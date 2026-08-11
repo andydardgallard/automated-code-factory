@@ -42,7 +42,9 @@
 - **Модели**: `.agents/agents/models.yaml` — per-role конфигурация (deepseek/qwen/kimi и др.).
   В новой версии модели задаются в `config.toml` (`default_model` + `[secondary_model]`),
   сабагентам — `model_preference: primary|secondary`. Фактические модели логируются в
-  `pipeline.yaml`/`report.md` (`models_used`).
+  `pipeline.yaml`/`report.md` (`models_used`). В новой версии для разделения моделей обязателен
+  `export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — фабрика проверяет его в pre-flight и при
+  отсутствии пишет `models_warning` в pipeline.yaml/report.md.
 - **Отчёты**: `report.md` (история прогона) + `report_code_changes.md` (diff «было→стало»)
   генерируются автоматически в `.code-factory/` при завершении.
 - **Коммиты**: поле `commit_exclude` в задаче исключает файлы из git-коммита

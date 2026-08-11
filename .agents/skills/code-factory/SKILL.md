@@ -47,7 +47,7 @@ flowchart TD
     J -->|Revise| F
     J -->|Approve| K
     G -->|auto| L[Make reasonable business assumptions from the task description. Record every assumption explicitly in the plan.]
-    L --> PF[Pre-flight git check: if the project has no git repository, run git init. Working tree must be clean: auto-untrack build artifacts (target/, node_modules/, __pycache__/ etc.) and commit factory artifacts (AGENTS.md). Record git HEAD and git status in .code-factory/state/.]
+    L --> PF[Pre-flight: git check — if the project has no git repository, run git init. Working tree must be clean: auto-untrack build artifacts (target/, node_modules/, __pycache__/ etc.) and commit factory artifacts (AGENTS.md). Record git HEAD and git status in .code-factory/state/. Also verify model setup: for the new CLI check that KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 is exported (otherwise secondary-model split is INACTIVE); record a models_warning in pipeline.yaml if missing.]
     PF --> K[Backup the current state: copy every file that will be modified to .code-factory/backups/ preserving relative paths. Track created files in .code-factory/manifest.json. Write the checkpoint .code-factory/state/pipeline.yaml after every phase for resume.]
     K --> M[Implement: launch factory-coder subagents for the plan tasks, respecting dependencies; independent tasks can run in parallel. Models are configured per subagent via model_preference in their agent .md files (new CLI) or models.yaml (legacy). Do NOT pass a concrete model name to the Agent tool — it is not supported. After each subagent returns, log the used model for each role to pipeline.yaml models_used. Each coder follows the plan and the project coding style in an isolated context. After every change, update manifest.json. Also create any new skills/scripts/plugins defined in the plan.]
     M --> N[Integration tests: write and run per-task tests for the changed modules following references/verification-strategy.md.]
@@ -121,7 +121,11 @@ Rules that always apply:
   Do NOT pass a concrete model name to the Agent tool (not supported). Log the actual model used
   for each role to `.code-factory/state/pipeline.yaml` (`models_used`) and include it in
   `report.md` so the run is auditable. The main agent's own model is the session model
-  (set via `kimi -m` / `/model`); record it too.
+  (set via `kimi -m` / `/model`); record it too. In the new CLI the secondary model is only used
+  when the env var `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is exported — during pre-flight
+  check it (Bash: `echo \"${KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL:-unset}\"`) and if missing write
+  `models_warning: \"KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL is not set — coder/tester subagents
+  will use the primary model\"` to pipeline.yaml and include the warning in report.md.
 - **Commit policy**: respect `commit_exclude` from the task — never commit matching files
   (e.g. personal strategy code); stage everything EXCEPT the excluded patterns.
 - **Git-native**: if the project has no git repository, run `git init`. All changes flow through

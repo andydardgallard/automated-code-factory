@@ -84,7 +84,11 @@ and commit factory artifacts (`AGENTS.md`). Record `git HEAD` and `git status` i
 **Commit policy**: read `commit_exclude` from the task (if present). These glob patterns are
 files the factory may modify (backups/tests/rollback) but must NEVER add to a git commit.
 **Models**: read `.agents/agents/models.yaml` and any `models:` override from the task; record
-the chosen models in `.code-factory/state/pipeline.yaml` under `models_used`.
+the chosen models in `.code-factory/state/pipeline.yaml` under `models_used`. If you are running
+with the new CLI, check during pre-flight that `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is
+exported (Bash: `echo "${KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL:-unset}"`). If it is missing,
+write `models_warning: "KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL is not set — coder/tester
+subagents will use the primary model"` into pipeline.yaml and carry the warning into report.md.
 Copy every file that will be modified into `.code-factory/backups/` preserving relative paths.
 Track changed/created files in `.code-factory/manifest.json`.
 
@@ -165,7 +169,10 @@ write `.code-factory/report_code_changes.md` (next to it) via
    (primary|secondary) in each sub-agent `.md`, resolved against `config.toml`
    `default_model`/`[secondary_model]`; legacy uses `.agents/agents/models.yaml`. Do NOT pass a
    concrete model name to the Agent tool (not supported). Log the actual model to
-   `.code-factory/state/pipeline.yaml` (`models_used`) and include it in `report.md`.
+   `.code-factory/state/pipeline.yaml` (`models_used`) and include it in `report.md`. In the new
+   CLI the secondary model is active only when `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is
+   exported — check it in pre-flight and record a `models_warning` in pipeline.yaml/report.md if
+   it is not set.
 9. **Commit policy** — respect `commit_exclude` from the task: never commit matching files.
    When committing, stage everything EXCEPT the excluded patterns.
 10. The factory may create any files/skills/tools inside the project needed to solve the task.

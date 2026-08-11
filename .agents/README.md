@@ -177,11 +177,15 @@ Checkpoint/resume: после каждой фазы пишется `.code-factor
 - SDK: `model=` в `prompt(...)` / `Session.create(...)`;
 - в задаче: поле `models:` в `task.yaml` (см. шаблон).
 
-**Проверка фактических моделей**: главный агент ОБЯЗАН передавать `model=` каждому сабагенту
-из `models.yaml` и записывать фактическую модель в `.code-factory/state/pipeline.yaml`
-(`models_used`) и в `report.md` (раздел «Models used»). Если после прогона в `pipeline.yaml`
-все роли показывают одну модель — значит, модели не разделялись; проверяй, что запуск CLI
-использует ожидаемую модель по умолчанию (`kimi -m …`).
+**Проверка фактических моделей**: модели задаются по ролям — в новой CLI через
+`model_preference` (`primary|secondary`) в `.md`-сабагентах + `config.toml`
+(`default_model` + `[secondary_model]`), в legacy — `models.yaml` (через `model=` в SDK).
+Главный агент НЕ передаёт имя модели в Agent tool (не поддерживается) и записывает
+фактическую модель в `.code-factory/state/pipeline.yaml` (`models_used`) и в `report.md`
+(раздел «Models used»). Если после прогона в `pipeline.yaml` все роли показывают одну модель —
+значит, модели не разделялись. Для новой CLI обязателен флаг
+`export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — без него coder/tester уйдут на primary.
+Фабрика проверяет это в pre-flight и пишет `models_warning` в pipeline.yaml/report.md.
 
 ## Коммиты
 

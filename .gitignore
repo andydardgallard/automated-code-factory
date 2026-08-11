@@ -1,0 +1,12 @@
+# Code Factory runtime state (never commit)
+.code-factory/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

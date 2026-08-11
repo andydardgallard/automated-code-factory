@@ -79,9 +79,9 @@ contain: `state/task.yaml`, `state/plan.md`, `logs/baseline.md`, `backups/` and
 
 ### Phase 5 — Implement
 Launch `factory-coder` subagents for the plan tasks, respecting dependencies; independent tasks
-may run in parallel. **MANDATORY**: when launching ANY subagent via the Agent tool, pass
-`model=` read from `models.yaml` by role (analyzer→flash, coder→flash, tester→flash,
-diagnostician→pro). After each subagent returns, append `models_used.<role> = <model>` to
+may run in parallel. Models are configured per subagent (model_preference in .md files for the
+new CLI, or models.yaml for legacy) — do NOT pass a concrete model name to the Agent tool.
+After each subagent returns, append `models_used.<role> = <model>` to
 `.code-factory/state/pipeline.yaml`. Each follows the plan and the project coding style. Update
 `manifest.json` after every change. Create any new skills/scripts/plugins defined in the plan.
 
@@ -148,10 +148,11 @@ write `.code-factory/report_code_changes.md` (next to it) via
    style.
 7. **Git-native** — if no git repo, `git init`; changes flow through git (feature branch per
    task), rollback to base commit on failure.
-8. **Models** — consult `.agents/agents/models.yaml` and task `models:` override. MANDATORY: pass
-   the per-role `model=` to every subagent launch via the Agent tool; log the actual model to
-   `.code-factory/state/pipeline.yaml` (`models_used`) and include it in `report.md`. This makes
-   the run auditable.
+8. **Models** — models are configured per role in the agent files: `model_preference` in the
+   new CLI (resolved against `config.toml` `default_model`/`[secondary_model]`), or
+   `.agents/agents/models.yaml` for legacy. Do NOT pass a concrete model name to the Agent tool
+   (not supported in the new CLI). Log the actual model to `.code-factory/state/pipeline.yaml`
+   (`models_used`) and include it in `report.md` for auditability.
 9. **Commit policy** — respect `commit_exclude` from the task: never commit matching files.
    When committing, stage everything EXCEPT the excluded patterns.
 10. The factory may create any files/skills/tools inside the project needed to solve the task.

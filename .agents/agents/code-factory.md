@@ -161,10 +161,10 @@ write `.code-factory/report_code_changes.md` (next to it) via
    style.
 7. **Git-native** — if no git repo, `git init`; changes flow through git (feature branch per
    task), rollback to base commit on failure.
-8. **Models** — consult `.agents/agents/models.yaml` and task `models:` override. In the new
-   Kimi Code CLI, models are configured in `config.toml` (`default_model` + `[secondary_model]`)
-   and per-session via `/model`; sub-agents can use `model_preference` (primary/secondary) or an
-   explicit `model` in the Agent tool call. Log the actual model to
+8. **Models** — models are configured per role in the agent files: `model_preference`
+   (primary|secondary) in each sub-agent `.md`, resolved against `config.toml`
+   `default_model`/`[secondary_model]`; legacy uses `.agents/agents/models.yaml`. Do NOT pass a
+   concrete model name to the Agent tool (not supported). Log the actual model to
    `.code-factory/state/pipeline.yaml` (`models_used`) and include it in `report.md`.
 9. **Commit policy** — respect `commit_exclude` from the task: never commit matching files.
    When committing, stage everything EXCEPT the excluded patterns.

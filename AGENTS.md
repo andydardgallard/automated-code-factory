@@ -7,21 +7,23 @@
 
 ## Структура
 
-- `.example.task.yaml` — шаблон бизнес-задачи (эталон формата; скопировать в `task.yaml`)
+- `task.yaml` — пример бизнес-задачи (эталон формата)
 - `.agents/skills/code-factory/` — flow skill фабрики (`SKILL.md`), справочники
   (`references/`: planning-guide, verification-strategy, error-routing, tech-stack-detection)
   и шаблон задачи (`assets/`)
-- `.agents/agents/` — главный агент фабрики (`code-factory.yaml`, `system.md`), модели
-  (`models.yaml`) и сабагенты (`sub-agents/analyzer.yaml`, `coder.yaml`, `tester.yaml`,
-  `diagnostician.yaml`)
+- `.agents/agents/` — главный агент фабрики: legacy YAML (`code-factory.yaml`, `system.md`) и
+  Markdown для новой версии (`code-factory.md`), модели (`models.yaml`) и сабагенты
+  (`sub-agents/analyzer|coder|tester|diagnostician.{yaml,md}`)
 - `.agents/examples/run_factory_sdk.py` — пример запуска через Kimi Agent SDK
 - `.agents/README.md` — полная инструкция по использованию фабрики
 
 ## Как использовать
 
-- CLI: `kimi`, затем `/flow:code-factory`; либо
+- Новая версия (Kimi Code 0.34+): `kimi`, затем `/skill:code-factory`; либо
+  `kimi --agent-file .agents/agents/code-factory.md "задача"`
+- Старая версия (Kimi CLI 1.12): `kimi`, затем `/flow:code-factory`; либо
   `kimi --agent-file .agents/agents/code-factory.yaml "задача"`
-- SDK: `python3 .agents/examples/run_factory_sdk.py task.yaml` (задача — из `.example.task.yaml`)
+- SDK: `python3 .agents/examples/run_factory_sdk.py task.yaml`
 
 ## Соглашения
 
@@ -38,7 +40,8 @@
 - **Git-native**: если нет git-репозитория — `git init`; изменения идут через git
   (feature-ветка на задачу), откат к базовому коммиту при неудаче.
 - **Модели**: `.agents/agents/models.yaml` — per-role конфигурация (deepseek/qwen/kimi и др.).
-  Главный агент передаёт `model=` каждому сабагенту и логирует фактические модели в
+  В новой версии модели задаются в `config.toml` (`default_model` + `[secondary_model]`),
+  сабагентам — `model_preference: primary|secondary`. Фактические модели логируются в
   `pipeline.yaml`/`report.md` (`models_used`).
 - **Отчёты**: `report.md` (история прогона) + `report_code_changes.md` (diff «было→стало»)
   генерируются автоматически в `.code-factory/` при завершении.

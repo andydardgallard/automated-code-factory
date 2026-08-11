@@ -38,8 +38,10 @@ setup, configs. Detect the stack deterministically with `references/tech-stack-d
 Run the existing test suite as the regression baseline and save it to
 `.code-factory/logs/baseline.md`.
 **Scout pipeline**: refine the project model with the analyzer report, generate `AGENTS.md`
-(with the 8 standard sections), then run native `/init kimi` so Kimi adapts AGENTS.md to
-itself. Skip if AGENTS.md already exists and the project is unchanged.
+(with the 8 standard sections), then run `/init` via
+`kimi -p /init --print --yolo -w <project>` so Kimi adapts AGENTS.md to itself. Note: `/init`
+is a SLASH COMMAND, not a CLI subcommand — do not run it as `/init kimi`. Skip if AGENTS.md
+already exists and the project is unchanged.
 
 **Repo-mismatch gate**: after analysis, verify that files, symbols, configs and data referenced
 by the task actually exist in the repo. If they are missing: in hitl mode STOP and ask the user

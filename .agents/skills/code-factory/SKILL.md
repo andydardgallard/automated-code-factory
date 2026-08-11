@@ -35,7 +35,7 @@ flowchart TD
     C -->|No| D[Ask the user business-level clarifying questions via AskUserQuestion. Ask ONLY business logic and expectations, never coding questions. Then update the parsed task.]
     D --> B
     C -->|Yes| E[Analyze the project: launch factory-analyzer subagents in parallel to determine tech stack, structure, entry points, test setup. Detect the stack deterministically using references/tech-stack-detection.md. Run the existing test suite to establish a regression baseline and save it to .code-factory/logs/baseline.md.]
-    E --> SC[Scout pipeline: refine the project model with the analyzer report; generate AGENTS.md with the 8 standard sections; run native /init kimi so Kimi adapts AGENTS.md to itself. Skip if AGENTS.md already exists and the project is unchanged.]
+    E --> SC[Scout pipeline: refine the project model with the analyzer report; generate AGENTS.md with the 8 standard sections; run /init via `kimi -p /init --print --yolo -w PROJECT_PATH` so Kimi adapts AGENTS.md to itself (it is a slash command, not a CLI subcommand). Skip if AGENTS.md already exists and the project is unchanged.]
     SC --> C2{Does the task match the analyzed repo? Check that files, symbols, configs and data referenced by the task actually exist.}
     C2 -->|No| R1[Ask the user for the missing files or context via AskUserQuestion in hitl mode, or in auto mode record an assumption that the repo is the source of truth and continue. Then re-analyze.]
     R1 --> E

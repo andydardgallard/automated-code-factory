@@ -7,7 +7,7 @@
 
 ## Структура
 
-- `task.yaml` — пример бизнес-задачи (эталон формата)
+- `.example.task.yaml` — шаблон бизнес-задачи (эталон формата; скопировать в `task.yaml`)
 - `.agents/skills/code-factory/` — flow skill фабрики (`SKILL.md`), справочники
   (`references/`: planning-guide, verification-strategy, error-routing, tech-stack-detection)
   и шаблон задачи (`assets/`)
@@ -21,7 +21,7 @@
 
 - CLI: `kimi`, затем `/flow:code-factory`; либо
   `kimi --agent-file .agents/agents/code-factory.yaml "задача"`
-- SDK: `python3 .agents/examples/run_factory_sdk.py task.yaml`
+- SDK: `python3 .agents/examples/run_factory_sdk.py task.yaml` (задача — из `.example.task.yaml`)
 
 ## Соглашения
 

@@ -30,7 +30,7 @@ green-field) — стек определяется автоматически.
 │   └── examples/run_factory_sdk.py  # запуск через Kimi Agent SDK
 ├── AGENTS.md                        # контекст для агентов Kimi
 ├── prepare_factory.sh               # развернуть фабрику в проект (1 команда)
-├── task.yaml                        # пример бизнес-задачи
+├── .example.task.yaml               # пример/шаблон бизнес-задачи
 └── .gitignore
 ```
 
@@ -54,6 +54,9 @@ python3 .agents/examples/run_factory_sdk.py task.yaml
 
 ## Формат бизнес-задачи (task.yaml)
 
+Скопируйте `.example.task.yaml` в `task.yaml` и заполните поля (обязательны только
+`title` и `description`):
+
 ```yaml
 title: "Стратегия не генерирует сигналы для CNY"
 repo_path: ./repo            # только для существующих проектов
@@ -65,4 +68,4 @@ acceptance_criteria:
   - "Стратегия генерирует не менее 5 сигналов LONG/SHORT для CNY"
 ```
 
-Полное описание — в `.agents/README.md`.
+Полное описание всех полей — в комментариях самого `.example.task.yaml`.

@@ -10,7 +10,7 @@ tools:
 disallowedTools:
   - Write
   - Edit
-model_preference: secondary
+model_preference: primary
 ---
 
 You are the ANALYZER subagent of the Code Factory. You explore a project READ-ONLY and return a

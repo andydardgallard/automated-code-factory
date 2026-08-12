@@ -1,12 +1,13 @@
 ---
 name: code-factory
-description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, finally validating acceptance criteria and writing reports. Works with any programming language or combination of languages.
-whenToUse: When the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", or provides a business task file (task.yaml) / description.
+description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria and writing reports. Works with any programming language or combination of languages.
+whenToUse: When the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 subagents:
   - factory-analyzer
   - factory-coder
   - factory-tester
   - factory-diagnostician
+  - factory-code-reviewer
 ---
 
 ${base_prompt}
@@ -27,21 +28,22 @@ at the user unless asked.
   - `references/planning-guide.md` — analysis checklist, DAG plan template, business-test questions (Phases 2–3)
   - `references/verification-strategy.md` — integration/regression/business tests + rollback (Phases 4–9)
   - `references/error-routing.md` — deterministic error classification, retry budgets, Diagnostician (any failure)
+  - `references/code-review.md` — static quality gate: checklist, severity, verdict, rework task (before acceptance)
   - `assets/task-template.yaml` — business task template
-- Agent models: `.agents/agents/models.yaml` — per-role model configuration (change anytime)
 - Runtime state: `.code-factory/` (state/, backups/, manifest.json, logs/)
 
 Read the relevant reference file when you reach its phase. Keep your own context lean — delegate
 heavy work to subagents (`factory-analyzer`, `factory-coder`, `factory-tester`,
-`factory-diagnostician`) and accept only concise structured results. When you delegate to a
-custom sub-agent, its final message IS the complete handoff — require a concise, structured
-result from it.
+`factory-diagnostician`, `factory-code-reviewer`) and accept only concise structured results. When
+you delegate to a custom sub-agent, its final message IS the complete handoff — require a
+concise, structured result from it.
 
 ## Workflow
 
 ### Phase 0 — Accept the task
 Read the user's message or `task.yaml`. Parse: title, repo_path (optional), description,
-priority, mode (hitl/auto, default hitl), acceptance_criteria, commit_exclude, models. Save to
+priority, mode (hitl/auto, default hitl), task_type (implement default | review),
+acceptance_criteria, commit_exclude, models. Save to
 `.code-factory/state/task.yaml`. If the business task is unclear, ask ONLY business-level
 questions via `AskUserQuestion` (never coding questions).
 **Checkpoint**: if `.code-factory/state/pipeline.yaml` exists and the task is unchanged, resume
@@ -67,6 +69,8 @@ assumption (repo is the source of truth) and continue. Never silently skip missi
 Follow `references/planning-guide.md`. Produce a DAG plan: tasks with dependencies, per-task
 verification commands, business tests as first-class tasks, architecture approach. If the task
 needs new in-project skills/scripts/plugins, include them. Save to `.code-factory/state/plan.md`.
+If `task_type: review`, the plan is produced differently: first run the code reviewer over the
+whole codebase (Phase 2b), then its rework list becomes the plan.
 
 ### Phase 3 — Business tests + approval
 - HITL: ask the user via `AskUserQuestion` for (1) the concrete business scenario/user story,
@@ -83,12 +87,12 @@ and commit factory artifacts (`AGENTS.md`). Record `git HEAD` and `git status` i
 `.code-factory/state/`.
 **Commit policy**: read `commit_exclude` from the task (if present). These glob patterns are
 files the factory may modify (backups/tests/rollback) but must NEVER add to a git commit.
-**Models**: read `.agents/agents/models.yaml` and any `models:` override from the task; record
-the chosen models in `.code-factory/state/pipeline.yaml` under `models_used`. If you are running
-with the new CLI, check during pre-flight that `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is
-exported (Bash: `echo "${KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL:-unset}"`). If it is missing,
-write `models_warning: "KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL is not set — coder/tester
-subagents will use the primary model"` into pipeline.yaml and carry the warning into report.md.
+**Models**: read any `models:` override from the task; record the chosen models in
+`.code-factory/state/pipeline.yaml` under `models_used`. If you are running with the new CLI,
+check during pre-flight that `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is exported (Bash:
+`echo "${KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL:-unset}"`). If it is missing, write
+`models_warning: "KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL is not set — coder/tester subagents
+will use the primary model"` into pipeline.yaml and carry the warning into report.md.
 Copy every file that will be modified into `.code-factory/backups/` preserving relative paths.
 Track changed/created files in `.code-factory/manifest.json`.
 
@@ -113,6 +117,24 @@ Run the real program with the user-specified configs and input data; compare act
 results with expected. On mismatch (HITL): show actual vs expected, ask the user whether to fix
 the code or revise the expectations.
 
+### Phase 8b — Code review (mandatory gate)
+Launch `factory-code-reviewer` following `references/code-review.md`. Scope: for a normal task
+the DIFF (`git diff` vs `git-head.txt` + `created_files` from `manifest.json`); for a review
+task the WHOLE codebase. The reviewer returns `approve` or `request_changes` with a rework
+list. Write the verdict to `.code-factory/logs/code-review.md` and log
+`models_used.reviewer`.
+- `approve` → proceed to Phase 9.
+- `request_changes` → increment `retry_counters.reviewer` in `pipeline.yaml`. If budget
+  (reviewer=2) remains: pass the rework list to the coder, re-run integration + regression
+  tests (business tests only if business logic changed), then re-review. If budget exhausted:
+  hitl mode → ask the user how to proceed; auto mode → record the unresolved findings in
+  `report.md` and continue (never silently).
+
+**Review task** (`task_type: review`): the code reviewer runs EARLIER — right after analysis
+(Phase 2b), over the whole codebase. Its rework list becomes the plan; an `approve` verdict
+means nothing to implement, so skip straight to Phase 9. After any rework, the normal
+end-of-task review (Phase 8b) still runs.
+
 ### Phase 9 — Acceptance + finish
 Verify every acceptance criterion with evidence (`.code-factory/state/acceptance.md`). Remove
 backups. Produce the final business-language report: what changed, test results, business
@@ -130,9 +152,10 @@ On ANY failure, do NOT roll back immediately. Follow `references/error-routing.m
    → planner; wrong business results / unknown → diagnostician; infrastructure → auto-fix;
    permission → human. Record the error in `.code-factory/logs/errors.md` and update retry
    counters in `.code-factory/state/pipeline.yaml`.
-2. **Retry budget check**: coder=1, ba=2, planner=2, diagnostician=1, infrastructure=3. If the
-   routed role has budget, roll back and retry it with the error context. If exhausted, escalate
-   to the Diagnostician.
+2. **Retry budget check**: coder=1, ba=2, planner=2, diagnostician=1, infrastructure=3,
+   reviewer=2. If the routed role has budget, roll back and retry it with the error context. If
+   exhausted, escalate to the Diagnostician (or, for the reviewer, to the human / recorded
+   unresolved-findings note).
 3. **Diagnostician** (LLM): launch `factory-diagnostician` with the error output + attempt
    history. It returns `root_cause`, `recommended_role`, `recommended_action`,
    `context_for_retry`, `confidence`. Write the report to `.code-factory/logs/diagnostic.md`.
@@ -167,12 +190,15 @@ write `.code-factory/report_code_changes.md` (next to it) via
    task), rollback to base commit on failure.
 8. **Models** — models are configured per role in the agent files: `model_preference`
    (primary|secondary) in each sub-agent `.md`, resolved against `config.toml`
-   `default_model`/`[secondary_model]`; legacy uses `.agents/agents/models.yaml`. Do NOT pass a
-   concrete model name to the Agent tool (not supported). Log the actual model to
-   `.code-factory/state/pipeline.yaml` (`models_used`) and include it in `report.md`. In the new
-   CLI the secondary model is active only when `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is
-   exported — check it in pre-flight and record a `models_warning` in pipeline.yaml/report.md if
-   it is not set.
+   `default_model`/`[secondary_model]`. Do NOT pass a concrete model name to the Agent tool (not
+   supported). Log the actual model to `.code-factory/state/pipeline.yaml` (`models_used`) and
+   include it in `report.md`. The secondary model is active only when
+   `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is exported — check it in pre-flight and record a
+   `models_warning` in pipeline.yaml/report.md if it is not set.
 9. **Commit policy** — respect `commit_exclude` from the task: never commit matching files.
    When committing, stage everything EXCEPT the excluded patterns.
 10. The factory may create any files/skills/tools inside the project needed to solve the task.
+11. **Code-review gate** — every task passes through `factory-code-reviewer` before acceptance.
+    Normal tasks review the DIFF at the end; review tasks review the WHOLE codebase at the start.
+    A task is never accepted while the reviewer has an open `request_changes` verdict; respect
+    the reviewer budget (2) to avoid infinite loops.

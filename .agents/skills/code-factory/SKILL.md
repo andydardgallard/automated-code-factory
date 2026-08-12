@@ -1,6 +1,6 @@
 ---
 name: code-factory
-description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", or provides a business task file (task.yaml) / description.
+description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 type: flow
 ---
 
@@ -14,7 +14,7 @@ Turns business tasks (described by non-technical users) into working, tested cod
 - `references/planning-guide.md` — analysis checklist, DAG plan template, business-test questions (Phases 2–3)
 - `references/verification-strategy.md` — integration / regression / business tests and rollback (Phases 4–9)
 - `references/error-routing.md` — deterministic error classification, retry budgets, Diagnostician fallback (on any failure)
-- `agents/models.yaml` — per-role model configuration (change providers/families anytime)
+- `references/code-review.md` — static quality gate: checklist, severity, verdict, rework task (before acceptance)
 - `assets/task-template.yaml` — business task template (Phase 0)
 
 ## Runtime state (inside the project)
@@ -30,7 +30,7 @@ The factory may create any files, skills, scripts or plugins inside the project 
 
 ```mermaid
 flowchart TD
-    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, priority, mode (hitl/auto), acceptance_criteria, commit_exclude, models. Save the parsed task to .code-factory/state/task.yaml. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
+    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, priority, mode (hitl/auto), task_type (implement default | review), acceptance_criteria, commit_exclude, models. Save the parsed task to .code-factory/state/task.yaml. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
     B --> C{Is the business task clear enough?}
     C -->|No| D[Ask the user business-level clarifying questions via AskUserQuestion. Ask ONLY business logic and expectations, never coding questions. Then update the parsed task.]
     D --> B
@@ -39,8 +39,13 @@ flowchart TD
     SC --> C2{Does the task match the analyzed repo? Check that files, symbols, configs and data referenced by the task actually exist.}
     C2 -->|No| R1[Ask the user for the missing files or context via AskUserQuestion in hitl mode, or in auto mode record an assumption that the repo is the source of truth and continue. Then re-analyze.]
     R1 --> E
-    C2 -->|Yes| F[Create the development plan following references/planning-guide.md: DAG of tasks with dependencies and per-task verification commands; business tests are first-class tasks in the plan. If the task needs new in-project skills, scripts or plugins, include them in the plan. Save the plan to .code-factory/state/plan.md.]
-    F --> G{Task mode?}
+    C2 -->|Yes| F[Create the development plan following references/planning-guide.md: DAG of tasks with dependencies and per-task verification commands; business tests are first-class tasks in the plan. If the task needs new in-project skills, scripts or plugins, include them in the plan. Save the plan to .code-factory/state/plan.md. For task_type=review, the plan is the review rework list produced by the code reviewer.]
+    F --> TT{task_type?}
+    TT -->|review| CR0[Run factory-code-reviewer over the WHOLE codebase (or the task's listed files) following references/code-review.md. Write the verdict to .code-factory/logs/code-review.md. On request_changes the rework list becomes the plan.]
+    CR0 --> CRV0{Review verdict?}
+    CRV0 -->|approve| W
+    CRV0 -->|request_changes| G
+    TT -->|implement| G
     G -->|hitl| H[Business test definition: ask the user via AskUserQuestion for 1 a concrete business scenario (user story), 2 which configs and input data to run, 3 expected business results. Only business-logic questions. Store answers in the plan.]
     H --> I[Present the full plan for approval: write it to the plan file and call EnterPlanMode then ExitPlanMode. Wait for approval or revision comments.]
     I --> J{Plan approved?}
@@ -49,7 +54,7 @@ flowchart TD
     G -->|auto| L[Make reasonable business assumptions from the task description. Record every assumption explicitly in the plan.]
     L --> PF[Pre-flight: git check — if the project has no git repository, run git init. Working tree must be clean: auto-untrack build artifacts (target/, node_modules/, __pycache__/ etc.) and commit factory artifacts (AGENTS.md). Record git HEAD and git status in .code-factory/state/. Also verify model setup: for the new CLI check that KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 is exported (otherwise secondary-model split is INACTIVE); record a models_warning in pipeline.yaml if missing.]
     PF --> K[Backup the current state: copy every file that will be modified to .code-factory/backups/ preserving relative paths. Track created files in .code-factory/manifest.json. Write the checkpoint .code-factory/state/pipeline.yaml after every phase for resume.]
-    K --> M[Implement: launch factory-coder subagents for the plan tasks, respecting dependencies; independent tasks can run in parallel. Models are configured per subagent via model_preference in their agent .md files (new CLI) or models.yaml (legacy). Do NOT pass a concrete model name to the Agent tool — it is not supported. After each subagent returns, log the used model for each role to pipeline.yaml models_used. Each coder follows the plan and the project coding style in an isolated context. After every change, update manifest.json. Also create any new skills/scripts/plugins defined in the plan.]
+    K --> M[Implement: launch factory-coder subagents for the plan tasks, respecting dependencies; independent tasks can run in parallel. Models are configured per subagent via model_preference in their agent .md files. Do NOT pass a concrete model name to the Agent tool — it is not supported. After each subagent returns, log the used model for each role to pipeline.yaml models_used. Each coder follows the plan and the project coding style in an isolated context. After every change, update manifest.json. Also create any new skills/scripts/plugins defined in the plan.]
     M --> N[Integration tests: write and run per-task tests for the changed modules following references/verification-strategy.md.]
     N --> O{Tests passed?}
     O -->|No| RR[Route the failure per references/error-routing.md: classify deterministically by regex, record the error context in .code-factory/logs/errors.md, and update retry counters in pipeline.yaml.]
@@ -81,7 +86,11 @@ flowchart TD
     U --> V{User decision}
     V -->|Fix the code| M
     V -->|Revise the expectations| S
-    T -->|Yes| W[Acceptance check: verify every acceptance_criteria item against the actual results and document evidence for each. Save the verification to .code-factory/state/acceptance.md.]
+    T -->|Yes| CR[Code review: run the factory-code-reviewer over the change (normal task: the diff; review task: the whole repo) following references/code-review.md. Write the verdict to .code-factory/logs/code-review.md and log models_used.reviewer.]
+    CR --> CRV{Review verdict?}
+    CRV -->|request_changes| RCR[Record the reviewer retry counter in pipeline.yaml. If the reviewer budget is not exhausted, pass the rework list to the coder and re-run integration + regression tests (business tests only if business logic changed), then re-review. If budget is exhausted: in hitl mode ask the user, in auto mode record the unresolved findings in report.md and continue.]
+    RCR --> M
+    CRV -->|approve| W[Acceptance check: verify every acceptance_criteria item against the actual results and document evidence for each. Save the verification to .code-factory/state/acceptance.md.]
     W --> X{All criteria met?}
     X -->|No| RR
     X -->|Yes| Y[Finish: remove backups, produce the final report (what changed, test results, business results, acceptance evidence, models_used per role). Commit changes to a feature branch respecting commit_exclude. Update project documentation if the task requires it. Write the self-contained .code-factory/report.md with the full history (task, plan, errors, diagnosis, results, manifest, models_used). Generate .code-factory/report_code_changes.md next to it with the scripts/gen_code_changes_report.py script (was-became per changed line). Present the report to the user.]
@@ -104,9 +113,10 @@ Rules that always apply:
   mode). Never silently skip missing inputs.
 - **Escalation ladder**: deterministic regex → Diagnostician (LLM) → Human (HITL) → FAILED with
   a full log. The factory never crashes silently.
-- **Retry budgets**: coder=1, ba=2, planner=2, diagnostician=1, infrastructure=3. When a role's
-  budget is exhausted, escalate to the Diagnostician, which resets the counter of its
-  recommended role and re-runs it with the diagnostic context.
+- **Retry budgets**: coder=1, ba=2, planner=2, diagnostician=1, infrastructure=3,
+  reviewer=2. When a role's budget is exhausted, escalate to the Diagnostician (for test/code
+  failures) or, for the reviewer, to the human in hitl mode / a recorded unresolved-findings note
+  in auto mode — never loop forever.
 - **Checkpoint/resume**: after every phase write `.code-factory/state/pipeline.yaml` (current
   phase, retry counters, plan fingerprint). On restart, resume from the recorded phase.
 - **Report**: on finish (success OR FAILED) write `.code-factory/report.md` — one
@@ -115,17 +125,17 @@ Rules that always apply:
   Also write `.code-factory/report_code_changes.md` (next to it) via
   `scripts/gen_code_changes_report.py` — a deterministic was-became diff report of the commit
   (zero LLM tokens).
-- **Models**: models are configured per role in the agent files themselves — in the new CLI
-  (`model_preference: primary|secondary` in each sub-agent `.md`, resolved against
-  `config.toml` `default_model`/`[secondary_model]`), in legacy via `.agents/agents/models.yaml`.
-  Do NOT pass a concrete model name to the Agent tool (not supported). Log the actual model used
-  for each role to `.code-factory/state/pipeline.yaml` (`models_used`) and include it in
-  `report.md` so the run is auditable. The main agent's own model is the session model
-  (set via `kimi -m` / `/model`); record it too. In the new CLI the secondary model is only used
-  when the env var `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is exported — during pre-flight
-  check it (Bash: `echo \"${KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL:-unset}\"`) and if missing write
-  `models_warning: \"KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL is not set — coder/tester subagents
-  will use the primary model\"` to pipeline.yaml and include the warning in report.md.
+- **Models**: models are configured per role in the agent files themselves —
+  `model_preference: primary|secondary` in each sub-agent `.md`, resolved against `config.toml`
+  `default_model`/`[secondary_model]`. Do NOT pass a concrete model name to the Agent tool (not
+  supported). Log the actual model used for each role to `.code-factory/state/pipeline.yaml`
+  (`models_used`) and include it in `report.md` so the run is auditable. The main agent's own
+  model is the session model (set via `kimi -m` / `/model`); record it too. The secondary model
+  is only used when the env var `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is exported — during
+  pre-flight check it (Bash: `echo "${KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL:-unset}"`) and if
+  missing write `models_warning: "KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL is not set —
+  coder/tester subagents will use the primary model"` to pipeline.yaml and include the warning
+  in report.md.
 - **Commit policy**: respect `commit_exclude` from the task — never commit matching files
   (e.g. personal strategy code); stage everything EXCEPT the excluded patterns.
 - **Git-native**: if the project has no git repository, run `git init`. All changes flow through

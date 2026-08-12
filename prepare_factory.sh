@@ -59,7 +59,7 @@ if [[ -d "$PROJECT_DIR/.agents" ]]; then
     # Безопасно: не трогаем пользовательские файлы в .agents/, которых нет в фабрике.
     cp -rn "$FACTORY_SRC"/. "$PROJECT_DIR/.agents/" 2>/dev/null || true
     # Принудительно обновляем ключевые файлы фабрики (они должны быть актуальны)
-    for f in SKILL.md system.md code-factory.yaml models.yaml gen_code_changes_report.py; do
+    for f in SKILL.md code-factory.md gen_code_changes_report.py; do
         src=$(find "$FACTORY_SRC" -name "$f" -type f | head -1 || true)
         if [[ -n "$src" ]]; then
             dst=$(find "$PROJECT_DIR/.agents" -name "$f" -type f | head -1 || true)
@@ -72,7 +72,7 @@ if [[ -d "$PROJECT_DIR/.agents" ]]; then
         fi
     done
     # Справочники и сабагенты — копируем только недостающие
-    for d in references assets sub-agents examples scripts; do
+    for d in references assets sub-agents scripts; do
         if [[ -d "$FACTORY_SRC/$d" ]]; then
             mkdir -p "$PROJECT_DIR/.agents/$d"
             cp -rn "$FACTORY_SRC/$d"/. "$PROJECT_DIR/.agents/$d/" 2>/dev/null || true
@@ -119,7 +119,7 @@ echo ""
 info "==> Готово! Запуск фабрики:"
 echo "    cd $PROJECT_DIR"
 echo "    kimi"
-echo "    # в чате: /flow:code-factory"
+echo "    # в чате: /skill:code-factory"
 echo ""
 echo "    Или сразу с задачей:"
-echo "    kimi --agent-file .agents/agents/code-factory.yaml \"описание задачи\""
+echo "    kimi --agent-file .agents/agents/code-factory.md \"описание задачи\""

@@ -5,6 +5,21 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [11.1.0] — 2026-08-23
+
+### Added
+- `prepare_factory.sh`: при развёртывании фабрики добавляет `.agents/` в `.gitignore` целевого
+  проекта (не ломая чтение/запись данных фабрики — `.gitignore` влияет только на git-трекинг).
+- Блок «Лестница Ленивого Сеньора» (Ponytail) в `code-factory.md` и `coder.md`: обязательная
+  лестница решений перед генерацией кода + фиксация выбора в `<thinking>`.
+- Скрипты `scripts/test_prompt_structure.py` и `scripts/test_env_propagation.sh` — детерминированные
+  проверки append-only структуры промптов и проброски env-переменной.
+
+### Changed
+- Документировано правило append-only сборки промптов (для автоматического кэша DeepSeek).
+- Документирована причина потери `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL` и требование
+  экспортировать его в том же терминале до запуска `kimi`.
+
 ## [11.0.0] — 2026-08-12
 
 ### Added
@@ -51,6 +66,7 @@
   tech-stack-detection), сабагенты analyzer/coder/tester/diagnostician, `models.yaml`,
   `prepare_factory.sh`, генератор `report_code_changes.md`.
 
+[11.1.0]: https://github.com/andydardgallard/automated-code-factory/compare/v11.0.0...v11.1.0
 [11.0.0]: https://github.com/andydardgallard/automated-code-factory/compare/v10.2.0...v11.0.0
 [10.2.0]: https://github.com/andydardgallard/automated-code-factory/compare/v10.1.0...v10.2.0
 [10.1.0]: https://github.com/andydardgallard/automated-code-factory/compare/v10.0.0...v10.1.0

@@ -84,9 +84,13 @@ else
 fi
 
 # --- 3. .gitignore -----------------------------------------------------------
+# Примечание: .gitignore влияет только на git-трекинг, но не на доступ к файлам
+# на диске. Игнорирование .agents/ не ломает чтение/запись данных фабрики
+# (кэш, история, контекст) — фабрика работает с .agents/ напрямую через файловую
+# систему, а не через git.
 GITIGNORE="$PROJECT_DIR/.gitignore"
 NEED_GITIGNORE=false
-for pat in ".code-factory/" "__pycache__/" "*.pyc"; do
+for pat in ".agents/" ".code-factory/" "__pycache__/" "*.pyc"; do
     if [[ -f "$GITIGNORE" ]] && grep -qF "$pat" "$GITIGNORE"; then
         :
     else
@@ -95,10 +99,11 @@ for pat in ".code-factory/" "__pycache__/" "*.pyc"; do
 done
 
 if [[ "$NEED_GITIGNORE" == true ]]; then
-    warn "    .gitignore: добавляю runtime-паттерны фабрики"
+    warn "    .gitignore: добавляю служебные паттерны фабрики"
     {
         [[ -f "$GITIGNORE" ]] && echo ""
-        echo "# --- Code Factory runtime (auto-added by prepare_factory.sh) ---"
+        echo "# --- Code Factory (auto-added by prepare_factory.sh) ---"
+        echo ".agents/"
         echo ".code-factory/"
         echo "__pycache__/"
         echo "*.pyc"
@@ -110,7 +115,7 @@ echo ""
 info "==> Проверка готовности:"
 echo "    • .agents/:            $([ -f "$PROJECT_DIR/.agents/skills/code-factory/SKILL.md" ] && echo 'OK ✓' || echo 'ОТСУТСТВУЕТ ✗')"
 echo "    • .git/:               $([ -d "$PROJECT_DIR/.git" ] && echo 'OK ✓' || echo 'ОТСУТСТВУЕТ ✗')"
-echo "    • .gitignore:          $(grep -qF '.code-factory/' "$PROJECT_DIR/.gitignore" 2>/dev/null && echo 'OK ✓' || echo 'нет .code-factory/ ✗')"
+echo "    • .gitignore:          $(grep -qF '.agents/' "$PROJECT_DIR/.gitignore" 2>/dev/null && grep -qF '.code-factory/' "$PROJECT_DIR/.gitignore" 2>/dev/null && echo 'OK ✓ (.agents/ + .code-factory/)' || echo 'нет .agents/ или .code-factory/ ✗')"
 echo "    • git status:"
 git -C "$PROJECT_DIR" status --short | head -20 || true
 [[ -z "$(git -C "$PROJECT_DIR" status --short)" ]] && echo "      (чистое дерево)"
@@ -123,3 +128,6 @@ echo "    # в чате: /skill:code-factory"
 echo ""
 echo "    Или сразу с задачей:"
 echo "    kimi --agent-file .agents/agents/code-factory.md \"описание задачи\""
+echo ""
+warn "    Для разделения моделей сабагентов выполните ДО запуска kimi (в этом же терминале):"
+echo "    export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1"

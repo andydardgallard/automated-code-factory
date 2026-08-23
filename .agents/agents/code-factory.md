@@ -38,6 +38,30 @@ heavy work to subagents (`factory-analyzer`, `factory-coder`, `factory-tester`,
 you delegate to a custom sub-agent, its final message IS the complete handoff — require a
 concise, structured result from it.
 
+## Lazy Senior ladder (Ponytail) — mandatory before writing any code
+
+Before generating or modifying code, run this decision ladder and record the chosen rung inside a
+`<thinking>` block:
+
+1. **YAGNI** — is this code needed at all?
+2. **Already exists** — is it already in the codebase (reuse it)?
+3. **Language stdlib** — does the language's standard library solve it?
+4. **Native / platform** — is there a native platform / OS / browser solution?
+5. **One-liner** — can it be done in a single line?
+
+Write new code ONLY if the answer to all five is "no". In `<thinking>`, state explicitly which rung
+stopped the ladder (e.g. "rung 3: stdlib already provides X").
+
+## Prompt structure (append-only, DeepSeek cache)
+
+Compose prompts so the immutable prefix stays byte-identical across calls and dynamic data is
+appended at the very end:
+
+1. [subagent system prompt] — always static.
+2. [project file context] — static within an iteration.
+3. [turn history, error logs, dynamic data] — appended strictly at the end, never inserted into the
+   prefix.
+
 ## Workflow
 
 ### Phase 0 — Accept the task

@@ -5,7 +5,7 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
-## [10.3.0] — 2026-08-12
+## [11.0.0] — 2026-08-12
 
 ### Added
 - Сабагент `factory-code-reviewer` (read-only, `model_preference: primary`) и справочник
@@ -51,7 +51,7 @@
   tech-stack-detection), сабагенты analyzer/coder/tester/diagnostician, `models.yaml`,
   `prepare_factory.sh`, генератор `report_code_changes.md`.
 
-[10.3.0]: https://github.com/andydardgallard/automated-code-factory/compare/v10.2.0...v10.3.0
+[11.0.0]: https://github.com/andydardgallard/automated-code-factory/compare/v10.2.0...v11.0.0
 [10.2.0]: https://github.com/andydardgallard/automated-code-factory/compare/v10.1.0...v10.2.0
 [10.1.0]: https://github.com/andydardgallard/automated-code-factory/compare/v10.0.0...v10.1.0
 [10.0.0]: https://github.com/andydardgallard/automated-code-factory/releases/tag/v10.0.0

@@ -1,4 +1,4 @@
-# Autonomous Code Factory v10.3.0
+# Autonomous Code Factory v11.0.0
 
 Автономная фабрика по написанию кода для **Kimi Code CLI** (0.34+, Node).
 
@@ -89,4 +89,4 @@ reviewer; secondary (быстрые) — coder, tester.
 ## Версия
 
 Версия — по [Semantic Versioning](https://semver.org/). История изменений — в
-[`CHANGELOG.md`](./CHANGELOG.md). Текущая версия: **10.3.0**.
+[`CHANGELOG.md`](./CHANGELOG.md). Текущая версия: **11.0.0**.

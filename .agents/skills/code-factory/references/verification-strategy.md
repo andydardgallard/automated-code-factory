@@ -18,6 +18,16 @@ project to its pre-change state before retrying.
 If a stage fails, roll back and retry implementation with the error context. Do not proceed to a
 later stage while an earlier one is failing.
 
+## 0.1 Task-type specifics
+
+- **refactor** — see `refactoring.md`. The success criterion is inverted vs a normal task: the
+  ONLY acceptable proof is that 100% of the EXISTING integration/regression/business tests pass
+  with zero changes. Any test that needs to be edited (not because it was broken before, but to
+  match new behavior) is a critical failure → automatic rollback.
+- **security_audit** — see `security-audit.md`. No code is changed and no tests are written;
+  the deliverable is a set of reports plus a generated fix-task file. Verification here means
+  "the reports exist, cover every present artifact type, and the fix-task file is valid".
+
 ## 1. Integration tests
 
 - Focused tests that verify the changed modules work together correctly (new function + its
@@ -148,7 +158,7 @@ analyzing the run without reading the rest of `.code-factory/`.
 SUCCESS | FAILED
 
 ## Task (business)
-<parsed task: title, description, priority, acceptance criteria>
+<parsed task: title, description, user_story (if any), acceptance criteria>
 
 ## Models used
 | Role | Model |

@@ -15,6 +15,9 @@ Turns business tasks (described by non-technical users) into working, tested cod
 - `references/verification-strategy.md` — integration / regression / business tests and rollback (Phases 4–9)
 - `references/error-routing.md` — deterministic error classification, retry budgets, Diagnostician fallback (on any failure)
 - `references/code-review.md` — static quality gate: checklist, severity, verdict, rework task (before acceptance)
+- `references/providers.md` — model routing for Kimi (K3) and Qwen providers (Phase 4)
+- `references/refactoring.md` — refactor task type: freeze functionality, 100% tests unchanged
+- `references/security-audit.md` — security_audit task type: adaptive full audit + fix-task file
 - `assets/task-template.yaml` — business task template (Phase 0)
 
 ## Runtime state (inside the project)
@@ -30,7 +33,7 @@ The factory may create any files, skills, scripts or plugins inside the project 
 
 ```mermaid
 flowchart TD
-    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, priority, mode (hitl/auto), task_type (implement default | review), acceptance_criteria, commit_exclude, models. Save the parsed task to .code-factory/state/task.yaml. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
+    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, user_story (optional), mode (hitl/auto), task_type (implement default | review | refactor | security_audit), acceptance_criteria, commit_exclude, models. There is NO priority field — every task is HIGH by default. Save the parsed task to .code-factory/state/task.yaml. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
     B --> C{Is the business task clear enough?}
     C -->|No| D[Ask the user business-level clarifying questions via AskUserQuestion. Ask ONLY business logic and expectations, never coding questions. Then update the parsed task.]
     D --> B
@@ -46,6 +49,10 @@ flowchart TD
     CRV0 -->|approve| W
     CRV0 -->|request_changes| G
     TT -->|implement| G
+    TT -->|refactor| RF[Refactor flow: baseline the existing test suite, plan structural-only tasks, implement with factory-refactorer, verify 100% of existing tests pass unchanged — any behavior change is a critical error and rolls back automatically. See references/refactoring.md.]
+    RF --> L
+    TT -->|security_audit| SA[Security audit flow: detect artifact types, run only the relevant checks with factory-security-auditor (read-only), write reports + a generated fix-task file. No code change and no auto-fixing. See references/security-audit.md.]
+    SA --> W
     G -->|hitl| H[Business test definition: ask the user via AskUserQuestion for 1 a concrete business scenario (user story), 2 which configs and input data to run, 3 expected business results. Only business-logic questions. Store answers in the plan.]
     H --> I[Present the full plan for approval: write it to the plan file and call EnterPlanMode then ExitPlanMode. Wait for approval or revision comments.]
     I --> J{Plan approved?}
@@ -99,6 +106,12 @@ flowchart TD
 
 Rules that always apply:
 
+- **Task format**: the task has `title`, `repo_path`, `description`, optional `user_story`,
+  `mode`, `task_type` (`implement` | `review` | `refactor` | `security_audit`),
+  `acceptance_criteria`, `commit_exclude`, `models`. There is NO `priority` field — every task
+  is HIGH by default and the factory never prioritizes.
+- **User story**: when present, `user_story` is analyzed and used by the analyzer, planner and
+  coder — it disambiguates the business intent and drives decisions.
 - **Language-agnostic**: detect the stack; never assume a language. The factory serves any
   project type (frontend, backend, CLI, library, green-field) — verification is framework-agnostic.
 - **Token efficiency**: parallel subagents, isolated contexts, concise results, progressive
@@ -135,7 +148,9 @@ Rules that always apply:
   pre-flight check it (Bash: `echo "${KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL:-unset}"`) and if
   missing write `models_warning: "KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL is not set —
   coder/tester subagents will use the primary model"` to pipeline.yaml and include the warning
-  in report.md.
+  in report.md. When a role's model is a Kimi (K3) or Qwen model, route it per
+  `references/providers.md` (alias → provider config) and handle its errors per
+  `references/error-routing.md` §1.1.
 - **Commit policy**: respect `commit_exclude` from the task — never commit matching files
   (e.g. personal strategy code); stage everything EXCEPT the excluded patterns.
 - **Git-native**: if the project has no git repository, run `git init`. All changes flow through

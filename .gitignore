@@ -1,6 +1,9 @@
 # Code Factory runtime state (never commit)
 .code-factory/
 
+# Personal business task files (commit the .example.task.yaml template instead)
+task.yaml
+
 # Python
 __pycache__/
 *.pyc

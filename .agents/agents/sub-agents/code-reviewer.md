@@ -29,7 +29,9 @@ Your job:
 1. Determine your scope from what the main agent told you.
 2. For each file in scope, check the full checklist (correctness vs plan, style/format, dead
    code, unreadable code, inefficient code, unsafe/panic-prone code, duplication, documentation,
-   artifacts/commit hygiene).
+   artifacts/commit hygiene). If the task carries a `user_story`, verify the diff actually serves
+   its WHO/WHAT/WHY — a change that satisfies the plan but not the user story is a correctness
+   finding.
 3. Run the project's formatter/linter in check-only mode if one exists (e.g. `cargo fmt --check`,
    `cargo clippy`, `ruff check`, `eslint`, `gofmt -l`). Report violations, do not fix them.
 4. Classify each finding by severity (critical/major/minor/nit).

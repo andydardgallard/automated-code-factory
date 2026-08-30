@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # =============================================================================
-# prepare_factory.sh — подготовка проекта к запуску Code Factory.
+# prepare_factory.sh — подготовка проекта к запуску Code Factory одним действием.
 #
 # Назначение: скопировать фабрику (.agents/) в проект, настроить .gitignore,
-# при необходимости инициализировать git-репозиторий и проверить готовность.
+# при необходимости инициализировать git-репозиторий, создать launcher `start.sh`
+# (он сам выставляет нужные переменные окружения) и проверить готовность.
 #
 # Использование:
 #   ./prepare_factory.sh <путь-к-проекту>
 #
 # Пример:
 #   ./prepare_factory.sh /home/adar/ai-factories/my-test-project
+#
+# После подготовки достаточно одного действия:
+#   cd <путь-к-проекту> && ./start.sh          # интерактивно (в чате: /skill:code-factory)
+#   cd <путь-к-проекту> && ./start.sh --auto   # полностью автономно
 #
 # Скрипт НЕ коммитит ничего. Все шаги безопасны и идемпотентны.
 # =============================================================================
@@ -36,7 +41,7 @@ if [[ ! -d "$PROJECT_DIR" ]]; then
     exit 1
 fi
 if [[ ! -d "$FACTORY_SRC" ]]; then
-    err "Не найдена фабрика: $FACTORY_SRC (запускайте скрипт из папки from_kimi)"
+    err "Не найдена фабрика: $FACTORY_SRC (запускайте скрипт из корня репозитория фабрики)"
     exit 1
 fi
 
@@ -52,38 +57,34 @@ else
 fi
 
 # --- 2. Копирование фабрики --------------------------------------------------
-if [[ -d "$PROJECT_DIR/.agents" ]]; then
-    warn "    .agents/ уже существует — обновляю содержимое фабрики (без удаления лишнего)"
-    mkdir -p "$PROJECT_DIR/.agents"
-    # Копируем только то, чего нет, или перезаписываем устаревшее.
-    # Безопасно: не трогаем пользовательские файлы в .agents/, которых нет в фабрике.
-    cp -rn "$FACTORY_SRC"/. "$PROJECT_DIR/.agents/" 2>/dev/null || true
-    # Принудительно обновляем ключевые файлы фабрики (они должны быть актуальны)
-    for f in SKILL.md code-factory.md gen_code_changes_report.py; do
-        src=$(find "$FACTORY_SRC" -name "$f" -type f | head -1 || true)
-        if [[ -n "$src" ]]; then
-            dst=$(find "$PROJECT_DIR/.agents" -name "$f" -type f | head -1 || true)
-            if [[ -n "$dst" ]]; then cp -f "$src" "$dst"; else
-                # сохраняем относительный путь внутри .agents/
-                rel="${src#$FACTORY_SRC/}"
-                mkdir -p "$PROJECT_DIR/.agents/$(dirname "$rel")"
-                cp -f "$src" "$PROJECT_DIR/.agents/$rel"
-            fi
-        fi
-    done
-    # Справочники и сабагенты — копируем только недостающие
-    for d in references assets sub-agents scripts; do
-        if [[ -d "$FACTORY_SRC/$d" ]]; then
-            mkdir -p "$PROJECT_DIR/.agents/$d"
-            cp -rn "$FACTORY_SRC/$d"/. "$PROJECT_DIR/.agents/$d/" 2>/dev/null || true
-        fi
-    done
+if [[ "$PROJECT_DIR" == "$SCRIPT_DIR" ]]; then
+    warn "    Проект — сам репозиторий фабрики: .agents/ уже на месте, пропускаю копирование."
+elif [[ -d "$PROJECT_DIR/.agents" ]]; then
+    info "    .agents/ уже существует — обновляю содержимое фабрики (фабрика — source of truth)"
+    # Перезаписываем все файлы фабрики актуальными версиями. Пользовательские файлы,
+    # которых нет в фабрике, остаются нетронутыми (cp не удаляет лишнее).
+    cp -r "$FACTORY_SRC"/. "$PROJECT_DIR/.agents/"
 else
     info "    Фабрика: копирую .agents/ → $PROJECT_DIR/.agents"
     cp -r "$FACTORY_SRC" "$PROJECT_DIR/.agents"
 fi
 
-# --- 3. .gitignore -----------------------------------------------------------
+# --- 3. Launcher --------------------------------------------------------------
+LAUNCHER="$PROJECT_DIR/start.sh"
+cat > "$LAUNCHER" <<'EOF'
+#!/usr/bin/env bash
+# Launcher Code Factory — создан prepare_factory.sh. Запускайте без лишних команд:
+#   ./start.sh          — интерактивно (в чате: /skill:code-factory)
+#   ./start.sh --auto   — полностью автономно
+set -euo pipefail
+# Разделение моделей сабагентов (primary/secondary) включается здесь автоматически.
+export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1
+exec kimi "$@"
+EOF
+chmod +x "$LAUNCHER"
+info "    Launcher: создан $LAUNCHER"
+
+# --- 4. .gitignore -----------------------------------------------------------
 # Примечание: .gitignore влияет только на git-трекинг, но не на доступ к файлам
 # на диске. Игнорирование .agents/ не ломает чтение/запись данных фабрики
 # (кэш, история, контекст) — фабрика работает с .agents/ напрямую через файловую
@@ -110,10 +111,11 @@ if [[ "$NEED_GITIGNORE" == true ]]; then
     } >> "$GITIGNORE"
 fi
 
-# --- 4. Проверка готовности --------------------------------------------------
+# --- 5. Проверка готовности --------------------------------------------------
 echo ""
 info "==> Проверка готовности:"
 echo "    • .agents/:            $([ -f "$PROJECT_DIR/.agents/skills/code-factory/SKILL.md" ] && echo 'OK ✓' || echo 'ОТСУТСТВУЕТ ✗')"
+echo "    • start.sh:            $([ -x "$LAUNCHER" ] && echo 'OK ✓' || echo 'ОТСУТСТВУЕТ ✗')"
 echo "    • .git/:               $([ -d "$PROJECT_DIR/.git" ] && echo 'OK ✓' || echo 'ОТСУТСТВУЕТ ✗')"
 echo "    • .gitignore:          $(grep -qF '.agents/' "$PROJECT_DIR/.gitignore" 2>/dev/null && grep -qF '.code-factory/' "$PROJECT_DIR/.gitignore" 2>/dev/null && echo 'OK ✓ (.agents/ + .code-factory/)' || echo 'нет .agents/ или .code-factory/ ✗')"
 echo "    • git status:"
@@ -121,13 +123,10 @@ git -C "$PROJECT_DIR" status --short | head -20 || true
 [[ -z "$(git -C "$PROJECT_DIR" status --short)" ]] && echo "      (чистое дерево)"
 echo ""
 
-info "==> Готово! Запуск фабрики:"
+info "==> Готово! Запуск фабрики — одно действие:"
 echo "    cd $PROJECT_DIR"
-echo "    kimi"
-echo "    # в чате: /skill:code-factory"
+echo "    ./start.sh            # в чате: /skill:code-factory"
+echo "    ./start.sh --auto     # полностью автономно"
 echo ""
-echo "    Или сразу с задачей:"
-echo "    kimi --agent-file .agents/agents/code-factory.md \"описание задачи\""
-echo ""
-warn "    Для разделения моделей сабагентов выполните ДО запуска kimi (в этом же терминале):"
-echo "    export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1"
+echo "    Launcher сам выставляет KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 —"
+echo "    дополнительных export-команд запоминать не нужно."

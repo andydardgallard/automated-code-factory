@@ -8,6 +8,8 @@ subagents:
   - factory-tester
   - factory-diagnostician
   - factory-code-reviewer
+  - factory-refactorer
+  - factory-security-auditor
 ---
 
 ${base_prompt}
@@ -29,6 +31,9 @@ at the user unless asked.
   - `references/verification-strategy.md` — integration/regression/business tests + rollback (Phases 4–9)
   - `references/error-routing.md` — deterministic error classification, retry budgets, Diagnostician (any failure)
   - `references/code-review.md` — static quality gate: checklist, severity, verdict, rework task (before acceptance)
+  - `references/providers.md` — model routing for Kimi (K3) and Qwen providers (Phase 4)
+  - `references/refactoring.md` — refactor task type: freeze functionality, 100% tests unchanged
+  - `references/security-audit.md` — security_audit task type: adaptive full audit + fix-task file
   - `assets/task-template.yaml` — business task template
 - Runtime state: `.code-factory/` (state/, backups/, manifest.json, logs/)
 
@@ -66,9 +71,10 @@ appended at the very end:
 
 ### Phase 0 — Accept the task
 Read the user's message or `task.yaml`. Parse: title, repo_path (optional), description,
-priority, mode (hitl/auto, default hitl), task_type (implement default | review),
-acceptance_criteria, commit_exclude, models. Save to
-`.code-factory/state/task.yaml`. If the business task is unclear, ask ONLY business-level
+user_story (optional but strongly used), mode (hitl/auto, default hitl),
+task_type (implement default | review | refactor | security_audit), acceptance_criteria,
+commit_exclude, models. (There is NO priority field — every task is HIGH by default.)
+Save to `.code-factory/state/task.yaml`. If the business task is unclear, ask ONLY business-level
 questions via `AskUserQuestion` (never coding questions).
 **Checkpoint**: if `.code-factory/state/pipeline.yaml` exists and the task is unchanged, resume
 from the recorded phase.
@@ -92,9 +98,16 @@ assumption (repo is the source of truth) and continue. Never silently skip missi
 ### Phase 2 — Plan (DAG)
 Follow `references/planning-guide.md`. Produce a DAG plan: tasks with dependencies, per-task
 verification commands, business tests as first-class tasks, architecture approach. If the task
+has a `user_story`, restate it in the plan and use it to drive every decision. If the task
 needs new in-project skills/scripts/plugins, include them. Save to `.code-factory/state/plan.md`.
-If `task_type: review`, the plan is produced differently: first run the code reviewer over the
-whole codebase (Phase 2b), then its rework list becomes the plan.
+The `task_type` selects the planning mode:
+- `implement` (default) — normal DAG plan.
+- `review` — the plan is produced differently: first run the code reviewer over the whole
+  codebase (Phase 2b), then its rework list becomes the plan.
+- `refactor` — follow `references/refactoring.md`; the plan is structural-only tasks guarded by
+  the freeze-functionality invariant.
+- `security_audit` — follow `references/security-audit.md`; the "plan" is the audit workflow
+  (detect → check → report → fix-task file), with no code changes and no auto-fixing.
 
 ### Phase 3 — Business tests + approval
 - HITL: ask the user via `AskUserQuestion` for (1) the concrete business scenario/user story,
@@ -112,7 +125,9 @@ and commit factory artifacts (`AGENTS.md`). Record `git HEAD` and `git status` i
 **Commit policy**: read `commit_exclude` from the task (if present). These glob patterns are
 files the factory may modify (backups/tests/rollback) but must NEVER add to a git commit.
 **Models**: read any `models:` override from the task; record the chosen models in
-`.code-factory/state/pipeline.yaml` under `models_used`. If you are running with the new CLI,
+`.code-factory/state/pipeline.yaml` under `models_used`. If the task names a Kimi (K3) or Qwen
+model, apply the routing rules from `references/providers.md` (map alias → provider config) and
+route their errors per `references/error-routing.md` §1.1. If you are running with the new CLI,
 check during pre-flight that `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is exported (Bash:
 `echo "${KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL:-unset}"`). If it is missing, write
 `models_warning: "KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL is not set — coder/tester subagents
@@ -126,7 +141,8 @@ contain: `state/task.yaml`, `state/plan.md`, `logs/baseline.md`, `backups/` and
 
 ### Phase 5 — Implement
 Launch `factory-coder` subagents for the plan tasks, respecting dependencies; independent tasks
-may run in parallel. After each subagent returns, append `models_used.<role> = <model>` to
+may run in parallel. For `task_type: refactor`, launch `factory-refactorer` instead. After each
+subagent returns, append `models_used.<role> = <model>` to
 `.code-factory/state/pipeline.yaml`. Each follows the plan and the project coding style. Update
 `manifest.json` after every change. Create any new skills/scripts/plugins defined in the plan.
 
@@ -158,6 +174,17 @@ list. Write the verdict to `.code-factory/logs/code-review.md` and log
 (Phase 2b), over the whole codebase. Its rework list becomes the plan; an `approve` verdict
 means nothing to implement, so skip straight to Phase 9. After any rework, the normal
 end-of-task review (Phase 8b) still runs.
+
+**Refactor task** (`task_type: refactor`): follow `references/refactoring.md`. Implement with the
+`factory-refactorer` subagent instead of `factory-coder`. The success gate is inverted: the FULL
+existing suite must pass 100% unchanged, and any behavior change → automatic rollback. The code
+reviewer additionally verifies the diff is structural-only.
+
+**Security audit task** (`task_type: security_audit`): follow `references/security-audit.md`.
+Launch the `factory-security-auditor` subagent (read-only). There is NO code change, NO test
+phase, and NO auto-fixing — the deliverables are the audit reports and a generated fix-task file
+(`.code-factory/audit/`). After the audit, skip straight to Phase 9 and validate the
+acceptance criteria against the produced reports and the validity of the fix-task file.
 
 ### Phase 9 — Acceptance + finish
 Verify every acceptance criterion with evidence (`.code-factory/state/acceptance.md`). Remove

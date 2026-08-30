@@ -38,6 +38,29 @@ Notes:
 - The "wrong business results" pattern (row 2) MUST be checked before generic assertion/compile
   patterns, because business markers may appear inside an assertion message.
 
+## 1.1 Provider errors (Kimi / Qwen) — integrated into the same routing
+
+When a task's `models` field selects a Kimi (Kimi K3 / Moonshot) or Qwen model, the same
+deterministic routing handles provider-side failures. See `references/providers.md` for the
+endpoint/auth/routing rules. Add these patterns (in order, most specific first):
+
+| # | Category | Match patterns (regex, case-insensitive) | Route to |
+|---|----------|------------------------------------------|----------|
+| A | PROVIDER_AUTH | `401\|unauthorized\|invalid api key\|authentication failed\|api key (missing\|expired)` | INFRASTRUCTURE |
+| B | PROVIDER_AUTH | `403\|forbidden\|access denied\|insufficient permission` | INFRASTRUCTURE |
+| C | PROVIDER_RATE | `429\|rate limit\|too many requests\|quota exceeded\|billing\|insufficient.*balance` | INFRASTRUCTURE |
+| D | PROVIDER_MODEL | `model (not found\|does not exist\|not available\|invalid.*model)` | PLANNER |
+| E | PROVIDER_UPSTREAM | `502\|503\|504\|5\d\d\|upstream\|temporarily unavailable\|connection (refused\|reset)` | INFRASTRUCTURE |
+| F | PROVIDER_FORMAT | `unsupported.*format\|malformed.*request\|invalid_request_error\|base_url.*not reachable` | PLANNER |
+
+Routing rules:
+- AUTH / RATE / UPSTREAM → INFRASTRUCTURE (auto-fix: verify/repair the provider config in
+  `~/.kimi-code/config.toml` — api_key, base_url, provider `type` — then re-run). These are
+  configuration/environment problems, not code problems; do NOT roll back the code.
+- MODEL / FORMAT → PLANNER (the chosen model alias does not resolve to a configured provider, or
+  the request shape is wrong for that provider — re-read `providers.md` and fix the mapping).
+- The retry budget for provider errors is INFRASTRUCTURE=3 (see §3).
+
 ## 2. Routing decision
 
 After classification, decide who retries:

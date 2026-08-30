@@ -22,7 +22,10 @@
 │       │   ├── verification-strategy.md  # интеграционные/регресс/бизнес-тесты + откат
 │       │   ├── error-routing.md     # детерминированная маршрутизация ошибок + Diagnostician
 │       │   ├── tech-stack-detection.md  # определение стека + Scout pipeline
-│       │   └── code-review.md       # статический quality gate: чек-лист, severity, вердикт
+│       │   ├── code-review.md       # статический quality gate: чек-лист, severity, вердикт
+│       │   ├── providers.md         # маршрутизация моделей Kimi (K3) и Qwen
+│       │   ├── refactoring.md       # тип задачи refactor: заморозка функциональности
+│       │   └── security-audit.md    # тип задачи security_audit: адаптивный полный аудит
 │       ├── scripts/
 │       │   └── gen_code_changes_report.py  # генератор report_code_changes.md (diff было→стало)
 │       └── assets/
@@ -34,7 +37,9 @@
         ├── coder.md                 # сабагент: реализация кода
         ├── tester.md                # сабагент: тесты и проверка результатов
         ├── diagnostician.md         # сабагент: глубокий анализ ошибок (read-only)
-        └── code-reviewer.md         # сабагент: статическое ревью кода (read-only)
+        ├── code-reviewer.md         # сабагент: статическое ревью кода (read-only)
+        ├── refactorer.md            # сабагент: рефакторинг без изменения поведения
+        └── security-auditor.md      # сабагент: аудит безопасности (read-only)
 ```
 
 Рантайм-состояние фабрики живёт в `.code-factory/` внутри проекта:
@@ -43,16 +48,24 @@
 
 ## Запуск (Kimi Code 0.34+, Node)
 
+Подготовка и запуск — одно действие. Сначала подготовьте проект:
+
 ```bash
-cd <проект>
-kimi
-# в чате:
-/skill:code-factory        # запуск flow-скилла (без текста после!)
+./prepare_factory.sh /path/to/your-project
 ```
 
-Полный автономный режим: `kimi --auto` → `/skill:code-factory`.
+Скрипт копирует фабрику, настраивает `.gitignore`/git и создаёт в проекте launcher `start.sh`
+(в нём уже выставлена `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`). Дальше — просто запустите:
 
-Или сразу с готовой задачей:
+```bash
+cd /path/to/your-project
+./start.sh                 # открывает Kimi Code; в чате: /skill:code-factory
+./start.sh --auto          # полностью автономный режим
+```
+
+Никаких дополнительных `export`-команд запоминать не нужно.
+
+Или вручную, без launcher-а:
 
 ```sh
 kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и реши задачу"
@@ -60,7 +73,7 @@ kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и 
 
 Модели: `default_model` и `[secondary_model]` в `~/.kimi-code/config.toml`; сабагентам —
 `model_preference: primary|secondary` в `.md`-файлах. Для разделения моделей сабагентов
-обязателен `export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`.
+нужен `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — launcher `start.sh` выставляет его сам.
 
 ## Формат бизнес-задачи
 
@@ -72,15 +85,26 @@ title: "Стратегия не генерирует сигналы для CNY"
 repo_path: ./repo            # только для существующих проектов
 description: |
   Опишите проблему бизнес-языком, без технических деталей.
-priority: high               # high | medium | low
+user_story: |                # опционально, но рекомендуется
+  Как трейдер, я хочу сигналы по CNY, чтобы торговать дробным инструментом как Si.
 mode: hitl                   # hitl (по умолчанию) | auto
-task_type: implement         # implement (по умолчанию) | review
+task_type: implement         # implement | review | refactor | security_audit
 acceptance_criteria:
   - "Стратегия генерирует не менее 5 сигналов LONG/SHORT для CNY"
 ```
+Поля `priority` нет — все задачи по умолчанию обрабатываются с наивысшим приоритетом.
 
 `task_type: review` — задача «сделать code review существующего кода»: фабрика запускает
 ревьюера по **всему** коду в начале, его замечания становятся планом работ.
+
+`task_type: refactor` — снижение техдолга/дублирования/упрощение архитектуры **без изменения
+поведения**: 100% существующих тестов должны пройти без изменений, любое изменение поведения —
+критическая ошибка и автооткат (см. `references/refactoring.md`).
+
+`task_type: security_audit` — полный адаптивный аудит кибербезопасности проекта: фабрика сама
+определяет типы артефактов (код, инфраструктура, контейнеры, сеть) и запускает только
+релевантные проверки. Результат — отчёты + сгенерированный файл задач на исправление. Фабрика
+НЕ чинит уязвимости сама (см. `references/security-audit.md`).
 
 ## Режимы
 
@@ -88,6 +112,12 @@ acceptance_criteria:
   запуска и ожидаемые бизнес-результаты, затем показывает план на согласование.
 - **auto** — фабрика принимает разумные допущения (записывает их в план как assumptions) и
   работает без вопросов.
+
+> **Важно:** `mode: auto` управляет ТОЛЬКО бизнес-вопросами фабрики и согласованием плана.
+> Он НЕ отключает запросы разрешения Kimi Code CLI на выполнение инструментов (Bash, Write,
+> Edit и т.д.). Для полностью автономного прогона (без запросов разрешения) запускайте
+> `kimi --auto` (или `--yolo`), либо задайте `default_permission_mode = "auto"` в
+> `~/.kimi-code/config.toml`.
 
 ## Code review (обязательный gate)
 
@@ -148,6 +178,11 @@ Checkpoint/resume: после каждой фазы пишется `.code-factor
 Можно менять провайдеров и семейства (deepseek, qwen, kimi/moonshot и др.):
 - CLI: `kimi -m <model>` или `/model` в сессии;
 - в задаче: поле `models:` в `task.yaml` (см. шаблон).
+
+Поддержка Kimi (K3) и Qwen — аддитивная: при указании модели Kimi или Qwen фабрика сама
+определяет вендора и маршрутизирует запросы на соответствующий API-эндпоинт с корректной
+аутентификацией, не ломая уже подключённые модели. Подробности, конфиги и обработка ошибок —
+в `references/providers.md` и `references/error-routing.md` §1.1.
 
 Главный агент НЕ передаёт имя модели в Agent tool (не поддерживается) и записывает фактическую
 модель в `.code-factory/state/pipeline.yaml` (`models_used`) и в `report.md` (раздел

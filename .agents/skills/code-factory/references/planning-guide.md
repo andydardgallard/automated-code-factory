@@ -10,6 +10,10 @@ Read the task and answer in your own words:
 - What business problem is being solved?
 - What is the desired end state ("done" looks like what)?
 - What are the acceptance criteria in business terms?
+- If the task has a `user_story` field, restate it in the plan and use it as the
+  primary lens for "what the user actually needs". The user story (WHO needs WHAT and WHY)
+  must be read by the analyzer, planner and coder — it disambiguates intent where the
+  free-form description is vague.
 
 If anything is genuinely ambiguous **for the business outcome** (not for the code), ask the user
 via `AskUserQuestion`. Example good questions:
@@ -47,6 +51,18 @@ task's missing reference X is ignored/interpreted as Y") and continue.
 
 Never silently skip missing inputs — the factory must not guess that the task is wrong.
 
+## 2.6 Task-type specific planning
+
+- **implement** (default) — normal plan as described in §4.
+- **review** — the plan is produced by the code reviewer first (see `code-review.md`); its
+  rework list becomes the DAG tasks.
+- **refactor** — see `refactoring.md`. The plan is structured around structural improvements
+  with a hard "freeze functionality" invariant: every task must be verified by running the
+  EXISTING test suite unchanged, and ANY behavior change is a critical failure → rollback.
+- **security_audit** — see `security-audit.md`. The "plan" is the audit workflow (artifact
+  detection → adaptive checks → reports + fix-task file). There is no code change and no
+  auto-fixing; the deliverable is reports and a generated task file the user runs separately.
+
 ## 3. Design the solution (minimal intrusion)
 
 - Prefer the smallest change that fully satisfies the task.
@@ -67,6 +83,9 @@ verifiable, have a clear file scope, a verification command, and explicit depend
 
 ## Goal (business)
 <one paragraph, business language>
+
+## User story (if provided)
+<restated user story from the task — drives decisions at analysis/planning/implementation>
 
 ## Assumptions (if mode=auto)
 - <assumption 1>
@@ -129,7 +148,7 @@ presenting the final plan:
    with? Give file names or paths if you know them."
 3. **Expected business results** — "What concrete result proves the task is done? For example:
    'at least 5 trading signals and no losses' or 'the report shows the correct monthly total'."
-4. (optional) **Priority/edge cases** — "Are there any specific edge cases that must keep working
+4. (optional) **Edge cases** — "Are there any specific edge cases that must keep working
    (e.g., zero values, empty data, very small numbers)?"
 
 Keep answers verbatim in the plan so the tester can check them later.

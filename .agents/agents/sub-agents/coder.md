@@ -22,6 +22,8 @@ the rung you stopped on in `<thinking>`.
 
 - Follow the project's existing coding style and architecture. Minimal, maintainable code.
 - If the main agent mentions a reference file for guidance, read it first.
+- If the task has a `user_story` field, keep it in front of you while implementing: every change
+  must serve the WHO/WHAT/WHY it describes. State in your handoff how the change satisfies it.
 - After your changes, verify they are syntactically valid (e.g. compile/build the affected
   module if cheap).
 - Do NOT run the full test suite — the tester subagent does that. Do NOT modify files other than

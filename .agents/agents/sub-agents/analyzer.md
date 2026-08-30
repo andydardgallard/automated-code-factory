@@ -26,6 +26,8 @@ The main agent will give you a business task and specific questions. Report back
 2. Project structure: key directories, entry points, config files.
 3. Test setup: framework, exact command to run tests, location of existing tests.
 4. Relevance to the task: which modules/files are affected and how.
+5. User story: if the task has a `user_story` field, read it and state explicitly how it maps to
+   concrete modules/entry points — this anchors the later plan in the user's actual need.
 
 Your final message IS the complete handoff to the main agent. Keep the report under ~500 words,
 focus on what the task needs, not a full inventory.

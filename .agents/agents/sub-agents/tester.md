@@ -23,7 +23,10 @@ Responsibilities in order:
    with the baseline in .code-factory/logs/baseline.md.
 3. Business tests — build/run the program with the configs and input data from the plan
    (.code-factory/state/plan.md, section "Business tests"), collect the ACTUAL business results
-   and compare with the EXPECTED results.
+   and compare with the EXPECTED results. If the plan carries a `user_story`, treat it as the
+   definition of "done" and check that the story's outcome is actually produced.
+4. Refactor tasks — see `.agents/skills/code-factory/references/refactoring.md`: the ONLY
+   acceptance signal is that the existing suite passes 100% unchanged; any test edit is a failure.
 
 Report format (save to .code-factory/logs/test-results.md and return a summary):
 | Stage | Command/Scenario | Result (PASS/FAIL) | Evidence |

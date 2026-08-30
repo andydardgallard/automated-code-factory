@@ -1,4 +1,4 @@
-# Autonomous Code Factory v11.1.0
+# Autonomous Code Factory v12.0.0
 
 Автономная фабрика по написанию кода для **Kimi Code CLI** (0.34+, Node).
 
@@ -14,13 +14,19 @@ green-field) — стек определяется автоматически.
 
 - **Работа из терминала** Kimi Code CLI: `/skill:code-factory`
 - **Два режима**: `hitl` (уточняет бизнес-вопросы, план на согласование) и `auto` (полный автомат)
-- **Два типа задач**: `implement` (написать/изменить код) и `review` (code review всего кода)
+- **Четыре типа задач**: `implement` (написать/изменить код), `review` (code review всего кода),
+  `refactor` (снижение техдолга без изменения поведения), `security_audit` (адаптивный полный аудит)
+- **User story** в задаче — обязательный анализ и использование контекста пользователя
+  на этапах планирования и реализации
+- **Нет поля приоритета** — все задачи по умолчанию обрабатываются с наивысшим приоритетом
 - **Обязательный code-review gate** перед приёмкой (сабагент `factory-code-reviewer`)
 - **Детерминированная маршрутизация ошибок** (~90% без LLM) + **Diagnostician** (LLM-fallback) + Human → FAILED (никогда не падает молча)
+- **Провайдеры Kimi (K3) и Qwen** — маршрутизация через поле `models` с корректной аутентификацией
 - **Откат при неудаче** любого теста (бэкапы + манифест + git)
 - **Checkpoint / resume** — продолжает с места сбоя
 - **Git-native**: `git init` при отсутствии репозитория, feature-ветка на задачу, `commit_exclude`
 - **Настраиваемые модели** для ролей — `model_preference` в `.md`-сабагентах + `config.toml`
+- **Запуск одним действием** — `prepare_factory.sh` создаёт launcher с настроенным окружением
 - **Автоотчёты**: `report.md` (история прогона) + `report_code_changes.md` (diff «было→стало»)
 
 ## Структура
@@ -41,22 +47,27 @@ green-field) — стек определяется автоматически.
 ## Быстрый старт
 
 ```bash
-# 1. Развернуть фабрику в проект
+# 1. Подготовить проект (копирует фабрику, настраивает git/.gitignore и создаёт launcher start.sh)
 ./prepare_factory.sh /path/to/your-project
 
-# 2. Запустить
+# 2. Запустить одним действием (launcher сам выставляет нужное окружение)
 cd /path/to/your-project
-kimi
+./start.sh
 # в чате: /skill:code-factory
+
+# Полностью автономно:
+./start.sh --auto
 ```
 
-Или сразу с готовой задачей:
+Или сразу с готовой задачей (без launcher-а):
 
 ```bash
 kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и реши задачу"
 ```
 
-Полный автомат: `kimi --auto` → `/skill:code-factory`.
+> `mode: auto` в `task.yaml` управляет только бизнес-вопросами фабрики (пропуск вопросов и
+> согласования плана). Запросы разрешения CLI отключаются отдельно — флагом `kimi --auto`
+> (`--yolo`) или `default_permission_mode = "auto"` в `~/.kimi-code/config.toml`.
 
 ## Формат бизнес-задачи (task.yaml)
 
@@ -68,12 +79,16 @@ title: "Стратегия не генерирует сигналы для CNY"
 repo_path: ./repo            # только для существующих проектов
 description: |
   Опишите проблему бизнес-языком, без технических деталей.
-priority: high               # high | medium | low
+user_story: |                # опционально, но рекомендуется
+  Как трейдер, я хочу сигналы по CNY, чтобы торговать дробным инструментом как Si.
 mode: hitl                   # hitl (по умолчанию) | auto
-task_type: implement         # implement (по умолчанию) | review
+task_type: implement         # implement | review | refactor | security_audit
 acceptance_criteria:
   - "Стратегия генерирует не менее 5 сигналов LONG/SHORT для CNY"
 ```
+
+Поля `priority` в задаче нет: все задачи по умолчанию обрабатываются с наивысшим приоритетом
+(`high`), приоритизацией фабрика не занимается.
 
 Полное описание всех полей — в комментариях самого `.example.task.yaml`.
 
@@ -81,11 +96,13 @@ acceptance_criteria:
 
 Модели задаются в `~/.kimi-code/config.toml` (`default_model` + `[secondary_model]`),
 сабагентам — `model_preference: primary|secondary` в `.md`-файлах. Для разделения моделей
-сабагентов обязателен `export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`.
+сабагентов нужен `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — launcher `start.sh`
+(генерируется `prepare_factory.sh`) выставляет его сам, поэтому вручную `export` не нужен.
 
-Переменную нужно экспортировать в **том же терминале**, где запускается `kimi`, и **до** его
-запуска. Если `kimi` запущен из нового терминала, лаунчера или через `sudo`, переменная
-теряется и фабрика увидит `unset` — это особенность окружения запуска, а не ошибка фабрики.
+Поддержка **Kimi (K3)** и **Qwen** — аддитивная: в поле `models` задачи можно указать модель
+Kimi или Qwen для любой роли, и фабрика маршрутизирует запросы на её API-эндпоинт с корректной
+аутентификацией, не ломая уже подключённые модели. Эндпоинты, конфиги и обработка ошибок —
+в `.agents/skills/code-factory/references/providers.md`.
 
 Рекомендуемое соответствие: primary (рассуждающие) — main/planner, analyzer, diagnostician,
 reviewer; secondary (быстрые) — coder, tester.
@@ -100,4 +117,4 @@ reviewer; secondary (быстрые) — coder, tester.
 ## Версия
 
 Версия — по [Semantic Versioning](https://semver.org/). История изменений — в
-[`CHANGELOG.md`](./CHANGELOG.md). Текущая версия: **11.1.0**.
+[`CHANGELOG.md`](./CHANGELOG.md). Текущая версия: **12.0.0**.

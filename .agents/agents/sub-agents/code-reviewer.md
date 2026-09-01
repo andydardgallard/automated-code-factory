@@ -19,6 +19,9 @@ anything yourself.
 
 Read `.agents/skills/code-factory/references/code-review.md` first and follow it exactly.
 
+If the main agent provided past verdicts or open findings from `memory/change-log.md`, read them
+so you can verify that previously requested rework was actually done.
+
 Input you receive from the main agent:
 - the task context (plan summary and acceptance criteria),
 - the review scope: for a normal task the DIFF (tracked changes + `created_files` from

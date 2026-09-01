@@ -27,7 +27,12 @@
 │       │   ├── refactoring.md       # тип задачи refactor: заморозка функциональности
 │       │   └── security-audit.md    # тип задачи security_audit: адаптивный полный аудит
 │       ├── scripts/
-│       │   └── gen_code_changes_report.py  # генератор report_code_changes.md (diff было→стало)
+│       │   ├── gen_code_changes_report.py  # генератор report_code_changes.md (diff было→стало)
+│       │   ├── project_fingerprint.py      # детерминированный fingerprint структурных сигналов
+│       │   ├── check_factory_model.py      # проверка: 8 секций + fingerprint + формат памяти
+│       │   ├── test_factory_model.py       # self-тест скриптов модели
+│       │   ├── test_prompt_structure.py    # self-тест: append-only структура промптов
+│       │   └── test_env_propagation.sh     # self-тест: перенос env-флага моделей
 │       └── assets/
 │           └── task-template.yaml   # шаблон бизнес-задачи
 └── agents/
@@ -42,9 +47,14 @@
         └── security-auditor.md      # сабагент: аудит безопасности (read-only)
 ```
 
-Рантайм-состояние фабрики живёт в `.code-factory/` внутри проекта:
+Рантайм-состояние фабрики живёт в `.code-factory/` внутри проекта (не коммитится):
 `state/` (задача, план), `backups/` (бэкапы изменяемых файлов), `manifest.json` (список
 изменённых/созданных файлов), `logs/` (ошибки, результаты тестов, code review).
+
+Переносимая долгосрочная память — в коммитимом каталоге `memory/` проекта (НЕ в `.gitignore`):
+`memory/change-log.md` (append-only журнал прогонов, одна запись на задачу) и
+`memory/summary.md` (сжатая сводка). Единственный писатель — главный агент в конце каждой
+задачи; читается главным агентом/planner/analyzer в начале и остальными ролями по необходимости.
 
 ## Запуск (Kimi Code 0.34+, Node)
 
@@ -74,6 +84,26 @@ kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и 
 Модели: `default_model` и `[secondary_model]` в `~/.kimi-code/config.toml`; сабагентам —
 `model_preference: primary|secondary` в `.md`-файлах. Для разделения моделей сабагентов
 нужен `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — launcher `start.sh` выставляет его сам.
+
+## AGENTS.md и долгосрочная память
+
+Фабрика сама держит `AGENTS.md` проекта актуальным единым источником правды:
+
+- генерирует ровно 8 секций `##` (Project Overview, Technology Stack, Architecture Overview,
+  Directory Structure, Key Configuration Files, Build & Run Instructions,
+  Dependencies & Integrations, Known Constraints & Limitations) и встраивает в первую строку
+  детерминированный fingerprint структурных сигналов;
+- fingerprint считается скриптом `scripts/project_fingerprint.py` (манифесты стека, CI-конфиги,
+  README, список каталогов; собственные артефакты фабрики исключены). Совпал — анализ/Scout
+  пропускается; не совпал — AGENTS.md перегенерируется;
+- обновляется в двух точках: начало задачи (внешние изменения) и конец задачи (собственные
+  изменения фабрики), после чего коммитится; фабрика делает хороший AGENTS.md сама, без
+  отдельного init-шага.
+
+Переносимая память в `memory/` (коммитится, не игнорируется): `change-log.md` (журнал прогонов,
+одна запись на задачу) и `summary.md` (сводка; компакция журнала по порогу 50 записей).
+Проверка модели — скрипт `scripts/check_factory_model.py` (8 секций + fingerprint + формат
+журнала), self-тест — `scripts/test_factory_model.py`.
 
 ## Формат бизнес-задачи
 

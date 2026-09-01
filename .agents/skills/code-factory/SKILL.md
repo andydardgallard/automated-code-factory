@@ -29,16 +29,24 @@ All runtime artifacts live in `.code-factory/`:
 - `manifest.json` — list of changed / created files (used for rollback)
 - `logs/` — baseline, errors.md, diagnostic.md, test-results.md
 
+The portable long-term memory lives in the committable `memory/` directory (NOT ignored, travels
+with the project):
+
+- `memory/change-log.md` — append-only journal, one entry per completed run; single writer: the
+  main agent at the end of each task
+- `memory/summary.md` — compressed summary (current state + key decisions + recent history),
+  compacted from the journal when it exceeds the threshold
+
 The factory may create any files, skills, scripts or plugins inside the project that are needed to solve the task. The factory must keep the total token spend minimal: use subagents for heavy context (analysis, coding, testing, diagnosis), return only concise structured results, and avoid loading large files into the main context.
 
 ```mermaid
 flowchart TD
-    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, user_story (optional), mode (hitl/auto), task_type (implement default | review | refactor | security_audit), acceptance_criteria, commit_exclude, models. There is NO priority field — every task is HIGH by default. Save the parsed task to .code-factory/state/task.yaml. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
+    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, user_story (optional), mode (hitl/auto), task_type (implement default | review | refactor | security_audit), acceptance_criteria, commit_exclude, models. There is NO priority field — every task is HIGH by default. Save the parsed task to .code-factory/state/task.yaml. Read the long-term memory (memory/summary.md + recent memory/change-log.md entries) so project history is not re-derived. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
     B --> C{Is the business task clear enough?}
     C -->|No| D[Ask the user business-level clarifying questions via AskUserQuestion. Ask ONLY business logic and expectations, never coding questions. Then update the parsed task.]
     D --> B
     C -->|Yes| E[Analyze the project: launch factory-analyzer subagents in parallel to determine tech stack, structure, entry points, test setup. Detect the stack deterministically using references/tech-stack-detection.md. Run the existing test suite to establish a regression baseline and save it to .code-factory/logs/baseline.md.]
-    E --> SC[Scout pipeline: refine the project model with the analyzer report; generate AGENTS.md with the 8 standard sections; run /init via `kimi -p /init --print --yolo -w PROJECT_PATH` so Kimi adapts AGENTS.md to itself (it is a slash command, not a CLI subcommand). Skip if AGENTS.md already exists and the project is unchanged.]
+    E --> SC[Scout pipeline: compute the deterministic structural fingerprint via scripts/project_fingerprint.py; if AGENTS.md exists and its embedded fingerprint matches, SKIP regeneration; otherwise generate AGENTS.md with exactly the 8 standard sections (no init step).]
     SC --> C2{Does the task match the analyzed repo? Check that files, symbols, configs and data referenced by the task actually exist.}
     C2 -->|No| R1[Ask the user for the missing files or context via AskUserQuestion in hitl mode, or in auto mode record an assumption that the repo is the source of truth and continue. Then re-analyze.]
     R1 --> E
@@ -100,7 +108,7 @@ flowchart TD
     CRV -->|approve| W[Acceptance check: verify every acceptance_criteria item against the actual results and document evidence for each. Save the verification to .code-factory/state/acceptance.md.]
     W --> X{All criteria met?}
     X -->|No| RR
-    X -->|Yes| Y[Finish: remove backups, produce the final report (what changed, test results, business results, acceptance evidence, models_used per role). Commit changes to a feature branch respecting commit_exclude. Update project documentation if the task requires it. Write the self-contained .code-factory/report.md with the full history (task, plan, errors, diagnosis, results, manifest, models_used). Generate .code-factory/report_code_changes.md next to it with the scripts/gen_code_changes_report.py script (was-became per changed line). Present the report to the user.]
+    X -->|Yes| Y[Finish: remove backups, produce the final report (what changed, test results, business results, acceptance evidence, models_used per role). Regenerate AGENTS.md if structure/stack/entry points changed, then commit AGENTS.md + memory/ to the feature branch respecting commit_exclude. Append one entry to memory/change-log.md (single writer: the main agent) and compact the journal into memory/summary.md when over the threshold. Update project documentation if the task requires it. Write the self-contained .code-factory/report.md with the full history (task, plan, errors, diagnosis, results, manifest, models_used). Generate .code-factory/report_code_changes.md next to it with the scripts/gen_code_changes_report.py script (was-became per changed line). Present the report to the user.]
     Y --> Z([END])
 ```
 
@@ -138,6 +146,17 @@ Rules that always apply:
   Also write `.code-factory/report_code_changes.md` (next to it) via
   `scripts/gen_code_changes_report.py` — a deterministic was-became diff report of the commit
   (zero LLM tokens).
+- **AGENTS.md (single source of truth) + fingerprint**: the factory generates `AGENTS.md` with
+  exactly 8 `##` sections and embeds a deterministic structural fingerprint on its first line
+  (`scripts/project_fingerprint.py`). At the start of a task, if the embedded fingerprint matches
+  the recomputed one, skip regeneration; otherwise regenerate. At the end of a task, regenerate
+  if structure/stack/entry points changed, then commit it. There is no init step.
+- **Long-term memory (`memory/`)**: committable, never ignored. Single writer = the main agent,
+  which appends one entry to `memory/change-log.md` at the end of every task (success OR FAILED)
+  and compacts old entries into `memory/summary.md` when the journal exceeds 50 entries (keeping
+  the last 20). Readers: main agent/planner/analyzer at start; coder/tester/reviewer/
+  diagnostician receive the relevant entries as needed. Verify with
+  `scripts/check_factory_model.py` (8 sections + fingerprint + memory format).
 - **Models**: models are configured per role in the agent files themselves —
   `model_preference: primary|secondary` in each sub-agent `.md`, resolved against `config.toml`
   `default_model`/`[secondary_model]`. Do NOT pass a concrete model name to the Agent tool (not

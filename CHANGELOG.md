@@ -5,6 +5,27 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.1.0] — 2026-09-01
+
+### Added
+- **AGENTS.md как единый источник правды**: фабрика сама генерирует `AGENTS.md` проекта с ровно
+  8 секциями `##` и встраивает детерминированный fingerprint структурных сигналов
+  (`scripts/project_fingerprint.py`). При совпадении fingerprint анализ/Scout пропускается, при
+  расхождении AGENTS.md перегенерируется; обновление в двух точках (начало/конец задачи).
+- **Переносимая долгосрочная память `memory/`** (коммитимая, не игнорируется): `change-log.md`
+  (append-only журнал, одна запись на прогон; единственный писатель — главный агент) и
+  `summary.md` (сводка). Компакция журнала в сводку по порогу 50 записей.
+- **Скрипты проверки модели**: `scripts/check_factory_model.py` (детерминированная проверка
+  «8 секций + fingerprint + формат журнала») и `scripts/test_factory_model.py` (self-тест).
+
+### Changed
+- Сабагенты `analyzer`, `coder`, `tester`, `code-reviewer`, `diagnostician` читают `AGENTS.md` и
+  `memory/` как источник правды, а не выводят структуру проекта заново.
+
+### Removed
+- Вызов `/init` из Scout-потока полностью удалён — фабрика генерирует `AGENTS.md` сама, без
+  отдельного init-шага.
+
 ## [12.0.0] — 2026-08-29
 
 ### Added
@@ -93,6 +114,7 @@
   tech-stack-detection), сабагенты analyzer/coder/tester/diagnostician, `models.yaml`,
   `prepare_factory.sh`, генератор `report_code_changes.md`.
 
+[12.1.0]: https://github.com/andydardgallard/automated-code-factory/compare/v12.0.0...v12.1.0
 [12.0.0]: https://github.com/andydardgallard/automated-code-factory/compare/v11.1.0...v12.0.0
 [11.1.0]: https://github.com/andydardgallard/automated-code-factory/compare/v11.0.0...v11.1.0
 [11.0.0]: https://github.com/andydardgallard/automated-code-factory/compare/v10.2.0...v11.0.0

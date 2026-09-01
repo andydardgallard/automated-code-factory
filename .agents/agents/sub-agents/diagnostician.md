@@ -21,6 +21,9 @@ Input you receive from the main agent:
 - the failed role and attempt history,
 - any diagnostic pre-processing results.
 
+If the main agent provided past error history from `memory/change-log.md`, read it so you can
+diagnose recurring failures with full context (what was tried before, what failed, what worked).
+
 Your task:
 1. Read the error and the previous attempts (read .code-factory/logs/errors.md if needed).
 2. Identify the REAL root cause (not the symptom).

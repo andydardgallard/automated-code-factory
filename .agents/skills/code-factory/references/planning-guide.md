@@ -27,6 +27,11 @@ Never ask: "Should I change type i64 to f64?" — the factory decides technical 
 
 ## 2. Analyze the project
 
+Read the durable project model FIRST, so analysis anchors on known structure instead of
+re-deriving it: `AGENTS.md` (the single source of truth) plus `memory/summary.md` and the most
+recent `memory/change-log.md` entries. Pass the relevant AGENTS.md sections and memory entries
+to the analyzer.
+
 Delegate heavy exploration to `factory-analyzer` subagents (parallel, isolated contexts). Each
 returns a concise summary. Combine into one picture:
 
@@ -34,6 +39,9 @@ returns a concise summary. Combine into one picture:
 - Key modules relevant to the task (entry points, data flow, config)
 - Existing tests that cover the affected area
 - Regression baseline result (`.code-factory/logs/baseline.md`)
+
+If AGENTS.md is stale (its embedded fingerprint does not match — see
+`tech-stack-detection.md` §7), regenerate it before delegating.
 
 ## 2.5 Repo-mismatch gate
 

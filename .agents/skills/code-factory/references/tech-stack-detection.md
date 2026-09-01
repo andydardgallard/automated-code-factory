@@ -69,30 +69,79 @@ The baseline is the definition of "no regression" for the whole task.
   (e.g., config.toml, CLI args, data files).
 - List them — the business-test phase will ask the user which specific configs to run.
 
-## 7. Scout pipeline (Phase 1)
+## 7. Scout pipeline (Phase 1) — AGENTS.md as Single Source of Truth
 
-After the deterministic steps above, run the Scout pipeline to produce a durable project
-model + AGENTS.md that every later phase can rely on:
+After the deterministic steps above, run the Scout pipeline to produce (or refresh) the durable
+project model + AGENTS.md that every later phase relies on. AGENTS.md is the Single Source of
+Truth about the project: the analyzer/planner/coder read it instead of re-deriving the project
+structure from scratch.
 
-1. **Deterministic collection (no LLM)**: stack (from sections 1–3), top-level structure
-   (source dirs, config files), known issues (e.g. `git ls-files target/` → build artifacts
-   tracked in git).
-2. **LLM refinement (cheap model)**: explore README, build configs, entry points,
-   cross-component dependencies; refine the model.
-3. **Generate AGENTS.md** in the repo root with EXACTLY these 8 `##` sections:
-   `Project Overview`, `Technology Stack`, `Architecture Overview`, `Directory Structure`,
-   `Key Configuration Files`, `Build & Run Instructions`, `Dependencies & Integrations`,
-   `Known Constraints & Limitations`. Copy build/test/run commands VERBATIM from config files;
-   record observed bugs/debt in section 8; keep sections self-contained.
-4. **Run `/init` to let Kimi adapt AGENTS.md to its own tooling** (skip gracefully if the CLI
-   is unavailable). `/init` is a SLASH COMMAND, not a CLI subcommand — run it in print mode:
-   ```bash
-   kimi -p /init --print --yolo -w <project-root>
-   ```
-   Do NOT try to run `/init kimi` as a shell command — it will fail with
-   "The kimi init CLI subcommand doesn't exist".
+### 7.1 Fingerprint gate (deterministic, zero LLM)
 
-Cache: keep the project model in `.code-factory/state/project-model.yaml`. Skip the whole
-Scout phase if AGENTS.md already exists and the project is unchanged (the file is the Single
-Source of Truth for BA/Planner/Coder).
+Compute the structural fingerprint of the project's working tree:
+
+```bash
+python3 .agents/skills/code-factory/scripts/project_fingerprint.py --repo <project-root>
+```
+
+The fingerprint is a SHA-256 over the project's structural working-tree signals: stack
+manifests, CI configs, README, and the sorted top-level directory listing. The factory's own
+artifacts (`AGENTS.md`, `memory/`, `task.yaml`, `start.sh`) are excluded from the signals, so
+committing them does not shift the fingerprint (a git tree SHA would, which would make the
+"skip when unchanged" branch unreachable). It is embedded in AGENTS.md on the first line
+(`<!-- code-factory-fingerprint: <sha> -->`), so it travels with the commit and survives a
+clone.
+
+- **Match** (AGENTS.md exists AND its embedded fingerprint == the recomputed fingerprint) →
+  the project is unchanged: SKIP the analyzer's structural re-analysis and the AGENTS.md
+  regeneration. Proceed directly to the repo-mismatch gate.
+- **Mismatch / no AGENTS.md** → regenerate the model below.
+
+### 7.2 Generate AGENTS.md (8 sections)
+
+Generate `AGENTS.md` in the repo root with EXACTLY these 8 `##` sections, in this order:
+`Project Overview`, `Technology Stack`, `Architecture Overview`, `Directory Structure`,
+`Key Configuration Files`, `Build & Run Instructions`, `Dependencies & Integrations`,
+`Known Constraints & Limitations`.
+
+Rules:
+- Copy build/test/run commands VERBATIM from config files; record observed bugs/debt in the
+  8th section; keep sections self-contained.
+- **Existing AGENTS.md is OVERWRITTEN entirely** — the factory owns the file and it always
+  contains exactly these 8 sections. Hand-written project notes belong in `memory/summary.md`,
+  not in AGENTS.md.
+- Put the fingerprint comment on the first line: `<!-- code-factory-fingerprint: <sha> -->`,
+  then a `# <Project Name>` title line, then the 8 sections.
+- There is **no init step** in the Scout flow. The factory's own AGENTS.md is already complete;
+  the Kimi init slash command would overwrite it and erase the 8 sections, so it is never run.
+
+### 7.3 Two update points
+
+1. **Start of task (Phase 1)** — catch EXTERNAL changes to the project (edited outside the
+   factory): compute the fingerprint; if it matches the embedded one, skip the regeneration;
+   otherwise regenerate.
+2. **End of task (Phase 9)** — reflect the factory's OWN changes: after implementation +
+   tests, recompute the fingerprint; if the structure/stack/entry points changed, regenerate
+   AGENTS.md and commit it (respecting `commit_exclude`).
+
+### 7.4 Read the model, don't rebuild it
+
+Every later role reads AGENTS.md as the source of truth:
+- **analyzer** — reads AGENTS.md + `memory/summary.md` + recent `memory/change-log.md` entries
+  BEFORE exploring, to anchor on known history instead of re-reading git.
+- **planner (main agent)** — reads AGENTS.md + memory at the start (Phase 0/1).
+- **coder** — receives the relevant AGENTS.md sections + recent memory entries from the main
+  agent.
+
+Verify the model with the deterministic checker:
+
+```bash
+python3 .agents/skills/code-factory/scripts/check_factory_model.py --repo <project-root>
+```
+
+It asserts: exactly 8 sections, fingerprint matches, memory format correct. Run it in
+`final_integration` (and use `--memory-only` for the factory's own root, whose AGENTS.md is a
+hand-authored manual).
+
+Cache: keep the project model in `.code-factory/state/project-model.yaml`.
 

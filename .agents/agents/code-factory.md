@@ -76,6 +76,9 @@ task_type (implement default | review | refactor | security_audit), acceptance_c
 commit_exclude, models. (There is NO priority field — every task is HIGH by default.)
 Save to `.code-factory/state/task.yaml`. If the business task is unclear, ask ONLY business-level
 questions via `AskUserQuestion` (never coding questions).
+**Long-term memory**: read `memory/summary.md` and the most recent `memory/change-log.md`
+entries so the project's history (decisions, fixes, past results) is not re-derived from git or
+scratch. If the files do not exist yet (fresh project), note it and continue.
 **Checkpoint**: if `.code-factory/state/pipeline.yaml` exists and the task is unchanged, resume
 from the recorded phase.
 
@@ -84,11 +87,18 @@ Launch `factory-analyzer` subagents in parallel: tech stack, structure, entry po
 setup, configs. Detect the stack deterministically with `references/tech-stack-detection.md`.
 Run the existing test suite as the regression baseline and save it to
 `.code-factory/logs/baseline.md`.
-**Scout pipeline**: refine the project model with the analyzer report, generate `AGENTS.md`
-(with the 8 standard sections), then run `/init` via
-`kimi -p /init --print --yolo -w <project>` so Kimi adapts AGENTS.md to itself. Note: `/init`
-is a SLASH COMMAND, not a CLI subcommand. Skip if AGENTS.md already exists and the project is
-unchanged.
+**Scout pipeline (AGENTS.md as single source of truth)** — follow
+`references/tech-stack-detection.md` §7:
+1. Compute the deterministic structural fingerprint
+   (`python3 .agents/skills/code-factory/scripts/project_fingerprint.py --repo <project>`).
+2. If `AGENTS.md` exists AND its embedded fingerprint (first line comment) matches the
+   recomputed one → the project is unchanged: SKIP regeneration. Otherwise generate `AGENTS.md`
+   with exactly the 8 standard sections (overwriting any existing file) and embed the new
+   fingerprint on the first line.
+3. There is **no init step** — do not run the init slash command (it would overwrite the file
+   and erase the 8 sections).
+4. Roles read AGENTS.md + memory instead of re-deriving structure: the analyzer reads them
+   before exploring; the planner reads them at start; the coder gets the relevant sections.
 
 **Repo-mismatch gate**: after analysis, verify that files, symbols, configs and data referenced
 by the task actually exist in the repo. If they are missing: in hitl mode STOP and ask the user
@@ -189,11 +199,23 @@ acceptance criteria against the produced reports and the validity of the fix-tas
 ### Phase 9 — Acceptance + finish
 Verify every acceptance criterion with evidence (`.code-factory/state/acceptance.md`). Remove
 backups. Produce the final business-language report: what changed, test results, business
-results, acceptance evidence. Write `.code-factory/report.md` — one self-contained file with
-the full history (task, plan, errors, diagnostic, results) for hand-off to the factory
-developer. Write `.code-factory/report_code_changes.md` next to it by running
+results, acceptance evidence.
+**AGENTS.md refresh (end of task)**: recompute the fingerprint; if the structure/stack/entry
+points changed, regenerate `AGENTS.md` (8 sections + new fingerprint) so it reflects the
+factory's own changes, and stage it for commit.
+**Long-term memory write (single writer = the main agent)**: append ONE entry to
+`memory/change-log.md` — timestamp, title, branch/commit, task_type, goal, changed/created
+files (from `manifest.json`), results (integration/regression/business/review), decisions +
+assumptions, models_used. When the journal exceeds 50 entries, compact all but the last 20 into
+`memory/summary.md` (Current state / Key decisions / Recent history). Memory is written on BOTH
+success and FAILED.
+Write `.code-factory/report.md` — one self-contained file with the full history (task, plan,
+errors, diagnostic, results) for hand-off to the factory developer. Write
+`.code-factory/report_code_changes.md` next to it by running
 `python3 .agents/skills/code-factory/scripts/gen_code_changes_report.py --repo <project> --commit <sha>`
 (a deterministic was-became diff of the commit). Update project docs if the task requires it.
+Commit AGENTS.md + `memory/` + the change to the feature branch, respecting `commit_exclude`
+(`task.yaml` is never committed).
 
 ## Error handling (Phases 6–9)
 
@@ -253,3 +275,10 @@ write `.code-factory/report_code_changes.md` (next to it) via
     Normal tasks review the DIFF at the end; review tasks review the WHOLE codebase at the start.
     A task is never accepted while the reviewer has an open `request_changes` verdict; respect
     the reviewer budget (2) to avoid infinite loops.
+12. **AGENTS.md + memory** — AGENTS.md is the machine-generated single source of truth (exactly 8
+    `##` sections + embedded fingerprint, no init step); regenerate it when the fingerprint
+    mismatches (start of task) or when structure/stack/entry points changed (end of task), then
+    commit it. The main agent is the single writer of `memory/change-log.md` (one entry per
+    completed run) and compacts old entries into `memory/summary.md` beyond 50 entries.
+    `memory/` is committable and must never be gitignored. Verify with
+    `scripts/check_factory_model.py`.

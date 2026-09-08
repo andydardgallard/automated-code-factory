@@ -89,3 +89,19 @@ assumptions: целевой репозиторий — сама фабрика (
 models_used: analyzer=primary; planner=primary; coder=unused; tester=unused; reviewer=unused; diagnostician=unused; documenter=unused; security_auditor=primary
 factory_version: 12.5.0
 unfinished: нет незавершённых элементов
+
+## 2026-09-08T21:28:42+03:00 — Закрыть возможность утечки API-ключей через git
+title: Закрыть возможность утечки API-ключей через git
+timestamp: 2026-09-08T21:28:42+03:00
+branch: main
+commit: 5a966be
+task_type: implement
+goal: добавить защиту .env/приватных ключей в .gitignore и в автодобавляемый блок prepare_factory.sh
+changed_files: .gitignore; prepare_factory.sh; VERSION; README.md; CHANGELOG.md; AGENTS.md; .agents/README.md; .agents/skills/code-factory/SKILL.md
+created_files: (none)
+results: integration=PASS; regression=PASS; business=PASS; review=approve
+decisions: версия 12.5.0 → 12.5.1 (patch, безопасность); код+версия одним коммитом v12.5.1, память — отдельным docs(memory)
+assumptions: target = repo/ (подтверждено пользователем); documenter без изменений (правка не затрагивает doc-комментарии/.md); secondary-модель не выбиралась через Agent-инструмент
+models_used: analyzer=primary; planner=primary; coder=primary; tester=primary; reviewer=primary; diagnostician=unused; documenter=primary; security_auditor=unused
+factory_version: 12.5.1
+unfinished: нет незавершённых элементов

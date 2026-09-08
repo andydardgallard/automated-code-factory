@@ -13,3 +13,10 @@ __pycache__/
 *.swp
 .idea/
 .vscode/
+
+# Secrets — never commit credentials / API keys
+.env
+.env.*
+*.env
+*.pem
+*.key

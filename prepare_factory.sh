@@ -91,7 +91,7 @@ info "    Launcher: создан $LAUNCHER"
 # систему, а не через git.
 GITIGNORE="$PROJECT_DIR/.gitignore"
 NEED_GITIGNORE=false
-for pat in ".agents/" ".code-factory/" "__pycache__/" "*.pyc"; do
+for pat in ".agents/" ".code-factory/" "__pycache__/" "*.pyc" ".env" ".env.*" "*.env" "*.pem" "*.key"; do
     if [[ -f "$GITIGNORE" ]] && grep -qF "$pat" "$GITIGNORE"; then
         :
     else
@@ -108,6 +108,11 @@ if [[ "$NEED_GITIGNORE" == true ]]; then
         echo ".code-factory/"
         echo "__pycache__/"
         echo "*.pyc"
+        echo ".env"
+        echo ".env.*"
+        echo "*.env"
+        echo "*.pem"
+        echo "*.key"
     } >> "$GITIGNORE"
 fi
 

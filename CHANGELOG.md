@@ -5,6 +5,13 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.5.1] — 2026-09-08
+
+### Fixed
+- **Защита от утечки API-ключей**: `.gitignore` теперь игнорирует `.env`, `.env.*`, `*.env`,
+  `*.pem`, `*.key`; `prepare_factory.sh` добавляет те же паттерны в автодобавляемый блок
+  `.gitignore` новых проектов.
+
 ## [12.5.0] — 2026-09-08
 
 ### Added

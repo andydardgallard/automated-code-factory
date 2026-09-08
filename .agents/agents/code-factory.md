@@ -10,6 +10,8 @@ subagents:
   - factory-code-reviewer
   - factory-refactorer
   - factory-security-auditor
+  - factory-documenter
+  - factory-skill-manager
 ---
 
 ${base_prompt}
@@ -34,6 +36,8 @@ at the user unless asked.
   - `references/providers.md` — model routing for Kimi (K3) and Qwen providers (Phase 4)
   - `references/refactoring.md` — refactor task type: freeze functionality, 100% tests unchanged
   - `references/security-audit.md` — security_audit task type: adaptive full audit + fix-task file
+  - `references/documentation.md` — factory-documenter: documentation methodology + validator (Finish phase)
+  - `references/reference-docs.md` — reference_docs/reference_skills: persistent skill base + relevance matrix (Phase 0/5)
   - `assets/task-template.yaml` — business task template
 - Runtime state: `.code-factory/` (state/, backups/, manifest.json, logs/)
 
@@ -73,7 +77,9 @@ appended at the very end:
 Read the user's message or `task.yaml`. Parse: title, repo_path (optional), description,
 user_story (optional but strongly used), mode (hitl/auto, default hitl),
 task_type (implement default | review | refactor | security_audit), acceptance_criteria,
-commit_exclude, models. (There is NO priority field — every task is HIGH by default.)
+commit_exclude, models, and the two optional knowledge fields `reference_docs` (list of
+`{path, skill}` documents) and `reference_skills` (names of existing skills). (There is NO
+priority field — every task is HIGH by default.)
 Save to `.code-factory/state/task.yaml`. If the business task is unclear, ask ONLY business-level
 questions via `AskUserQuestion` (never coding questions).
 **Long-term memory**: read `memory/summary.md` and the most recent `memory/change-log.md`
@@ -156,6 +162,14 @@ subagent returns, append `models_used.<role> = <model>` to
 `.code-factory/state/pipeline.yaml`. Each follows the plan and the project coding style. Update
 `manifest.json` after every change. Create any new skills/scripts/plugins defined in the plan.
 
+**Reference skills (dynamic context)**: if the task has `reference_docs`/`reference_skills`,
+resolve them into skills via the `factory-skill-manager` subagent + `scripts/skill_base.py`
+(see `references/reference-docs.md`), then append the resolved skill instructions to each
+subagent's prompt at the very END (append-only — never modify the static `.md` files). Use the
+deterministic relevance matrix: analyzer/planner/coder/reviewer/documenter read skills always,
+tester only if a skill contains business criteria, diagnostician and skill-manager never. Record
+the used skills in `pipeline.yaml` (`used_skills`).
+
 ### Phase 6 — Integration tests
 Write and run per-task tests for the changed modules.
 
@@ -200,22 +214,42 @@ acceptance criteria against the produced reports and the validity of the fix-tas
 Verify every acceptance criterion with evidence (`.code-factory/state/acceptance.md`). Remove
 backups. Produce the final business-language report: what changed, test results, business
 results, acceptance evidence.
-**AGENTS.md refresh (end of task)**: recompute the fingerprint; if the structure/stack/entry
-points changed, regenerate `AGENTS.md` (8 sections + new fingerprint) so it reflects the
-factory's own changes, and stage it for commit.
+
+**Documentation (implement/refactor only)**: after acceptance, if `task_type` is `implement` or
+`refactor`, launch the `factory-documenter` subagent (secondary model) with the run manifest
+(`.code-factory/manifest.json`). It updates ONLY doc-comments and `.md` files and validates with
+`scripts/validate_documentation.py` (retry budget 1). If validation is exhausted, record the
+documentation debt in `report.md` and continue — the factory never fails because of docs. For
+`review`/`security_audit` this step is skipped. Log `models_used.documenter`.
+
+**Version bump (implement/refactor only, after the change)** — three steps:
+1. **Deterministic matrix**: run `python3 .agents/skills/code-factory/scripts/version_manager.py
+   suggest <flags>` over the run's changes (new subagent → minor, new task type → minor, new task
+   field → minor, breaking change → major, fix → patch, review/security_audit → none) to propose
+   the version type with an explanation.
+2. **Reviewer validation**: pass the proposed type + change list to the code reviewer; it
+   validates and may override (raise/lower) with an explanation — it never determines the type
+   from scratch. Record any override in `report.md`.
+3. **Apply**: `python3 .../version_manager.py bump <type>` (or `set`) then `sync`; run `validate`
+   and require exit 0. For `review`/`security_audit` skip versioning entirely.
+
 **Long-term memory write (single writer = the main agent)**: append ONE entry to
 `memory/change-log.md` — timestamp, title, branch/commit, task_type, goal, changed/created
 files (from `manifest.json`), results (integration/regression/business/review), decisions +
-assumptions, models_used. When the journal exceeds 50 entries, compact all but the last 20 into
-`memory/summary.md` (Current state / Key decisions / Recent history). Memory is written on BOTH
-success and FAILED.
+assumptions, models_used, `factory_version`, and the `unfinished` section (explicit
+"нет незавершённых элементов", or one item per unresolved debt with `item`/`reason`/
+`severity`/`follow_up`). Fill the `unfinished` section EVERY run, even when empty. When the
+journal exceeds 50 entries, compact all but the last 20 into `memory/summary.md` (Current state
+/ Key decisions / Recent history), preserving items with severity=critical or follow_up=true.
+Memory is written on BOTH success and FAILED.
 Write `.code-factory/report.md` — one self-contained file with the full history (task, plan,
-errors, diagnostic, results) for hand-off to the factory developer. Write
+errors, diagnostic, results, factory_version) for hand-off to the factory developer. Write
 `.code-factory/report_code_changes.md` next to it by running
 `python3 .agents/skills/code-factory/scripts/gen_code_changes_report.py --repo <project> --commit <sha>`
 (a deterministic was-became diff of the commit). Update project docs if the task requires it.
 Commit AGENTS.md + `memory/` + the change to the feature branch, respecting `commit_exclude`
-(`task.yaml` is never committed).
+(`task.yaml` is never committed), with a message prefixed `v<версия>: <type>: <описание>`, and
+commit the version change in the SAME commit as the change (no separate version commit).
 
 ## Error handling (Phases 6–9)
 
@@ -279,6 +313,15 @@ write `.code-factory/report_code_changes.md` (next to it) via
     `##` sections + embedded fingerprint, no init step); regenerate it when the fingerprint
     mismatches (start of task) or when structure/stack/entry points changed (end of task), then
     commit it. The main agent is the single writer of `memory/change-log.md` (one entry per
-    completed run) and compacts old entries into `memory/summary.md` beyond 50 entries.
-    `memory/` is committable and must never be gitignored. Verify with
+    completed run) and compacts old entries into `memory/summary.md` beyond 50 entries. Every
+    entry MUST carry an `unfinished` section (explicit no-debt marker or `item`/`reason`/
+    `severity`/`follow_up` items) and a `factory_version`; compaction preserves critical or
+    follow_up items. `memory/` is committable and must never be gitignored. Verify with
     `scripts/check_factory_model.py`.
+13. **Documentation + versioning** — after every successful `implement`/`refactor` run: (a) invoke
+    `factory-documenter` (secondary) on the run manifest, docs only, `validate_documentation.py`
+    with retry budget 1, debt recorded on exhaustion; (b) choose the version type by the
+    deterministic `version_manager.py suggest` matrix, have the reviewer validate/override it,
+    apply with `bump`/`sync` and require `validate` exit 0, and commit the version change in the
+    same commit (message `v<версия>: <type>: <описание>`). `review`/`security_audit` skip both
+    steps and never change the version.

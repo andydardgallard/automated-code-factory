@@ -22,8 +22,27 @@ created_files: <список через "; ">
 results: integration=<PASS|FAIL|SKIP>; regression=<...>; business=<...>; review=<approve|request_changes|SKIP>
 decisions: <принятые решения и допущения>
 assumptions: <допущения>
-models_used: analyzer=<модель>; planner=<модель>; coder=<модель>; tester=<модель>; reviewer=<модель>; diagnostician=<модель>
+models_used: analyzer=<модель>; planner=<модель>; coder=<модель>; tester=<модель>; reviewer=<модель>; diagnostician=<модель>; documenter=<модель>
+factory_version: <X.Y.Z — версия фабрики на момент прогона>
+unfinished: нет незавершённых элементов
 ```
+
+Если долг есть — вместо одной строки `unfinished:` пишется многострочный список; для каждого
+элемента обязательны 4 поля (`item`, `reason`, `severity` critical|warning|info, `follow_up`
+true|false):
+
+```
+unfinished:
+  - item: замечания код-ревьюера приняты как есть
+    reason: бюджет ревьюера исчерпан
+    severity: warning
+    follow_up: false
+```
+
+Секция `unfinished` заполняется ОБЯЗАТЕЛЬНО при каждой записи, даже если она пуста (явный
+маркер `нет незавершённых элементов`). При компакции журнала в сводку элементы с
+severity=critical или follow_up=true сохраняются обязательно. Существующие записи без секции
+`unfinished`/`factory_version` проходят валидацию с предупреждением (не ошибкой).
 
 ## 2026-09-01T01:01:45+0300 — AGENTS.md как единый источник правды + переносимая память
 title: AGENTS.md как единый источник правды + переносимая долгосрочная память

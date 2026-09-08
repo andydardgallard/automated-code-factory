@@ -1,3 +1,4 @@
+<!-- code-factory-version: 12.5.0 -->
 # Project: Autonomous Code Factory
 
 Этот проект содержит автономную фабрику по написанию кода для Kimi Code CLI.
@@ -13,7 +14,9 @@
   (`references/`: planning-guide, verification-strategy, error-routing, tech-stack-detection,
   code-review, providers, refactoring, security-audit) и шаблон задачи (`assets/`)
 - `.agents/agents/` — главный агент фабрики (Markdown `code-factory.md`) и сабагенты
-  (`sub-agents/analyzer|coder|tester|diagnostician|code-reviewer|refactorer|security-auditor.md`)
+  (`sub-agents/analyzer|coder|tester|diagnostician|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
+- `VERSION` — единый источник истины для версии фабрики (одна строка X.Y.Z)
+- `skill-base/` — персистентная база навыков из `reference_docs`/`reference_skills` (опционально)
 - `.agents/README.md` — полная инструкция по использованию фабрики
 - `prepare_factory.sh` — подготовка проекта одним действием (создаёт launcher `start.sh`)
 - `memory/` — переносимая долгосрочная память проекта (коммитится): `change-log.md`
@@ -78,3 +81,9 @@
 - **Коммиты**: поле `commit_exclude` в задаче исключает файлы из git-коммита
   (например, личную стратегию); ядро и документация коммитятся.
 - При изменении файлов фабрики обновлять `.agents/README.md` и эти инструкции.
+- **Документирование**: после каждого успешного implement/refactor вызывается сабагент
+  `factory-documenter` (secondary) — обновляет только doc-комментарии и `.md`, валидатор
+  `validate_documentation.py` с бюджетом 1 retry; для review/security_audit не вызывается.
+- **Версия**: `VERSION` — единый источник истины; тип версии определяет детерминированная
+  матрица, валидирует код-ревьюер (может переопределить с объяснением), применяет
+  `version_manager.py`; review/security_audit версию не меняют.

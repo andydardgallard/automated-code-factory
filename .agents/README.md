@@ -1,4 +1,5 @@
 # Code Factory (for Kimi Code CLI)
+<!-- code-factory-version: 12.5.0 -->
 
 Автономная фабрика по написанию кода. Принимает бизнес-задачу от пользователя, который не
 разбирается в программировании, анализирует проект, планирует изменения, уточняет только
@@ -25,14 +26,24 @@
 │       │   ├── code-review.md       # статический quality gate: чек-лист, severity, вердикт
 │       │   ├── providers.md         # маршрутизация моделей Kimi (K3) и Qwen
 │       │   ├── refactoring.md       # тип задачи refactor: заморозка функциональности
-│       │   └── security-audit.md    # тип задачи security_audit: адаптивный полный аудит
+│       │   ├── security-audit.md    # тип задачи security_audit: адаптивный полный аудит
+│       │   ├── documentation.md     # сабагент документирования: методология + валидатор
+│       │   └── reference-docs.md    # reference_docs/reference_skills: база навыков + матрица
 │       ├── scripts/
 │       │   ├── gen_code_changes_report.py  # генератор report_code_changes.md (diff было→стало)
 │       │   ├── project_fingerprint.py      # детерминированный fingerprint структурных сигналов
 │       │   ├── check_factory_model.py      # проверка: 8 секций + fingerprint + формат памяти
 │       │   ├── test_factory_model.py       # self-тест скриптов модели
 │       │   ├── test_prompt_structure.py    # self-тест: append-only структура промптов
-│       │   └── test_env_propagation.sh     # self-тест: перенос env-флага моделей
+│       │   ├── test_env_propagation.sh     # self-тест: перенос env-флага моделей
+│       │   ├── validate_documentation.py   # валидатор документации (сабагент документирования)
+│       │   ├── test_validate_documentation.py  # self-тест валидатора документации
+│       │   ├── skill_base.py               # персистентная база навыков (reference_docs)
+│       │   ├── test_skill_base.py          # self-тест базы навыков
+│       │   ├── version_manager.py          # единый источник версии: get/bump/sync/validate/set/suggest
+│       │   ├── test_version_manager.py     # self-тест скрипта версий (≥12 кейсов)
+│       │   ├── validate_mermaid.py         # структурный валидатор Mermaid-диаграмм
+│       │   └── test_validate_mermaid.py    # self-тест валидатора Mermaid
 │       └── assets/
 │           └── task-template.yaml   # шаблон бизнес-задачи
 └── agents/
@@ -44,7 +55,9 @@
         ├── diagnostician.md         # сабагент: глубокий анализ ошибок (read-only)
         ├── code-reviewer.md         # сабагент: статическое ревью кода (read-only)
         ├── refactorer.md            # сабагент: рефакторинг без изменения поведения
-        └── security-auditor.md      # сабагент: аудит безопасности (read-only)
+        ├── security-auditor.md      # сабагент: аудит безопасности (read-only)
+        ├── documenter.md            # сабагент: документация изменённых файлов (secondary)
+        └── skill-manager.md         # сабагент: управление базой навыков (reference_docs)
 ```
 
 Рантайм-состояние фабрики живёт в `.code-factory/` внутри проекта (не коммитится):
@@ -200,6 +213,32 @@ Checkpoint/resume: после каждой фазы пишется `.code-factor
   работу фильтра повторным прогоном с порогом, соразмерным цене инструмента;
 - бизнес-тесты выполнять именно теми командами, что дал пользователь (build + run);
 - побочные артефакты прогона (папки результатов) удалять после проверки или игнорировать в git.
+
+## Автодокументирование, долг и версия
+
+**Автодокументирование**: после каждого успешного `implement`/`refactor`-прогона фабрика
+вызывает сабагента `factory-documenter` (secondary-модель). Он берёт список изменённых файлов
+из `.code-factory/manifest.json` и приводит документацию в соответствие с кодом — только
+doc-комментарии и `.md`, никогда код/тесты/конфиги. Результат проверяется встроенным
+валидатором `scripts/validate_documentation.py` (бюджет 1 retry); при исчерпании долг
+фиксируется в отчёте прогона, фабрика продолжает. Для `review`/`security_audit` не вызывается.
+
+**Память «что НЕ реализовано»**: каждая запись журнала `memory/change-log.md` содержит секцию
+`unfinished` (явный маркер «нет незавершённых элементов» либо список элементов
+`item`/`reason`/`severity`/`follow_up`) и поле `factory_version`. Главный агент заполняет её
+обязательно, даже если она пуста. При компакции сохраняются элементы critical или follow_up.
+
+**Справочники-навыки**: поля задачи `reference_docs` (`{path, skill}`) и `reference_skills`
+(имена) подключают книги/документы как переиспользуемые навыки. База `skill-base/` персистентна,
+актуальность определяется SHA256-хешем источника; управление — сабагент `factory-skill-manager`
+и скрипт `scripts/skill_base.py`. Навыки попадают в динамический контекст сабагентов по
+детерминированной матрице (см. `references/reference-docs.md`).
+
+**Версия (единый источник истины)**: файл `VERSION` (одна строка X.Y.Z). После успешного
+прогона тип версии определяет детерминированная матрица (`scripts/version_manager.py suggest`),
+ревьюер валидирует (может переопределить с объяснением), затем `bump`/`sync` синхронизирует
+версию в README/CHANGELOG/AGENTS.md/SKILL.md/инструкцию и проверяет `validate` (exit 0).
+`review`/`security_audit` версию не меняют. Пользователю обновлять версию вручную не нужно.
 
 ## Модели
 

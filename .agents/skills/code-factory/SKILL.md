@@ -3,6 +3,7 @@ name: code-factory
 description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 type: flow
 ---
+<!-- code-factory-version: 12.5.0 -->
 
 # Code Factory
 
@@ -18,6 +19,8 @@ Turns business tasks (described by non-technical users) into working, tested cod
 - `references/providers.md` — model routing for Kimi (K3) and Qwen providers (Phase 4)
 - `references/refactoring.md` — refactor task type: freeze functionality, 100% tests unchanged
 - `references/security-audit.md` — security_audit task type: adaptive full audit + fix-task file
+- `references/documentation.md` — factory-documenter: documentation methodology + validator (Finish phase)
+- `references/reference-docs.md` — reference_docs/reference_skills: persistent skill base + relevance matrix (Phase 0/5)
 - `assets/task-template.yaml` — business task template (Phase 0)
 
 ## Runtime state (inside the project)
@@ -41,7 +44,7 @@ The factory may create any files, skills, scripts or plugins inside the project 
 
 ```mermaid
 flowchart TD
-    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, user_story (optional), mode (hitl/auto), task_type (implement default | review | refactor | security_audit), acceptance_criteria, commit_exclude, models. There is NO priority field — every task is HIGH by default. Save the parsed task to .code-factory/state/task.yaml. Read the long-term memory (memory/summary.md + recent memory/change-log.md entries) so project history is not re-derived. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
+    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, user_story (optional), mode (hitl/auto), task_type (implement default | review | refactor | security_audit), acceptance_criteria, commit_exclude, models, reference_docs, reference_skills. There is NO priority field — every task is HIGH by default. Save the parsed task to .code-factory/state/task.yaml. Read the long-term memory (memory/summary.md + recent memory/change-log.md entries) so project history is not re-derived. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
     B --> C{Is the business task clear enough?}
     C -->|No| D[Ask the user business-level clarifying questions via AskUserQuestion. Ask ONLY business logic and expectations, never coding questions. Then update the parsed task.]
     D --> B
@@ -108,7 +111,14 @@ flowchart TD
     CRV -->|approve| W[Acceptance check: verify every acceptance_criteria item against the actual results and document evidence for each. Save the verification to .code-factory/state/acceptance.md.]
     W --> X{All criteria met?}
     X -->|No| RR
-    X -->|Yes| Y[Finish: remove backups, produce the final report (what changed, test results, business results, acceptance evidence, models_used per role). Regenerate AGENTS.md if structure/stack/entry points changed, then commit AGENTS.md + memory/ to the feature branch respecting commit_exclude. Append one entry to memory/change-log.md (single writer: the main agent) and compact the journal into memory/summary.md when over the threshold. Update project documentation if the task requires it. Write the self-contained .code-factory/report.md with the full history (task, plan, errors, diagnosis, results, manifest, models_used). Generate .code-factory/report_code_changes.md next to it with the scripts/gen_code_changes_report.py script (was-became per changed line). Present the report to the user.]
+    X -->|Yes| DOC{task_type: implement или refactor?}
+    DOC -->|Да| DOC2[Документирование: вызвать factory-documenter (secondary) по .code-factory/manifest.json; обновить только doc-комментарии и .md файлы; валидатор validate_documentation.py с бюджетом 1 retry; при исчерпании — документационный долг в отчёт прогона, фабрика продолжает.]
+    DOC2 --> VER1[Версия — шаг 1: детерминированная матрица version_manager.py suggest → предложить тип major|minor|patch|none с объяснением]
+    VER1 --> VER2[Версия — шаг 2: код-ревьюер валидирует предложенный тип, может переопределить с объяснением (не с нуля)]
+    VER2 --> VER3[Версия — шаг 3: применить bump|set + sync, validate exit 0; коммит с префиксом v<версия>: в одном коммите с изменениями]
+    VER3 --> Y
+    DOC -->|Нет (review/security_audit)| Y
+    Y[Finish: remove backups, produce the final report (what changed, test results, business results, acceptance evidence, models_used per role). Regenerate AGENTS.md if structure/stack/entry points changed, then commit AGENTS.md + memory/ to the feature branch respecting commit_exclude. Append one entry to memory/change-log.md (single writer: the main agent) and compact the journal into memory/summary.md when over the threshold. Update project documentation if the task requires it. Write the self-contained .code-factory/report.md with the full history (task, plan, errors, diagnosis, results, manifest, models_used). Generate .code-factory/report_code_changes.md next to it with the scripts/gen_code_changes_report.py script (was-became per changed line). Present the report to the user.]
     Y --> Z([END])
 ```
 
@@ -116,8 +126,10 @@ Rules that always apply:
 
 - **Task format**: the task has `title`, `repo_path`, `description`, optional `user_story`,
   `mode`, `task_type` (`implement` | `review` | `refactor` | `security_audit`),
-  `acceptance_criteria`, `commit_exclude`, `models`. There is NO `priority` field — every task
-  is HIGH by default and the factory never prioritizes.
+  `acceptance_criteria`, `commit_exclude`, `models`, and the two optional knowledge fields
+  `reference_docs` (list of `{path, skill}` documents to convert into skills) and
+  `reference_skills` (names of existing skills to reuse). There is NO `priority` field — every
+  task is HIGH by default and the factory never prioritizes.
 - **User story**: when present, `user_story` is analyzed and used by the analyzer, planner and
   coder — it disambiguates the business intent and drives decisions.
 - **Language-agnostic**: detect the stack; never assume a language. The factory serves any
@@ -154,9 +166,25 @@ Rules that always apply:
 - **Long-term memory (`memory/`)**: committable, never ignored. Single writer = the main agent,
   which appends one entry to `memory/change-log.md` at the end of every task (success OR FAILED)
   and compacts old entries into `memory/summary.md` when the journal exceeds 50 entries (keeping
-  the last 20). Readers: main agent/planner/analyzer at start; coder/tester/reviewer/
-  diagnostician receive the relevant entries as needed. Verify with
+  the last 20). Every entry MUST include an `unfinished` section (even if it is the explicit
+  "нет незавершённых элементов" marker) and a `factory_version` field; each unfinished item has
+  `item`, `reason`, `severity` (critical|warning|info) and `follow_up` (true|false). Compaction
+  MUST preserve items with severity=critical or follow_up=true. Legacy entries without the
+  `unfinished`/`factory_version` keys validate with a warning, never an error. Verify with
   `scripts/check_factory_model.py` (8 sections + fingerprint + memory format).
+- **Documentation (factory-documenter)**: after every successful `implement` or `refactor` run,
+  the main agent invokes the `factory-documenter` subagent (secondary model) with the run
+  manifest; it updates ONLY doc-comments and `.md` files, never code/tests/configs, and validates
+  its work with `scripts/validate_documentation.py` (retry budget 1). If validation is exhausted,
+  the documentation debt is recorded in the run report and the factory continues. It is skipped
+  for `review` and `security_audit`.
+- **Versioning (single source of truth)**: `VERSION` (one line `X.Y.Z`) is the only source of
+  truth; all other files sync FROM it via `scripts/version_manager.py` (get/bump/sync/validate/
+  set/suggest, stdlib only). After a successful `implement`/`refactor` run the version type is
+  chosen by the deterministic matrix (`suggest`), validated by the code reviewer (which may
+  override it with an explanation, never from scratch), then applied with `bump`/`set` + `sync`
+  and committed in the SAME commit with a message prefixed `v<версия>: `. `review`/`security_audit`
+  tasks do NOT change the version.
 - **Models**: models are configured per role in the agent files themselves —
   `model_preference: primary|secondary` in each sub-agent `.md`, resolved against `config.toml`
   `default_model`/`[secondary_model]`. Do NOT pass a concrete model name to the Agent tool (not

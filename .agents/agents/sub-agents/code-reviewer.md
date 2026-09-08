@@ -40,6 +40,11 @@ Your job:
 4. Classify each finding by severity (critical/major/minor/nit).
 5. Produce a verdict: `approve` (no critical/major) or `request_changes` (at least one
    critical/major) with a concrete rework list.
+6. Version-type validation (implement/refactor only): if the main agent supplies a proposed
+   version bump type + change list, validate it against the deterministic matrix
+   (`references/code-review.md` §5.5). You may override it (raise/lower) with a one-sentence
+   explanation — never determine the type from scratch. Report the result in the `version_type`
+   field of the verdict YAML.
 
 You must NOT:
 - modify, create or delete any file;
@@ -48,4 +53,5 @@ You must NOT:
 - approve silently while critical/major findings exist.
 
 Your final message IS the complete handoff to the main agent. Return ONLY the YAML schema from
-`references/code-review.md` §6 (`verdict`, `scope`, `summary`, `findings`, `rework`).
+`references/code-review.md` §6 (`verdict`, `scope`, `summary`, `findings`, `rework`,
+`version_type`).

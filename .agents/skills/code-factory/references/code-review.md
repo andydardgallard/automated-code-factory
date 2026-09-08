@@ -88,6 +88,20 @@ attached separately as "optional" and the coder may skip them.
   - auto mode: proceed to acceptance but record the unresolved findings prominently in
     `report.md` (`review: approved with open major findings` — never silently).
 
+## 5.5 Version-type validation (implement/refactor tasks)
+
+For `implement`/`refactor` tasks the main agent proposes a version bump type from the
+deterministic matrix (`scripts/version_manager.py suggest`: new subagent/task-type/field →
+minor, breaking change → major, fix → patch, review/security_audit → none). The reviewer receives
+the proposed type + the change list and **validates** it:
+
+- The reviewer does **not** determine the type from scratch — it only checks that the proposed
+  type matches the observed change list against the matrix.
+- It may **override** the type (raise or lower) when the proposal disagrees with the matrix; every
+  override MUST carry a one-sentence explanation.
+- The final decision (including any override + explanation) is reported in the verdict YAML
+  (`version_type` field) and recorded by the main agent in the run report.
+
 ## 6. Output format
 
 The reviewer's final message IS the complete handoff. Return ONLY this YAML:
@@ -107,6 +121,11 @@ rework:                    # only when verdict=request_changes
     severity: critical | major
     issue: <1 sentence>
     fix: <1-2 sentences>
+version_type:              # implement/refactor only — validation of the proposed bump
+  proposed: major | minor | patch | none
+  validated: major | minor | patch | none
+  override: true | false
+  explanation: <1 sentence>  # required when override=true
 ```
 
 The main agent writes the verdict to `.code-factory/logs/code-review.md` (or appends to it) and

@@ -57,6 +57,17 @@ acceptance_criteria:
 #     config: "path/to/config.toml"
 #     expected_results: "At least 5 LONG/SHORT signals and a positive equity curve"
 
+# Optional: external knowledge for THIS task — books/documents (PDF, EPUB, DOCX,
+# Markdown, HTML, folders) converted into reusable skills and stored in the
+# persistent skill-base/. `reference_docs` = {path, skill} to generate/update/reuse;
+# `reference_skills` = names of existing skills to reuse without a path (a missing
+# name is an error asking for the path in reference_docs).
+# reference_docs:
+#   - path: "docs/market-making-book.pdf"
+#     skill: "market-making"
+# reference_skills:
+#   - "market-making"
+
 # Optional: override the default models per role. Any model available to your
 # provider works, including Kimi (e.g. kimi-k3 / moonshot) and Qwen models.
 # The factory maps the provider from the model name and routes requests to the
@@ -75,3 +86,9 @@ acceptance_criteria:
 # commit_exclude:
 #   - "strategy_lib/src/SYMI_Ch_SMA_up_lmt.rs"
 #   - "strategy_lib/**"
+
+# NOTE: you do NOT need to update the factory version manually — after every successful
+# implement/refactor run the factory picks the version type (major/minor/patch/none) via a
+# deterministic matrix, has the reviewer validate it, and syncs the version everywhere.
+# review / security_audit tasks never change the version.
+

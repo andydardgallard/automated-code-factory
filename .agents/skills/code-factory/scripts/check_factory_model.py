@@ -7,8 +7,9 @@ Checks three invariants of the durable project model:
   2. The fingerprint embedded in AGENTS.md matches the fingerprint recomputed from the
      project's current structural signals (project unchanged -> model is current).
   3. The portable long-term memory is well-formed: `memory/change-log.md` is an
-     append-only journal (each entry has the required keys) and `memory/summary.md`
-     exists with the canonical marker.
+     append-only journal (each entry has the required keys, plus the optional
+     `unfinished` and `factory_version` keys) and `memory/summary.md` exists with the
+     canonical marker.
 
 Usage:
   python3 check_factory_model.py [--repo <path>] [--memory-only]
@@ -17,7 +18,8 @@ Usage:
                   the memory files. Useful for the factory's own root, whose AGENTS.md
                   is a hand-authored manual rather than a generated 8-section model.
 
-Exit code 0 = PASS, 1 = FAIL (each failure printed to stderr). stdlib only.
+Exit code 0 = PASS, 1 = FAIL (each failure printed to stderr). Warnings are printed to
+stderr but do not fail (legacy entries missing the newer optional keys). stdlib only.
 """
 from __future__ import annotations
 
@@ -45,14 +47,20 @@ SUMMARY_MARKER = "<!-- code-factory-memory: summary -->"
 ENTRY_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2}.*)$")
 KV_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
 TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
-ENTRY_KEYS = [
+ENTRY_REQUIRED_KEYS = [
     "title", "timestamp", "branch", "commit", "task_type", "goal",
     "changed_files", "created_files", "results", "decisions", "assumptions",
     "models_used",
 ]
+# Newer keys. Missing in a legacy entry is a WARNING (never an error), so the project
+# history is not broken when the format evolves.
+ENTRY_OPTIONAL_KEYS = ["unfinished", "factory_version"]
 TASK_TYPES = {"implement", "review", "refactor", "security_audit"}
 RESULT_SUBKEYS = ["integration", "regression", "business", "review"]
+UNFINISHED_SEVERITIES = {"critical", "warning", "info"}
+UNFINISHED_BOOLS = {"true", "false"}
 
 
 def check_agents(root: pathlib.Path) -> list[str]:
@@ -84,20 +92,45 @@ def check_agents(root: pathlib.Path) -> list[str]:
     return errors
 
 
-def _parse_entry_body(body: list[str]) -> dict[str, str]:
+def _parse_entry_body(body: list[str]) -> tuple[dict[str, str], list[dict[str, str]]]:
+    """Parse an entry body into flat KV fields plus the structured `unfinished` item list."""
     fields: dict[str, str] = {}
-    for line in body:
-        m = KV_RE.match(line.rstrip())
-        if m:
-            fields[m.group(1)] = m.group(2).strip()
-    return fields
+    items: list[dict[str, str]] = []
+    cur_item: dict[str, str] | None = None
+    in_unfinished = False
+    for raw in body:
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        m = KV_RE.match(line)
+        if m and not line.startswith((" ", "\t", "-")):
+            key, val = m.group(1), m.group(2).strip()
+            fields[key] = val
+            in_unfinished = (key == "unfinished" and val == "")
+            cur_item = None
+            continue
+        if in_unfinished:
+            item_m = re.match(r"^\s*-\s*item:\s*(.*)$", line)
+            if item_m:
+                cur_item = {"item": item_m.group(1).strip()}
+                items.append(cur_item)
+                continue
+            sub_m = re.match(r"^\s*(reason|severity|follow_up):\s*(.*)$", line)
+            if sub_m and cur_item is not None:
+                cur_item[sub_m.group(1)] = sub_m.group(2).strip()
+    return fields, items
 
 
-def _validate_entry(heading: str, fields: dict[str, str]) -> list[str]:
+def _validate_entry(heading: str, fields: dict[str, str],
+                    items: list[dict[str, str]]) -> tuple[list[str], list[str]]:
     errors: list[str] = []
-    for key in ENTRY_KEYS:
+    warnings: list[str] = []
+    for key in ENTRY_REQUIRED_KEYS:
         if key not in fields:
             errors.append(f"entry '{heading}': missing key '{key}'")
+    for key in ENTRY_OPTIONAL_KEYS:
+        if key not in fields:
+            warnings.append(f"entry '{heading}': missing key '{key}' (legacy format)")
     if "task_type" in fields and fields["task_type"] not in TASK_TYPES:
         errors.append(f"entry '{heading}': invalid task_type '{fields['task_type']}'")
     if "timestamp" in fields and not TIMESTAMP_RE.search(fields["timestamp"]):
@@ -106,12 +139,26 @@ def _validate_entry(heading: str, fields: dict[str, str]) -> list[str]:
         for sub in RESULT_SUBKEYS:
             if f"{sub}=" not in fields["results"]:
                 errors.append(f"entry '{heading}': results missing '{sub}='")
-    return errors
+    if "factory_version" in fields and not VERSION_RE.match(fields["factory_version"]):
+        errors.append(f"entry '{heading}': invalid factory_version '{fields['factory_version']}'")
+
+    if "unfinished" in fields and fields["unfinished"] == "" and not items:
+        errors.append(f"entry '{heading}': 'unfinished' is empty without items or a no-debt marker")
+    for it in items:
+        for sub in ("item", "reason", "severity", "follow_up"):
+            if sub not in it:
+                errors.append(f"entry '{heading}': unfinished item missing '{sub}'")
+        if "severity" in it and it["severity"] not in UNFINISHED_SEVERITIES:
+            errors.append(f"entry '{heading}': invalid unfinished severity '{it['severity']}'")
+        if "follow_up" in it and it["follow_up"] not in UNFINISHED_BOOLS:
+            errors.append(f"entry '{heading}': invalid unfinished follow_up '{it['follow_up']}'")
+    return errors, warnings
 
 
-def validate_memory(root: pathlib.Path) -> list[str]:
-    """Return a list of errors for the memory files (empty = OK)."""
+def validate_memory(root: pathlib.Path) -> tuple[list[str], list[str]]:
+    """Return (errors, warnings) for the memory files (empty lists = OK)."""
     errors: list[str] = []
+    warnings: list[str] = []
     memdir = root / "memory"
     change_log = memdir / "change-log.md"
     summary = memdir / "summary.md"
@@ -139,13 +186,16 @@ def validate_memory(root: pathlib.Path) -> list[str]:
         if cur_head is not None:
             entries.append((cur_head, cur_body))
         for head, body in entries:
-            errors.extend(_validate_entry(head, _parse_entry_body(body)))
+            fields, items = _parse_entry_body(body)
+            e, w = _validate_entry(head, fields, items)
+            errors.extend(e)
+            warnings.extend(w)
 
     if not summary.is_file():
         errors.append("memory/summary.md not found")
     elif SUMMARY_MARKER not in summary.read_text(encoding="utf-8"):
         errors.append("memory/summary.md missing canonical marker")
-    return errors
+    return errors, warnings
 
 
 def main() -> int:
@@ -158,10 +208,17 @@ def main() -> int:
 
     root = pathlib.Path(args.repo).resolve()
     errors: list[str] = []
+    warnings: list[str] = []
     if args.memory_only:
-        errors = validate_memory(root)
+        errors, warnings = validate_memory(root)
     else:
-        errors = check_agents(root) + validate_memory(root)
+        errors = check_agents(root)
+        m_errs, m_warns = validate_memory(root)
+        errors += m_errs
+        warnings += m_warns
+
+    for w in warnings:
+        print("WARN - " + w, file=sys.stderr)
 
     if errors:
         print("FAIL - factory model check:", file=sys.stderr)

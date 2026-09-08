@@ -73,3 +73,19 @@ assumptions: mode hitl без вопросов (критерии машинно-
 models_used: analyzer=primary; planner=primary; coder=primary; tester=primary; reviewer=primary; diagnostician=unused; documenter=secondary
 factory_version: 12.5.0
 unfinished: нет незавершённых элементов
+
+## 2026-09-08T21:09:33+03:00 — Аудит системы безопасности
+title: Аудит системы безопасности
+timestamp: 2026-09-08T21:09:33+03:00
+branch: main
+commit: (none)
+task_type: security_audit
+goal: полный адаптивный аудит репозитория код-фабрики v12.5.0; особое внимание — утечке API-ключей
+changed_files: (none — аудит read-only, изменения кода не вносились)
+created_files: .code-factory/audit/report.md; .code-factory/audit/fix-tasks.yaml
+results: integration=SKIP; regression=SKIP; business=SKIP; review=SKIP
+decisions: реальных секретов и опасных вызовов не найдено; единственный пробел — .gitignore не защищает .env/.pem/.key; сгенерирована fix-задача на implement
+assumptions: целевой репозиторий — сама фабрика (AGENTS.md hand-authored, проверка модели в режиме --memory-only); SAST-сканеры отсутствуют — детерминированные grep-эвристики; совпадения паттернов в git-истории — только плейсхолдеры sk-xxxxx
+models_used: analyzer=primary; planner=primary; coder=unused; tester=unused; reviewer=unused; diagnostician=unused; documenter=unused; security_auditor=primary
+factory_version: 12.5.0
+unfinished: нет незавершённых элементов

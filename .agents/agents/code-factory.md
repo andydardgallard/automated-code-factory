@@ -82,9 +82,19 @@ commit_exclude, models, and the two optional knowledge fields `reference_docs` (
 priority field — every task is HIGH by default.)
 Save to `.code-factory/state/task.yaml`. If the business task is unclear, ask ONLY business-level
 questions via `AskUserQuestion` (never coding questions).
-**Long-term memory**: read `memory/summary.md` and the most recent `memory/change-log.md`
-entries so the project's history (decisions, fixes, past results) is not re-derived from git or
-scratch. If the files do not exist yet (fresh project), note it and continue.
+**Long-term memory**: `memory/` is the long-term memory of THE TARGET PROJECT named by the task's
+`repo_path` — one memory belongs to exactly one project, and it is NOT the memory of the factory
+(when the task targets this repository, the target project is the factory itself). Read
+`memory/summary.md` and the most recent `memory/change-log.md` entries so the project's history
+(decisions, fixes, past results) is not re-derived from git or scratch. `memory/` always lives IN
+THE DEPLOYMENT ROOT (the directory handed to `prepare_factory.sh`), where the base project name is
+the basename of that root — but when the task's `repo_path` points to a SUBDIRECTORY of the
+deployment root, the project name is the basename of the resolved `repo_path`. If `memory/` does not
+exist yet (first contact with the project), CREATE it first, then read it; name the project
+explicitly so both the journal and the summary call it the same way:
+`python3 .agents/skills/code-factory/scripts/memory_project.py init --repo <deployment root>
+--project <basename of the resolved repo_path>` — the name is pinned in the summary's `project:`
+declaration.
 **Checkpoint**: if `.code-factory/state/pipeline.yaml` exists and the task is unchanged, resume
 from the recorded phase.
 
@@ -103,8 +113,9 @@ Run the existing test suite as the regression baseline and save it to
    fingerprint on the first line.
 3. There is **no init step** — do not run the init slash command (it would overwrite the file
    and erase the 8 sections).
-4. Roles read AGENTS.md + memory instead of re-deriving structure: the analyzer reads them
-   before exploring; the planner reads them at start; the coder gets the relevant sections.
+4. Roles read AGENTS.md + the target project's memory instead of re-deriving structure: the
+   analyzer reads them before exploring; the planner reads them at start; the coder gets the
+   relevant sections.
 
 **Repo-mismatch gate**: after analysis, verify that files, symbols, configs and data referenced
 by the task actually exist in the repo. If they are missing: in hitl mode STOP and ask the user
@@ -233,15 +244,24 @@ documentation debt in `report.md` and continue — the factory never fails becau
 3. **Apply**: `python3 .../version_manager.py bump <type>` (or `set`) then `sync`; run `validate`
    and require exit 0. For `review`/`security_audit` skip versioning entirely.
 
-**Long-term memory write (single writer = the main agent)**: append ONE entry to
-`memory/change-log.md` — timestamp, title, branch/commit, task_type, goal, changed/created
-files (from `manifest.json`), results (integration/regression/business/review), decisions +
-assumptions, models_used, `factory_version`, and the `unfinished` section (explicit
+**Long-term memory write (single writer = the main agent)**: this memory belongs to the target
+project from `repo_path`, so check ownership BEFORE writing with
+`python3 .agents/skills/code-factory/scripts/memory_project.py check --repo <deployment root>`
+(a journal mixing entries of different projects is an error, fix that memory first). Append ONE
+entry to `memory/change-log.md` — timestamp, title, branch/commit, task_type, goal,
+`project: <project name>` (MANDATORY for new entries; the name pinned in `memory/summary.md`'s
+`project:` declaration, i.e. the basename of the resolved `repo_path`, which differs from the
+deployment-root basename when `repo_path` is a subdirectory),
+changed/created files (from `manifest.json`), results (integration/regression/business/review),
+decisions + assumptions, models_used, `factory_version`, and the `unfinished` section (explicit
 "нет незавершённых элементов", or one item per unresolved debt with `item`/`reason`/
 `severity`/`follow_up`). Fill the `unfinished` section EVERY run, even when empty. When the
 journal exceeds 50 entries, compact all but the last 20 into `memory/summary.md` (Current state
-/ Key decisions / Recent history), preserving items with severity=critical or follow_up=true.
-Memory is written on BOTH success and FAILED.
+/ Key decisions / Recent history), preserving items with severity=critical or follow_up=true, and
+keep `memory/summary.md` declaring the project with `project: <name>` + `repo_path: <path>` lines
+right after the canonical marker (this declaration is what fixes the project name). Never record the
+factory's own development history in the target project's memory. Memory is written on BOTH success
+and FAILED.
 Write `.code-factory/report.md` — one self-contained file with the full history (task, plan,
 errors, diagnostic, results, factory_version) for hand-off to the factory developer. Write
 `.code-factory/report_code_changes.md` next to it by running
@@ -312,12 +332,26 @@ write `.code-factory/report_code_changes.md` (next to it) via
 12. **AGENTS.md + memory** — AGENTS.md is the machine-generated single source of truth (exactly 8
     `##` sections + embedded fingerprint, no init step); regenerate it when the fingerprint
     mismatches (start of task) or when structure/stack/entry points changed (end of task), then
-    commit it. The main agent is the single writer of `memory/change-log.md` (one entry per
-    completed run) and compacts old entries into `memory/summary.md` beyond 50 entries. Every
-    entry MUST carry an `unfinished` section (explicit no-debt marker or `item`/`reason`/
-    `severity`/`follow_up` items) and a `factory_version`; compaction preserves critical or
-    follow_up items. `memory/` is committable and must never be gitignored. Verify with
-    `scripts/check_factory_model.py`.
+    commit it. **One memory — one project**: `memory/` is the long-term memory of the TARGET
+    project named by the task's `repo_path` (for a task targeting this repository the target
+    project is the factory itself), never the factory's own development history. The `memory/`
+    directory is always created IN THE DEPLOYMENT ROOT (the directory handed to
+    `prepare_factory.sh`), where the base project name is the basename of that root; when
+    `repo_path` points to a SUBDIRECTORY of the deployment root, the project name is the basename
+    of the resolved `repo_path` and `init` is called with both `--repo <deployment root>` and
+    `--project <that name>`. New entries carry
+    `project: <project name>` (the name pinned in `memory/summary.md`'s `project:` declaration, i.e.
+    the basename of the resolved `repo_path`), `memory/summary.md`
+    declares `project:`/`repo_path:` right after the canonical marker, and a missing `memory/` is
+    created on first contact via `scripts/memory_project.py init` (ownership verified with
+    `memory_project.py check` before writing). The main agent is the single writer of
+    `memory/change-log.md` (one entry per completed run) and compacts old entries into
+    `memory/summary.md` beyond 50 entries. Every new entry MUST carry `project: <project name>`
+    next to the other fields, plus an `unfinished` section (explicit no-debt marker or
+    `item`/`reason`/`severity`/`follow_up` items) and a `factory_version`; entries without
+    `project:` are legacy and only warned about, while entries of different projects in one journal
+    are an error; compaction preserves critical or follow_up items. `memory/` is committable and
+    must never be gitignored. Verify with `scripts/check_factory_model.py`.
 13. **Documentation + versioning** — after every successful `implement`/`refactor` run: (a) invoke
     `factory-documenter` (secondary) on the run manifest, docs only, `validate_documentation.py`
     with retry budget 1, debt recorded on exhaustion; (b) choose the version type by the

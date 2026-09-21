@@ -19,7 +19,10 @@ concise, structured report. Do NOT modify any files. Do NOT run state-changing c
 Read the durable project model FIRST and anchor on it: `AGENTS.md` is the single source of truth
 about the project (structure, stack, entry points, configs). Also read `memory/summary.md` and
 the recent `memory/change-log.md` entries if the main agent provided them, so you rely on known
-history instead of re-reading git. Do NOT re-derive from scratch what AGENTS.md already
+history instead of re-reading git. That `memory/` is the long-term memory of the task's TARGET
+project (the one named by `repo_path`) — never the factory's own development history; use the
+entries whose `project:` matches it (entries without `project:` are legacy, entries of another
+project mean the journal is wrong). Do NOT re-derive from scratch what AGENTS.md already
 documents — report only what the model is missing or what the task specifically needs.
 
 Allowed Bash commands are read-only: `ls`, `find`, `cat`, `head`, `tail`, `grep`, `wc`, and

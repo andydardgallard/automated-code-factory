@@ -2,14 +2,19 @@
 """
 Deterministic check of the Code Factory's project model (zero LLM tokens).
 
-Checks three invariants of the durable project model:
+Checks four invariants of the durable project model:
   1. AGENTS.md exists and has EXACTLY the 8 canonical `##` sections.
   2. The fingerprint embedded in AGENTS.md matches the fingerprint recomputed from the
      project's current structural signals (project unchanged -> model is current).
   3. The portable long-term memory is well-formed: `memory/change-log.md` is an
      append-only journal (each entry has the required keys, plus the optional
-     `unfinished` and `factory_version` keys) and `memory/summary.md` exists with the
-     canonical marker.
+     `unfinished`, `factory_version` and `project` keys) and `memory/summary.md` exists with
+     the canonical marker.
+  4. One memory belongs to exactly ONE project: `memory/` is the long-term memory of the
+     project from the task's `repo_path` field, whose name every entry carries as
+     `project: <name>`. Entries without `project` are legacy (warning only), while DIFFERENT
+     `project` values in the same journal — or a `summary.md` declaring another project — are
+     errors, and so is a `project` key that is present but empty (never silent legacy).
 
 Usage:
   python3 check_factory_model.py [--repo <path>] [--memory-only]
@@ -19,7 +24,8 @@ Usage:
                   is a hand-authored manual rather than a generated 8-section model.
 
 Exit code 0 = PASS, 1 = FAIL (each failure printed to stderr). Warnings are printed to
-stderr but do not fail (legacy entries missing the newer optional keys). stdlib only.
+stderr but do not fail (legacy memory missing the newer optional keys or the `project:`
+ownership declaration). stdlib only.
 """
 from __future__ import annotations
 
@@ -48,6 +54,10 @@ ENTRY_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2}.*)$")
 KV_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
 TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+# `project: <name>` declaration of the owning project in memory/summary.md. It counts ONLY
+# inside the declaration area (right after the canonical marker, before the first `## ` section),
+# so a `project: <name>` example inside a fenced code block is never mistaken for a declaration.
+SUMMARY_PROJECT_RE = re.compile(r"^project:\s*(\S.*)$", re.MULTILINE)
 
 ENTRY_REQUIRED_KEYS = [
     "title", "timestamp", "branch", "commit", "task_type", "goal",
@@ -55,8 +65,11 @@ ENTRY_REQUIRED_KEYS = [
     "models_used",
 ]
 # Newer keys. Missing in a legacy entry is a WARNING (never an error), so the project
-# history is not broken when the format evolves.
-ENTRY_OPTIONAL_KEYS = ["unfinished", "factory_version"]
+# history is not broken when the format evolves. `project` names the project that OWNS the
+# memory (basename of the task's resolved `repo_path`): its absence in an old entry is just a
+# legacy warning, but DIFFERENT `project` values inside the same journal are an error —
+# one memory belongs to exactly one project.
+ENTRY_OPTIONAL_KEYS = ["unfinished", "factory_version", "project"]
 TASK_TYPES = {"implement", "review", "refactor", "security_audit"}
 RESULT_SUBKEYS = ["integration", "regression", "business", "review"]
 UNFINISHED_SEVERITIES = {"critical", "warning", "info"}
@@ -131,6 +144,8 @@ def _validate_entry(heading: str, fields: dict[str, str],
     for key in ENTRY_OPTIONAL_KEYS:
         if key not in fields:
             warnings.append(f"entry '{heading}': missing key '{key}' (legacy format)")
+    if "project" in fields and not fields["project"].strip():
+        errors.append(f"entry '{heading}': empty 'project' value")
     if "task_type" in fields and fields["task_type"] not in TASK_TYPES:
         errors.append(f"entry '{heading}': invalid task_type '{fields['task_type']}'")
     if "timestamp" in fields and not TIMESTAMP_RE.search(fields["timestamp"]):
@@ -155,6 +170,24 @@ def _validate_entry(heading: str, fields: dict[str, str],
     return errors, warnings
 
 
+def _summary_declaration_area(text: str) -> str:
+    """Return the part of memory/summary.md that may declare the owning project.
+
+    It spans from the canonical summary marker to the first `## ` section (or EOF); anything
+    below — e.g. a `project: <name>` example inside a fenced code block — is ignored.
+    """
+    lines = text.splitlines()
+    start = next((i + 1 for i, ln in enumerate(lines) if SUMMARY_MARKER in ln), None)
+    if start is None:
+        return ""
+    area: list[str] = []
+    for ln in lines[start:]:
+        if ln.startswith("## "):
+            break
+        area.append(ln)
+    return "\n".join(area)
+
+
 def validate_memory(root: pathlib.Path) -> tuple[list[str], list[str]]:
     """Return (errors, warnings) for the memory files (empty lists = OK)."""
     errors: list[str] = []
@@ -162,6 +195,8 @@ def validate_memory(root: pathlib.Path) -> tuple[list[str], list[str]]:
     memdir = root / "memory"
     change_log = memdir / "change-log.md"
     summary = memdir / "summary.md"
+    # Projects declared by the journal entries (empty = legacy memory without `project`).
+    journal_projects: set[str] = set()
 
     if not change_log.is_file():
         errors.append("memory/change-log.md not found")
@@ -187,14 +222,31 @@ def validate_memory(root: pathlib.Path) -> tuple[list[str], list[str]]:
             entries.append((cur_head, cur_body))
         for head, body in entries:
             fields, items = _parse_entry_body(body)
+            project = fields.get("project", "").strip()
+            if project:
+                journal_projects.add(project)
             e, w = _validate_entry(head, fields, items)
             errors.extend(e)
             warnings.extend(w)
+        if len(journal_projects) > 1:
+            errors.append("memory/change-log.md mixes projects: "
+                          + ", ".join(sorted(journal_projects))
+                          + " (one memory belongs to exactly one project)")
 
     if not summary.is_file():
         errors.append("memory/summary.md not found")
-    elif SUMMARY_MARKER not in summary.read_text(encoding="utf-8"):
-        errors.append("memory/summary.md missing canonical marker")
+    else:
+        summary_text = summary.read_text(encoding="utf-8")
+        if SUMMARY_MARKER not in summary_text:
+            errors.append("memory/summary.md missing canonical marker")
+        declared = SUMMARY_PROJECT_RE.search(_summary_declaration_area(summary_text))
+        declared_project = declared.group(1).strip() if declared else ""
+        if not declared_project:
+            warnings.append("memory/summary.md does not declare 'project: <name>' (legacy format)")
+        elif len(journal_projects) == 1 and declared_project not in journal_projects:
+            errors.append(f"memory/summary.md declares project '{declared_project}' but "
+                          f"memory/change-log.md belongs to "
+                          f"'{next(iter(journal_projects))}'")
     return errors, warnings
 
 

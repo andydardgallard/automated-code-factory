@@ -18,7 +18,9 @@ and report structured results. Read
 
 If the main agent provided past results or the regression baseline from `memory/change-log.md`
 / `memory/summary.md`, read them first so you know what "no regression" means for this project
-and do not re-run checks that are known to be unchanged.
+and do not re-run checks that are known to be unchanged. That memory belongs to the task's TARGET
+project (the one named by `repo_path`), not to the factory — use the entries whose `project:`
+matches it (entries without `project:` are legacy).
 
 Responsibilities in order:
 1. Integration tests — write/run focused tests for the changed modules (project's own test

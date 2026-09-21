@@ -20,7 +20,9 @@ anything yourself.
 Read `.agents/skills/code-factory/references/code-review.md` first and follow it exactly.
 
 If the main agent provided past verdicts or open findings from `memory/change-log.md`, read them
-so you can verify that previously requested rework was actually done.
+so you can verify that previously requested rework was actually done. That memory describes the
+task's TARGET project (the one named by `repo_path`), not the factory — use the entries whose
+`project:` matches that project.
 
 Input you receive from the main agent:
 - the task context (plan summary and acceptance criteria),

@@ -6,7 +6,10 @@ Builds a synthetic project, then verifies `check_factory_model.py`:
   - a correct 8-section AGENTS.md + fingerprint + memory passes (exit 0),
   - corrupting each invariant fails (exit 1),
   - the `unfinished` memory section is validated (no-debt, with-debt, incomplete -> fail,
-    legacy -> warning), and `factory_version` is validated.
+    legacy -> warning), and `factory_version` is validated,
+  - project ownership is validated (entry + summary declaring one project -> pass, a missing
+    `project` -> warning only, different `project` values in one journal -> fail, an empty
+    `project` value -> fail, and a `project:` example inside a code block is not a declaration).
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -29,6 +32,7 @@ SECTIONS = check_factory_model.CANONICAL_SECTIONS
 VALID_ENTRY = """\
 ## 2026-09-01T00:00:00Z — First run
 title: First run
+project: demo
 timestamp: 2026-09-01T00:00:00Z
 branch: main
 commit: abc1234
@@ -44,13 +48,21 @@ unfinished: нет незавершённых элементов
 factory_version: 12.5.0
 """
 
-# Same entry but WITHOUT the two newer keys -> a legacy entry that must pass with warnings.
+# Same entry but WITHOUT the newer keys -> a legacy entry that must pass with warnings.
 LEGACY_ENTRY = VALID_ENTRY.replace("unfinished: нет незавершённых элементов\n", "").replace(
     "factory_version: 12.5.0\n", "")
+
+# Legacy entry without the project ownership marker either -> warning about 'project'.
+LEGACY_ENTRY_NO_PROJECT = LEGACY_ENTRY.replace("project: demo\n", "")
+
+# The same journal but owned by a DIFFERENT project -> the memory mixes projects (error).
+FOREIGN_ENTRY = VALID_ENTRY.replace("# First run", "# Second run").replace(
+    "project: demo", "project: other_project")
 
 ENTRY_WITH_DEBT = """\
 ## 2026-09-02T00:00:00Z — Debt run
 title: Debt run
+project: demo
 timestamp: 2026-09-02T00:00:00Z
 branch: main
 commit: deadbeef
@@ -74,6 +86,7 @@ factory_version: 12.5.0
 ENTRY_INCOMPLETE = """\
 ## 2026-09-03T00:00:00Z — Incomplete debt
 title: Incomplete debt
+project: demo
 timestamp: 2026-09-03T00:00:00Z
 branch: main
 commit: badc0de
@@ -92,7 +105,10 @@ factory_version: 12.5.0
 """
 
 CHANGE_LOG_HEADER = "# Change Log — Code Factory\n\n<!-- code-factory-memory: change-log -->\n\n"
-SUMMARY = "# Project Summary — Code Factory\n\n<!-- code-factory-memory: summary -->\n\n"
+SUMMARY = ("# Project Summary — Code Factory\n\n<!-- code-factory-memory: summary -->\n"
+           "project: demo\nrepo_path: .\n\n")
+# Legacy summary without the `project:` declaration -> warning, but never an error.
+SUMMARY_NO_PROJECT = SUMMARY.replace("project: demo\nrepo_path: .\n", "")
 
 
 def build(root: pathlib.Path, entry: str = VALID_ENTRY) -> None:
@@ -200,7 +216,74 @@ def main() -> int:
         build(root, ENTRY_WITH_DEBT.replace("severity: warning", "severity: fatal"))
         expect(mem_errors(root) != [], "invalid unfinished severity must fail")
 
-    # 13. Fingerprint must be stable across committing AGENTS.md (regression: it must NOT
+        # 13. Canonical single-project memory (entry + summary both declare `project`) -> PASS
+        #     with no warnings at all.
+        build(root)
+        expect(mem_errors(root) == [], "single-project memory must pass")
+        expect(mem_warnings(root) == [], f"canonical memory must not warn: {mem_warnings(root)}")
+        expect(run_cli("--repo", td, "--memory-only") == 0, "canonical memory must exit 0")
+
+        # 14. Legacy entry WITHOUT `project` -> PASS (warning only): old journals keep working.
+        build(root, LEGACY_ENTRY_NO_PROJECT)
+        expect(mem_errors(root) == [], "entry without 'project' must pass (no error)")
+        expect(any("missing key 'project'" in w for w in mem_warnings(root)),
+               "entry without 'project' must warn about the missing 'project' key")
+        expect(run_cli("--repo", td, "--memory-only") == 0, "legacy entry must exit 0")
+
+        # 15. Two entries with DIFFERENT `project:` -> FAIL: one memory belongs to one project.
+        build(root, VALID_ENTRY + FOREIGN_ENTRY)
+        expect(any("mixes projects" in e and "other_project" in e for e in mem_errors(root)),
+               "two different 'project' values must fail with 'mixes projects'")
+        expect(run_cli("--repo", td, "--memory-only") != 0, "mixed memory must exit != 0")
+
+        # 16. summary.md without a `project:` declaration -> warning, NOT an error.
+        build(root)
+        (root / "memory" / "summary.md").write_text(SUMMARY_NO_PROJECT, encoding="utf-8")
+        expect(mem_errors(root) == [], "summary without 'project' must not be an error")
+        expect(any("does not declare" in w and "project" in w for w in mem_warnings(root)),
+               "summary without 'project' must warn about the missing declaration")
+        expect(run_cli("--repo", td, "--memory-only") == 0,
+               "summary without 'project' must still exit 0")
+
+        # 17. summary.md declaring a foreign project while the journal belongs to `demo` -> FAIL.
+        build(root)
+        (root / "memory" / "summary.md").write_text(
+            SUMMARY.replace("project: demo", "project: other_project"), encoding="utf-8")
+        expect(any("other_project" in e and "demo" in e for e in mem_errors(root)),
+               "summary declaring another project than the journal must fail")
+
+        # 18. An entry carrying the `project` key with an EMPTY value -> FAIL (never silent legacy).
+        build(root, VALID_ENTRY.replace("project: demo\n", "project:\n"))
+        expect(any("empty 'project' value" in e for e in mem_errors(root)),
+               "an empty 'project' value must fail")
+        expect(run_cli("--repo", td, "--memory-only") != 0,
+               "an empty 'project' value must exit != 0")
+
+        # 19. A `project:` example inside a fenced code block below a `## ` section is NOT the
+        #     declaration: only the area between the canonical marker and the first `## ` section
+        #     declares the owner, so the example never causes a project mismatch.
+        example = "## Format examples\n\n```\nproject: {0}\nrepo_path: /some/path\n```\n"
+        for name in ("demo", "other_project"):
+            build(root)
+            (root / "memory" / "summary.md").write_text(SUMMARY + example.format(name),
+                                                        encoding="utf-8")
+            expect(mem_errors(root) == [],
+                   f"a 'project: {name}' example in a code block must not fail")
+            expect(run_cli("--repo", td, "--memory-only") == 0,
+                   f"a 'project: {name}' example in a code block must still exit 0")
+        #     Same but WITHOUT any real declaration: the block example must not be read as one
+        #     (only the legacy warning, never a mismatch with the journal).
+        build(root)
+        (root / "memory" / "summary.md").write_text(
+            SUMMARY_NO_PROJECT + example.format("other_project"), encoding="utf-8")
+        expect(mem_errors(root) == [],
+               "a 'project:' example in a code block must not be read as a declaration")
+        expect(any("does not declare" in w for w in mem_warnings(root)),
+               "a summary without a real declaration must still warn")
+        expect(run_cli("--repo", td, "--memory-only") == 0,
+               "a 'project:' example in a code block must still exit 0")
+
+    # 20. Fingerprint must be stable across committing AGENTS.md (regression: it must NOT
     #     include the git tree SHA, or the embedded fingerprint goes stale after the very
     #     commit that carries it).
     with tempfile.TemporaryDirectory() as gtd:
@@ -218,7 +301,7 @@ def main() -> int:
         expect(check_factory_model.check_agents(groot) == [], "model should still pass after commit")
 
     print("PASS - factory model scripts behave as expected (valid passes, corruptions fail, "
-          "unfinished/factory_version validated).")
+          "unfinished/factory_version/project validated).")
     return 0
 
 

@@ -127,11 +127,17 @@ Rules:
 ### 7.4 Read the model, don't rebuild it
 
 Every later role reads AGENTS.md as the source of truth:
-- **analyzer** — reads AGENTS.md + `memory/summary.md` + recent `memory/change-log.md` entries
-  BEFORE exploring, to anchor on known history instead of re-reading git.
-- **planner (main agent)** — reads AGENTS.md + memory at the start (Phase 0/1).
-- **coder** — receives the relevant AGENTS.md sections + recent memory entries from the main
-  agent.
+- **analyzer** — reads AGENTS.md + `memory/summary.md` + recent `memory/change-log.md` entries of
+  the CURRENT project (the task's `repo_path`) BEFORE exploring, to anchor on known history
+  instead of re-reading git.
+- **planner (main agent)** — reads AGENTS.md + the current project's memory at the start (Phase 0/1).
+- **coder** — receives the relevant AGENTS.md sections + recent memory entries of the current
+  project from the main agent.
+
+`memory/` always belongs to the project at `repo_path` (one memory — one project; `project:`
+declared in `memory/summary.md`), never to the factory's own development. A missing `memory/` is
+created on first contact with the project via `scripts/memory_project.py init`, and ownership is
+verified with `memory_project.py check`.
 
 Verify the model with the deterministic checker:
 

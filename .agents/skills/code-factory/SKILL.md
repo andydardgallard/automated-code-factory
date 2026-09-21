@@ -3,7 +3,7 @@ name: code-factory
 description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 type: flow
 ---
-<!-- code-factory-version: 12.5.1 -->
+<!-- code-factory-version: 12.6.0 -->
 
 # Code Factory
 
@@ -33,18 +33,33 @@ All runtime artifacts live in `.code-factory/`:
 - `logs/` — baseline, errors.md, diagnostic.md, test-results.md
 
 The portable long-term memory lives in the committable `memory/` directory (NOT ignored, travels
-with the project):
+with the project). It is the memory of THE TARGET PROJECT named by the task's `repo_path` — one
+memory belongs to exactly one project (when the task targets the factory repository, that target
+project is the factory). The `memory/` directory itself is created IN THE DEPLOYMENT ROOT — the
+directory handed to `prepare_factory.sh` — and the base project name is the basename of that root.
+When the task's `repo_path` points to a SUBDIRECTORY of the deployment root, the project name is the
+basename of the resolved `repo_path`, and the main agent creates the memory explicitly:
+`python3 .agents/skills/code-factory/scripts/memory_project.py init --repo <deployment root>
+--project <basename of the resolved repo_path>`, then reads it; the name is pinned in the summary's
+`project:` declaration.
 
 - `memory/change-log.md` — append-only journal, one entry per completed run; single writer: the
-  main agent at the end of each task
+  main agent at the end of each task. Every NEW entry MUST carry `project: <project name>` (the name
+  pinned in `memory/summary.md`'s `project:` declaration = basename of the resolved `repo_path`)
+  next to the other fields; entries without `project:` are
+  legacy and only warned about, while entries of DIFFERENT projects in one journal are an error
+  (caught by `scripts/check_factory_model.py` and `memory_project.py check`)
 - `memory/summary.md` — compressed summary (current state + key decisions + recent history),
-  compacted from the journal when it exceeds the threshold
+  compacted from the journal when it exceeds the threshold; it MUST declare the project with
+  `project: <name>` and `repo_path: <path>` lines right after the canonical marker
+
+The factory's own development history is NEVER written into the target project's memory.
 
 The factory may create any files, skills, scripts or plugins inside the project that are needed to solve the task. The factory must keep the total token spend minimal: use subagents for heavy context (analysis, coding, testing, diagnosis), return only concise structured results, and avoid loading large files into the main context.
 
 ```mermaid
 flowchart TD
-    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, user_story (optional), mode (hitl/auto), task_type (implement default | review | refactor | security_audit), acceptance_criteria, commit_exclude, models, reference_docs, reference_skills. There is NO priority field — every task is HIGH by default. Save the parsed task to .code-factory/state/task.yaml. Read the long-term memory (memory/summary.md + recent memory/change-log.md entries) so project history is not re-derived. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
+    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, user_story (optional), mode (hitl/auto), task_type (implement default | review | refactor | security_audit), acceptance_criteria, commit_exclude, models, reference_docs, reference_skills. There is NO priority field — every task is HIGH by default. Save the parsed task to .code-factory/state/task.yaml. Read the long-term memory of the TARGET project from repo_path (memory/summary.md + recent memory/change-log.md entries) — the memory of the project, NOT of the factory; if memory/ is absent (first contact with the project), create it first via memory_project.py init --repo <deployment root> --project <basename of repo_path> (memory/ always lives in the deployment root; the name is pinned in the summary's project: declaration) — so that project's history is not re-derived. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
     B --> C{Is the business task clear enough?}
     C -->|No| D[Ask the user business-level clarifying questions via AskUserQuestion. Ask ONLY business logic and expectations, never coding questions. Then update the parsed task.]
     D --> B
@@ -118,7 +133,7 @@ flowchart TD
     VER2 --> VER3[Версия — шаг 3: применить bump|set + sync, validate exit 0; коммит с префиксом v<версия>: в одном коммите с изменениями]
     VER3 --> Y
     DOC -->|Нет (review/security_audit)| Y
-    Y[Finish: remove backups, produce the final report (what changed, test results, business results, acceptance evidence, models_used per role). Regenerate AGENTS.md if structure/stack/entry points changed, then commit AGENTS.md + memory/ to the feature branch respecting commit_exclude. Append one entry to memory/change-log.md (single writer: the main agent) and compact the journal into memory/summary.md when over the threshold. Update project documentation if the task requires it. Write the self-contained .code-factory/report.md with the full history (task, plan, errors, diagnosis, results, manifest, models_used). Generate .code-factory/report_code_changes.md next to it with the scripts/gen_code_changes_report.py script (was-became per changed line). Present the report to the user.]
+    Y[Finish: remove backups, produce the final report (what changed, test results, business results, acceptance evidence, models_used per role). Regenerate AGENTS.md if structure/stack/entry points changed, then commit AGENTS.md + memory/ to the feature branch respecting commit_exclude. Append one entry to memory/change-log.md (single writer: the main agent) carrying the mandatory project field (project: name of the target project, pinned in summary.md's project: declaration = basename of repo_path) and compact the journal into memory/summary.md when over the threshold; summary.md declares project and repo_path right after the canonical marker. Update project documentation if the task requires it. Write the self-contained .code-factory/report.md with the full history (task, plan, errors, diagnosis, results, manifest, models_used). Generate .code-factory/report_code_changes.md next to it with the scripts/gen_code_changes_report.py script (was-became per changed line). Present the report to the user.]
     Y --> Z([END])
 ```
 
@@ -163,14 +178,30 @@ Rules that always apply:
   (`scripts/project_fingerprint.py`). At the start of a task, if the embedded fingerprint matches
   the recomputed one, skip regeneration; otherwise regenerate. At the end of a task, regenerate
   if structure/stack/entry points changed, then commit it. There is no init step.
-- **Long-term memory (`memory/`)**: committable, never ignored. Single writer = the main agent,
+- **Long-term memory (`memory/`)**: committable, never ignored. It is the memory of the TARGET
+  PROJECT named by the task's `repo_path` (one memory — one project; the factory repository is
+  itself such a target project when the task points at it), never the memory of the factory's own
+  development. The `memory/` directory is created IN THE DEPLOYMENT ROOT — the directory handed to
+  `prepare_factory.sh` — where the base project name is the basename of that root; if the task's
+  `repo_path` points to a SUBDIRECTORY of it, the project name is the basename of the resolved
+  `repo_path` and the main agent creates the memory explicitly. If `memory/` is missing on first
+  contact with a project, create it with
+  `python3 .agents/skills/code-factory/scripts/memory_project.py init --repo <deployment root>
+  --project <basename of the resolved repo_path>`; the chosen name is pinned in the summary's
+  `project:` declaration. Single writer = the main agent,
   which appends one entry to `memory/change-log.md` at the end of every task (success OR FAILED)
   and compacts old entries into `memory/summary.md` when the journal exceeds 50 entries (keeping
-  the last 20). Every entry MUST include an `unfinished` section (even if it is the explicit
+  the last 20). Every NEW entry MUST carry `project: <project name>` (the name pinned in
+  `memory/summary.md`'s `project:` declaration = basename of the resolved
+  `repo_path`) next to the other fields, plus an `unfinished` section (even if it is the explicit
   "нет незавершённых элементов" marker) and a `factory_version` field; each unfinished item has
-  `item`, `reason`, `severity` (critical|warning|info) and `follow_up` (true|false). Compaction
-  MUST preserve items with severity=critical or follow_up=true. Legacy entries without the
-  `unfinished`/`factory_version` keys validate with a warning, never an error. Verify with
+  `item`, `reason`, `severity` (critical|warning|info) and `follow_up` (true|false).
+  `memory/summary.md` MUST declare the project with `project:`/`repo_path:` lines right after the
+  canonical marker. Compaction MUST preserve items with severity=critical or follow_up=true.
+  Legacy entries without
+  `project:` or the `unfinished`/`factory_version` keys validate with a warning, never an error;
+  entries of DIFFERENT projects in one journal are an error (caught by
+  `scripts/check_factory_model.py` and `memory_project.py check`). Verify with
   `scripts/check_factory_model.py` (8 sections + fingerprint + memory format).
 - **Documentation (factory-documenter)**: after every successful `implement` or `refactor` run,
   the main agent invokes the `factory-documenter` subagent (secondary model) with the run

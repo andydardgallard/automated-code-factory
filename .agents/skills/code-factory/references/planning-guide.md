@@ -29,8 +29,14 @@ Never ask: "Should I change type i64 to f64?" — the factory decides technical 
 
 Read the durable project model FIRST, so analysis anchors on known structure instead of
 re-deriving it: `AGENTS.md` (the single source of truth) plus `memory/summary.md` and the most
-recent `memory/change-log.md` entries. Pass the relevant AGENTS.md sections and memory entries
-to the analyzer.
+recent `memory/change-log.md` entries. That `memory/` is the memory of the CURRENT project — the
+one named by the task's `repo_path`, not of the factory (if the task targets the factory
+repository, the factory is that project). Read the entries whose `project:` matches it; entries
+without `project:` are legacy, entries of another project mean the journal is wrong. On first
+contact with a project, create the memory with
+`python3 .agents/skills/code-factory/scripts/memory_project.py init --repo <project root>
+--project <basename of the resolved repo_path>`. Pass the relevant AGENTS.md sections and memory
+entries to the analyzer.
 
 Delegate heavy exploration to `factory-analyzer` subagents (parallel, isolated contexts). Each
 returns a concise summary. Combine into one picture:

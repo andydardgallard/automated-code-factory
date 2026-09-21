@@ -12,7 +12,8 @@ Signals (all read from disk, so uncommitted edits to them are caught too):
   2. CI configs (.github/workflows/**, .gitlab-ci.yml, Jenkinsfile, .circleci/**),
   3. README (README.md / README.rst / README / readme.md),
   4. sorted top-level directory listing (dirs/files, minus build/VCS/editor noise and the
-     factory's own artifacts — AGENTS.md, memory/, task.yaml, start.sh).
+     factory's own artifacts — AGENTS.md, memory/, task.yaml, and the deployer/launcher
+     scripts: start.sh, start.cmd, prepare_factory.cmd, prepare_factory.ps1).
 
 NOTE: the fingerprint deliberately does NOT include the git tree SHA. AGENTS.md and memory/ are
 factory artifacts excluded from the signals, so committing them does not change the fingerprint.
@@ -44,11 +45,15 @@ CI_DIRS = [".github/workflows", ".circleci"]
 README_NAMES = ["README.md", "README.rst", "README", "readme.md", "Readme.md"]
 
 # Top-level entries skipped in the directory-listing signal (build/VCS/editor noise,
-# plus the factory's own artifacts — they are not project structure).
+# plus the factory's own artifacts — they are not project structure). The generated
+# launchers (start.sh and its Windows counterpart start.cmd) and the Windows deployer
+# (prepare_factory.cmd → prepare_factory.ps1) are excluded alongside AGENTS.md/memory/,
+# so committing them does not shift the fingerprint of the deployed project.
 IGNORE_TOP_LEVEL = {
     ".git", ".code-factory", ".venv", "venv", "__pycache__",
     "node_modules", "target", "dist", "build", ".idea", ".vscode", ".DS_Store",
-    "AGENTS.md", "memory", "task.yaml", "start.sh",
+    "AGENTS.md", "memory", "task.yaml", "start.sh", "start.cmd",
+    "prepare_factory.cmd", "prepare_factory.ps1",
 }
 
 # Sub-path segments that are never traversed for the *.{csproj,sln} glob.

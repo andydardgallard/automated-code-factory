@@ -86,7 +86,8 @@ python3 .agents/skills/code-factory/scripts/project_fingerprint.py --repo <proje
 
 The fingerprint is a SHA-256 over the project's structural working-tree signals: stack
 manifests, CI configs, README, and the sorted top-level directory listing. The factory's own
-artifacts (`AGENTS.md`, `memory/`, `task.yaml`, `start.sh`) are excluded from the signals, so
+artifacts (`AGENTS.md`, `memory/`, `task.yaml`, the launcher `start.sh`/`start.cmd` and the Windows
+deployer `prepare_factory.cmd`/`prepare_factory.ps1`) are excluded from the signals, so
 committing them does not shift the fingerprint (a git tree SHA would, which would make the
 "skip when unchanged" branch unreachable). It is embedded in AGENTS.md on the first line
 (`<!-- code-factory-fingerprint: <sha> -->`), so it travels with the commit and survives a

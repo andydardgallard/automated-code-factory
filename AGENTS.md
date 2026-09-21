@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.6.0 -->
+<!-- code-factory-version: 12.7.0 -->
 # Project: Autonomous Code Factory
 
 Этот проект содержит автономную фабрику по написанию кода для Kimi Code CLI.
@@ -19,10 +19,13 @@
 - `skill-base/` — персистентная база навыков из `reference_docs`/`reference_skills` (опционально)
 - `.agents/README.md` — полная инструкция по использованию фабрики
 - `prepare_factory.sh` — подготовка проекта одним действием (создаёт launcher `start.sh`)
+- `prepare_factory.cmd` / `prepare_factory.ps1` — то же самое в Windows без Git Bash (точка входа
+  и реализация; создают launcher `start.cmd`), `start.cmd` — запуск фабрики в Windows
 - `memory/` — переносимая долгосрочная память ЦЕЛЕВОГО проекта (коммитится); создаётся В КОРНЕ
-  РАЗВЁРТЫВАНИЯ (том каталоге, который передан `prepare_factory.sh`), базовое имя проекта =
-  basename этого каталога: `change-log.md` (append-only журнал прогонов) и `summary.md` (сжатая
-  сводка); признак проекта — `project: <имя>` в записи и `project:`/`repo_path:` в сводке
+  РАЗВЁРТЫВАНИЯ (том каталоге, который передан `prepare_factory.sh`; в Windows —
+  `prepare_factory.cmd`), базовое имя проекта = basename этого каталога: `change-log.md`
+  (append-only журнал прогонов) и `summary.md` (сжатая сводка); признак проекта — `project: <имя>`
+  в записи и `project:`/`repo_path:` в сводке
 
 ## Как использовать
 
@@ -31,6 +34,9 @@
 - Полный автомат: `kimi --auto` → `/skill:code-factory`
 - **Одно действие**: `./prepare_factory.sh <проект>` затем `./<проект>/start.sh` (launcher сам
   выставляет `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`)
+- **Одно действие в Windows**: `prepare_factory.cmd <проект>` затем `cd <проект>` и `start.cmd`
+  (интерактивно; в чате `/skill:code-factory`) либо `start.cmd --auto` — Git Bash не нужен; для
+  развёртывания Python не требуется (сама фабрика использует Python для скриптов памяти и версии)
 - `mode: auto` в `task.yaml` управляет только бизнес-вопросами фабрики; запросы разрешения
   CLI отключаются отдельно — флагом `kimi --auto`/`--yolo` или `default_permission_mode`
   в `config.toml`.
@@ -86,7 +92,7 @@
 - **Модели**: модели задаются в `config.toml` (`default_model` + `[secondary_model]`),
   сабагентам — `model_preference: primary|secondary`. Фактические модели логируются в
   `pipeline.yaml`/`report.md` (`models_used`). Для разделения моделей нужен
-  `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — launcher `start.sh` выставляет его сам; фабрика
+  `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — launcher `start.sh`/`start.cmd` выставляет его сам; фабрика
   проверяет его в pre-flight и при отсутствии пишет `models_warning` в pipeline.yaml/report.md.
   Модели Kimi (K3) и Qwen маршрутизируются через поле `models` задачи (см.
   `references/providers.md`).

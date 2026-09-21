@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.6.0 -->
+<!-- code-factory-version: 12.7.0 -->
 
 Автономная фабрика по написанию кода. Принимает бизнес-задачу от пользователя, который не
 разбирается в программировании, анализирует проект, планирует изменения, уточняет только
@@ -43,7 +43,8 @@
 │       │   ├── version_manager.py          # единый источник версии: get/bump/sync/validate/set/suggest
 │       │   ├── test_version_manager.py     # self-тест скрипта версий (≥12 кейсов)
 │       │   ├── validate_mermaid.py         # структурный валидатор Mermaid-диаграмм
-│       │   └── test_validate_mermaid.py    # self-тест валидатора Mermaid
+│       │   ├── test_validate_mermaid.py    # self-тест валидатора Mermaid
+│       │   └── test_windows_scripts.py     # self-тест Windows-скриптов развёртывания/запуска
 │       └── assets/
 │           └── task-template.yaml   # шаблон бизнес-задачи
 └── agents/
@@ -67,8 +68,10 @@
 Переносимая долгосрочная память живёт в коммитимом каталоге `memory/` ТОГО проекта, который указан в
 `repo_path` задачи (НЕ в `.gitignore`): `memory/change-log.md` (append-only журнал прогонов, одна
 запись на задачу) и `memory/summary.md` (сжатая сводка). Каталог `memory/` создаётся В КОРНЕ
-РАЗВЁРТЫВАНИЯ — том, который передан `prepare_factory.sh` (базовое имя проекта при развёртывании =
-basename этого каталога). Одна память принадлежит ровно одному проекту: каждая новая запись журнала
+РАЗВЁРТЫВАНИЯ — том, который передан `prepare_factory.sh` (в Windows — `prepare_factory.cmd`, он
+запускает `prepare_factory.ps1`); базовое имя проекта при развёртывании = basename этого каталога,
+а запускается фабрика из него через `./start.sh` (Git Bash/Linux) или `start.cmd` (Windows). Одна
+память принадлежит ровно одному проекту: каждая новая запись журнала
 несёт признак `project: <имя проекта>`, сводка объявляет `project:`/`repo_path:` сразу после
 канонического маркера; записи без `project:` — legacy, записи разных проектов в одном журнале —
 ошибка (`check_factory_model.py`, `memory_project.py check`). Если `repo_path` задачи указывает на
@@ -96,6 +99,31 @@ cd /path/to/your-project
 
 Никаких дополнительных `export`-команд запоминать не нужно.
 
+### Windows (без Git Bash)
+
+Та же подготовка одним действием через `prepare_factory.cmd`: он вызывает `prepare_factory.ps1`
+(Windows-версия деплойера, PowerShell входит в состав Windows) и передаёт её код возврата. Скрипт
+копирует фабрику, настраивает git/`.gitignore`, создаёт в проекте launcher-ы `start.cmd` (Windows) и
+`start.sh` (Git Bash/Linux) и печатает отчёт о готовности:
+
+```bat
+rem подготовка проекта (копирует фабрику, настраивает git/.gitignore и создаёт launcher-ы)
+prepare_factory.cmd C:\work\my-project
+
+rem запуск одним действием
+cd C:\work\my-project
+start.cmd
+rem в чате: /skill:code-factory
+
+rem полностью автономно:
+start.cmd --auto
+```
+
+Для развёртывания Python не требуется: шаг долгосрочной памяти (`memory/`) без него деградирует с
+понятным предупреждением, развёртывание всё равно завершится успешно, а память фабрика создаст при
+первом обращении к проекту. Сама фабрика использует Python для скриптов памяти и версии
+(`memory_project.py`, `version_manager.py` и др.).
+
 Или вручную, без launcher-а:
 
 ```sh
@@ -104,7 +132,7 @@ kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и 
 
 Модели: `default_model` и `[secondary_model]` в `~/.kimi-code/config.toml`; сабагентам —
 `model_preference: primary|secondary` в `.md`-файлах. Для разделения моделей сабагентов
-нужен `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — launcher `start.sh` выставляет его сам.
+нужен `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — launcher `start.sh`/`start.cmd` выставляет его сам.
 
 ## AGENTS.md и долгосрочная память
 
@@ -123,8 +151,9 @@ kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и 
 
 Переносимая память в `memory/` (коммитится, не игнорируется) — память ЦЕЛЕВОГО проекта из
 `repo_path` задачи, а не история разработки фабрики. Каталог `memory/` создаётся В КОРНЕ
-РАЗВЁРТЫВАНИЯ (том, который передан `prepare_factory.sh`), базовое имя проекта при развёртывании =
-basename этого каталога; при `repo_path` в ПОДКАТАЛОГЕ корня развёртывания имя проекта = basename
+РАЗВЁРТЫВАНИЯ (том, который передан `prepare_factory.sh`, а в Windows — `prepare_factory.cmd`),
+базовое имя проекта при развёртывании = basename этого каталога; при `repo_path` в ПОДКАТАЛОГЕ
+корня развёртывания имя проекта = basename
 разрешённого `repo_path`. Файлы: `change-log.md` (журнал прогонов, одна запись на задачу,
 обязательный для новых записей признак `project: <имя проекта>`) и `summary.md` (сводка с
 объявлением `project:`/`repo_path:` сразу после канонического маркера; компакция журнала по порогу

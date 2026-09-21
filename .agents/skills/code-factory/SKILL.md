@@ -3,7 +3,7 @@ name: code-factory
 description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 type: flow
 ---
-<!-- code-factory-version: 12.6.0 -->
+<!-- code-factory-version: 12.7.0 -->
 
 # Code Factory
 
@@ -36,7 +36,8 @@ The portable long-term memory lives in the committable `memory/` directory (NOT 
 with the project). It is the memory of THE TARGET PROJECT named by the task's `repo_path` — one
 memory belongs to exactly one project (when the task targets the factory repository, that target
 project is the factory). The `memory/` directory itself is created IN THE DEPLOYMENT ROOT — the
-directory handed to `prepare_factory.sh` — and the base project name is the basename of that root.
+directory handed to `prepare_factory.sh` (on Windows to `prepare_factory.cmd`, which runs
+`prepare_factory.ps1` without Git Bash) — and the base project name is the basename of that root.
 When the task's `repo_path` points to a SUBDIRECTORY of the deployment root, the project name is the
 basename of the resolved `repo_path`, and the main agent creates the memory explicitly:
 `python3 .agents/skills/code-factory/scripts/memory_project.py init --repo <deployment root>
@@ -182,7 +183,8 @@ Rules that always apply:
   PROJECT named by the task's `repo_path` (one memory — one project; the factory repository is
   itself such a target project when the task points at it), never the memory of the factory's own
   development. The `memory/` directory is created IN THE DEPLOYMENT ROOT — the directory handed to
-  `prepare_factory.sh` — where the base project name is the basename of that root; if the task's
+  `prepare_factory.sh` (on Windows to `prepare_factory.cmd`, which runs `prepare_factory.ps1`
+  without Git Bash) — where the base project name is the basename of that root; if the task's
   `repo_path` points to a SUBDIRECTORY of it, the project name is the basename of the resolved
   `repo_path` and the main agent creates the memory explicitly. If `memory/` is missing on first
   contact with a project, create it with

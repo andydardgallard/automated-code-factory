@@ -87,8 +87,9 @@ questions via `AskUserQuestion` (never coding questions).
 (when the task targets this repository, the target project is the factory itself). Read
 `memory/summary.md` and the most recent `memory/change-log.md` entries so the project's history
 (decisions, fixes, past results) is not re-derived from git or scratch. `memory/` always lives IN
-THE DEPLOYMENT ROOT (the directory handed to `prepare_factory.sh`), where the base project name is
-the basename of that root — but when the task's `repo_path` points to a SUBDIRECTORY of the
+THE DEPLOYMENT ROOT (the directory handed to `prepare_factory.sh` — or to `prepare_factory.cmd` on
+Windows, which runs `prepare_factory.ps1` without Git Bash), where the base project name is the
+basename of that root — but when the task's `repo_path` points to a SUBDIRECTORY of the
 deployment root, the project name is the basename of the resolved `repo_path`. If `memory/` does not
 exist yet (first contact with the project), CREATE it first, then read it; name the project
 explicitly so both the journal and the summary call it the same way:
@@ -336,7 +337,8 @@ write `.code-factory/report_code_changes.md` (next to it) via
     project named by the task's `repo_path` (for a task targeting this repository the target
     project is the factory itself), never the factory's own development history. The `memory/`
     directory is always created IN THE DEPLOYMENT ROOT (the directory handed to
-    `prepare_factory.sh`), where the base project name is the basename of that root; when
+    `prepare_factory.sh`, or to `prepare_factory.cmd` on Windows — it runs `prepare_factory.ps1`
+    without Git Bash), where the base project name is the basename of that root; when
     `repo_path` points to a SUBDIRECTORY of the deployment root, the project name is the basename
     of the resolved `repo_path` and `init` is called with both `--repo <deployment root>` and
     `--project <that name>`. New entries carry

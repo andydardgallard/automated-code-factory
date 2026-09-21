@@ -1,5 +1,5 @@
-# Autonomous Code Factory v12.6.0
-<!-- code-factory-version: 12.6.0 -->
+# Autonomous Code Factory v12.7.0
+<!-- code-factory-version: 12.7.0 -->
 
 Автономная фабрика по написанию кода для **Kimi Code CLI** (0.34+, Node).
 
@@ -28,6 +28,7 @@ green-field) — стек определяется автоматически.
 - **Git-native**: `git init` при отсутствии репозитория, feature-ветка на задачу, `commit_exclude`
 - **Настраиваемые модели** для ролей — `model_preference` в `.md`-сабагентах + `config.toml`
 - **Запуск одним действием** — `prepare_factory.sh` создаёт launcher с настроенным окружением
+  (в Windows — `prepare_factory.cmd`, Git Bash не нужен)
 - **Автоотчёты**: `report.md` (история прогона) + `report_code_changes.md` (diff «было→стало»)
 
 ## Структура
@@ -41,6 +42,9 @@ green-field) — стек определяется автоматически.
 ├── AGENTS.md                        # контекст для агентов Kimi
 ├── CHANGELOG.md                     # история версий (SemVer)
 ├── prepare_factory.sh               # развернуть фабрику в проект (1 команда)
+├── prepare_factory.cmd              # то же для Windows без Git Bash (вызывает prepare_factory.ps1)
+├── prepare_factory.ps1              # Windows-деплойер: копирует фабрику, пишет start.cmd и start.sh
+├── start.cmd                        # launcher для Windows (в проекте его создаёт prepare_factory)
 ├── .example.task.yaml               # пример/шаблон бизнес-задачи
 ├── memory/                          # долгосрочная память целевого проекта (коммитится)
 └── .gitignore
@@ -73,6 +77,21 @@ cd /path/to/your-project
 
 # Полностью автономно:
 ./start.sh --auto
+```
+
+В Windows — то же самое без Git Bash (достаточно встроенного PowerShell):
+
+```bat
+rem 1. Подготовить проект (копирует фабрику, настраивает git/.gitignore и создаёт launcher-ы)
+prepare_factory.cmd C:\work\my-project
+
+rem 2. Запустить одним действием (launcher сам выставляет нужное окружение)
+cd C:\work\my-project
+start.cmd
+rem в чате: /skill:code-factory
+
+rem Полностью автономно:
+start.cmd --auto
 ```
 
 Или сразу с готовой задачей (без launcher-а):
@@ -112,8 +131,8 @@ acceptance_criteria:
 
 Модели задаются в `~/.kimi-code/config.toml` (`default_model` + `[secondary_model]`),
 сабагентам — `model_preference: primary|secondary` в `.md`-файлах. Для разделения моделей
-сабагентов нужен `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — launcher `start.sh`
-(генерируется `prepare_factory.sh`) выставляет его сам, поэтому вручную `export` не нужен.
+сабагентов нужен `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — launcher `start.sh` (Unix) или
+`start.cmd` (Windows) выставляет его сам, поэтому вручную `export` не нужен.
 
 Поддержка **Kimi (K3)** и **Qwen** — аддитивная: в поле `models` задачи можно указать модель
 Kimi или Qwen для любой роли, и фабрика маршрутизирует запросы на её API-эндпоинт с корректной
@@ -133,4 +152,4 @@ reviewer; secondary (быстрые) — coder, tester.
 ## Версия
 
 Версия — по [Semantic Versioning](https://semver.org/). История изменений — в
-[`CHANGELOG.md`](./CHANGELOG.md). Текущая версия: **12.6.0**.
+[`CHANGELOG.md`](./CHANGELOG.md). Текущая версия: **12.7.0**.

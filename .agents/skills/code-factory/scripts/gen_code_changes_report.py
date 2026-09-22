@@ -23,16 +23,41 @@ import subprocess
 
 MAX_BLOCK = 30  # max lines shown for a pure add/remove block
 
+# One path token of a `diff --git` header: either C-quoted ("a/my file.txt") or a plain run.
+PATH_TOKEN_RE = re.compile(r'"(?:[^"\\]|\\.)*"|\S+')
+
 
 def git_show_diff(repo: pathlib.Path, commit: str) -> str:
     """Return the diff of a commit with zero context (only changed lines)."""
     proc = subprocess.run(
         ["git", "show", commit, "--unified=0", "--format="],
-        cwd=repo, capture_output=True, text=True,
+        cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if proc.returncode != 0:
         raise RuntimeError(f"git show {commit} failed: {proc.stderr.strip()}")
     return proc.stdout
+
+
+def unquote_path(token: str) -> str:
+    """Decode one git path token: C-quoting (spaces, non-ASCII as octal bytes) is undone."""
+    if not token.startswith('"') or not token.endswith('"') or len(token) < 2:
+        return token
+    body = token[1:-1]
+    if "\\" not in body:
+        return body
+    # unicode_escape gives byte semantics for \ooo; latin-1 glues the bytes back together.
+    raw = body.encode("latin-1", "replace").decode("unicode_escape").encode("latin-1", "replace")
+    return raw.decode("utf-8", "replace")
+
+
+def header_paths(raw: str) -> tuple[str, str] | None:
+    """Return (old, new) repo-relative paths of a `diff --git ...` header, or None."""
+    tokens = PATH_TOKEN_RE.findall(raw[len("diff --git "):] if raw.startswith("diff --git ") else raw)
+    if len(tokens) != 2:
+        return None
+    old, new = (unquote_path(t) for t in tokens)
+    return (old[2:] if old.startswith("a/") else old,
+            new[2:] if new.startswith("b/") else new)
 
 
 def parse_diff(diff: str) -> list[dict]:
@@ -43,8 +68,8 @@ def parse_diff(diff: str) -> list[dict]:
         if raw.startswith("diff --git "):
             if cur:
                 files.append(cur)
-            m = re.match(r"diff --git a/(.*?) b/(.*)$", raw)
-            cur = {"path": m.group(2) if m else raw, "lines": []}
+            paths = header_paths(raw)
+            cur = {"path": paths[1] if paths else raw, "lines": []}
         elif raw.startswith("new file"):
             cur["status"] = "new"
         elif raw.startswith("deleted file"):
@@ -153,7 +178,7 @@ def main() -> None:
 
     branch = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=repo, capture_output=True, text=True,
+        cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
     ).stdout.strip() or "(detached)"
 
     diff = git_show_diff(repo, args.commit)

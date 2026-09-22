@@ -3,7 +3,7 @@ name: code-factory
 description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 type: flow
 ---
-<!-- code-factory-version: 12.7.0 -->
+<!-- code-factory-version: 12.8.0 -->
 
 # Code Factory
 
@@ -60,7 +60,7 @@ The factory may create any files, skills, scripts or plugins inside the project 
 
 ```mermaid
 flowchart TD
-    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, user_story (optional), mode (hitl/auto), task_type (implement default | review | refactor | security_audit), acceptance_criteria, commit_exclude, models, reference_docs, reference_skills. There is NO priority field — every task is HIGH by default. Save the parsed task to .code-factory/state/task.yaml. Read the long-term memory of the TARGET project from repo_path (memory/summary.md + recent memory/change-log.md entries) — the memory of the project, NOT of the factory; if memory/ is absent (first contact with the project), create it first via memory_project.py init --repo <deployment root> --project <basename of repo_path> (memory/ always lives in the deployment root; the name is pinned in the summary's project: declaration) — so that project's history is not re-derived. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
+    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, user_story (optional), mode (hitl/auto), task_type (implement default | review | refactor | security_audit), acceptance_criteria (each criterion may carry verify and derived), business_tests (scenario, config, expected_results), commit_exclude, models, reference_docs, reference_skills. There is NO priority field — every task is HIGH by default. Save the parsed task to .code-factory/state/task.yaml. Read the long-term memory of the TARGET project from repo_path (memory/summary.md + recent memory/change-log.md entries) — the memory of the project, NOT of the factory; if memory/ is absent (first contact with the project), create it first via memory_project.py init --repo <deployment root> --project <basename of repo_path> (memory/ always lives in the deployment root; the name is pinned in the summary's project: declaration) — so that project's history is not re-derived. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
     B --> C{Is the business task clear enough?}
     C -->|No| D[Ask the user business-level clarifying questions via AskUserQuestion. Ask ONLY business logic and expectations, never coding questions. Then update the parsed task.]
     D --> B
@@ -71,14 +71,14 @@ flowchart TD
     R1 --> E
     C2 -->|Yes| F[Create the development plan following references/planning-guide.md: DAG of tasks with dependencies and per-task verification commands; business tests are first-class tasks in the plan. If the task needs new in-project skills, scripts or plugins, include them in the plan. Save the plan to .code-factory/state/plan.md. For task_type=review, the plan is the review rework list produced by the code reviewer.]
     F --> TT{task_type?}
-    TT -->|review| CR0[Run factory-code-reviewer over the WHOLE codebase (or the task's listed files) following references/code-review.md. Write the verdict to .code-factory/logs/code-review.md. On request_changes the rework list becomes the plan.]
+    TT -->|review| CR0[Run factory-code-reviewer over the WHOLE codebase — in shards, never as one whole-repo context: repo_inventory.py shards with --max-lines 20000 → one reviewer subagent per shard in parallel → merge_findings.py prints the deterministic merged verdict (request_changes if any shard returned it or any critical finding exists). Write the verdict to .code-factory/logs/code-review.md and log models_used.reviewer. On request_changes the rework list becomes the plan.]
     CR0 --> CRV0{Review verdict?}
     CRV0 -->|approve| W
     CRV0 -->|request_changes| G
     TT -->|implement| G
     TT -->|refactor| RF[Refactor flow: baseline the existing test suite, plan structural-only tasks, implement with factory-refactorer, verify 100% of existing tests pass unchanged — any behavior change is a critical error and rolls back automatically. See references/refactoring.md.]
     RF --> L
-    TT -->|security_audit| SA[Security audit flow: detect artifact types, run only the relevant checks with factory-security-auditor (read-only), write reports + a generated fix-task file. No code change and no auto-fixing. See references/security-audit.md.]
+    TT -->|security_audit| SA[Security audit flow: detect artifact types, run only the relevant checks with factory-security-auditor (read-only) over the same shards — repo_inventory.py shards ≤20000 lines → parallel auditors → merge_findings.py — write reports + a generated fix-task file. No code change and no auto-fixing. See references/security-audit.md.]
     SA --> W
     G -->|hitl| H[Business test definition: ask the user via AskUserQuestion for 1 a concrete business scenario (user story), 2 which configs and input data to run, 3 expected business results. Only business-logic questions. Store answers in the plan.]
     H --> I[Present the full plan for approval: write it to the plan file and call EnterPlanMode then ExitPlanMode. Wait for approval or revision comments.]
@@ -86,9 +86,9 @@ flowchart TD
     J -->|Revise| F
     J -->|Approve| K
     G -->|auto| L[Make reasonable business assumptions from the task description. Record every assumption explicitly in the plan.]
-    L --> PF[Pre-flight: git check — if the project has no git repository, run git init. Working tree must be clean: auto-untrack build artifacts (target/, node_modules/, __pycache__/ etc.) and commit factory artifacts (AGENTS.md). Record git HEAD and git status in .code-factory/state/. Also verify model setup: for the new CLI check that KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 is exported (otherwise secondary-model split is INACTIVE); record a models_warning in pipeline.yaml if missing.]
+    L --> PF[Pre-flight: probe the real environment first with scripts/factory_preflight.py --out .code-factory/state/preflight.json — it reports the python command that actually works (python / python3 / py), git, bash/sh, the OS and KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL, and every command below is emitted for the capabilities found. Then the git check: if the project has no git repository, run git init. Working tree must be clean: auto-untrack build artifacts (target/, node_modules/, __pycache__/ etc.) and commit factory artifacts (AGENTS.md). Record git HEAD and git status in .code-factory/state/. Also verify model setup: for the new CLI check that KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 is exported (otherwise secondary-model split is INACTIVE); record a models_warning in pipeline.yaml if missing.]
     PF --> K[Backup the current state: copy every file that will be modified to .code-factory/backups/ preserving relative paths. Track created files in .code-factory/manifest.json. Write the checkpoint .code-factory/state/pipeline.yaml after every phase for resume.]
-    K --> M[Implement: launch factory-coder subagents for the plan tasks, respecting dependencies; independent tasks can run in parallel. Models are configured per subagent via model_preference in their agent .md files. Do NOT pass a concrete model name to the Agent tool — it is not supported. After each subagent returns, log the used model for each role to pipeline.yaml models_used. Each coder follows the plan and the project coding style in an isolated context. After every change, update manifest.json. Also create any new skills/scripts/plugins defined in the plan.]
+    K --> M[Implement: launch factory-coder subagents for the plan tasks, respecting dependencies; independent tasks can run in parallel. Every delegation uses the mandatory briefing template references/handoff-briefing.md. Models are passed by the main agent: pass model: explicitly to the Agent tool (supported by the CLI) following the task's models matrix — model_preference in the sub-agent .md files is only the FALLBACK for roles the task does not name. After each subagent returns, log the used model for each role to pipeline.yaml models_used. Each coder follows the plan and the project coding style in an isolated context. After every change, update manifest.json. Also create any new skills/scripts/plugins defined in the plan.]
     M --> N[Integration tests: write and run per-task tests for the changed modules following references/verification-strategy.md.]
     N --> O{Tests passed?}
     O -->|No| RR[Route the failure per references/error-routing.md: classify deterministically by regex, record the error context in .code-factory/logs/errors.md, and update retry counters in pipeline.yaml.]
@@ -101,13 +101,19 @@ flowchart TD
     RR2 -->|planner| P2
     RR2 -->|infrastructure| AI[Run the deterministic auto-fix command from error-routing.md, then re-run the failed verification.]
     AI --> M
-    RR2 -->|diagnostician| DG[Run the factory-diagnostician subagent: deep LLM analysis of the error output and attempt history. Write the report to .code-factory/logs/diagnostic.md.]
+    RR2 -->|diagnostician| DG[Run the factory-diagnostician subagent: deep LLM analysis of the error output and attempt history. Every finding must quote the archived evidence verbatim and the quotes are re-checked with scripts/verify_quotes.py; long logs are read through scripts/log_tail.py. Write the report to .code-factory/logs/diagnostic.md.]
     DG --> DR{Diagnostician recommendation}
     DR -->|coder| P
     DR -->|ba| P2
     DR -->|planner| P2
     DR -->|infrastructure| AI
-    DR -->|human| U2[Show the user the diagnosis and ask how to proceed.]
+    DR -->|human| ADV[Escalation step three: run the factory-advisor subagent (secondary model, budget advisor=1) with a self-contained briefing — the task, files by path, what was tried and why it failed, acceptance criteria. It returns the machine-read agreement (agree|disagree with the Diagnostician's route), root_cause, recommended_role, recommended_action and confidence, logged to .code-factory/logs/diagnostic.md.]
+    ADV --> ADR{Advisor recommendation}
+    ADR -->|coder| P
+    ADR -->|ba| P2
+    ADR -->|planner| P2
+    ADR -->|infrastructure| AI
+    ADR -->|human| U2[Show the user the diagnosis and ask how to proceed.]
     U2 --> V2{User decision}
     V2 -->|fix code| M
     V2 -->|revise plan| F
@@ -122,9 +128,9 @@ flowchart TD
     V -->|Revise the expectations| S
     T -->|Yes| CR[Code review: run the factory-code-reviewer over the change (normal task: the diff; review task: the whole repo) following references/code-review.md. Write the verdict to .code-factory/logs/code-review.md and log models_used.reviewer.]
     CR --> CRV{Review verdict?}
-    CRV -->|request_changes| RCR[Record the reviewer retry counter in pipeline.yaml. If the reviewer budget is not exhausted, pass the rework list to the coder and re-run integration + regression tests (business tests only if business logic changed), then re-review. If budget is exhausted: in hitl mode ask the user, in auto mode record the unresolved findings in report.md and continue.]
+    CRV -->|request_changes| RCR[Record the reviewer retry counter in pipeline.yaml. If the reviewer budget is not exhausted, pass the rework list to the coder and re-run integration + regression tests (business tests only if business logic changed), then re-review. If the budget is exhausted the canonical review-gate policy applies: in hitl mode STOP and ask the user, in auto mode ONLY a conditional pass is allowed — mark the affected criterion unverified_review in state/acceptance.md and record the unresolved findings in report.md, never silently. A full SUCCESS with open critical findings is impossible.]
     RCR --> M
-    CRV -->|approve| W[Acceptance check: verify every acceptance_criteria item against the actual results and document evidence for each. Save the verification to .code-factory/state/acceptance.md.]
+    CRV -->|approve| W[Acceptance check with scripts/verify_acceptance.py: --input criteria.json --output .code-factory/state/acceptance.md --repo the project --regression pass, fail or not-run --ledger --evidence-files the signed files. Criteria carrying a verify command are executed for real and their exit codes plus output excerpts land in acceptance.md; criteria without verify are labeled derived/unverified and are not proof of anything; a degraded baseline or STALE ledger evidence downgrades the verdict to DEGRADED; the exit code is 0 only for SUCCESS.]
     W --> X{All criteria met?}
     X -->|No| RR
     X -->|Yes| DOC{task_type: implement или refactor?}
@@ -142,7 +148,9 @@ Rules that always apply:
 
 - **Task format**: the task has `title`, `repo_path`, `description`, optional `user_story`,
   `mode`, `task_type` (`implement` | `review` | `refactor` | `security_audit`),
-  `acceptance_criteria`, `commit_exclude`, `models`, and the two optional knowledge fields
+  `acceptance_criteria` (each criterion may carry `verify: <command>` and `derived: true`),
+  `business_tests` (optional `scenario`/`config`/`expected_results` — the source of the Phase 8
+  business tests), `commit_exclude`, `models`, and the two optional knowledge fields
   `reference_docs` (list of `{path, skill}` documents to convert into skills) and
   `reference_skills` (names of existing skills to reuse). There is NO `priority` field — every
   task is HIGH by default and the factory never prioritizes.
@@ -160,12 +168,18 @@ Rules that always apply:
 - **Repo-mismatch gate**: if the task references files, symbols, configs or data that are absent
   in the repo, stop in hitl mode and ask the user for them (or record an assumption in auto
   mode). Never silently skip missing inputs.
-- **Escalation ladder**: deterministic regex → Diagnostician (LLM) → Human (HITL) → FAILED with
-  a full log. The factory never crashes silently.
-- **Retry budgets**: coder=1, ba=2, planner=2, diagnostician=1, infrastructure=3,
+- **Escalation ladder**: deterministic regex → Diagnostician (LLM) → Advisor (LLM, secondary
+  model family, budget 1) → Human (HITL) → FAILED with a full log. The Advisor is the second
+  opinion taken when the Diagnostician's fix did not work; it receives a self-contained briefing
+  per `references/handoff-briefing.md` and never edits files. The factory never crashes silently.
+- **Retry budgets**: coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3,
   reviewer=2. When a role's budget is exhausted, escalate to the Diagnostician (for test/code
-  failures) or, for the reviewer, to the human in hitl mode / a recorded unresolved-findings note
-  in auto mode — never loop forever.
+  failures), then to the Advisor (budget 1), and finally to the human (hitl) — never loop forever.
+  The reviewer is governed by the canonical gate policy:
+
+<!-- review-gate-policy: begin -->
+**Review-гейт (каноническая формулировка):** задача НЕ принимается, пока у ревьюера открыты замечания severity=critical (вердикт `request_changes` с open critical findings). Бюджет ревьюера = 2 итерации. Если бюджет исчерпан, а critical findings остались: в режиме hitl фабрика ОСТАНАВЛИВАЕТСЯ и спрашивает пользователя; в режиме auto допускается только conditional pass — соответствующий критерий помечается `unverified_review` в `.code-factory/state/acceptance.md`, а нерешённые findings попадают в `.code-factory/report.md` (раздел unresolved findings), никогда молча. Полный SUCCESS при открытых critical findings невозможен.
+<!-- review-gate-policy: end -->
 - **Checkpoint/resume**: after every phase write `.code-factory/state/pipeline.yaml` (current
   phase, retry counters, plan fingerprint). On restart, resume from the recorded phase.
 - **Report**: on finish (success OR FAILED) write `.code-factory/report.md` — one
@@ -218,10 +232,12 @@ Rules that always apply:
   override it with an explanation, never from scratch), then applied with `bump`/`set` + `sync`
   and committed in the SAME commit with a message prefixed `v<версия>: `. `review`/`security_audit`
   tasks do NOT change the version.
-- **Models**: models are configured per role in the agent files themselves —
-  `model_preference: primary|secondary` in each sub-agent `.md`, resolved against `config.toml`
-  `default_model`/`[secondary_model]`. Do NOT pass a concrete model name to the Agent tool (not
-  supported). Log the actual model used for each role to `.code-factory/state/pipeline.yaml`
+- **Models**: the main agent PASSES the model explicitly to the Agent tool (`model:` is supported
+  by the CLI) following the task's `models` matrix and the generator≠judge rule of
+  `references/providers.md` (coder/tester and reviewer/diagnostician/advisor come from different
+  model families). The per-role `model_preference: primary|secondary` in each sub-agent `.md` is
+  the FALLBACK, resolved against `config.toml` `default_model`/`[secondary_model]` for roles the
+  task does not name. Log the actual model used for each role to `.code-factory/state/pipeline.yaml`
   (`models_used`) and include it in `report.md` so the run is auditable. The main agent's own
   model is the session model (set via `kimi -m` / `/model`); record it too. The secondary model
   is only used when the env var `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is exported — during
@@ -235,3 +251,26 @@ Rules that always apply:
   (e.g. personal strategy code); stage everything EXCEPT the excluded patterns.
 - **Git-native**: if the project has no git repository, run `git init`. All changes flow through
   git (feature branch per task), with rollback to the base commit on failure.
+- **Think in Code (analyzer / tester / diagnostician)**: never read files or logs just to count,
+  search or summarize — write a small stdlib script and read only its result (ready-made
+  analyzers: `scripts/repo_stats.py` — sizes, entry points, imports). Long test/build output goes
+  to `.code-factory/logs/`; the context gets counters + tail only, via `scripts/log_tail.py`.
+- **Sharded whole-repo operations (review / security_audit)**: `scripts/repo_inventory.py shards
+  --max-lines 20000` → one reviewer/auditor subagent per shard in parallel → `scripts/
+  merge_findings.py` returns the deterministic merged verdict; an entire repository never enters
+  one context.
+- **Verified acceptance**: acceptance is machine-checked with `scripts/verify_acceptance.py` —
+  criteria carrying `verify` are executed for real and their exit codes land in
+  `state/acceptance.md`, criteria without `verify` are only `derived`/`unverified`; the exit code
+  is 0 only for SUCCESS, a degraded baseline or STALE ledger evidence gives DEGRADED, and SUCCESS
+  without regression proof is impossible.
+- **Evidence ledger + quotes**: test and review evidence is signed with the working-tree
+  fingerprint (`scripts/evidence_ledger.py`) and accepted only while FRESH; every quote a
+  diagnostician or a reviewer asserts is re-checked verbatim with `scripts/verify_quotes.py`.
+- **Environment pre-flight**: probe the real machine first with `scripts/factory_preflight.py
+  --out .code-factory/state/preflight.json` (the python command that actually works, git, bash/sh,
+  the OS, the secondary-model env) and emit every command for the capabilities actually found —
+  this closes the python3-vs-py mismatch on Windows.
+- **Handoff briefing**: every subagent delegation uses `references/handoff-briefing.md` (files by
+  path, never pasted content; read-only roles get the no-edits suffix), and every subagent returns
+  a concise structured result with artifact paths.

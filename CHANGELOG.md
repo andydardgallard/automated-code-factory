@@ -5,6 +5,60 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.8.0] — 2026-09-24
+
+### Added
+- **Shard-протокол whole-repo операций** (review, security_audit): `repo_inventory.py`
+  (детерминированный inventory + нарезка на шарды ≤ N тысяч строк, дефолт 20k) → параллельные
+  reviewer/auditor сабагенты по шардам → `merge_findings.py` (дедупликация по
+  (file,line,title), сортировка по severity, merged verdict). Закрывает переполнение контекста
+  на проектах 100k+ строк.
+- **Двухуровневый fingerprint проекта**: структурный (commit-стабильный) + контентный
+  (`git ls-files -s`, fallback — хэш дерева без git); AGENTS.md встраивает оба хэша, SKIP
+  регенерации — только при совпадении обоих; `check_factory_model.py` валидирует оба
+  (legacy однохэшевый формат — warning).
+- **Think in Code**: `log_tail.py` (счётчики + tail длинных логов), `repo_stats.py`
+  (sizes/entry-points/imports); правила для analyzer/tester/diagnostician — скрипт вместо
+  чтения ради подсчёта, длинный вывод тестов в `.code-factory/logs/`, в контекст — выжимка.
+- **Верифицируемая приёмка (anti-tautology)**: `verify_acceptance.py` — acceptance_criteria
+  поддерживают `verify: <команда>`; acceptance.md заполняется по факту запуска (exit code +
+  выдержка); критерии без verify помечаются derived/unverified; деградированный baseline →
+  вердикт DEGRADED.
+- **Evidence ledger FRESH/STALE**: `evidence_ledger.py` — результаты тестов/приёмки подписаны
+  fingerprint'ом затронутых файлов; ревьюер и приёмка принимают evidence только FRESH.
+- **Антигаллюцинационные цитаты**: `verify_quotes.py` — цитаты Diagnostician/ревьюера/Advisor
+  проверяются как точные подстроки источника; несовпадение → «недоверенный» + fallback на
+  полный лог.
+- **Сабагент `factory-advisor`** (secondary, no-edits): эскалация после Diagnostician;
+  лестница regex → Diagnostician → Advisor → Human → FAILED, бюджет advisor=1 per root cause;
+  машиночитаемое поле `agreement: agree|disagree`.
+- **Handoff-шаблон брифинга** `references/handoff-briefing.md` (Task/Context/Relevant files/
+  Current state/What was tried/Decisions/Acceptance criteria/Constraints) + контракт concise
+  output; файлы — путями, не вставками.
+- **Инфраструктурные скрипты**: `factory_preflight.py` (проба окружения → capabilities),
+  `action_gate.py` (детерминированный гейт деструктивных действий: HARD_DENY/CONFIRM/ALLOW +
+  журнал), `task_graph.py` (дисковый граф state/tasks/*.json, валидация циклов, sha256).
+- **Память**: enforced owner = basename(repo_path) в `memory_project.py check`; команды
+  `rename` (миграция владельца), `compact-check` (сохранность critical/follow_up при
+  компакции), `validate-fix-tasks` (валидатор схемы fix-tasks.yaml).
+- **Model diversity generator≠judge** в providers.md + «trajectory is the truth» в чек-листе
+  ревьюера; модель передаётся в Agent tool явно по матрице `models` задачи (правило «не
+  передавать» устарело).
+
+### Changed
+- **Единый канонический review-гейт** в 5 документах (references/code-review.md,
+  code-factory.md, SKILL.md, AGENTS.md, .agents/README.md): приёмка запрещена при открытых
+  critical findings; auto-exhaustion = conditional pass с `unverified_review` в acceptance.md
+  и unresolved findings в report.md; консистентность проверяется `test_review_gate.py`.
+
+### Fixed
+- nit-фиксы code-review 2026-09-23: encoding="utf-8" в gen_code_changes_report.py (+парсинг
+  quoted/octal путей), newline="" в version_manager.py, list.index при дублях в
+  validate_documentation.py, git init fallback для git<2.28 и точное сравнение паттернов
+  .gitignore в prepare_factory.sh/.ps1, prepare_factory.sh в IGNORE_TOP_LEVEL fingerprint,
+  нечитаемые файлы не рушат repo_inventory.py, дерево скриптов в .agents/README.md,
+  дрейфы verification-strategy §6.1 и reference-docs record.
+
 ## [12.7.0] — 2026-09-21
 
 ### Added

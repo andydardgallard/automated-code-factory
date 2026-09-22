@@ -3,7 +3,7 @@
 Goal: on ANY test/build failure, route the fix to the right role deterministically (~90% of
 cases, zero LLM tokens), and only escalate to the Diagnostician (1 LLM call) for the rest.
 The factory NEVER crashes silently — unknown errors always fall through to the Diagnostician,
-then Human, then FAILED with a full log.
+then the Advisor (a second opinion, §4.1), then Human, then FAILED with a full log.
 
 ## 1. Classification (deterministic, regex-based)
 
@@ -88,11 +88,15 @@ After classification, decide who retries:
 | BA | 2 |
 | PLANNER | 2 |
 | DIAGNOSTICIAN | 1 |
+| ADVISOR | 1 |
 | INFRASTRUCTURE | 3 |
 | HUMAN | 0 (cannot auto-retry) |
 
-- Each retry increments the per-role counter in `.code-factory/state/pipeline.yaml`.
-- When a role's budget is exhausted → escalate to DIAGNOSTICIAN (append the attempt history).
+- Each retry increments the per-role counter in `.code-factory/state/pipeline.yaml`
+  (`retry_counters.advisor` for the Advisor, §4.1).
+- When a role's budget is exhausted → escalate to DIAGNOSTICIAN (append the attempt history);
+  when the DIAGNOSTICIAN budget is exhausted and the fix still fails → escalate to the ADVISOR
+  (§4.1), then to HUMAN.
 - DIAGNOSTICIAN, after its analysis, RESETS the recommended role's counter to 0 and re-runs it
   with the diagnostic context (do NOT repeat the failed approach).
 
@@ -120,10 +124,64 @@ Before calling the LLM, run these cheap checks and include their results in the 
 
 This is the same trick the Python factory used; it makes the Diagnostician ~10x more reliable.
 
+## 4.1 Advisor (second opinion, no edits)
+
+When the DIAGNOSTICIAN has already spent its budget (1) and the recommended fix still fails — or
+when the Diagnostician's own confidence is low / its recommendation contradicts the observed
+behaviour — escalate once to the **Advisor**: a second, independent diagnosis before the user is
+disturbed and before the run is allowed to fail.
+
+- **Contrasting model family (P1.13).** The Advisor runs on a different model family from the one
+  that produced the code/previous diagnosis (e.g. coder/diagnostician on Kimi K3 → advisor on
+  `deepseek-flash`, and vice versa; see `references/providers.md` §5.1). A second opinion from the
+  same family reproduces the same blind spots and is worth nothing.
+- **No edits.** The Advisor is read-only: it never changes a file, never runs the fix and never
+  re-runs the test suite. Its only output is an assessment.
+- **Self-contained briefing** — the main agent hands it everything, because the Advisor has no run
+  context of its own:
+  1. the FULL error output (the archived log path plus the tail, `log_tail.py`), not a prose
+     summary;
+  2. the task goal and acceptance criteria that the run must satisfy;
+  3. the attempt history — which roles ran, what each tried, what happened (from
+     `.code-factory/logs/errors.md` and `diagnostic.md`);
+  4. the Diagnostician's report as-is (`root_cause`, `recommended_role`, `recommended_action`,
+     `confidence`), explicitly marked as a *claim to be checked*, not as a fact;
+  5. the current diff / manifest, so it sees exactly what was changed.
+- **Its verdict**: the machine-read `agreement` field (`agree | disagree` with the Diagnostician's
+  route — `agree` = the same route still holds, `disagree` = the evidence points to another one;
+  never implicit in the prose), `root_cause` (its own), `recommended_role`,
+  `recommended_action`, `confidence`, plus a verbatim quote of the log fragment its reasoning rests
+  on (the same quote discipline as `references/code-review.md` §2.1 — `verify_quotes.py` re-checks
+  it). The main agent writes it to `.code-factory/logs/diagnostic.md` (appended, marked `advisor`)
+  and then:
+  - `agreement: agree` → run the recommended role once more with the combined context;
+  - `agreement: disagree` → do NOT retry blindly: route to HUMAN (HITL) with both diagnoses side by
+    side, or, in auto mode, stop the fix loop and record the disagreement in `report.md`.
+- **Budget: advisor = 1 per root cause** (one escalation, never a loop of opinions), counted in
+  `retry_counters.advisor` in `.code-factory/state/pipeline.yaml`.
+
 ## 5. Escalation ladder (never silent crash)
 
-1. Deterministic regex → ~90% of errors, 0 tokens.
-2. Diagnostician (LLM) → remaining ~10%, 1 LLM call.
-3. HUMAN (HITL) → if Diagnostician recommends human, ask the user.
-4. FAILED → only when ALL budgets are exhausted; produce a full report in
-   `.code-factory/logs/errors.md` with the transition history.
+```
+failure
+   │
+   ▼
+1. Deterministic regex  ──────────────► ~90% of errors, 0 tokens
+   │ (no pattern matched / role budget exhausted)
+   ▼
+2. Diagnostician (LLM, factory-diagnostician) ──► 1 LLM call, budget=1
+   │ (fix still failing, or low confidence / contradictory recommendation)
+   ▼
+3. Advisor (second opinion, contrasting model family, no edits) ──► budget=1
+   │ (agreement: agree → retry the recommended role once; disagree → next rung)
+   ▼
+4. HUMAN (HITL) ──► ask the user, show both diagnoses
+   │
+   ▼
+5. FAILED ──► only when ALL budgets are exhausted; full report in
+              .code-factory/logs/errors.md with the transition history
+```
+
+Budget guards: rung 1 costs nothing, rung 2 has budget 1, rung 3 has budget 1 (§4.1), rung 4 cannot
+auto-retry, and rung 5 is reachable only when every budget above it is spent — so a stuck run
+cannot loop, it escalates and finally fails loudly with a full log.

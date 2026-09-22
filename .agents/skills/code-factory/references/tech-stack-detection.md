@@ -78,25 +78,47 @@ structure from scratch.
 
 ### 7.1 Fingerprint gate (deterministic, zero LLM)
 
-Compute the structural fingerprint of the project's working tree:
+Compute BOTH levels of the project fingerprint:
 
 ```bash
-python3 .agents/skills/code-factory/scripts/project_fingerprint.py --repo <project-root>
+python .agents/skills/code-factory/scripts/project_fingerprint.py --repo <project-root> --all
+# structural: <structural-64-hex>
+# content:    <content-64-hex>
 ```
 
-The fingerprint is a SHA-256 over the project's structural working-tree signals: stack
-manifests, CI configs, README, and the sorted top-level directory listing. The factory's own
-artifacts (`AGENTS.md`, `memory/`, `task.yaml`, the launcher `start.sh`/`start.cmd` and the Windows
-deployer `prepare_factory.cmd`/`prepare_factory.ps1`) are excluded from the signals, so
-committing them does not shift the fingerprint (a git tree SHA would, which would make the
-"skip when unchanged" branch unreachable). It is embedded in AGENTS.md on the first line
-(`<!-- code-factory-fingerprint: <sha> -->`), so it travels with the commit and survives a
-clone.
+`--content` prints only the content level, no flag prints only the structural one; `--all` prints
+both (`structural: …` / `content: …`). The two levels are independent, and together they decide
+whether re-analysis + AGENTS.md regeneration are skipped:
 
-- **Match** (AGENTS.md exists AND its embedded fingerprint == the recomputed fingerprint) →
-  the project is unchanged: SKIP the analyzer's structural re-analysis and the AGENTS.md
-  regeneration. Proceed directly to the repo-mismatch gate.
-- **Mismatch / no AGENTS.md** → regenerate the model below.
+- **structural** — SHA-256 over the working-tree structural signals: stack manifests, CI configs,
+  README and the sorted top-level directory listing. It is commit-stable, but **blind to an edit
+  inside an existing file deeper than the signal list** (e.g. `src/a/b/c.py` changes while no root
+  manifest, CI config, README or top-level entry does).
+- **content** — SHA-256 over the tracked content, read from the git index (`git ls-files -s`:
+  `mode SHA path` of every non-excluded entry, sorted), so ANY modification of a tracked file
+  changes it, including changes level 1 cannot see. Without a usable git repository/index it falls
+  back to hashing the working-tree contents (which also catches uncommitted edits); on the git path
+  a modification that was neither staged nor committed is out of scope.
+
+Both levels exclude the factory's own artifacts (`AGENTS.md`, `memory/`, `task.yaml`, the launchers
+`start.sh`/`start.cmd` and the deployers `prepare_factory.sh`/`prepare_factory.cmd`/
+`prepare_factory.ps1`), so committing them does not shift either hash (a git tree SHA would, which
+would make the "skip when unchanged" branch unreachable). Both hashes are embedded in AGENTS.md on
+the first line, so they travel with the commit and survive a clone:
+
+```
+<!-- code-factory-fingerprint: <structural-64-hex> content: <content-64-hex> -->
+```
+
+- **Match** (AGENTS.md exists AND **both** embedded hashes == the recomputed ones) → the project
+  is unchanged: SKIP the analyzer's structural re-analysis and the AGENTS.md regeneration. Proceed
+  directly to the repo-mismatch gate. A content-only change (invisible to level 1) still triggers a
+  regeneration — that is exactly what the second level is for.
+- **Either hash missing or mismatching / no AGENTS.md** → regenerate the model below.
+- A **legacy single-hash line** (`<!-- code-factory-fingerprint: <64-hex> -->`, no `content:` part)
+  is a **warning**, not a supported state: such a model cannot see content-only changes, so
+  AGENTS.md is regenerated with both hashes. `check_factory_model.py` (§7.4) reports it as a
+  warning while it validates both hashes.
 
 ### 7.2 Generate AGENTS.md (8 sections)
 
@@ -111,19 +133,22 @@ Rules:
 - **Existing AGENTS.md is OVERWRITTEN entirely** — the factory owns the file and it always
   contains exactly these 8 sections. Hand-written project notes belong in `memory/summary.md`,
   not in AGENTS.md.
-- Put the fingerprint comment on the first line: `<!-- code-factory-fingerprint: <sha> -->`,
-  then a `# <Project Name>` title line, then the 8 sections.
+- Put the fingerprint comment with BOTH hashes on the first line
+  (`<!-- code-factory-fingerprint: <structural-64-hex> content: <content-64-hex> -->`), then a
+  `# <Project Name>` title line, then the 8 sections.
 - There is **no init step** in the Scout flow. The factory's own AGENTS.md is already complete;
   the Kimi init slash command would overwrite it and erase the 8 sections, so it is never run.
 
 ### 7.3 Two update points
 
+Both points compare BOTH hashes (`--all`) — the SKIP branch requires both to match:
+
 1. **Start of task (Phase 1)** — catch EXTERNAL changes to the project (edited outside the
-   factory): compute the fingerprint; if it matches the embedded one, skip the regeneration;
-   otherwise regenerate.
+   factory, at any depth): compute both fingerprints; only if BOTH embedded hashes match, skip the
+   regeneration; otherwise regenerate (a content-only difference is enough to regenerate).
 2. **End of task (Phase 9)** — reflect the factory's OWN changes: after implementation +
-   tests, recompute the fingerprint; if the structure/stack/entry points changed, regenerate
-   AGENTS.md and commit it (respecting `commit_exclude`).
+   tests, recompute both fingerprints; if the structure/stack/entry points OR the tracked content
+   changed, regenerate AGENTS.md and commit it (respecting `commit_exclude`).
 
 ### 7.4 Read the model, don't rebuild it
 
@@ -146,7 +171,8 @@ Verify the model with the deterministic checker:
 python3 .agents/skills/code-factory/scripts/check_factory_model.py --repo <project-root>
 ```
 
-It asserts: exactly 8 sections, fingerprint matches, memory format correct. Run it in
+It asserts: exactly 8 sections, BOTH fingerprints (structural + content) matching, memory format
+correct — and it warns (does not fail) on a legacy single-hash fingerprint line. Run it in
 `final_integration` (and use `--memory-only` for the factory's own root, whose AGENTS.md is a
 hand-authored manual).
 

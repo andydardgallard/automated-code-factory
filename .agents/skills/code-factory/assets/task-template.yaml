@@ -46,13 +46,22 @@ mode: hitl
 task_type: implement
 
 # What success looks like — in business terms, things you will personally check.
+# У критерия может быть МАШИННАЯ проверка (опционально):
+#   criterion — формулировка на бизнес-языке (обязательная часть)
+#   verify    — команда, которая РЕАЛЬНО выполняется; её exit code и выдержка вывода
+#               попадают в .code-factory/state/acceptance.md
+#   derived   — true помечает критерий, выведенный из других артефактов (без verify):
+#               доказательством он не считается и помечается derived/unverified
 acceptance_criteria:
   - "Criterion 1, e.g.: The strategy generates at least 5 LONG/SHORT signals for CNY."
-  - "Criterion 2, e.g.: Behavior for the Si instrument did not change."
+  - criterion: "Criterion 2, e.g.: Behavior for the Si instrument did not change."
+    verify: "python -m pytest -q tests/test_si_regression.py"
+  - criterion: "Criterion 3, e.g.: The report lists the CNY instrument."
+    derived: true
 
 # Optional: business test scenarios. If omitted, the factory will ask you about
 # them at the planning stage (in hitl mode).
-# business_tests:
+# business_tests:                    # сценарий, конфиги и ожидаемые бизнес-результаты
 #   - scenario: "Run the strategy on the CNY data file"
 #     config: "path/to/config.toml"
 #     expected_results: "At least 5 LONG/SHORT signals and a positive equity curve"

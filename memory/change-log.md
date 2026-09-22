@@ -58,7 +58,7 @@ severity=critical или follow_up=true сохраняются обязател�
 
 ## 2026-09-01T01:01:45+0300 — AGENTS.md как единый источник правды + переносимая память
 title: AGENTS.md как единый источник правды + переносимая долгосрочная память
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-01T01:01:45+0300
 branch: main
 commit: a53ef72ac36825fb3a6a1a34fc63781d1c2de7f6
@@ -73,7 +73,7 @@ models_used: analyzer=primary; planner=primary; coder=primary; tester=primary; r
 
 ## 2026-09-08T14:07:38+0300 — Фабрика v12.5.0: documenter + память долга + база навыков + версионирование
 title: Фабрика v12.5.0: documenter + память долга + база навыков + версионирование
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-08T14:07:38+0300
 branch: feature/factory-v12.5.0
 commit: 123acf33561298379a2c374fcb2fed27967a9df6
@@ -90,7 +90,7 @@ unfinished: нет незавершённых элементов
 
 ## 2026-09-08T21:09:33+03:00 — Аудит системы безопасности
 title: Аудит системы безопасности
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-08T21:09:33+03:00
 branch: main
 commit: (none)
@@ -107,7 +107,7 @@ unfinished: нет незавершённых элементов
 
 ## 2026-09-08T21:28:42+03:00 — Закрыть возможность утечки API-ключей через git
 title: Закрыть возможность утечки API-ключей через git
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-08T21:28:42+03:00
 branch: main
 commit: 5a966be
@@ -124,7 +124,7 @@ unfinished: нет незавершённых элементов
 
 ## 2026-09-21T19:40:00+03:00 — Память фабрики принадлежит целевому проекту
 title: Память фабрики принадлежит целевому проекту, а не самой фабрике
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-21T19:40:00+03:00
 branch: feature/project-scoped-memory
 commit: (none)
@@ -162,7 +162,7 @@ unfinished:
 ## 2026-09-21T20:55:17+03:00 — Развёртывание и запуск фабрики в Windows
 
 title: Развёртывание и запуск фабрики в Windows (скрипты prepare_factory и start)
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-21T20:55:17+03:00
 branch: feature/windows-launch
 commit: 37a683e
@@ -214,5 +214,95 @@ unfinished:
     follow_up: false
   - item: предсуществующий дрейф документации — в дереве скриптов .agents/README.md нет memory_project.py и test_memory_project.py; AGENTS.md называет task.yaml, тогда как в репозитории .example.task.yaml
     reason: предсуществующее (то же на базовом коммите), вне задачи про Windows-скрипты
+    severity: info
+    follow_up: false
+
+## 2026-09-22T20:27:04+03:00 — Ревью фабрики по философии + план усиления (task-improvements.yaml)
+title: Проверка фабрики на соблюдение философии и план её усиления по материалам
+project: repo
+timestamp: 2026-09-22T20:27:04+03:00
+branch: feature/philosophy-review
+commit: (none)
+task_type: review
+goal: независимое code review устройства фабрики по 4 принципам философии + сравнение с SoL-Pi/context-mode/gstack/opencode/learn-claude-code/paseo/Kaggle-курсом; результат — готовая implement-задача task-improvements.yaml
+changed_files: memory/change-log.md
+created_files: task-improvements.yaml (не закоммичен по решению пользователя); .code-factory/{state/task.yaml,state/pipeline.yaml,state/acceptance.md,logs/baseline.md,logs/analysis-factory.md,logs/research-solpi-contextmode-gstack.md,logs/research-opencode-lcc-paseo.md,logs/research-kaggle.md,logs/code-review.md,report.md,report_code_changes.md}
+results: integration=SKIP; regression=PASS (8/8 self-тестов baseline); business=PASS (план и состав приоритетов утверждены пользователем); review=request_changes (verdict ревьюера по всему репо; rework-лист перенесён в task-improvements.yaml P1.15 — специфика review-задачи)
+decisions: цель ревью — ./repo (уточнено у пользователя, две слипшиеся формулировки task.yaml слиты); skill-base в этом прогоне не создавалась — проекты изучены онлайн по README/докам, ./materials как тексты; критические находки аудита верифицированы независимым ревьюером (2a противоречие review-гейта в 5 документах; 2b слепота fingerprint глубже 1 уровня — доказано эмпирически); LSP/MCP/демоны/своя компакция/worktree сознательно отклонены (даже opencode отключил LSP); матрица моделей K3+deepseek-flash подтверждена с поправкой generator≠judge (advisor=deepseek-flash); версия не меняется (review → none); task-improvements.yaml и materials/ не коммитятся по решению пользователя
+assumptions: opencode-ai/opencode заархивирован (переехал в charmbracelet/crush) — изучены README архива и доки нового anomalyco/opencode; PDF в materials не читались (есть транскрипты); имя проекта в памяти оставлено automated_vode_factory_v_12.15.1 несмотря на выявленную ложность (исправление — P1.14 будущего прогона, чтобы не смешивать конвенции вне задачи)
+models_used: main=primary; analyzer=primary; planner=main; coder=unused; tester=unused; reviewer=primary; diagnostician=unused; documenter=unused; research explore×3=primary
+factory_version: 12.7.0
+unfinished:
+  - item: реализовать план усиления task-improvements.yaml (P0×7 — шарды, двухуровневый fingerprint, Think in Code, унификация review-гейта, верифицируемая приёмка, verify_quotes, handoff-шаблоны; P1×8; P2 backlog)
+    reason: главный результат прогона; файл лежит некоммиченным в ./repo (по решению пользователя)
+    severity: critical
+    follow_up: true
+  - item: вердикт код-ревьюера request_changes (1 critical + 1 major + 16 minor/nit) не исправлен в коде, а перенесён в план
+    reason: специфика task_type=review — замечания становятся планом (task-improvements.yaml P0.4, P1.14, P1.15)
+    severity: warning
+    follow_up: true
+  - item: декларация project: automated_vode_factory_v_12.15.1 в памяти ложна (опечатка, ≠ basename), но проходит оба валидатора
+    reason: конвенция project=basename(repo_path) машинно не enforced; исправление включено в P1.14
+    severity: warning
+    follow_up: true
+  - item: ~/.kimi-code/config.toml исправлен вне репозитория (удалён secondary_model.force, конфликтовавший с models-пулом)
+    reason: блокировал запуск любых сабагентов; исправлено по согласию пользователя; бэкап config.toml.bak-factory-20260923
+    severity: info
+    follow_up: false
+
+## 2026-09-24T00:00:00+03:00 — Усиление фабрики v12.8.0: шарды, fingerprint, Think in Code, верифицируемая приёмка, антигаллюцинационные гейты
+title: Усиление фабрики: шардирование whole-repo операций, двухуровневый fingerprint, Think in Code, верифицируемая приёмка и антигаллюцинационные гейты
+project: repo
+timestamp: 2026-09-24T00:00:00+03:00
+branch: feature/factory-hardening-2026-09-24
+commit: cf0f4e1
+task_type: implement
+goal: реализовать план усиления из task-improvements.yaml: P0×7 (шарды, двухуровневый fingerprint, Think in Code, единый review-гейт, верифицируемая приёмка, verify_quotes, handoff-шаблон), P1×8, P2 — backlog
+changed_files: 29 файлов (scripts: project_fingerprint, check_factory_model, memory_project, gen_code_changes_report, version_manager, validate_documentation + тесты; references: code-review, security-audit, providers, verification-strategy, error-routing, tech-stack-detection, reference-docs; sub-agents: analyzer, tester, diagnostician, code-reviewer, security-auditor; code-factory.md, SKILL.md, AGENTS.md, .agents/README.md, task-template.yaml, prepare_factory.sh/.ps1, CHANGELOG, VERSION, memory/*)
+created_files: scripts/{repo_inventory,merge_findings,log_tail,repo_stats,verify_acceptance,verify_quotes,evidence_ledger,factory_preflight,action_gate,task_graph}.py + 11 test_*.py; sub-agents/advisor.md; references/handoff-briefing.md; skill-base/skills/kaggle-agents-course/ (из ../materials, 68 файлов)
+results: integration=PASS (19/19 test_*.py); regression=PASS (8/8 существующих без ослабления + 11 новых; check_factory_model --memory-only PASS); business=PASS (шарды: 45k строк → 3 шарда, merge с дедупликацией; fingerprint: повтор эксперимента 2026-09-23 — structural неизменен, content сдвинут; приёмка SUCCESS 11 MET + 1 derived); review=approve (итерация 2/2: 2 major закрыты и проверены эмпирически, цитаты ревьюера verify_quotes 4/4 VERIFIED)
+decisions: владелец памяти мигрирован automated_vode_factory_v_12.15.1 → repo (rename, подтверждено пользователем); строгий вариант верифицируемой приёмки; skill kaggle-agents-course создан на k3 и оставлен (валиден, rerun на flash без выгоды — решение пользователя); устаревшее правило «не передавать model в Agent tool» исправлено — CLI поддерживает явный model:, secondary-роли запускались на deepseek-flash по матрице; nit fingerprint (index-based) оставлен задокументированным решением; start.cmd pause-finding отклонён как неточный; версия 12.7.0 → 12.8.0 (minor, новый сабагент advisor, валидировано ревьюером)
+assumptions: канонический блок review-гейта вставлен русским текстом во все 5 документов включая англоязычные (тест требует байт-идентичности); advisor из P0.7 покрывается его созданием в P1.8
+models_used: main=primary; analyzer=primary; planner=main; coder=deepseek-flash ×12; tester=unused (тесты писали кодеры); reviewer=primary; diagnostician=unused; advisor=unused; documenter=deepseek-flash; skill_manager=primary (расход с матрицей, зафиксирован)
+factory_version: 12.8.0
+unfinished:
+  - item: P2 backlog — единый rulebook references/factory-rules.md + consistency-checker (B5)
+    reason: осознанно не реализовано (P2 задачи); кандидат на следующий прогон
+    severity: info
+    follow_up: true
+  - item: P2 backlog — вынос доменных regex из error-routing в project-learned patterns (B3)
+    reason: осознанно не реализовано (P2 задачи)
+    severity: info
+    follow_up: true
+  - item: P2 backlog — evaluate-your-evaluator: golden-set diff'ов для калибровки ревьюера
+    reason: осознанно не реализовано (P2 задачи)
+    severity: info
+    follow_up: true
+  - item: P2 backlog — вакцинация: баг после приёмки → регрессионный тест до фикса (норма)
+    reason: осознанно не реализовано (P2 задачи)
+    severity: info
+    follow_up: true
+  - item: P2 backlog — provenance/confidence метки (verified/inferred) в памяти
+    reason: осознанно не реализовано (P2 задачи)
+    severity: info
+    follow_up: true
+  - item: P2 backlog — сквозной run_id во всех артефактах .code-factory/
+    reason: осознанно не реализовано (P2 задачи)
+    severity: info
+    follow_up: true
+  - item: P2 backlog — WIP-checkpoints со структурированным телом; committee при двойном rejection плана; FTS5-индекс memory/ и кодовой базы (stdlib sqlite3)
+    reason: осознанно не реализовано (P2 задачи)
+    severity: info
+    follow_up: true
+  - item: контентный fingerprint читает git-индекс — unstaged-правки невидимы (nit ревьюера)
+    reason: осознанное задокументированное решение; fallback покрывает non-git проекты
+    severity: info
+    follow_up: false
+  - item: action_gate.py — uncaught OSError при незаписываемом журнале (nit ревьюера)
+    reason: fails closed, не опасно; некритично
+    severity: info
+    follow_up: false
+  - item: память корня развёртывания (../memory) всё ещё декларирует automated_vode_factory_v_12.15.1
+    reason: память repo (целевого проекта) мигрирована; корневая память — отдельный deployment, вне scope задачи
     severity: info
     follow_up: false

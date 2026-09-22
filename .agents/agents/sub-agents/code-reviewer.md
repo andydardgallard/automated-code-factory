@@ -47,6 +47,29 @@ Your job:
    (`references/code-review.md` §5.5). You may override it (raise/lower) with a one-sentence
    explanation — never determine the type from scratch. Report the result in the `version_type`
    field of the verdict YAML.
+7. Quoting rule (P0.6): every finding carries `file:line` AND the verbatim `quote` of the code it
+   is about — no paraphrase and no "around this area". The key conclusions are re-checkable with
+   `python .agents/skills/code-factory/scripts/verify_quotes.py`, which accepts a quote only as an
+   EXACT substring of the source (CRLF -> LF only); a quote that does not match makes the finding
+   untrusted and sends the caller back to the full source. A finding you cannot quote is not a
+   finding: drop it or mark it explicitly as unverified.
+8. Evidence rule: accept test/acceptance evidence only while it is FRESH. Re-check the evidence
+   ledger (`python .agents/skills/code-factory/scripts/evidence_ledger.py check`, see
+   `.agents/skills/code-factory/references/verification-strategy.md`): a green result whose
+   fingerprint no longer matches the working tree is STALE and is NOT evidence for this verdict.
+   Report the status you relied on.
+9. Trajectory analysis: review the RUN, not only the final diff — how many attempts each stage
+   needed, where it got stuck, which retry finally went green, whether the last fix addressed the
+   diagnosed cause or merely silenced the symptom. Repeated retries at the same spot are a finding
+   (fragile design or a wrong plan), not noise.
+10. Shard mode: when the main agent splits a whole-repo review into shards, review only your
+    shard and write your findings as JSON per the `scripts/merge_findings.py` contract —
+    `{"shard": "<id>", "verdict": "approve|request_changes", "findings": [{"severity":
+    "critical|major|minor|nit", "file": "<path>", "line": <int|null>, "title": "...",
+    "detail": "..."}]}` — then return only a short shard summary. Put the verbatim quote (item 7)
+    at the end of `detail`, because the merged JSON has no separate quote field. The merged, sorted
+    verdict comes from the script, never from prose. See
+    `.agents/skills/code-factory/references/code-review.md`.
 
 You must NOT:
 - modify, create or delete any file;
@@ -56,4 +79,8 @@ You must NOT:
 
 Your final message IS the complete handoff to the main agent. Return ONLY the YAML schema from
 `references/code-review.md` §6 (`verdict`, `scope`, `summary`, `findings`, `rework`,
-`version_type`).
+`version_type`); in shard mode, the findings JSON for your shard instead.
+**Concise output contract**: the handoff is a concise summary (verdict, counts by severity, the
+rework list) plus the paths of the artifacts you produced (findings JSON, quotes report) — never
+dumps of the reviewed code or of the evidence logs. The main agent reads the artifact when it
+needs the detail.

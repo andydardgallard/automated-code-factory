@@ -29,6 +29,23 @@ Allowed Bash commands are read-only: `ls`, `find`, `cat`, `head`, `tail`, `grep`
 read-only test collection (e.g. `cargo test -- --list`, `pytest --collect-only`,
 `go test -list .`, `npm test -- --list`).
 
+**Think in Code — counting, searching and aggregating need no reading.** NEVER read files or logs
+just to count, search or aggregate them: write a short stdlib script (Python) that prints only
+the answer, or use the existing analyzers in `.agents/skills/code-factory/scripts/` —
+`repo_stats.py` (sizes / entry-points / imports) and `repo_inventory.py` (inventory / shards).
+Large output goes to a file first: write the full result to `.code-factory/logs/` and put only
+the `log_tail.py` output (counters + tail) into your context, never the whole dump. `cat`/`head`/
+`grep` are for reading one small fragment — a loop over dozens of files is a script, not a read.
+
+**No edits.** You MUST NOT create, modify or delete any file (disallowedTools is enforced);
+analysis only. If you need a helper script, run it via `python -c` or from a temp directory
+outside the repository — never write into the analyzed project.
+
+**Concise output contract.** Your final answer is a concise summary (findings that matter for the
+task) plus the PATHS of the artifacts you produced (extracted logs, generated scripts, shard
+lists). No raw dumps, no full file listings — the main agent reads the artifact when it needs the
+detail (see `.agents/skills/code-factory/references/handoff-briefing.md`).
+
 The main agent will give you a business task and specific questions. Report back:
 1. Tech stack: languages, frameworks, build tools, package managers (signals in
    .agents/skills/code-factory/references/tech-stack-detection.md).

@@ -1,23 +1,21 @@
 # Project Summary — Code Factory
 
 <!-- code-factory-memory: summary -->
-project: automated_vode_factory_v_12.15.1
+project: repo
 repo_path: .
 
 Сжатая сводка проекта. Сворачивается из старых записей `memory/change-log.md` при компакции
 (порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
 
 ## Current state
-Фабрика v12.7.0: развёртывание проекта и запуск фабрики работают и в Windows без Git Bash
-(`prepare_factory.cmd` → `prepare_factory.ps1` на PowerShell 5.1 и `start.cmd`; bash-скрипты
-`prepare_factory.sh`/`start.sh` не меняются); `AGENTS.md` — единый источник правды (ровно 8 секций
-+ детерминированный fingerprint, без init-шага); долгосрочная память `memory/` принадлежит ЦЕЛЕВОМУ проекту
-(поле `repo_path` задачи) и несёт признак `project:`; смешение проектов в одной памяти
-обнаруживается детерминированно (`check_factory_model.py`, `memory_project.py`); при
-развёртывании `prepare_factory.sh` заводит память проекта и никогда не перезаписывает
-существующую; сабагенты `factory-documenter` (автодокументирование) и `factory-skill-manager`
-(база навыков); скрипты `version_manager.py` (VERSION — единый источник версии), `skill_base.py`,
-`memory_project.py`, `validate_documentation.py`, `validate_mermaid.py`. Все self-тесты PASS.
+Фабрика v12.8.0: shard-протокол whole-repo review/security_audit (repo_inventory + merge_findings);
+двухуровневый fingerprint (структурный + контентный `git ls-files -s`, SKIP регенерации AGENTS.md
+только при совпадении обоих); Think in Code (log_tail, repo_stats); канонический review-гейт в 5 документах
+(консистентность — test_review_gate.py); верифицируемая приёмка (verify_acceptance.py: verify/derived/unverified, DEGRADED без регрессии);
+verify_quotes.py (цитаты = точные подстроки); evidence ledger FRESH/STALE; advisor-сабагент (лестница
+regex→Diagnostician→Advisor→Human→FAILED); action_gate/factory_preflight/task_graph; память enforced owner=basename
+(repo, мигрировано rename'ом); model diversity generator≠judge, модели передаются явно в Agent tool.
+Владелец памяти: repo (rename). 19/19 self-тестов PASS.
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле

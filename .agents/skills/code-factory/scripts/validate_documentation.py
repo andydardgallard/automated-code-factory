@@ -159,9 +159,12 @@ def check(root: pathlib.Path, baseline: pathlib.Path, files: list[str]) -> list[
         for ln in changed:
             if not ln.strip():
                 continue
-            # conservatively treat a line as code if it is code in either version
-            in_old = ln in old and not old_mask[old.index(ln)]
-            in_new = ln in new and not new_mask[new.index(ln)]
+            # conservatively treat a line as code if it is code in either version;
+            # first occurrence wins and a missing line is simply "not code" (no IndexError).
+            oi = next((i for i, x in enumerate(old) if x == ln), -1)
+            ni = next((i for i, x in enumerate(new) if x == ln), -1)
+            in_old = oi >= 0 and not old_mask[oi]
+            in_new = ni >= 0 and not new_mask[ni]
             if in_old or in_new:
                 errors.append(f"{rel}: code line changed: {ln.strip()[:80]}")
                 break

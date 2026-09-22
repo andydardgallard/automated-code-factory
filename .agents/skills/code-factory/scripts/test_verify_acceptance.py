@@ -8,7 +8,8 @@ derived/unverified, commands really run inside `--repo`, long output is excerpte
 follows the rules (SUCCESS only with all verify criteria MET + regression pass; DEGRADED without a
 regression proof or without any verify criterion; FAILURE on any failure), and the optional
 evidence ledger gate (--ledger/--evidence-files) downgrades SUCCESS to DEGRADED on STALE, failed,
-missing or unparsable evidence, while a FRESH regression=pass ledger keeps SUCCESS.
+missing or unparsable evidence, while a FRESH regression=pass ledger keeps SUCCESS. The optional
+`--run-id` only adds the `run_id: <id>` provenance line to the acceptance header.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -249,9 +250,22 @@ def main() -> int:
                    f"a {label} ledger must degrade with a reason: {text[:300]!r}")
             expect("Traceback" not in res.stderr, f"a {label} ledger must not raise a traceback")
 
+        # 15. --run-id stamps the run provenance into the header and changes nothing else.
+        runid_criteria = write_criteria(tmp, [{"criterion": "ok", "verify": f'{PY} -c "pass"'}],
+                                        name="runid.json")
+        md_runid = tmp / "acceptance_runid.md"
+        res = run("--input", str(runid_criteria), "--output", str(md_runid), "--repo", str(tmp),
+                  "--regression", "pass", "--run-id", "20260922-442cd2f8")
+        expect(res.returncode == 0, f"a run id must not change the verdict: {res.stderr!r}")
+        text_runid = md_runid.read_text(encoding="utf-8")
+        expect("run_id: 20260922-442cd2f8" in text_runid,
+               f"the run id must be recorded in acceptance.md: {text_runid[:300]!r}")
+        expect("Verdict: **SUCCESS**" in text_runid, "the verdict must stay unaffected by --run-id")
+
     print("PASS - verify_acceptance.py behaves as expected (MET/FAILED/UNVERIFIED with "
-          "derived/unverified labels, excerpts, SUCCESS/DEGRADED/FAILURE verdicts, and the "
-          "evidence ledger gate: FRESH keeps SUCCESS, STALE/missing evidence degrades).")
+          "derived/unverified labels, excerpts, SUCCESS/DEGRADED/FAILURE verdicts, the "
+          "evidence ledger gate: FRESH keeps SUCCESS, STALE/missing evidence degrades, and the "
+          "optional --run-id provenance line).")
     return 0
 
 

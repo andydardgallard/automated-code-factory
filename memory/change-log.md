@@ -14,14 +14,15 @@ Append-only журнал прогонов фабрики. Одна запись 
 title: <строка>
 project: <имя проекта>
 timestamp: <ISO8601 дата>
+run_id: <YYYYMMDD-8hex — идентификатор прогона, scripts/run_id.py>
 branch: <ветка или "(none)">
 commit: <sha или "(none)">
 task_type: implement | review | refactor | security_audit
 goal: <краткая цель>
 changed_files: <список через "; ">
 created_files: <список через "; ">
-results: integration=<PASS|FAIL|SKIP>; regression=<...>; business=<...>; review=<approve|request_changes|SKIP>
-decisions: <принятые решения и допущения>
+results: integration=<PASS|FAIL|SKIP>; regression=<...>; business=<...>; review=<approve|request_changes|SKIP> — ключевые значения с меткой [verified: <команда/тест/лог>] или [inferred]
+decisions: <принятые решения и допущения; каждое ключевое утверждение с меткой [verified: <команда/тест/лог>] или [inferred]>
 assumptions: <допущения>
 models_used: analyzer=<модель>; planner=<модель>; coder=<модель>; tester=<модель>; reviewer=<модель>; diagnostician=<модель>; documenter=<модель>
 factory_version: <X.Y.Z — версия фабрики на момент прогона>
@@ -29,14 +30,30 @@ unfinished: нет незавершённых элементов
 ```
 
 Однострочный пример записи (одна запись — один блок, поля построчно):
-`title: Короткий заголовок | project: automated_vode_factory_v_12.15.1 | timestamp: 2026-01-01T00:00:00+0300 | task_type: implement`
+`title: Короткий заголовок | project: repo | timestamp: 2026-01-01T00:00:00+0300 | run_id: 20260101-1a2b3c4d | task_type: implement`
 
 Память `memory/` принадлежит ТОЛЬКО одному проекту — тому, что указан в поле `repo_path`
 задачи; `project:` = basename разрешённого `repo_path`. Для этого репозитория целевой проект —
-сама фабрика, поэтому во всех записях `project: automated_vode_factory_v_12.15.1`. Разные
+сама фабрика (каталог `repo`), поэтому во всех записях `project: repo`. Разные
 значения `project:` в одном журнале — ошибка (память смешивает проекты; ловят
 `scripts/check_factory_model.py` и `scripts/memory_project.py check`); записи без `project:` —
 legacy (предупреждение, не ошибка).
+
+**Формат v2 (введённый после v12.8.0): `run_id` + provenance-метки.** Поле `run_id` —
+идентификатор прогона (`YYYYMMDD-<8 hex>`, см. `scripts/run_id.py`), который связывает запись с
+артефактами прогона (pipeline.yaml, acceptance.md, logs/*.md, report.md). Каждое ключевое
+утверждение записи в полях `decisions` и `results` несёт инлайн-метку:
+`[verified: <команда/тест/лог, подтверждающий утверждение>]` — утверждение подтверждено
+доказательством прогона, или `[inferred]` — выведено, но не проверено. Пример:
+`results: integration=PASS [verified: .code-factory/logs/code-results.md]; review=approve [inferred]`.
+
+Записью формата v2 считается запись, у которой `factory_version` НОВЕЕ 12.8.0 ИЛИ которая уже
+несёт v2-поле (`run_id` или метку происхождения) — так полумигрированная запись тоже
+проверяется. Для v2-записи отсутствие `run_id` (или `run_id` не по формату `YYYYMMDD-<8 hex>`)
+либо отсутствие метки в `decisions`/`results` — ОШИБКА формата; записи, написанные фабрикой не
+новее 12.8.0 и не несущие v2-полей, и legacy-записи без `project:` проходят валидацию с
+предупреждением (не ошибкой). Проверяют `scripts/memory_project.py check` и
+`scripts/check_factory_model.py`.
 
 Если долг есть — вместо одной строки `unfinished:` пишется многострочный список; для каждого
 элемента обязательны 4 поля (`item`, `reason`, `severity` critical|warning|info, `follow_up`
@@ -54,7 +71,8 @@ unfinished:
 маркер `нет незавершённых элементов`). При компакции журнала в сводку элементы с
 severity=critical или follow_up=true сохраняются обязательно. Существующие записи без секции
 `unfinished`/`factory_version` или без поля `project` проходят валидацию с предупреждением
-(не ошибкой).
+(не ошибкой); так же (предупреждением, не ошибкой) проходят записи, написанные фабрикой не
+новее 12.8.0 и не несущие v2-полей (`run_id` или provenance-метки).
 
 ## 2026-09-01T01:01:45+0300 — AGENTS.md как единый источник правды + переносимая память
 title: AGENTS.md как единый источник правды + переносимая долгосрочная память

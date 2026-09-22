@@ -31,7 +31,7 @@ criterion FAILED, so a hung command can never block the gate.
 
 Usage:
   python verify_acceptance.py --input criteria.json --output acceptance.md --repo . \\
-         [--regression pass|fail|not-run] [--timeout 600] \\
+         [--regression pass|fail|not-run] [--timeout 600] [--run-id 20260922-442cd2f8] \\
          [--ledger state/evidence.json --evidence-files src/a.py src/b.py]
 
 `--ledger`/`--evidence-files` are optional and off by default: when given, the ledger is
@@ -39,6 +39,9 @@ re-checked in-process via `evidence_ledger` (import, not subprocess) against the
 of `--evidence-files`. Any STALE entry, a non-pass entry, or the absence of a FRESH
 `regression=pass` entry downgrades the verdict to DEGRADED with the reason quoted in
 acceptance.md — a green log from an older revision is not proof about the current tree.
+
+`--run-id` (see `run_id.py`) is optional and only adds the line `run_id: <id>` to the header of
+acceptance.md, so the artifact names the run it belongs to.
 
 Exit code 0 = SUCCESS, 1 = FAILURE / DEGRADED / usage error. stdlib only.
 """
@@ -209,7 +212,7 @@ def _fence(text: str) -> str:
 
 
 def render_markdown(results: list[dict], verdict: str, reason: str, regression: str,
-                    ledger: dict | None = None) -> str:
+                    ledger: dict | None = None, run_id: str = "") -> str:
     verified = sum(1 for r in results if r["status"] in ("MET", "FAILED"))
     unverified = sum(1 for r in results if r["status"] == "UNVERIFIED")
     lines = [
@@ -217,6 +220,10 @@ def render_markdown(results: list[dict], verdict: str, reason: str, regression: 
         "",
         f"Verdict: **{verdict}**",
         "",
+    ]
+    if run_id:  # run provenance: the artifact names the run it belongs to (see run_id.py)
+        lines.append(f"- run_id: {run_id}")
+    lines += [
         f"- Verdict reason: {reason}",
         f"- Regression baseline: {regression}",
         f"- Criteria: {len(results)} (verified: {verified}, unverified: {unverified})",
@@ -321,6 +328,8 @@ def main() -> int:
     ap.add_argument("--evidence-files", nargs="*", default=[], metavar="FILE",
                     help="Files the ledger evidence was signed over (required in practice for "
                          "--ledger: a different scope makes every entry STALE)")
+    ap.add_argument("--run-id", default="",
+                    help="Run id (see run_id.py); when given it is recorded in acceptance.md")
     args = ap.parse_args()
 
     repo = pathlib.Path(args.repo)
@@ -353,7 +362,7 @@ def main() -> int:
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(render_markdown(results, verdict, reason, args.regression,
-                                          ledger_report),
+                                          ledger_report, args.run_id),
                           encoding="utf-8")
     except OSError as exc:
         print(f"error: cannot write {output}: {exc}", file=sys.stderr)

@@ -4,12 +4,14 @@ Generate `.code-factory/report_code_changes.md` — a visual "was → became" re
 of file changes in a git commit (only changed lines, no context).
 
 Usage:
-  python3 scripts/gen_code_changes_report.py [--repo <path>] [--commit <sha|HEAD>] [--out <path>]
+  python3 scripts/gen_code_changes_report.py [--repo <path>] [--commit <sha|HEAD>] [--out <path>] \\
+          [--run-id <id>]
 
 Defaults:
   --repo    current working directory
   --commit  HEAD (last commit)
   --out     <repo>/.code-factory/report_code_changes.md
+  --run-id  empty: the report header is unchanged; when given, the line `run_id: <id>` is added
 
 The report is deterministic (parses `git show --unified=0`), costs zero LLM tokens,
 and is written next to report.md so the factory run is fully auditable.
@@ -88,10 +90,11 @@ def parse_diff(diff: str) -> list[dict]:
     return files
 
 
-def build_report(files: list[dict], commit: str, branch: str) -> str:
-    out: list[str] = [
-        "# Report of Code Changes — commit `%s`" % commit,
-        "",
+def build_report(files: list[dict], commit: str, branch: str, run_id: str = "") -> str:
+    out: list[str] = ["# Report of Code Changes — commit `%s`" % commit, ""]
+    if run_id:  # run provenance: the artifact names the run it belongs to (see run_id.py)
+        out += ["run_id: %s" % run_id, ""]
+    out += [
         "**Branch:** `%s`  ·  **Files:** %d  ·  Generated from `git show %s --unified=0`"
         % (branch, len(files), commit),
         "",
@@ -170,6 +173,8 @@ def main() -> None:
     ap.add_argument("--repo", default=".", help="Path to the git repository (default: cwd)")
     ap.add_argument("--commit", default="HEAD", help="Commit to report (default: HEAD)")
     ap.add_argument("--out", default=None, help="Output path (default: <repo>/.code-factory/report_code_changes.md)")
+    ap.add_argument("--run-id", default="",
+                    help="Run id (see run_id.py); when given it is recorded in the report header")
     args = ap.parse_args()
 
     repo = pathlib.Path(args.repo).resolve()
@@ -183,7 +188,7 @@ def main() -> None:
 
     diff = git_show_diff(repo, args.commit)
     files = parse_diff(diff)
-    report = build_report(files, args.commit, branch)
+    report = build_report(files, args.commit, branch, args.run_id)
 
     out = pathlib.Path(args.out) if args.out else repo / ".code-factory" / "report_code_changes.md"
     out.parent.mkdir(parents=True, exist_ok=True)

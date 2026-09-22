@@ -7,6 +7,25 @@ then the Advisor (a second opinion, §4.1), then Human, then FAILED with a full 
 
 ## 1. Classification (deterministic, regex-based)
 
+The machine-readable source of the patterns is the project's `.code-factory/state/error-patterns.json`
+(project-learned: the Diagnostician adds new patterns during runs and `python
+.agents/skills/code-factory/scripts/error_router.py merge --project <file>` folds them in,
+project-first); the fallback is the shipped snapshot `references/error-patterns.default.json`.
+Classification is executed by `python .agents/skills/code-factory/scripts/error_router.py classify
+--log <file>` (exit 1 = unreadable log, exit 2 = unusable patterns JSON); when a table below
+disagrees with the JSON, the JSON is authoritative. The tables are kept as documentation of the
+default snapshot.
+
+Known quirks of that snapshot (carried over verbatim so the JSON and the tables below match):
+row 8 keeps `error[E\d+]` as a character class — it matches one of the characters `E`, `\d`, `+`,
+not a Rust error code; row 18 keeps unescaped parentheses in `Traceback (most recent call last)`,
+so they form a group; rows 16/17 are two identical TIMEOUT rows and, under first-match-wins, row
+16 shadows row 17 (an output containing "test" routes to PLANNER, anything else never reaches
+row 17's CODER); and the §2 nuance `WRONG_RESULTS (with "regression")` → CODER does NOT apply
+under JSON-first classification: row 2 of the snapshot matches any WRONG_RESULTS (its pattern
+contains `regression`) and routes it to DIAGNOSTICIAN, and the JSON is authoritative over the §2
+table.
+
 Match the combined error output (stdout + stderr) against these patterns IN ORDER — more
 specific first. First match wins.
 
@@ -91,6 +110,9 @@ After classification, decide who retries:
 | ADVISOR | 1 |
 | INFRASTRUCTURE | 3 |
 | HUMAN | 0 (cannot auto-retry) |
+<!-- factory-rule: retry-budgets begin -->
+**Бюджеты ретраев (каноническая формулировка):** у каждой роли свой бюджет повторов — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; счётчики ведутся в `.code-factory/state/pipeline.yaml` (`retry_counters`). Исчерпанный бюджет не продлевается: прогон эскалируется по лестнице детерминированный regex → Diagnostician (LLM) → Advisor (LLM, secondary модель, контрастное семейство, бюджет 1) → Human (hitl) → FAILED с полным логом. Фабрика не зацикливается, не смягчает тесты ради зелёного прогона и не падает молча.
+<!-- factory-rule: retry-budgets end -->
 
 - Each retry increments the per-role counter in `.code-factory/state/pipeline.yaml`
   (`retry_counters.advisor` for the Advisor, §4.1).

@@ -10,6 +10,13 @@ Builds a synthetic project, then verifies `check_factory_model.py`:
   - project ownership is validated (entry + summary declaring one project -> pass, a missing
     `project` -> warning only, different `project` values in one journal -> fail, an empty
     `project` value -> fail, and a `project:` example inside a code block is not a declaration),
+  - the memory format v2 (run_id + provenance marks) is enforced on the records of a
+    current-generation factory: a missing or malformed `run_id`, or a missing provenance mark in
+    `decisions`/`results`, fails, while records written before the format and legacy records
+    without `project` only warn,
+  - the WIP checkpoint `.code-factory/state/pipeline.yaml` is validated when it exists (required
+    keys, `status` enum, `run_id` format, list/mapping types of the optional keys) and a missing
+    one is a SKIP, never a failure,
   - the two-level fingerprint line is validated: the `... content: <hash>` format passes, a
     forged or stale CONTENT hash fails, and a legacy single-hash line only warns.
 
@@ -115,6 +122,67 @@ unfinished:
 factory_version: 12.5.0
 """
 
+# A record written in the memory format v2 (factory newer than the one that introduced it):
+# `run_id` + a provenance mark in BOTH `decisions` and `results` -> must PASS.
+V2_ENTRY = """\
+## 2026-09-25T00:00:00Z — Verified run
+title: Verified run
+project: demo
+timestamp: 2026-09-25T00:00:00Z
+run_id: 20260922-442cd2f8
+branch: main
+commit: abc1234
+task_type: implement
+goal: Record a run in the memory format v2.
+changed_files: src/main.py
+created_files: (none)
+results: integration=PASS [verified: .code-factory/logs/code-results.md]; regression=PASS; business=PASS; review=approve
+decisions: keep the two-level fingerprint [verified: scripts/test_factory_model.py]; P2 postponed [inferred]
+assumptions: (none)
+models_used: analyzer=primary
+unfinished: нет незавершённых элементов
+factory_version: 12.9.0
+"""
+
+# The same v2 record with one v2 element missing / malformed -> the format is violated.
+V2_NO_RUN_ID = V2_ENTRY.replace("run_id: 20260922-442cd2f8\n", "")
+V2_BAD_RUN_ID = V2_ENTRY.replace("20260922-442cd2f8", "2026-09-22")
+V2_NO_MARKS = (V2_ENTRY.replace("integration=PASS [verified: .code-factory/logs/code-results.md]",
+                                "integration=PASS")
+               .replace(
+    "decisions: keep the two-level fingerprint [verified: scripts/test_factory_model.py]; "
+    "P2 postponed [inferred]", "decisions: keep the two-level fingerprint"))
+# A record that already carries a v2 field must satisfy the REST of the format, even when its
+# factory_version still predates it (half-migrated record).
+V2_HALF = V2_NO_RUN_ID.replace("factory_version: 12.9.0", "factory_version: 12.8.0")
+
+# A record whose `factory_version` ALONE puts it in the format v2: no `run_id`, no provenance marks
+# — only the captured version tuple can catch it (a non-capturing VERSION_RE would let it pass).
+V2_BY_VERSION_ENTRY = VALID_ENTRY.replace("factory_version: 12.5.0", "factory_version: 12.9.0")
+
+# A record of a pre-v2 factory: no run_id, no marks -> must PASS and stay silent, so memories
+# written before the format are never broken.
+PRE_V2_ENTRY = VALID_ENTRY.replace("factory_version: 12.5.0", "factory_version: 12.8.0")
+
+VALID_PIPELINE = """\
+run_id: 20260922-442cd2f8
+task: .code-factory/state/task.yaml
+phase: implement-wave-2
+status: in_progress
+branch: feature/example
+files_touched:
+  - src/main.py
+  - memory/change-log.md
+pending_decision: нет
+resume_hint: continue with wave 2
+updated_at: 2026-09-22T23:05:00+03:00
+retry_counters:
+  coder: 0
+  reviewer: 0
+models_used:
+  analyzer: primary
+"""
+
 CHANGE_LOG_HEADER = "# Change Log — Code Factory\n\n<!-- code-factory-memory: change-log -->\n\n"
 SUMMARY = ("# Project Summary — Code Factory\n\n<!-- code-factory-memory: summary -->\n"
            "project: demo\nrepo_path: .\n\n")
@@ -174,6 +242,19 @@ def parsed_fingerprint(root: pathlib.Path) -> re.Match:
 def run_cli(*args: str) -> int:
     return subprocess.run([sys.executable, str(CHECKER), *args],
                           capture_output=True, text=True).returncode
+
+
+def run_cli_out(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run the checker as a CLI and keep stdout/stderr (for the SKIP / ok lines)."""
+    return subprocess.run([sys.executable, str(CHECKER), *args], capture_output=True, text=True)
+
+
+def pipeline_errors(root: pathlib.Path, text: str) -> list[str]:
+    """Write `text` as the WIP checkpoint of `root` and return the errors the checker reports."""
+    state = root / ".code-factory" / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "pipeline.yaml").write_text(text, encoding="utf-8")
+    return check_factory_model.check_pipeline_checkpoints(root)[0]
 
 
 def run_fp(*args: str) -> subprocess.CompletedProcess:
@@ -379,6 +460,82 @@ def main() -> int:
         expect(all_out == [f"structural: {struct}", f"content: {content}"],
                f"--all must print both labelled hashes: {all_out}")
 
+        # 26. Memory format v2 (run_id + provenance marks). A record of a current-generation
+        #     factory must carry them: a missing or malformed `run_id`, or a missing mark in
+        #     `decisions`/`results`, is an error that also fails the CLI. A record written before
+        #     the format stays valid AND silent, and a legacy record (no `project`) only warns.
+        build(root, V2_ENTRY)
+        expect(mem_errors(root) == [], f"a v2 record must pass: {mem_errors(root)}")
+        expect(run_cli("--repo", td, "--memory-only") == 0, "a v2 record must exit 0")
+
+        build(root, V2_NO_RUN_ID)
+        expect(any("run_id" in e for e in mem_errors(root)), "a v2 record without run_id must fail")
+        expect(run_cli("--repo", td, "--memory-only") != 0,
+               "a v2 record without run_id must exit != 0")
+
+        build(root, V2_BAD_RUN_ID)
+        expect(any("invalid run_id" in e for e in mem_errors(root)),
+               "a malformed run_id must fail")
+        expect(run_cli("--repo", td, "--memory-only") != 0, "a malformed run_id must exit != 0")
+
+        build(root, V2_NO_MARKS)
+        expect(any("provenance mark" in e for e in mem_errors(root)),
+               "a v2 record without provenance marks must fail")
+        expect(run_cli("--repo", td, "--memory-only") != 0,
+               "a v2 record without provenance marks must exit != 0")
+
+        #     A record that already carries one v2 field is held to the whole format, even when its
+        #     factory_version still predates it (half-migrated record).
+        build(root, V2_HALF)
+        expect(any("run_id" in e for e in mem_errors(root)),
+               "a half-migrated v2 record must fail on the missing field")
+
+        #     The factory_version TRIGGER alone must select the format v2: a record of a factory
+        #     newer than 12.8.0 without run_id and without marks carries no v2 field at all, so only
+        #     the captured version tuple can catch it (a non-capturing VERSION_RE silently accepts
+        #     it). Both the predicate and the end-to-end memory verdict are asserted.
+        expect(check_factory_model._v2_record({"project": "demo", "factory_version": "12.9.0"}),
+               "factory_version 12.9.0 must select the memory format v2")
+        expect(check_factory_model._v2_record({"project": "demo", "factory_version": "13.0.0"}),
+               "a major bump must stay a v2 record")
+        expect(not check_factory_model._v2_record({"project": "demo", "factory_version": "12.8.0"}),
+               "12.8.0 is the version the format is introduced AFTER, not a v2 record")
+        build(root, V2_BY_VERSION_ENTRY)
+        version_issues = mem_errors(root)
+        expect(any("run_id" in e for e in version_issues)
+               and any("provenance mark" in e for e in version_issues),
+               f"a 12.9.0 record without run_id/marks must fail the format: {version_issues}")
+        expect(run_cli("--repo", td, "--memory-only") != 0,
+               "a 12.9.0 record without run_id/marks must exit != 0")
+        #     Positive control: the same factory_version WITH run_id and marks passes.
+        build(root, V2_BY_VERSION_ENTRY.replace(
+            "decisions: regenerate AGENTS.md",
+            "run_id: 20260922-442cd2f8\ndecisions: regenerate AGENTS.md [verified: "
+            "scripts/test_factory_model.py]").replace(
+            "results: integration=PASS; regression=PASS; business=PASS; review=approve",
+            "results: integration=PASS [verified: .code-factory/logs/code-results.md]; "
+            "regression=PASS; business=PASS; review=approve"))
+        expect(mem_errors(root) == [], f"12.9.0 with run_id and marks must pass: {mem_errors(root)}")
+        expect(run_cli("--repo", td, "--memory-only") == 0,
+               "12.9.0 with run_id and marks must exit 0")
+
+        #     Pre-v2 record: no error and no warning, so memories written before the format keep
+        #     passing untouched (the format is never retroactive).
+        build(root, PRE_V2_ENTRY)
+        expect(mem_errors(root) == [], f"a pre-v2 record must pass: {mem_errors(root)}")
+        expect(mem_warnings(root) == [], f"a pre-v2 record must not warn: {mem_warnings(root)}")
+        expect(run_cli("--repo", td, "--memory-only") == 0, "a pre-v2 record must exit 0")
+
+        #     Legacy record without `project`: -> warnings only, never an error.
+        build(root, LEGACY_ENTRY_NO_PROJECT)
+        expect(mem_errors(root) == [], "a legacy record must not fail")
+        expect(any("run_id" in w for w in mem_warnings(root)),
+               "a legacy record must warn about the missing run_id")
+        expect(any("provenance mark" in w for w in mem_warnings(root)),
+               "a legacy record must warn about the missing provenance marks")
+        expect(run_cli("--repo", td, "--memory-only") == 0,
+               "a legacy record must still exit 0 (warnings only)")
+
     # 20. Both fingerprints must be stable across committing the factory's own artifacts. The
     #     structural level excludes AGENTS.md/memory/ and never included the git tree SHA (or the
     #     embedded hash would go stale after the very commit that carries it); the content level
@@ -453,9 +610,62 @@ def main() -> int:
         expect(run_fp("--repo", ftd, "--content").stdout.split() == [content_after],
                "the fallback must be what --content prints without a repository")
 
+    # 27. WIP checkpoints: `.code-factory/state/pipeline.yaml` is validated when it exists — the
+    #     required keys, the `status` enum, the `run_id` format and the shape of the optional
+    #     keys — and its absence is a SKIP, never a failure (a project without a run in flight
+    #     has no checkpoint). The fixture carries a valid memory and AGENTS.md, so only the
+    #     checkpoint decides the exit code of the CLI.
+    with tempfile.TemporaryDirectory() as ptd:
+        proot = pathlib.Path(ptd)
+        build(proot, V2_ENTRY)
+
+        p_errors, p_skip = check_factory_model.check_pipeline_checkpoints(proot)
+        expect(p_errors == [] and p_skip, "a missing checkpoint must be a SKIP, not an error")
+        res = run_cli_out("--repo", ptd, "--memory-only")
+        expect(res.returncode == 0, f"a missing checkpoint must exit 0: {res.stderr!r}")
+        expect("SKIP" in res.stderr, f"the check must report the skip: {res.stderr!r}")
+        expect("no WIP checkpoint" in res.stdout,
+               f"the PASS line must say there is no checkpoint: {res.stdout!r}")
+
+        expect(pipeline_errors(proot, VALID_PIPELINE) == [], "a valid checkpoint must pass")
+        p_errors, p_skip = check_factory_model.check_pipeline_checkpoints(proot)
+        expect(p_errors == [] and not p_skip, f"a valid checkpoint must pass: {p_errors}")
+        res = run_cli_out("--repo", ptd, "--memory-only")
+        expect(res.returncode == 0, f"a valid checkpoint must exit 0: {res.stderr!r}")
+        expect("WIP checkpoint" in res.stdout and "is valid" in res.stdout,
+               f"the valid checkpoint must be reported: {res.stdout!r}")
+
+        #     A missing required key, an unknown status and a malformed run_id are errors.
+        missing_key = VALID_PIPELINE.replace("phase: implement-wave-2\n", "")
+        expect(any("'phase'" in e for e in pipeline_errors(proot, missing_key)),
+               "a missing required key must fail")
+        expect(run_cli("--repo", ptd, "--memory-only") != 0,
+               "a missing required key must exit != 0")
+        unknown_status = VALID_PIPELINE.replace("status: in_progress", "status: finished")
+        expect(any("invalid status" in e for e in pipeline_errors(proot, unknown_status)),
+               "an unknown status must fail")
+        expect(run_cli("--repo", ptd, "--memory-only") != 0, "an unknown status must exit != 0")
+        bad_run_id = VALID_PIPELINE.replace("run_id: 20260922-442cd2f8", "run_id: 2026-09-22")
+        expect(any("invalid run_id" in e for e in pipeline_errors(proot, bad_run_id)),
+               "a malformed run_id must fail")
+        #     `files_touched` is a list by contract; a scalar there is a format error.
+        scalar_touched = VALID_PIPELINE.replace(
+            "files_touched:\n  - src/main.py\n  - memory/change-log.md\n",
+            "files_touched: src/main.py\n")
+        expect(any("files_touched" in e for e in pipeline_errors(proot, scalar_touched)),
+               "a scalar files_touched must fail")
+        #     Every required status of the schema is accepted.
+        for status in ("ok", "failed", "in_progress"):
+            expect(pipeline_errors(proot, VALID_PIPELINE.replace("status: in_progress",
+                                                                 f"status: {status}")) == [],
+                   f"the status '{status}' must be accepted")
+        expect(run_cli("--repo", ptd, "--memory-only") == 0,
+               "the last valid checkpoint must exit 0")
+
     print("PASS - factory model scripts behave as expected (valid passes, corruptions fail, "
-          "unfinished/factory_version/project validated, structural+content fingerprints "
-          "distinguish depth>=2 content changes).")
+          "unfinished/factory_version/project validated, memory format v2 (run_id + provenance "
+          "marks) enforced on current-generation records, WIP checkpoints validated, "
+          "structural+content fingerprints distinguish depth>=2 content changes).")
     return 0
 
 

@@ -18,7 +18,11 @@ Deterministic self-test for `memory_project.py` (zero LLM tokens).
   - `compact-check` fails when a severity=critical or follow_up=true item is missing after a
     compaction and passes when all of them survived,
   - `validate-fix-tasks` accepts a well-formed generated fix-task file and rejects a file that
-    misses a required field or carries an invalid task_type, naming the offending line.
+    misses a required field or carries an invalid task_type, naming the offending line,
+  - the memory format v2 (run_id + provenance marks) is enforced on the records of a
+    current-generation factory: a missing or malformed `run_id`, or a missing provenance mark in
+    `decisions`/`results`, is an error, while records written before the format and legacy
+    records without `project:` only warn (exit 0).
 
 Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
 """
@@ -46,29 +50,40 @@ def expect(cond: bool, msg: str) -> None:
         raise AssertionError(msg)
 
 
-def journal_entry(timestamp: str, project: str = "", unfinished: str = "") -> str:
+def journal_entry(timestamp: str, project: str = "", unfinished: str = "",
+                  run_id: str = "", factory_version: str = "", marks: bool = False) -> str:
     """A minimal but format-valid journal record belonging to `project`.
 
     `project=""` builds a legacy record without the `project:` field; `unfinished` is an
-    optional ready-made `unfinished:` block appended to the record.
+    optional ready-made `unfinished:` block appended to the record. The defaults keep every
+    record written before the memory format v2 (no `run_id`, no provenance marks); `run_id`,
+    `factory_version` and `marks=True` build a v2 record — marks=True puts a provenance mark
+    into BOTH `decisions` and `results`, as the format requires.
     """
     name = project or "legacy"
     project_line = f"project: {project}\n" if project else ""
+    run_id_line = f"run_id: {run_id}\n" if run_id else ""
+    version_line = f"factory_version: {factory_version}\n" if factory_version else ""
+    decisions = ("keep the two-level fingerprint [verified: scripts/test_memory_project.py]"
+                 if marks else "(none)")
+    results = ("integration=PASS [verified: .code-factory/logs/code-results.md]; regression=PASS; "
+               "business=PASS; review=approve" if marks else
+               "integration=PASS; regression=PASS; business=PASS; review=approve")
     return f"""\
 ## {timestamp} — Run on {name}
 title: Run on {name}
 {project_line}timestamp: {timestamp}
-branch: main
+{run_id_line}branch: main
 commit: abc1234
 task_type: implement
 goal: Demo record.
 changed_files: (none)
 created_files: (none)
-results: integration=PASS; regression=PASS; business=PASS; review=approve
-decisions: (none)
+results: {results}
+decisions: {decisions}
 assumptions: (none)
 models_used: analyzer=primary
-{unfinished}"""
+{version_line}{unfinished}"""
 
 
 def unfinished_block(*items: tuple[str, str, str]) -> str:
@@ -356,10 +371,78 @@ def main() -> int:
         expect(run("validate-fix-tasks", str(tmp / "missing.yaml")).returncode == 1,
                "a missing fix-task file must exit 1")
 
+        # 16. Memory format v2: the template documents `run_id` and the provenance marks; a
+        #     record of a current-generation factory must carry a well-formed `run_id` and a mark
+        #     in BOTH decisions and results (error otherwise), while a pre-v2 record stays valid
+        #     and silent and a legacy record (no `project:`) only warns.
+        v2 = tmp / "v2_proj"
+        v2.mkdir()
+        expect(run("init", "--repo", str(v2)).returncode == 0, "init of the v2 fixture must exit 0")
+        template = (v2 / "memory" / "change-log.md").read_text(encoding="utf-8")
+        expect("run_id: <YYYYMMDD-8hex" in template,
+               "the change-log template must document the run_id field")
+        expect("\\d{8}-[0-9a-f]{8}" in template,
+               "the change-log template must document the run_id format")
+        expect("[verified: " in template and "[inferred]" in template,
+               "the change-log template must document both provenance marks")
+
+        write_journal(v2, journal_entry("2026-09-25T00:00:00Z", "v2_proj",
+                                       run_id="20260922-442cd2f8",
+                                       factory_version="12.9.0", marks=True))
+        res = run("check", "--repo", str(v2))
+        expect(res.returncode == 0,
+               f"a v2 record with run_id and marks must exit 0: {res.stderr!r}")
+
+        write_journal(v2, journal_entry("2026-09-25T00:00:00Z", "v2_proj",
+                                       factory_version="12.9.0", marks=True))
+        res = run("check", "--repo", str(v2))
+        expect(res.returncode == 1, "a v2 record without run_id must exit 1")
+        expect("run_id" in res.stderr, f"the missing run_id must be named: {res.stderr!r}")
+
+        write_journal(v2, journal_entry("2026-09-25T00:00:00Z", "v2_proj",
+                                       run_id="2026-09-22", factory_version="12.9.0", marks=True))
+        res = run("check", "--repo", str(v2))
+        expect(res.returncode == 1, "a malformed run_id must exit 1")
+        expect("invalid run_id" in res.stderr,
+               f"the malformed run_id must be reported: {res.stderr!r}")
+
+        write_journal(v2, journal_entry("2026-09-25T00:00:00Z", "v2_proj",
+                                       run_id="20260922-442cd2f8", factory_version="12.9.0"))
+        res = run("check", "--repo", str(v2))
+        expect(res.returncode == 1, "a v2 record without provenance marks must exit 1")
+        expect("provenance mark" in res.stderr,
+               f"the missing marks must be reported: {res.stderr!r}")
+        expect("decisions" in res.stderr and "results" in res.stderr,
+               f"both marked fields must be named: {res.stderr!r}")
+
+        #     A record that already carries one v2 field must satisfy the rest of the format even
+        #     when its factory_version still predates it (half-migrated record).
+        write_journal(v2, journal_entry("2026-09-25T00:00:00Z", "v2_proj",
+                                       factory_version="12.8.0", marks=True))
+        expect(run("check", "--repo", str(v2)).returncode == 1,
+               "a half-migrated v2 record must still be an error")
+
+        #     A record of a pre-v2 factory stays valid and silent: the format is not retroactive.
+        write_journal(v2, journal_entry("2026-09-25T00:00:00Z", "v2_proj",
+                                       factory_version="12.8.0"))
+        res = run("check", "--repo", str(v2))
+        expect(res.returncode == 0, f"a pre-v2 record must exit 0: {res.stderr!r}")
+        expect("WARN" not in res.stderr, f"a pre-v2 record must not warn: {res.stderr!r}")
+
+        #     A legacy record (no `project:`) is only warned about, never failed.
+        write_journal(v2, journal_entry("2026-09-25T00:00:00Z"))
+        res = run("check", "--repo", str(v2))
+        expect(res.returncode == 0, "a legacy record without run_id/marks must exit 0")
+        expect("WARN" in res.stderr and "run_id" in res.stderr,
+               f"a legacy record must warn about the missing run_id: {res.stderr!r}")
+        expect("legacy format" in res.stderr,
+               f"the warning must mark the record as legacy: {res.stderr!r}")
+
     print("PASS - memory_project.py behaves as expected (init creates once, never rewrites; "
           "check enforces a single owner and fails on mixed/mismatched/missing/legacy memory; "
           "rename rewrites the owner and is idempotent; compact-check keeps critical/follow_up "
-          "items; validate-fix-tasks checks the fix-task schema).")
+          "items; validate-fix-tasks checks the fix-task schema; the memory format v2 requires "
+          "run_id + provenance marks on current-generation records).")
     return 0
 
 

@@ -40,6 +40,7 @@ at the user unless asked.
   - `references/documentation.md` — factory-documenter: documentation methodology + validator (Finish phase)
   - `references/reference-docs.md` — reference_docs/reference_skills: persistent skill base + relevance matrix (Phase 0/5)
   - `references/handoff-briefing.md` — MANDATORY briefing template for every subagent handoff
+  - `references/factory-rules.md` — the ONE home of the mandatory rules + the documents that must quote each one verbatim (`scripts/check_factory_rules.py` verifies the byte-identical blocks; any phase)
   - `assets/task-template.yaml` — business task template
 - Deterministic scripts: `.agents/skills/code-factory/scripts/` (stdlib only, zero LLM tokens) —
   `repo_inventory.py` (inventory + shards), `merge_findings.py` (deterministic merged shard
@@ -61,6 +62,9 @@ and read-only roles (analyzer, advisor, reviewer, auditor, diagnostician) get th
 a subagent writes files only when its role owns the change. When you delegate to a custom
 sub-agent, its final message IS the complete handoff — require a concise, structured result
 (summary + artifact paths), never a dump.
+<!-- factory-rule: handoff-briefing begin -->
+**Брифинг каждой делегации (каноническая формулировка):** каждая делегация сабагенту — самодостаточный брифинг по `references/handoff-briefing.md` (Task / Context / релевантные файлы ПУТЯМИ, без вставки содержимого / что уже пробовали и почему не сработало). Файлы пишет только главный агент; read-only роли (analyzer, reviewer, security-auditor, diagnostician, advisor) идут с суффиксом «без правок». Сабагент возвращает сжатый структурированный результат с путями к артефактам, а не пересказ контекста.
+<!-- factory-rule: handoff-briefing end -->
 
 ## Lazy Senior ladder (Ponytail) — mandatory before writing any code
 
@@ -92,6 +96,9 @@ appended at the very end:
 actually works in this environment from the pre-flight report
 (`scripts/factory_preflight.py` → `python_cmd`: `python` / `python3` / `py`) and substitute it —
 on Windows `python3` usually does not exist.
+<!-- factory-rule: preflight begin -->
+**Pre-flight окружения (каноническая формулировка):** перед первыми командами фабрика пробует реальное окружение через `scripts/factory_preflight.py --out .code-factory/state/preflight.json` — рабочая python-команда (`python`/`python3`/`py`), git, bash/sh, ОС и `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL`. Дальнейшие команды эмитятся под НАЙДЕННЫЕ capabilities, поэтому догадка о `python3` на Windows не ломает прогон. Отсутствие secondary-модели прогон не останавливает, а даёт `models_warning` в pipeline.yaml и report.md.
+<!-- factory-rule: preflight end -->
 
 ### Phase 0 — Accept the task
 Read the user's message or `task.yaml`. Parse: title, repo_path (optional), description,
@@ -105,6 +112,10 @@ and the two optional knowledge fields `reference_docs` (list of
 priority field — every task is HIGH by default.)
 Save to `.code-factory/state/task.yaml`. If the business task is unclear, ask ONLY business-level
 questions via `AskUserQuestion` (never coding questions).
+<!-- factory-rule: task-format begin -->
+**Формат задачи (каноническая формулировка):** задача несёт `title`, `repo_path`, `description`, опционально `user_story`, `mode` (`hitl`|`auto`), `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria` (критерий может нести `verify: <команда>` и `derived: true`), `business_tests` (сценарий, конфиги, ожидаемые бизнес-результаты), `commit_exclude`, `models`, `reference_docs`, `reference_skills`. Поля `priority` НЕТ — все задачи по умолчанию high, фабрика их не приоритизирует. Отсутствие обязательного поля — ошибка разбора задачи, а не повод домыслить его по ходу прогона.
+<!-- factory-rule: task-format end -->
+
 **Long-term memory**: `memory/` is the long-term memory of THE TARGET PROJECT named by the task's
 `repo_path` — one memory belongs to exactly one project, and it is NOT the memory of the factory
 (when the task targets this repository, the target project is the factory itself). Read
@@ -120,7 +131,23 @@ explicitly so both the journal and the summary call it the same way:
 --project <basename of the resolved repo_path>` — the name is pinned in the summary's `project:`
 declaration.
 **Checkpoint**: if `.code-factory/state/pipeline.yaml` exists and the task is unchanged, resume
-from the recorded phase.
+from the recorded phase. Every run carries the deterministic
+`run_id = YYYYMMDD-<sha256(task.yaml)[:8]>`, generated now with
+`python .agents/skills/code-factory/scripts/run_id.py gen --task .code-factory/state/task.yaml`;
+it is stamped into `.code-factory/state/pipeline.yaml`, `state/acceptance.md`, `logs/*.md`,
+`report.md` and this run's `memory/change-log.md` entry, so all artifacts of one run are linked by
+one id (`python .agents/skills/code-factory/scripts/run_id.py check --dir .code-factory` lists the
+artifacts that carry none). The checkpoint `.code-factory/state/pipeline.yaml` carries the
+REQUIRED keys `run_id`, `phase`, `status` (`ok|failed|in_progress`) and `updated_at`, plus the
+optional `files_touched`, `pending_decision`, `resume_hint`, `retry_counters` and `models_used`;
+`scripts/check_factory_model.py` validates it whenever the file exists (a missing file is a SKIP,
+never a failure).
+<!-- factory-rule: checkpoint-resume begin -->
+**Checkpoint/resume (каноническая формулировка):** после каждой фазы главный агент пишет `.code-factory/state/pipeline.yaml` (фаза, статус, затронутые файлы, ожидаемое решение, resume-hint, run_id, время) — состояние прогона живёт на диске, а не в контексте. При рестарте фабрика сверяет фиксатор плана и, если задача не изменилась, продолжает с ЗАПИСАННОЙ фазы, а не с начала. `resume` восстанавливает счётчики ретраев, поэтому исчерпанные бюджеты не обнуляются рестартом.
+<!-- factory-rule: checkpoint-resume end -->
+<!-- factory-rule: run-id begin -->
+**Идентификатор прогона (каноническая формулировка):** в начале прогона детерминированно вычисляется `run_id = YYYYMMDD-<sha256(task.yaml)[:8]>` (`scripts/run_id.py`) и проставляется в `.code-factory/state/pipeline.yaml`, `state/acceptance.md`, `logs/*.md`, `report.md` и в memory-запись прогона. Один прогон — один идентификатор, по нему артефакты связываются между собой. `scripts/run_id.py check` находит артефакты прогона без `run_id` и перечисляет их.
+<!-- factory-rule: run-id end -->
 
 ### Phase 1 — Analyze the project + Scout
 Launch `factory-analyzer` subagents in parallel: tech stack, structure, entry points, test
@@ -183,12 +210,21 @@ check during pre-flight that `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is expor
 `echo "${KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL:-unset}"`). If it is missing, write
 `models_warning: "KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL is not set — coder/tester subagents
 will use the primary model"` into pipeline.yaml and carry the warning into report.md.
+**Run id**: every artifact written from here on carries the run's `run_id`
+(`python .agents/skills/code-factory/scripts/run_id.py gen --task .code-factory/state/task.yaml` if
+it has not been generated yet) — write it as the required `run_id` key of the checkpoint
+`.code-factory/state/pipeline.yaml`, so the checkpoint, `state/acceptance.md`, `logs/*.md`,
+`report.md` and the memory entry of this run share one id (`run_id.py check --dir .code-factory`
+lists artifacts without it).
 Copy every file that will be modified into `.code-factory/backups/` preserving relative paths.
 Track changed/created files in `.code-factory/manifest.json`.
 
 **Artifacts-first rule**: before touching ANY source file, `.code-factory/` must already
 contain: `state/task.yaml`, `state/plan.md`, `logs/baseline.md`, `backups/` and
 `manifest.json`. Factory state lives in files, not only in the conversation.
+<!-- factory-rule: artifacts-first begin -->
+**Артефакты до изменений (каноническая формулировка):** фабрика не правит ни одного исходника, пока в `.code-factory/` не материализованы `state/task.yaml` (разобранная задача), `state/plan.md` (план), `logs/baseline.md` (базовый прогон тестов), `backups/` (бэкап каждого файла, который будет изменён, с сохранением относительных путей) и `manifest.json` (изменённые и созданные файлы). Состояние прогона живёт на диске, а не в переписке: неперсистентное знание теряется при рестарте и делает откат невозможным.
+<!-- factory-rule: artifacts-first end -->
 
 ### Phase 5 — Implement
 Launch `factory-coder` subagents for the plan tasks, respecting dependencies; independent tasks
@@ -224,9 +260,9 @@ task the WHOLE codebase (see the shard protocol below). Findings carry a severit
 `scripts/verify_quotes.py` before it counts as evidence. Write the verdict to
 `.code-factory/logs/code-review.md` and log `models_used.reviewer`.
 
-<!-- review-gate-policy: begin -->
+<!-- factory-rule: review-gate-policy begin -->
 **Review-гейт (каноническая формулировка):** задача НЕ принимается, пока у ревьюера открыты замечания severity=critical (вердикт `request_changes` с open critical findings). Бюджет ревьюера = 2 итерации. Если бюджет исчерпан, а critical findings остались: в режиме hitl фабрика ОСТАНАВЛИВАЕТСЯ и спрашивает пользователя; в режиме auto допускается только conditional pass — соответствующий критерий помечается `unverified_review` в `.code-factory/state/acceptance.md`, а нерешённые findings попадают в `.code-factory/report.md` (раздел unresolved findings), никогда молча. Полный SUCCESS при открытых critical findings невозможен.
-<!-- review-gate-policy: end -->
+<!-- factory-rule: review-gate-policy end -->
 
 - `approve` (no open critical findings) → proceed to Phase 9.
 - `request_changes` with open critical findings → increment `retry_counters.reviewer` in
@@ -253,6 +289,9 @@ task the WHOLE codebase (see the shard protocol below). Findings carry a severit
    critical finding exists, else `approve`) — deterministic, so prose can never soften it. That
    merged verdict is the verdict of Phase 8b / Phase 2b; the merged markdown goes to
    `.code-factory/logs/code-review.md`.
+<!-- factory-rule: shard-protocol begin -->
+**Шард-протокол (каноническая формулировка):** whole-repo ревью и security_audit никогда не помещаются в один контекст: `scripts/repo_inventory.py shards --max-lines 20000` режет репозиторий на шарды ≤20000 строк, каждый шард обрабатывает свой параллельный сабагент (ревьюер или аудитор) и пишет один findings-файл. Итог даёт детерминированный `scripts/merge_findings.py` (дедупликация, сортировка по severity, merged verdict), и канонический review-гейт применяется к MERGED findings, а не к отдельным шардам. Обычная задача `implement` ревьюится по diff и шардирования не требует.
+<!-- factory-rule: shard-protocol end -->
 
 **Review task** (`task_type: review`): the code reviewer runs EARLIER — right after analysis
 (Phase 2b), over the whole codebase via the shard protocol above. Its rework list becomes the
@@ -275,12 +314,20 @@ Acceptance is machine-checked, not asserted: build the criteria input JSON from 
 `acceptance_criteria` (the main agent builds it — stdlib has no YAML parser) and run
 `python .agents/skills/code-factory/scripts/verify_acceptance.py --input <criteria.json>
 --output .code-factory/state/acceptance.md --repo <project> [--regression pass|fail|not-run]
-[--ledger --evidence-files <file...>]`. Criteria that carry `verify` are executed for real: the
+[--ledger --evidence-files <file...>] [--run-id <run_id>]`. Criteria that carry `verify` are
+executed for real: the
 command, its exit code and an output excerpt land in `acceptance.md`; criteria without `verify`
 are labeled `derived` (inferred from other artifacts) or `unverified` and never count as proof. A
 degraded baseline (`--regression not-run`), the absence of any verified criterion, or STALE
 ledger evidence downgrades the verdict to DEGRADED — the exit code is 0 only for SUCCESS, so a
-degraded or unproven run can never be accepted silently.
+degraded or unproven run can never be accepted silently. The scripts that write run artifacts all
+accept `--run-id <run_id>` (`verify_acceptance.py`, `evidence_ledger.py`,
+`gen_code_changes_report.py`) — pass it so acceptance, the signed evidence and the report code
+changes are stamped with the same id as the checkpoint, the logs and the memory entry.
+<!-- factory-rule: verified-acceptance begin -->
+**Проверяемая приёмка (каноническая формулировка):** приёмка машинно-проверяемая — `scripts/verify_acceptance.py` реально исполняет критерии с `verify` и пишет exit-коды и выдержки вывода в `.code-factory/state/acceptance.md`. Exit 0 возможен только при SUCCESS: хотя бы один критерий с `verify`, все критерии MET, baseline доказан; критерии без `verify` помечаются `derived`/`unverified` и доказательством не являются. STALE-доказательства или деградированный baseline понижают вердикт до DEGRADED; SUCCESS без регрессионного доказательства невозможен.
+<!-- factory-rule: verified-acceptance end -->
+
 Remove backups. Produce the final business-language report: what changed, test results, business
 results, acceptance evidence.
 
@@ -290,6 +337,9 @@ results, acceptance evidence.
 `scripts/validate_documentation.py` (retry budget 1). If validation is exhausted, record the
 documentation debt in `report.md` and continue — the factory never fails because of docs. For
 `review`/`security_audit` this step is skipped. Log `models_used.documenter`.
+<!-- factory-rule: documentation begin -->
+**Документирование (каноническая формулировка):** после каждого успешного `implement`/`refactor` главный агент вызывает сабагента `factory-documenter` (secondary) с манифестом прогона; он обновляет ТОЛЬКО doc-комментарии и `.md` файлы и никогда код, тесты или конфиги. Свою работу он валидирует `scripts/validate_documentation.py` с бюджетом 1 retry; при исчерпании бюджета документационный долг фиксируется в отчёте прогона, и фабрика продолжает. Для `review`/`security_audit` документирование не вызывается.
+<!-- factory-rule: documentation end -->
 
 **Version bump (implement/refactor only, after the change)** — three steps:
 1. **Deterministic matrix**: run `python .agents/skills/code-factory/scripts/version_manager.py
@@ -301,12 +351,16 @@ documentation debt in `report.md` and continue — the factory never fails becau
    from scratch. Record any override in `report.md`.
 3. **Apply**: `python .../version_manager.py bump <type>` (or `set`) then `sync`; run `validate`
    and require exit 0. For `review`/`security_audit` skip versioning entirely.
+<!-- factory-rule: versioning begin -->
+**Версионирование (каноническая формулировка):** `VERSION` (одна строка `X.Y.Z`) — единый источник истины, все остальные файлы синхронизируются ИЗ него через `scripts/version_manager.py`. Тип версии предлагает детерминированная матрица (`suggest`), валидирует код-ревьюер (может переопределить с объяснением, но не выбирает с нуля), применяет `bump`/`set` + `sync` + `validate` exit 0. Коммит версии идёт в ОДНОМ коммите с изменениями и несёт префикс `v<версия>: `. Задачи `review`/`security_audit` версию НЕ меняют.
+<!-- factory-rule: versioning end -->
 
 **Long-term memory write (single writer = the main agent)**: this memory belongs to the target
 project from `repo_path`, so check ownership BEFORE writing with
 `python .agents/skills/code-factory/scripts/memory_project.py check --repo <deployment root>`
 (a journal mixing entries of different projects is an error, fix that memory first). Append ONE
-entry to `memory/change-log.md` — timestamp, title, branch/commit, task_type, goal,
+entry to `memory/change-log.md` — `run_id: <YYYYMMDD-8hex>` (the id of this run, computed in
+Phase 0/4), timestamp, title, branch/commit, task_type, goal,
 `project: <project name>` (MANDATORY for new entries; the name pinned in `memory/summary.md`'s
 `project:` declaration, i.e. the basename of the resolved `repo_path`, which differs from the
 deployment-root basename when `repo_path` is a subdirectory),
@@ -319,7 +373,19 @@ journal exceeds 50 entries, compact all but the last 20 into `memory/summary.md`
 keep `memory/summary.md` declaring the project with `project: <name>` + `repo_path: <path>` lines
 right after the canonical marker (this declaration is what fixes the project name). Never record the
 factory's own development history in the target project's memory. Memory is written on BOTH success
-and FAILED.
+and FAILED. The entry counts as a **v2 memory record** when its `factory_version` is newer than
+12.8.0 OR it already carries a v2 field (`run_id` or a provenance mark): such an entry MUST carry
+`run_id` (shaped `YYYYMMDD-<8 hex>`) and a provenance mark — `[verified: <evidence>]` or
+`[inferred]` — in BOTH `decisions` and `results`; a v2 entry missing them is a format ERROR
+(`memory_project.py check`, `scripts/check_factory_model.py`), while an entry written by factory
+12.8.0 or older that carries no v2 field is only warned about.
+<!-- factory-rule: memory-ownership begin -->
+**Владение памятью (каноническая формулировка):** одна память принадлежит ровно одному проекту — тому, что назван в `repo_path` задачи; каталог `memory/` живёт в КОРНЕ РАЗВЁРТЫВАНИЯ, базовое имя проекта = basename разрешённого `repo_path` и фиксируется в объявлении `project:` сводки. Единственный писатель — главный агент: одна запись в `memory/change-log.md` на прогон, компакция в `memory/summary.md` при пороге 50 записей (остаются последние 20, элементы severity=critical и follow_up=true сохраняются всегда). Записи разных проектов в одном журнале — ошибка (`check_factory_model.py`, `memory_project.py check`), записи без `project:` — legacy (предупреждение, не ошибка). История разработки самой фабрики в память целевого проекта не попадает.
+<!-- factory-rule: memory-ownership end -->
+<!-- factory-rule: memory-provenance begin -->
+**Происхождение записей памяти (каноническая формулировка):** запись считается записью формата v2, если её `factory_version` новее 12.8.0 ИЛИ она уже несёт v2-поле (`run_id` или метку происхождения) — так полумигрированная запись тоже проверяется; у такой записи обязательны `run_id` формата `YYYYMMDD-<8 hex>` (`scripts/run_id.py`) и метки происхождения в полях `decisions` и `results`: `[verified: <evidence>]` — утверждение подтверждено доказательством прогона (лог, acceptance, цитата), `[inferred]` — вывод без прямого доказательства. Запись формата v2 без `run_id` или без меток в этих полях — ошибка формата (`memory_project.py check`, `check_factory_model.py`), тогда как записи, написанные фабрикой не новее 12.8.0 и не несущие v2-полей, и legacy-записи без `project:` дают только предупреждение. Метка `[verified: ...]` обязана ссылаться на конкретное доказательство (команда/тест/лог); валидаторы проверяют наличие и форму метки.
+<!-- factory-rule: memory-provenance end -->
+
 Write `.code-factory/report.md` — one self-contained file with the full history (task, plan,
 errors, diagnostic, results, factory_version) for hand-off to the factory developer. Write
 `.code-factory/report_code_changes.md` next to it by running
@@ -342,12 +408,20 @@ On ANY failure, do NOT roll back immediately. Follow `references/error-routing.m
    reviewer=2. If the routed role has budget, roll back and retry it with the error context. If it
    is exhausted, escalate to the Diagnostician, then to the Advisor (budget 1), and finally to the
    human; for the reviewer the canonical review-gate policy of Phase 8b applies.
+<!-- factory-rule: retry-budgets begin -->
+**Бюджеты ретраев (каноническая формулировка):** у каждой роли свой бюджет повторов — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; счётчики ведутся в `.code-factory/state/pipeline.yaml` (`retry_counters`). Исчерпанный бюджет не продлевается: прогон эскалируется по лестнице детерминированный regex → Diagnostician (LLM) → Advisor (LLM, secondary модель, контрастное семейство, бюджет 1) → Human (hitl) → FAILED с полным логом. Фабрика не зацикливается, не смягчает тесты ради зелёного прогона и не падает молча.
+<!-- factory-rule: retry-budgets end -->
+
 3. **Diagnostician** (LLM): launch `factory-diagnostician` with the error output + attempt
    history. It returns `root_cause`, `recommended_role`, `recommended_action`,
    `context_for_retry`, `confidence`. Write the report to `.code-factory/logs/diagnostic.md`.
    Reset the recommended role's counter to 0 and re-run it with the diagnostic context. Every
    finding must quote the archived evidence verbatim, and the quotes are re-checked with
    `scripts/verify_quotes.py` — an unverifiable quote falls back to the full log, never trusted.
+<!-- factory-rule: evidence-ledger begin -->
+**Реестр доказательств и цитаты (каноническая формулировка):** каждое доказательство (baseline, тесты, ревью) подписывается отпечатком рабочего дерева через `scripts/evidence_ledger.py` и принимается только со статусом FRESH; доказательство STALE (после подписи файлы изменились) приёмкой не считается. Каждая цитата ревьюера, диагноста или советника перепроверяется дословно `scripts/verify_quotes.py` (точная подстрока, нормализуется только CRLF→LF). Неподтверждённая цитата помечается UNTRUSTED и на вердикт не влияет.
+<!-- factory-rule: evidence-ledger end -->
+
 4. **Advisor** (LLM, secondary model — deliberately a DIFFERENT family from the Diagnostician,
    budget advisor=1): when the Diagnostician's fix did not work (its budget is exhausted or the
    same error repeats), launch `factory-advisor` with a self-contained briefing per
@@ -376,6 +450,10 @@ write `.code-factory/report_code_changes.md` (next to it) via
    loop forever.
 2. **Rollback on retry** — before retrying a role, restore backups, remove created files, verify
    the project matches its pre-change state (see `references/verification-strategy.md` §4).
+<!-- factory-rule: rollback-on-retry begin -->
+**Откат перед ретраем (каноническая формулировка):** каждый провал тестов или сборки сначала маршрутизируется детерминированно (`references/error-routing.md`), затем состояние откатывается: файлы восстанавливаются из `.code-factory/backups/`, созданные фабрикой файлы удаляются, состояние git приводится к зафиксированному. Только после отката ошибка отдаётся роли-исполнителю — иначе повторный прогон идёт по уже испорченному состоянию. Инфраструктурные авто-фиксы (окружение, зависимости) код не откатывают.
+<!-- factory-rule: rollback-on-retry end -->
+
 3. **Business-first communication** — ask/explain in business terms; decide technical details
    yourself.
 4. **Token efficiency** — parallel subagents, isolated contexts, concise results, progressive
@@ -386,6 +464,10 @@ write `.code-factory/report_code_changes.md` (next to it) via
    style.
 7. **Git-native** — if no git repo, `git init`; changes flow through git (feature branch per
    task), rollback to base commit on failure.
+<!-- factory-rule: git-native begin -->
+**Git-native (каноническая формулировка):** если в проекте нет git-репозитория, фабрика делает `git init` — отдельного init-шага в CLI нет. Все изменения идут через git: на задачу создаётся feature-ветка, базовый коммит и его HEAD фиксируются в `.code-factory/state/`, при неудаче прогон откатывается к базовому коммиту. Рабочее дерево держится чистым: build-артефакты авто-унтрекаются, артефакты фабрики коммитятся.
+<!-- factory-rule: git-native end -->
+
 8. **Models** — the main agent PASSES the model explicitly to the Agent tool (`model:` is
    supported by the CLI) for every role the task's `models` matrix names, respecting the
    generator≠judge rule of `references/providers.md` (coder/tester and
@@ -397,8 +479,16 @@ write `.code-factory/report_code_changes.md` (next to it) via
    `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is exported — check it in pre-flight
    (`scripts/factory_preflight.py`) and record a `models_warning` in pipeline.yaml/report.md if it
    is not set.
+<!-- factory-rule: models-generator-ne-judge begin -->
+**Модели: генератор ≠ судья (каноническая формулировка):** главный агент передаёт модель явно в Agent tool (`model:`) по матрице `models` задачи и правилу generator≠judge: coder/tester и reviewer/diagnostician/advisor берутся из разных семейств моделей. `model_preference: primary|secondary` в `.md` сабагента — только FALLBACK для ролей, не названных задачей. Фактические модели ролей логируются в `.code-factory/state/pipeline.yaml` (`models_used`) и в `report.md`; secondary-модель работает только при `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`, иначе фабрика пишет `models_warning` и продолжает на primary.
+<!-- factory-rule: models-generator-ne-judge end -->
+
 9. **Commit policy** — respect `commit_exclude` from the task: never commit matching files.
    When committing, stage everything EXCEPT the excluded patterns.
+<!-- factory-rule: commit-exclude begin -->
+**commit_exclude (каноническая формулировка):** файлы, попадающие под шаблоны `commit_exclude` задачи, НИКОГДА не коммитятся — ни в одном коммите прогона, включая коммит версии и памяти. Стейджится всё, кроме исключённых шаблонов; код-ревьюер проверяет гигиену коммита и попадание исключённого файла в индекс считает замечанием severity ≥ major.
+<!-- factory-rule: commit-exclude end -->
+
 10. The factory may create any files/skills/tools inside the project needed to solve the task.
 11. **Code-review gate** — every task passes through `factory-code-reviewer` before acceptance;
     the canonical policy (marker `review-gate-policy`, Phase 8b) is binding: a task is NEVER
@@ -407,6 +497,10 @@ write `.code-factory/report_code_changes.md` (next to it) via
     criterion `unverified_review` and records the unresolved findings in `report.md`. Normal tasks
     review the DIFF at the end; review tasks review the WHOLE codebase through the shard protocol
     at the start.
+<!-- factory-rule: vaccination begin -->
+**Вакцинация (каноническая формулировка):** баг, найденный ПОСЛЕ приёмки задачи, сначала получает регрессионный тест, который его воспроизводит (тест падает на текущем коде), и только потом исправление. Фикс без воспроизводящего теста не принимается, а сам тест остаётся в наборе как вакцина против повторения. Код-ревьюер проверяет наличие такого теста у каждого пост-приёмочного фикса и считает его отсутствие замечанием severity ≥ major.
+<!-- factory-rule: vaccination end -->
+
 12. **AGENTS.md + memory** — AGENTS.md is the machine-generated single source of truth (exactly 8
     `##` sections + a two-level embedded fingerprint: structural AND content, no init step);
     regenerate it when EITHER hash mismatches (start of task) — the "skip regeneration" branch

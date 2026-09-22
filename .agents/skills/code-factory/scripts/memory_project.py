@@ -18,7 +18,12 @@ ownership explicit and machine-checkable:
                                  --no-owner-check drops only that basename comparison, and
                                  --expect <name> replaces the expected name explicitly.
                                  Legacy memory without a `project:` declaration stays a
-                                 warning, never an error.
+                                 warning, never an error. The memory format v2 (see
+                                 change_log_template) is enforced on the records of a
+                                 current-generation factory: they must carry a well-formed
+                                 `run_id` AND a provenance mark in `decisions` and in
+                                 `results`; records that predate the format and records
+                                 without `project:` stay warnings, never errors.
   rename --repo <path> --to <n>  deterministically rewrite the `project:` field of every
                                  journal record and the `project:` declaration of the summary
                                  to <n> (atomic, idempotent: a second run changes nothing and
@@ -41,9 +46,10 @@ basename of the resolved deploy root; `init --project <name>` overrides it, e.g.
 task's `repo_path` points to a SUBDIRECTORY of the deploy root — memory/ still lives in the
 deploy root, but the project is named after that subdirectory.
 
-Exit codes: 0 = OK, 1 = FAIL (memory mixes projects, belongs to an unexpected project,
-compaction dropped a critical/follow_up item, or a fix-task file violates its schema).
-This script imports nothing from the factory: it runs from anywhere.
+Exit codes: 0 = OK, 1 = FAIL (memory mixes projects, belongs to an unexpected project, a record
+of the current generation violates the memory format v2, compaction dropped a critical/follow_up
+item, or a fix-task file violates its schema). This script imports nothing from the factory:
+it runs from anywhere.
 """
 from __future__ import annotations
 
@@ -66,6 +72,15 @@ ITEM_FIELD_RE = re.compile(r"^\s*(reason|severity|follow_up):\s*(.*)$")
 FIX_TASK_RE = re.compile(r"^(?P<indent>\s*)-\s+(?P<key>[A-Za-z_][A-Za-z0-9_]*):\s*(?P<val>.*)$")
 FIX_FIELD_RE = re.compile(r"^(?P<indent>\s*)(?P<key>[A-Za-z_][A-Za-z0-9_]*):\s*(?P<val>.*)$")
 FIX_LIST_RE = re.compile(r"^(?P<indent>\s*)-\s+(?P<val>.*)$")
+
+# Memory format v2 (introduced after factory 12.8.0): `run_id` (see scripts/run_id.py) and a
+# provenance mark — `[verified: <evidence>]` or `[inferred]` — in `decisions` and `results`.
+# A record must carry them once it comes from a factory NEWER than MEMORY_V2_AFTER, or as soon
+# as it already carries one of the v2 fields (so a half-migrated record is caught as well).
+RUN_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{8}$")
+PROVENANCE_RE = re.compile(r"\[verified:[^\[\]]+\]|\[inferred\]")
+MEMORY_V2_AFTER = (12, 8, 0)
+VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 LEGACY_NO_PROJECT = "(legacy, no project field)"
 # Task types of the factory task format (see references/security-audit.md, section 4).
@@ -141,14 +156,15 @@ Append-only журнал прогонов фабрики по проекту `{p
 title: <строка>
 project: <имя проекта — basename(repo_path задачи), здесь всегда {project}>
 timestamp: <ISO8601 дата>
+run_id: <YYYYMMDD-8hex — идентификатор прогона, scripts/run_id.py>
 branch: <ветка или "(none)">
 commit: <sha или "(none)">
 task_type: implement | review | refactor | security_audit
 goal: <краткая цель>
 changed_files: <список через "; ">
 created_files: <список через "; ">
-results: integration=<PASS|FAIL|SKIP>; regression=<...>; business=<...>; review=<approve|request_changes|SKIP>
-decisions: <принятые решения>
+results: integration=<PASS|FAIL|SKIP>; regression=<...>; business=<...>; review=<approve|request_changes|SKIP> — ключевые результаты с меткой [verified: <команда/тест/лог>] или [inferred]
+decisions: <принятые решения; каждое ключевое утверждение с меткой [verified: <команда/тест/лог>] или [inferred]>
 assumptions: <допущения>
 models_used: analyzer=<модель>; coder=<модель>; tester=<модель>; reviewer=<модель>
 factory_version: <X.Y.Z — версия фабрики на момент прогона>
@@ -157,6 +173,18 @@ unfinished: нет незавершённых элементов
 
 Однострочный пример записи (одна запись — один блок, поля построчно):
 `title: Короткий заголовок | project: {project} | timestamp: 2026-01-01T00:00:00+0300 | task_type: implement | ...`
+
+**Формат v2 (введён после v12.8.0): `run_id` + provenance-метки.** Поле `run_id` — идентификатор
+прогона (`YYYYMMDD-<8 hex>`, см. `scripts/run_id.py`), по нему запись связывается с артефактами
+прогона. Каждое КЛЮЧЕВОЕ утверждение новой записи в полях `decisions` и `results` несёт
+инлайн-метку прямо в значении поля:
+`[verified: <команда/тест/лог, подтверждающий утверждение>]` — утверждение проверено
+доказательством, или `[inferred]` — выведено, но не проверено. Пример:
+`results: integration=PASS [verified: .code-factory/logs/code-results.md]; review=approve [inferred]`.
+Запись, написанная фабрикой новее v12.8.0, без `run_id` (или с `run_id` не по формату
+`^\\d{{8}}-[0-9a-f]{{8}}$`) либо без метки в `decisions`/`results` — ОШИБКА формата; записи без
+поля `project:` и записи, написанные фабрикой не новее v12.8.0, — legacy (предупреждение, не
+ошибка). Проверяют `scripts/memory_project.py check` и `scripts/check_factory_model.py`.
 
 Если долг есть — вместо одной строки `unfinished:` пишется многострочный список; для каждого
 элемента обязательны 4 поля (`item`, `reason`, `severity` critical|warning|info, `follow_up`
@@ -221,22 +249,90 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def journal_records(change_log: pathlib.Path) -> list[tuple[str, dict[str, str]]]:
+    """Return (heading, top-level fields) of every journal record, in file order.
+
+    Only lines after a dated `## ` heading count, and only non-indented `key: value` lines are
+    fields — so the template's fenced examples and the `unfinished` sub-fields are never read
+    as fields.
+    """
+    records: list[tuple[str, dict[str, str]]] = []
+    heading: str | None = None
+    fields: dict[str, str] = {}
+    for line in change_log.read_text(encoding="utf-8").splitlines():
+        if ENTRY_RE.match(line):
+            if heading is not None:
+                records.append((heading, fields))
+            heading, fields = line.strip(), {}
+            continue
+        if heading is None:
+            continue
+        m = FIELD_RE.match(line)
+        if m:
+            fields[m.group(1)] = m.group(2).strip()
+    if heading is not None:
+        records.append((heading, fields))
+    return records
+
+
 def journal_projects(change_log: pathlib.Path) -> list[str]:
     """Return the distinct non-empty top-level `project:` values of all journal entries."""
     found: list[str] = []
-    in_entry = False
-    for line in change_log.read_text(encoding="utf-8").splitlines():
-        if ENTRY_RE.match(line):
-            in_entry = True
-            continue
-        if not in_entry:
-            continue
-        m = FIELD_RE.match(line)
-        if m and m.group(1) == "project":
-            value = m.group(2).strip()
-            if value and value not in found:
-                found.append(value)
+    for _, fields in journal_records(change_log):
+        value = fields.get("project", "")
+        if value and value not in found:
+            found.append(value)
     return found
+
+
+def version_after(factory_version: str, base: tuple[int, int, int] = MEMORY_V2_AFTER) -> bool:
+    """True when `factory_version` (X.Y.Z) is strictly newer than `base`."""
+    m = VERSION_RE.match(factory_version.strip())
+    return bool(m) and tuple(int(g) for g in m.groups()) > base
+
+
+def is_v2_record(fields: dict[str, str]) -> bool:
+    """True when a journal record has to satisfy the memory format v2 (see the template).
+
+    That is the case once the record comes from a factory version NEWER than MEMORY_V2_AFTER,
+    or as soon as it already carries a v2 field — `run_id` or a provenance mark — so a
+    half-migrated record is never silently accepted. Records without `project:` are legacy and
+    are only warned about, exactly like the other newer keys; records written before the format
+    stay as they are.
+    """
+    if not fields.get("project", "").strip():
+        return False
+    return (version_after(fields.get("factory_version", ""))
+            or "run_id" in fields
+            or any(PROVENANCE_RE.search(fields.get(f, "")) for f in ("decisions", "results")))
+
+
+def record_format_issues(change_log: pathlib.Path) -> tuple[list[str], list[str]]:
+    """Return (errors, warnings) of the memory format v2 over a whole journal.
+
+    A v2 record must carry a well-formed `run_id` and at least one provenance mark in
+    `decisions` AND in `results`; a miss is an error there, a warning in a legacy record.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    for heading, fields in journal_records(change_log):
+        problems: list[str] = []
+        run_id = fields.get("run_id", "").strip()
+        if not run_id:
+            problems.append("missing or empty key 'run_id'")
+        elif not RUN_ID_RE.match(run_id):
+            problems.append(f"invalid run_id '{run_id}' (expected YYYYMMDD-<8 hex>)")
+        for field in ("decisions", "results"):
+            if not PROVENANCE_RE.search(fields.get(field, "")):
+                problems.append(f"no provenance mark '[verified: <evidence>]' or '[inferred]' "
+                                f"in '{field}'")
+        if not problems:
+            continue
+        if is_v2_record(fields):
+            errors += [f"entry '{heading}': {p}" for p in problems]
+        elif not fields.get("project", "").strip():
+            warnings += [f"entry '{heading}': {p} (legacy format)" for p in problems]
+    return errors, warnings
 
 
 def entry_count(change_log: pathlib.Path) -> int:
@@ -303,6 +399,17 @@ def cmd_check(args: argparse.Namespace) -> int:
               file=sys.stderr)
         for hint in owner_hints(root, owner, expected):
             print(hint, file=sys.stderr)
+        return 1
+
+    # Memory format v2 (run_id + provenance marks) of the records themselves: an error for the
+    # records of a current-generation factory, a warning for legacy records without `project:`.
+    fmt_errors, fmt_warnings = record_format_issues(change_log)
+    for warning in fmt_warnings:
+        print(f"WARN - {warning}", file=sys.stderr)
+    if fmt_errors:
+        print("FAIL - memory record format v2 violated:", file=sys.stderr)
+        for error in fmt_errors:
+            print(f"  {error}", file=sys.stderr)
         return 1
 
     print(f"ok - memory belongs to project '{owner or LEGACY_NO_PROJECT}' "

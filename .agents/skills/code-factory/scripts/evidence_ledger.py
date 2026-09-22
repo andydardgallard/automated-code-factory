@@ -18,13 +18,17 @@ Ledger JSON (created on demand by `stamp`, written atomically: same-directory te
 os.replace, so a crash can never leave a half-written ledger):
   {"version": 1,
    "entries": [{"name": "regression", "result": "pass", "fingerprint": "<64 hex>",
-                "timestamp": "2026-09-24T10:00:00+00:00", "log": "<path or null>"}]}
+                "timestamp": "2026-09-24T10:00:00+00:00", "log": "<path or null>",
+                "run_id": "20260922-442cd2f8"}]}
 Re-stamping a name refreshes that entry, so one evidence name has exactly one current entry.
+`run_id` (see `run_id.py`) attributes an entry to the run that produced it; it is written from
+`--run-id` and defaults to "", so entries written before the field existed still load unchanged.
 
 Usage:
-  python evidence_ledger.py sign  --files src/a.py src/b.py [--repo .]
+  python evidence_ledger.py sign  --files src/a.py src/b.py [--repo .] [--run-id <id>]
   python evidence_ledger.py stamp --ledger .code-factory/state/evidence.json --name regression \\
-         --result pass --files src/a.py [--log .code-factory/logs/regression.log] [--repo .]
+         --result pass --files src/a.py [--log .code-factory/logs/regression.log] [--repo .] \\
+         [--run-id <id>]
   python evidence_ledger.py check --ledger .code-factory/state/evidence.json --files src/a.py
 
 `sign` prints the fingerprint. `check` prints one FRESH/STALE row per entry and exits 0 only
@@ -135,7 +139,9 @@ def load_ledger(path) -> list[dict]:
                         "result": str(item.get("result", "")).strip().lower(),
                         "fingerprint": fingerprint.strip().lower(),
                         "timestamp": str(item.get("timestamp", "")),
-                        "log": item.get("log")})
+                        "log": item.get("log"),
+                        # `run_id` was added later: an older entry simply has no run and loads as "".
+                        "run_id": str(item.get("run_id") or "").strip()})
     return entries
 
 
@@ -223,7 +229,8 @@ def cmd_stamp(args: argparse.Namespace) -> int:
              "result": args.result,
              "fingerprint": fingerprint_files(args.files, pathlib.Path(args.repo)),
              "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-             "log": args.log or None}
+             "log": args.log or None,
+             "run_id": args.run_id or ""}
     entries = [e for e in entries if e["name"] != entry["name"]] + [entry]
     try:
         save_ledger(ledger, entries)
@@ -263,6 +270,8 @@ def main() -> int:
                             help="Files the evidence depends on (relative to --repo)")
         parser.add_argument("--repo", default=".",
                             help="Directory the file paths are relative to (default: cwd)")
+        parser.add_argument("--run-id", default="",
+                            help="Run id (see run_id.py); recorded in the entry by `stamp`")
 
     sign = sub.add_parser("sign", help="Print the SHA-256 fingerprint of --files")
     add_common(sign)

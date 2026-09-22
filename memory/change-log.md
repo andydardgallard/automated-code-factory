@@ -249,3 +249,60 @@ unfinished:
     reason: блокировал запуск любых сабагентов; исправлено по согласию пользователя; бэкап config.toml.bak-factory-20260923
     severity: info
     follow_up: false
+
+## 2026-09-24T00:00:00+03:00 — Усиление фабрики v12.8.0: шарды, fingerprint, Think in Code, верифицируемая приёмка, антигаллюцинационные гейты
+title: Усиление фабрики: шардирование whole-repo операций, двухуровневый fingerprint, Think in Code, верифицируемая приёмка и антигаллюцинационные гейты
+project: repo
+timestamp: 2026-09-24T00:00:00+03:00
+branch: feature/factory-hardening-2026-09-24
+commit: cf0f4e1
+task_type: implement
+goal: реализовать план усиления из task-improvements.yaml: P0×7 (шарды, двухуровневый fingerprint, Think in Code, единый review-гейт, верифицируемая приёмка, verify_quotes, handoff-шаблон), P1×8, P2 — backlog
+changed_files: 29 файлов (scripts: project_fingerprint, check_factory_model, memory_project, gen_code_changes_report, version_manager, validate_documentation + тесты; references: code-review, security-audit, providers, verification-strategy, error-routing, tech-stack-detection, reference-docs; sub-agents: analyzer, tester, diagnostician, code-reviewer, security-auditor; code-factory.md, SKILL.md, AGENTS.md, .agents/README.md, task-template.yaml, prepare_factory.sh/.ps1, CHANGELOG, VERSION, memory/*)
+created_files: scripts/{repo_inventory,merge_findings,log_tail,repo_stats,verify_acceptance,verify_quotes,evidence_ledger,factory_preflight,action_gate,task_graph}.py + 11 test_*.py; sub-agents/advisor.md; references/handoff-briefing.md; skill-base/skills/kaggle-agents-course/ (из ../materials, 68 файлов)
+results: integration=PASS (19/19 test_*.py); regression=PASS (8/8 существующих без ослабления + 11 новых; check_factory_model --memory-only PASS); business=PASS (шарды: 45k строк → 3 шарда, merge с дедупликацией; fingerprint: повтор эксперимента 2026-09-23 — structural неизменен, content сдвинут; приёмка SUCCESS 11 MET + 1 derived); review=approve (итерация 2/2: 2 major закрыты и проверены эмпирически, цитаты ревьюера verify_quotes 4/4 VERIFIED)
+decisions: владелец памяти мигрирован automated_vode_factory_v_12.15.1 → repo (rename, подтверждено пользователем); строгий вариант верифицируемой приёмки; skill kaggle-agents-course создан на k3 и оставлен (валиден, rerun на flash без выгоды — решение пользователя); устаревшее правило «не передавать model в Agent tool» исправлено — CLI поддерживает явный model:, secondary-роли запускались на deepseek-flash по матрице; nit fingerprint (index-based) оставлен задокументированным решением; start.cmd pause-finding отклонён как неточный; версия 12.7.0 → 12.8.0 (minor, новый сабагент advisor, валидировано ревьюером)
+assumptions: канонический блок review-гейта вставлен русским текстом во все 5 документов включая англоязычные (тест требует байт-идентичности); advisor из P0.7 покрывается его созданием в P1.8
+models_used: main=primary; analyzer=primary; planner=main; coder=deepseek-flash ×12; tester=unused (тесты писали кодеры); reviewer=primary; diagnostician=unused; advisor=unused; documenter=deepseek-flash; skill_manager=primary (расход с матрицей, зафиксирован)
+factory_version: 12.8.0
+unfinished:
+  - item: P2 backlog — единый rulebook references/factory-rules.md + consistency-checker (B5)
+    reason: осознанно не реализовано (P2 задачи); кандидат на следующий прогон
+    severity: info
+    follow_up: true
+  - item: P2 backlog — вынос доменных regex из error-routing в project-learned patterns (B3)
+    reason: осознанно не реализовано (P2 задачи)
+    severity: info
+    follow_up: true
+  - item: P2 backlog — evaluate-your-evaluator: golden-set diff'ов для калибровки ревьюера
+    reason: осознанно не реализовано (P2 задачи)
+    severity: info
+    follow_up: true
+  - item: P2 backlog — вакцинация: баг после приёмки → регрессионный тест до фикса (норма)
+    reason: осознанно не реализовано (P2 задачи)
+    severity: info
+    follow_up: true
+  - item: P2 backlog — provenance/confidence метки (verified/inferred) в памяти
+    reason: осознанно не реализовано (P2 задачи)
+    severity: info
+    follow_up: true
+  - item: P2 backlog — сквозной run_id во всех артефактах .code-factory/
+    reason: осознанно не реализовано (P2 задачи)
+    severity: info
+    follow_up: true
+  - item: P2 backlog — WIP-checkpoints со структурированным телом; committee при двойном rejection плана; FTS5-индекс memory/ и кодовой базы (stdlib sqlite3)
+    reason: осознанно не реализовано (P2 задачи)
+    severity: info
+    follow_up: true
+  - item: контентный fingerprint читает git-индекс — unstaged-правки невидимы (nit ревьюера)
+    reason: осознанное задокументированное решение; fallback покрывает non-git проекты
+    severity: info
+    follow_up: false
+  - item: action_gate.py — uncaught OSError при незаписываемом журнале (nit ревьюера)
+    reason: fails closed, не опасно; некритично
+    severity: info
+    follow_up: false
+  - item: память корня развёртывания (../memory) всё ещё декларирует automated_vode_factory_v_12.15.1
+    reason: память repo (целевого проекта) мигрирована; корневая память — отдельный deployment, вне scope задачи
+    severity: info
+    follow_up: false

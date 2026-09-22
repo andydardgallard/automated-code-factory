@@ -9,13 +9,23 @@ Builds a synthetic project, then verifies `check_factory_model.py`:
     legacy -> warning), and `factory_version` is validated,
   - project ownership is validated (entry + summary declaring one project -> pass, a missing
     `project` -> warning only, different `project` values in one journal -> fail, an empty
-    `project` value -> fail, and a `project:` example inside a code block is not a declaration).
+    `project` value -> fail, and a `project:` example inside a code block is not a declaration),
+  - the two-level fingerprint line is validated: the `... content: <hash>` format passes, a
+    forged or stale CONTENT hash fails, and a legacy single-hash line only warns.
+
+`project_fingerprint.py` is covered as well:
+  - the content fingerprint catches a change to an EXISTING file at depth >= 2 that the
+    structural fingerprint cannot see (git index and git-less fallback), which is the confirmed
+    defect reported by the code reviewer on 2026-09-23,
+  - both fingerprints stay stable across a commit of the factory's own artifacts,
+  - the CLI modes (default = structural only, `--content`, `--all`) behave as documented.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
 from __future__ import annotations
 
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +36,7 @@ import project_fingerprint
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 CHECKER = SCRIPTS / "check_factory_model.py"
+FP = SCRIPTS / "project_fingerprint.py"
 
 SECTIONS = check_factory_model.CANONICAL_SECTIONS
 
@@ -112,7 +123,7 @@ SUMMARY_NO_PROJECT = SUMMARY.replace("project: demo\nrepo_path: .\n", "")
 
 
 def build(root: pathlib.Path, entry: str = VALID_ENTRY) -> None:
-    """Write a synthetic but valid project model into `root`."""
+    """Write a synthetic but valid project model into `root` (fingerprints stamped on top)."""
     (root / "src").mkdir(parents=True, exist_ok=True)
     (root / "memory").mkdir(exist_ok=True)
     (root / "pyproject.toml").write_text("[project]\nname = \"demo\"\n", encoding="utf-8")
@@ -121,11 +132,43 @@ def build(root: pathlib.Path, entry: str = VALID_ENTRY) -> None:
     (root / "memory" / "change-log.md").write_text(CHANGE_LOG_HEADER + entry, encoding="utf-8")
     (root / "memory" / "summary.md").write_text(SUMMARY, encoding="utf-8")
 
-    fp = project_fingerprint.compute_fingerprint(root)
-    lines = ["<!-- code-factory-fingerprint: %s -->" % fp, "# Demo — Project Model", ""]
+    lines = ["<!-- code-factory-fingerprint: (unstamped) -->", "# Demo — Project Model", ""]
     for s in SECTIONS:
         lines += [f"## {s}", "", f"Content of {s}.", ""]
     (root / "AGENTS.md").write_text("\n".join(lines), encoding="utf-8")
+    stamp(root)
+
+
+def stamp(root: pathlib.Path) -> None:
+    """Rewrite AGENTS.md line 1 with the CURRENT structural + content fingerprints.
+
+    Called after every project change that the check itself cannot anticipate (e.g. `git add`,
+    which is what the content level reads), so a stale model is never mistaken for a broken one.
+    """
+    agents = root / "AGENTS.md"
+    body = agents.read_text(encoding="utf-8").splitlines()[1:]  # drop the old fingerprint line
+    line = "<!-- code-factory-fingerprint: %s content: %s -->" % (
+        project_fingerprint.compute_fingerprint(root),
+        project_fingerprint.compute_content_fingerprint(root))
+    agents.write_text("\n".join([line, *body]), encoding="utf-8")
+
+
+def fingerprint_line(root: pathlib.Path) -> str:
+    """Return the raw first (fingerprint) line of AGENTS.md."""
+    return (root / "AGENTS.md").read_text(encoding="utf-8").splitlines()[0]
+
+
+def replace_line1(root: pathlib.Path, line: str) -> None:
+    """Replace AGENTS.md line 1 (the fingerprint line) with `line`."""
+    lines = (root / "AGENTS.md").read_text(encoding="utf-8").splitlines()
+    (root / "AGENTS.md").write_text("\n".join([line, *lines[1:]]), encoding="utf-8")
+
+
+def parsed_fingerprint(root: pathlib.Path) -> re.Match:
+    """Match AGENTS.md line 1 against the checker's regex (structural [+ content] hashes)."""
+    m = check_factory_model.FINGERPRINT_RE.match(fingerprint_line(root).strip())
+    expect(m is not None, f"line 1 must carry a fingerprint: {fingerprint_line(root)!r}")
+    return m
 
 
 def run_cli(*args: str) -> int:
@@ -133,9 +176,18 @@ def run_cli(*args: str) -> int:
                           capture_output=True, text=True).returncode
 
 
+def run_fp(*args: str) -> subprocess.CompletedProcess:
+    """Run project_fingerprint.py as a CLI (default / --content / --all) and capture stdout."""
+    return subprocess.run([sys.executable, str(FP), *args], capture_output=True, text=True)
+
+
 def expect(cond: bool, msg: str) -> None:
     if not cond:
         raise AssertionError(msg)
+
+
+def agents_warnings(root: pathlib.Path) -> list[str]:
+    return check_factory_model.check_agents_model(root)[1]
 
 
 def mem_errors(root: pathlib.Path) -> list[str]:
@@ -163,11 +215,10 @@ def main() -> int:
         expect(check_factory_model.check_agents(root) != [], "missing section must fail")
         expect(run_cli("--repo", td) != 0, "missing section must exit != 0")
 
-        # 3. Wrong fingerprint -> FAIL.
+        # 3. Wrong (structural AND content) fingerprint -> FAIL.
         build(root)
-        text = (root / "AGENTS.md").read_text(encoding="utf-8")
-        bad = "<!-- code-factory-fingerprint: " + "0" * 64 + " -->" + "\n" + "\n".join(text.splitlines()[1:])
-        (root / "AGENTS.md").write_text(bad, encoding="utf-8")
+        replace_line1(root, "<!-- code-factory-fingerprint: " + "0" * 64
+                            + " content: " + "0" * 64 + " -->")
         expect(check_factory_model.check_agents(root) != [], "wrong fingerprint must fail")
 
         # 4. Corrupt memory entry (remove a required key) -> FAIL.
@@ -283,25 +334,128 @@ def main() -> int:
         expect(run_cli("--repo", td, "--memory-only") == 0,
                "a 'project:' example in a code block must still exit 0")
 
-    # 20. Fingerprint must be stable across committing AGENTS.md (regression: it must NOT
-    #     include the git tree SHA, or the embedded fingerprint goes stale after the very
-    #     commit that carries it).
+        # 23. Two-hash format (structural + content): accepted without warnings, and a FORGED
+        #     content hash fails — a content-only drift is an error, not a warning.
+        build(root)
+        expect(check_factory_model.check_agents(root) == [], "two-hash model must pass")
+        expect(agents_warnings(root) == [], f"two-hash model must not warn: {agents_warnings(root)}")
+        replace_line1(root, "<!-- code-factory-fingerprint: %s content: %s -->"
+                            % (parsed_fingerprint(root).group(1), "0" * 64))
+        expect(any("content fingerprint mismatch" in e for e in check_factory_model.check_agents(root)),
+               "a forged content hash must fail with a content mismatch")
+        expect(run_cli("--repo", td) != 0, "a forged content hash must exit != 0")
+
+        # 23b. A REAL content-only change (structural signals untouched, hash left stale) must fail
+        #      the model check as well — this is what makes "skip regeneration" safe.
+        build(root)
+        struct = project_fingerprint.compute_fingerprint(root)
+        (root / "src" / "main.py").write_text("print('changed')\n", encoding="utf-8")
+        expect(project_fingerprint.compute_fingerprint(root) == struct,
+               "editing src/main.py must not move the structural hash")
+        expect(any("content fingerprint mismatch" in e for e in check_factory_model.check_agents(root)),
+               "a stale content hash must fail the model check")
+
+        # 24. Legacy single-hash fingerprint line: accepted with a WARNING, never an error, so
+        #     models generated before the two-level fingerprint keep working.
+        build(root)
+        legacy = "<!-- code-factory-fingerprint: %s -->" % parsed_fingerprint(root).group(1)
+        replace_line1(root, legacy)
+        expect(check_factory_model.check_agents(root) == [], "legacy line must not be an error")
+        expect(any("legacy" in w and "content" in w for w in agents_warnings(root)),
+               "legacy line must warn about the missing content hash")
+        expect(run_cli("--repo", td) == 0, "legacy line must still exit 0 (warning only)")
+
+        # 25. project_fingerprint.py CLI contract: no flag -> structural only (backwards
+        #     compatible), --content -> content only, --all -> both labelled lines.
+        build(root)
+        struct = project_fingerprint.compute_fingerprint(root)
+        content = project_fingerprint.compute_content_fingerprint(root)
+        default_out = run_fp("--repo", td).stdout.split()
+        expect(default_out == [struct],
+               f"default CLI output must be the structural hash only: {default_out}")
+        expect(run_fp("--repo", td, "--content").stdout.split() == [content],
+               "--content must print the content hash only")
+        all_out = run_fp("--repo", td, "--all").stdout.splitlines()
+        expect(all_out == [f"structural: {struct}", f"content: {content}"],
+               f"--all must print both labelled hashes: {all_out}")
+
+    # 20. Both fingerprints must be stable across committing the factory's own artifacts. The
+    #     structural level excludes AGENTS.md/memory/ and never included the git tree SHA (or the
+    #     embedded hash would go stale after the very commit that carries it); the content level
+    #     reads the git INDEX via `git ls-files -s`, which a commit does not modify. So the two
+    #     hashes embedded in AGENTS.md survive the commit — the "skip regeneration" branch stays
+    #     reachable (regression guard).
     with tempfile.TemporaryDirectory() as gtd:
         groot = pathlib.Path(gtd)
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=groot, check=True)
         build(groot)
+        subprocess.run(["git", "-C", gtd, "add", "-A"], check=True)
+        stamp(groot)  # the index just appeared -> the content hash changed, restamp the model
         expect(check_factory_model.check_agents(groot) == [], "fixture should pass before commit")
         before = project_fingerprint.compute_fingerprint(groot)
-        subprocess.run(["git", "-C", gtd, "add", "-A"], check=True)
+        before_content = project_fingerprint.compute_content_fingerprint(groot)
         subprocess.run(
             ["git", "-C", gtd, "-c", "user.email=a@b.c", "-c", "user.name=t",
              "commit", "-q", "-m", "commit AGENTS.md + memory"], check=True)
         after = project_fingerprint.compute_fingerprint(groot)
+        after_content = project_fingerprint.compute_content_fingerprint(groot)
         expect(before == after, "fingerprint changed after committing AGENTS.md/memory (git tree SHA leak)")
+        expect(before_content == after_content,
+               "content fingerprint changed after committing AGENTS.md/memory (index must be commit-stable)")
         expect(check_factory_model.check_agents(groot) == [], "model should still pass after commit")
 
+    # 21. Confirmed defect (code review 2026-09-23): a change to an EXISTING file at depth >= 2 is
+    #     invisible to the structural fingerprint. The content fingerprint MUST catch it. Tmp repo
+    #     with `git init` + `git add` only — `git ls-files -s` reads the index, no commit needed.
+    with tempfile.TemporaryDirectory() as gtd:
+        groot = pathlib.Path(gtd)
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=groot, check=True)
+        (groot / "src" / "a" / "b").mkdir(parents=True)
+        (groot / "pyproject.toml").write_text("[project]\nname = \"deep\"\n", encoding="utf-8")
+        (groot / "README.md").write_text("# Deep\n", encoding="utf-8")
+        nested = groot / "src" / "a" / "b" / "c.py"
+        nested.write_text("print('one')\n", encoding="utf-8")
+        subprocess.run(["git", "-C", gtd, "add", "-A"], check=True)
+        struct_before = project_fingerprint.compute_fingerprint(groot)
+        content_before = project_fingerprint.compute_content_fingerprint(groot)
+        nested.write_text("print('two')\n", encoding="utf-8")
+        subprocess.run(["git", "-C", gtd, "add", "-A"], check=True)
+        expect(project_fingerprint.compute_fingerprint(groot) == struct_before,
+               "structural hash must NOT react to a depth-3 change of an existing file (blind spot)")
+        expect(project_fingerprint.compute_content_fingerprint(groot) != content_before,
+               "content hash MUST react to a depth-3 change of an existing file (git index)")
+
+    # 22. Git-less fallback of the content level: with no repository it hashes the working-tree
+    #     files (same exclusions), catches the same depth-3 change, and stays blind to the factory
+    #     artifacts (AGENTS.md/memory) — which is what lets AGENTS.md embed its own hash pair.
+    with tempfile.TemporaryDirectory() as ftd:
+        froot = pathlib.Path(ftd)
+        expect(project_fingerprint._git_index_records(froot) is None,
+               "the fallback fixture must not be inside a git repository")
+        (froot / "src" / "a" / "b").mkdir(parents=True)
+        (froot / "pyproject.toml").write_text("[project]\nname = \"deep\"\n", encoding="utf-8")
+        (froot / "README.md").write_text("# Deep\n", encoding="utf-8")
+        nested = froot / "src" / "a" / "b" / "c.py"
+        nested.write_text("print('one')\n", encoding="utf-8")
+        struct_before = project_fingerprint.compute_fingerprint(froot)
+        content_before = project_fingerprint.compute_content_fingerprint(froot)
+        nested.write_text("print('two')\n", encoding="utf-8")
+        expect(project_fingerprint.compute_fingerprint(froot) == struct_before,
+               "structural hash must not react to a depth-3 change either")
+        content_after = project_fingerprint.compute_content_fingerprint(froot)
+        expect(content_after != content_before,
+               "the git-less fallback MUST catch a depth-3 content change")
+        (froot / "AGENTS.md").write_text("# model\n", encoding="utf-8")
+        (froot / "memory").mkdir()
+        (froot / "memory" / "summary.md").write_text("x\n", encoding="utf-8")
+        expect(project_fingerprint.compute_content_fingerprint(froot) == content_after,
+               "factory artifacts (AGENTS.md/memory) must be excluded from the content hash")
+        expect(run_fp("--repo", ftd, "--content").stdout.split() == [content_after],
+               "the fallback must be what --content prints without a repository")
+
     print("PASS - factory model scripts behave as expected (valid passes, corruptions fail, "
-          "unfinished/factory_version/project validated).")
+          "unfinished/factory_version/project validated, structural+content fingerprints "
+          "distinguish depth>=2 content changes).")
     return 0
 
 

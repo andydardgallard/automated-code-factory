@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.7.0 -->
+<!-- code-factory-version: 12.8.0 -->
 # Project: Autonomous Code Factory
 
 Этот проект содержит автономную фабрику по написанию кода для Kimi Code CLI.
@@ -12,9 +12,17 @@
 - `task.yaml` — пример бизнес-задачи (эталон формата)
 - `.agents/skills/code-factory/` — flow skill фабрики (`SKILL.md`), справочники
   (`references/`: planning-guide, verification-strategy, error-routing, tech-stack-detection,
-  code-review, providers, refactoring, security-audit) и шаблон задачи (`assets/`)
+  code-review, providers, refactoring, security-audit, handoff-briefing — обязательный шаблон
+  брифинга сабагентов) и шаблон задачи (`assets/`)
+- `.agents/skills/code-factory/scripts/` — детерминированные stdlib-скрипты (0 токенов):
+  `repo_inventory.py` (инвентарь + шарды ≤20k строк), `merge_findings.py` (слияние findings
+  шардов + merged verdict), `verify_acceptance.py` (критерии с `verify` → acceptance.md),
+  `verify_quotes.py` (дословность цитат), `evidence_ledger.py` (подписи FRESH/STALE),
+  `factory_preflight.py` (проба окружения), `action_gate.py` (деструктивные действия),
+  `task_graph.py` (граф задач на диске), `log_tail.py` (хвост длинного лога), `repo_stats.py`
+  (анализы кодом), `project_fingerprint.py`, `memory_project.py`, `version_manager.py`
 - `.agents/agents/` — главный агент фабрики (Markdown `code-factory.md`) и сабагенты
-  (`sub-agents/analyzer|coder|tester|diagnostician|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
+  (`sub-agents/analyzer|coder|tester|diagnostician|advisor|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
 - `VERSION` — единый источник истины для версии фабрики (одна строка X.Y.Z)
 - `skill-base/` — персистентная база навыков из `reference_docs`/`reference_skills` (опционально)
 - `.agents/README.md` — полная инструкция по использованию фабрики
@@ -44,13 +52,19 @@
 ## Соглашения
 
 - Рантайм-состояние фабрики — `.code-factory/` внутри проекта (не коммитить):
-  `state/` (задача, план, pipeline.yaml), `logs/` (baseline, ошибки, результаты, code-review),
+  `state/` (задача, план, pipeline.yaml, acceptance.md, ledger доказательств, граф задач),
+  `logs/` (baseline, ошибки, результаты, code-review, findings шардов),
   `backups/`, `manifest.json`.
 - **AGENTS.md — единый источник правды**: фабрика генерирует его с ровно 8 секциями `##` и
-  детерминированным fingerprint структурных сигналов (`scripts/project_fingerprint.py`),
-  перегенерирует при расхождении fingerprint (начало задачи) или изменении структуры/стека/
-  точек входа (конец задачи) и коммитит (без отдельного init-шага Kimi). Сабагенты читают
-  AGENTS.md вместо повторного вывода структуры.
+  детерминированным ДВУХУРОВНЕВЫМ fingerprint в первой строке — структурный (манифесты стека,
+  CI-конфиги, README, список каталогов) + контентный (SHA индексированных git-файлов) —
+  `scripts/project_fingerprint.py --all`, маркер
+  `<!-- code-factory-fingerprint: <64-hex> content: <64-hex> -->`. Перегенерирует при расхождении
+  ЛЮБОГО из двух хэшей (начало задачи) или изменении структуры/стека/точек входа (конец задачи)
+  и коммитит (без отдельного init-шага Kimi); ветка «SKIP regeneration» разрешена ТОЛЬКО при
+  совпадении ОБОИХ хэшей — совпадение одного структурного уровня недостаточно (изменения глубже
+  первого уровня видит контентный хэш). Сабагенты читают AGENTS.md вместо повторного вывода
+  структуры.
 - **Долгосрочная память `memory/`** (коммитится, не игнорируется) — память ТОГО проекта, который
   указан в `repo_path` задачи (для этого репозитория целевой проект — сама фабрика), а не память
   фабрики: одна память принадлежит ровно одному проекту. Каталог `memory/` живёт В КОРНЕ
@@ -72,15 +86,31 @@
   существовать `state/task.yaml`, `state/plan.md`, `logs/baseline.md`, `backups/`, `manifest.json`.
 - **Репо-гейт**: если задача ссылается на отсутствующие в репозитории файлы/символы/конфиги —
   в режиме hitl остановиться и спросить пользователя, в режиме auto зафиксировать допущение.
-- **Маршрутизация ошибок**: детерминированный regex → Diagnostician (LLM) → Human → FAILED;
-  ретраи по бюджетам ролей (coder=1, ba=2, planner=2, diagnostician=1, infrastructure=3,
-  reviewer=2).
+- **Маршрутизация ошибок**: детерминированный regex → Diagnostician (LLM) → Advisor (secondary,
+  контрастное семейство диагностика, бюджет 1) → Human → FAILED; ретраи по бюджетам ролей
+  (coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2).
 - **Code review**: каждая задача проходит через сабагента `factory-code-reviewer` перед
-  приёмкой. Обычная задача — ревью diff изменений; `task_type: review` — ревью всего кода в
-  начале, замечания становятся планом. Задача не принимается при открытом `request_changes`.
+  приёмкой. Обычная задача — ревью diff изменений; `task_type: review` и `security_audit` —
+  ревью/аудит всего кода ШАРДАМИ (`repo_inventory.py shards --max-lines 20000` → параллельные
+  сабагенты по шардам → `merge_findings.py` даёт детерминированный merged verdict), замечания
+  review-задачи становятся планом.
+
+<!-- review-gate-policy: begin -->
+**Review-гейт (каноническая формулировка):** задача НЕ принимается, пока у ревьюера открыты замечания severity=critical (вердикт `request_changes` с open critical findings). Бюджет ревьюера = 2 итерации. Если бюджет исчерпан, а critical findings остались: в режиме hitl фабрика ОСТАНАВЛИВАЕТСЯ и спрашивает пользователя; в режиме auto допускается только conditional pass — соответствующий критерий помечается `unverified_review` в `.code-factory/state/acceptance.md`, а нерешённые findings попадают в `.code-factory/report.md` (раздел unresolved findings), никогда молча. Полный SUCCESS при открытых critical findings невозможен.
+<!-- review-gate-policy: end -->
+- **Проверяемая приёмка**: критерии с `verify` исполняются реально (`scripts/verify_acceptance.py`
+  → `.code-factory/state/acceptance.md`; exit 0 только при SUCCESS — хотя бы один критерий с
+  `verify`, все MET, baseline доказан), а доказательства несут подписи FRESH/STALE
+  (`scripts/evidence_ledger.py`): зелёный лог устаревшей ревизии приёмкой не считается.
+- **Брифинг каждой делегации**: сабагент получает самодостаточный брифинг по
+  `.agents/skills/code-factory/references/handoff-briefing.md` — Task / Context / релевантные
+  файлы ПУТЯМИ (без вставки содержимого) / что уже пробовали и почему не сработало; файлы пишет
+  только главный агент, read-only роли идут с суффиксом «без правок».
 - **Формат задачи**: `title`, `repo_path`, `description`, опционально `user_story`, `mode`,
-  `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria`,
-  `commit_exclude`, `models`. Поля `priority` нет — все задачи по умолчанию high.
+  `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria`
+  (у критерия опционально `verify: <команда>` и `derived: true`), `business_tests`
+  (сценарий/конфиги/ожидаемые бизнес-результаты), `commit_exclude`, `models`.
+  Поля `priority` нет — все задачи по умолчанию high.
 - **User story**: при наличии `user_story` фабрика анализирует и использует его на этапах
   анализа, планирования и реализации (всеми агентами).
 - **`task_type: refactor`** — заморозка функциональности: 100% существующих тестов проходят без

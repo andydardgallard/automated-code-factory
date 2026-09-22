@@ -64,7 +64,7 @@ def read_version(vf: pathlib.Path) -> str:
 
 
 def write_version(vf: pathlib.Path, v: str) -> None:
-    vf.write_text(v + "\n", encoding="utf-8")
+    vf.write_text(v + "\n", encoding="utf-8", newline="")
 
 
 def bump(v: str, kind: str) -> str:
@@ -97,11 +97,13 @@ def sync_file(path: pathlib.Path, rel: str, v: str, date: str) -> None:
     lines = path.read_text(encoding="utf-8").splitlines()
     if rel == "README.md":
         lines = ensure_marker(lines, v, insert_at=1)
+        # README mentions the version twice: the title heading and the footer line.
         for i, ln in enumerate(lines):
             m = README_TITLE_RE.match(ln)
             if m:
                 lines[i] = m.group(1) + v + m.group(2)
-            lines[i] = README_FOOTER_RE.sub(lambda mo: mo.group(1) + v + mo.group(2), lines[i])
+                break  # only the first versioned heading is the title
+        lines = [README_FOOTER_RE.sub(lambda mo: mo.group(1) + v + mo.group(2), ln) for ln in lines]
     elif rel == "CHANGELOG.md":
         # Look at the FIRST `## [X.Y.Z]` section only; prepend a new one if it is older than v.
         for i, ln in enumerate(lines):
@@ -121,7 +123,8 @@ def sync_file(path: pathlib.Path, rel: str, v: str, date: str) -> None:
             lines = ensure_marker(lines, v, insert_at=0)
     elif rel == ".agents/README.md":
         lines = ensure_marker(lines, v, insert_at=0)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # newline="" so the explicit LF line endings are not translated to CRLF on Windows.
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
 
 
 def sync(repo: pathlib.Path, v: str, date: str) -> None:

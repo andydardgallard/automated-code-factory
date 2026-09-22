@@ -1,0 +1,14 @@
+{
+  "skills": {
+    "kaggle-agents-course": {
+      "name": "kaggle-agents-course",
+      "source": "../materials",
+      "sha256": "d1dcac189accfa21cff60be957bf8a3ede5d75a95eed4eccc7a1cec8d0ef1df7",
+      "created_at": "2026-09-22T17:47:06+00:00",
+      "last_used": "2026-09-22T17:47:06+00:00",
+      "task_ids": [
+        "task-improvements-2026-09-24"
+      ]
+    }
+  }
+}

@@ -43,6 +43,77 @@ later stage while an earlier one is failing.
 - Compare against the baseline: any previously-passing test that now fails is a regression and
   triggers rollback.
 
+## 2.1 Think in Code — big output lives on disk, not in context
+
+Test and build output is bulky and mostly uninformative: the agent needs the counters and the tail,
+not 4000 lines. So:
+
+- Run every test/build/business command with its FULL output redirected to
+  `.code-factory/logs/<stage>.log` (e.g. `integration.log`, `regression.log`,
+  `business-test.log`) — an output above a few KB (guideline: >100 lines) is never truncated away,
+  the file keeps all of it. That log is the evidence a quote refers to
+  (`references/code-review.md` §2.1).
+- Into the agent's context comes only the deterministic reduction:
+
+  ```bash
+  python .agents/skills/code-factory/scripts/log_tail.py .code-factory/logs/regression.log \
+    --lines 50 --grep 'FAILED|ERROR|error'
+  ```
+
+  It prints `total_lines`, `total_bytes`, the match count per `--grep` pattern and the last N
+  lines — nothing more, and no LLM tokens. The same rule applies to counting/scanning anything
+  large: write a small stdlib script that prints only the answer instead of reading files into the
+  context.
+- Reports and handoffs reference the log by path plus the counters/tail excerpt
+  (`test-results.md`, section §5), never by pasting the full log.
+- A log is only evidence for the tree it was produced from — that is what the ledger below
+  enforces.
+
+## 2.2 Evidence ledger — FRESH/STALE (P1.9)
+
+A green log from an older revision is not proof about the current code. Every test/acceptance
+result is therefore signed with the fingerprint of the files it depends on, and re-checked before
+anyone relies on it.
+
+```bash
+# sign: print the SHA-256 fingerprint of the files this evidence depends on
+python .agents/skills/code-factory/scripts/evidence_ledger.py sign --files src/a.py src/b.py
+
+# stamp: write/refresh one evidence entry in the ledger
+python .agents/skills/code-factory/scripts/evidence_ledger.py stamp \
+  --ledger .code-factory/state/evidence.json --name regression --result pass \
+  --files src/a.py src/b.py --log .code-factory/logs/regression.log
+
+# check: recompute the fingerprints of the signed files and print FRESH/STALE per entry
+python .agents/skills/code-factory/scripts/evidence_ledger.py check \
+  --ledger .code-factory/state/evidence.json --files src/a.py src/b.py
+```
+
+- The fingerprint is SHA-256 over `<relative path>:<content sha256>` lines, sorted and
+  de-duplicated, so neither the order of `--files` nor the platform separator matters. A deleted
+  file contributes `:missing` and an unreadable one `:unreadable`, so a deletion counts as a change
+  instead of an error. Re-stamping a name refreshes that entry (one current entry per name).
+- **FRESH** = every signed file is byte-identical to the moment the evidence was produced;
+  **STALE** = at least one signed file changed afterwards. `check` exits 0 only when every entry is
+  FRESH and every result is `pass`; STALE evidence, a failed result or an empty/unreadable ledger is
+  exit 1.
+- **The reviewer and the acceptance step accept evidence only while it is FRESH.** A green test log
+  whose files changed since (the very common "tests passed, then the coder touched the code again")
+  proves nothing about the current tree. Implementation: after any change to signed files, re-run
+  the stage and re-stamp; never carry a stale stamp forward.
+- **STALE downgrades the verdict**: passing `--ledger` to the acceptance gate makes it re-check the
+  ledger in-process, and a STALE entry — or the absence of a FRESH `regression=pass` entry —
+  downgrades an otherwise SUCCESS run to **DEGRADED** with the reason quoted in `acceptance.md`:
+
+  ```bash
+  python .agents/skills/code-factory/scripts/verify_acceptance.py \
+    --input criteria.json --output .code-factory/state/acceptance.md --repo . \
+    --regression pass --ledger .code-factory/state/evidence.json --evidence-files src/a.py
+  ```
+
+- The ledger is not a second source of truth: it only answers "is this evidence still about the
+  code we have?", while the logs stay the evidence itself.
+
 ## 3. Business tests
 
 Business test = run the actual (built/started) program with the user-specified configs and input
@@ -139,11 +210,13 @@ Write `.code-factory/logs/test-results.md`:
 | Stage | Command/Scenario | Result | Evidence |
 |-------|------------------|--------|----------|
 | Baseline | `cargo test` | PASS (42) | logs/baseline.md |
-| Integration | ... | PASS | ... |
-| Regression | `cargo test` | PASS (42) | ... |
-| Business | run on CNY-3.23.txt | PASS | actual==expected |
+| Integration | ... | PASS | logs/integration.log |
+| Regression | `cargo test` | PASS (42) | logs/regression.log |
+| Business | run on CNY-3.23.txt | PASS | logs/business-test.log |
 
-Keep the report short — evidence by file reference, not by pasting full logs.
+Keep the report short — evidence by file reference, not by pasting full logs. Each row's full
+output lives in `.code-factory/logs/<stage>.log` (see §2.1); the row links the log, and a green
+result is only quoted as evidence while its ledger entry is FRESH (§2.2).
 
 ## 6. Final report (.code-factory/report.md)
 
@@ -200,8 +273,9 @@ python3 .agents/skills/code-factory/scripts/gen_code_changes_report.py \
   --repo <project-root> --commit <sha>
 ```
 
-The report shows for each file: changed lines as a "Было | Стало" table, pure additions and
-removals as code blocks (truncated at 30 lines with a pointer to git), and full content for new
-files. Run it after the factory's commit so the reported commit sha exists in the repo.
+The report shows for each file: changed lines as a "Было | Стало" table, and pure additions and
+removals as code blocks. Every block — including a new file's content — is truncated at 30 lines
+(`MAX_BLOCK`) with a `... (+N строк, полный код в git)` pointer to git. Run it after the
+factory's commit so the reported commit sha exists in the repo.
 
 

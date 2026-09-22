@@ -58,7 +58,7 @@ severity=critical или follow_up=true сохраняются обязател�
 
 ## 2026-09-01T01:01:45+0300 — AGENTS.md как единый источник правды + переносимая память
 title: AGENTS.md как единый источник правды + переносимая долгосрочная память
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-01T01:01:45+0300
 branch: main
 commit: a53ef72ac36825fb3a6a1a34fc63781d1c2de7f6
@@ -73,7 +73,7 @@ models_used: analyzer=primary; planner=primary; coder=primary; tester=primary; r
 
 ## 2026-09-08T14:07:38+0300 — Фабрика v12.5.0: documenter + память долга + база навыков + версионирование
 title: Фабрика v12.5.0: documenter + память долга + база навыков + версионирование
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-08T14:07:38+0300
 branch: feature/factory-v12.5.0
 commit: 123acf33561298379a2c374fcb2fed27967a9df6
@@ -90,7 +90,7 @@ unfinished: нет незавершённых элементов
 
 ## 2026-09-08T21:09:33+03:00 — Аудит системы безопасности
 title: Аудит системы безопасности
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-08T21:09:33+03:00
 branch: main
 commit: (none)
@@ -107,7 +107,7 @@ unfinished: нет незавершённых элементов
 
 ## 2026-09-08T21:28:42+03:00 — Закрыть возможность утечки API-ключей через git
 title: Закрыть возможность утечки API-ключей через git
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-08T21:28:42+03:00
 branch: main
 commit: 5a966be
@@ -124,7 +124,7 @@ unfinished: нет незавершённых элементов
 
 ## 2026-09-21T19:40:00+03:00 — Память фабрики принадлежит целевому проекту
 title: Память фабрики принадлежит целевому проекту, а не самой фабрике
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-21T19:40:00+03:00
 branch: feature/project-scoped-memory
 commit: (none)
@@ -162,7 +162,7 @@ unfinished:
 ## 2026-09-21T20:55:17+03:00 — Развёртывание и запуск фабрики в Windows
 
 title: Развёртывание и запуск фабрики в Windows (скрипты prepare_factory и start)
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-21T20:55:17+03:00
 branch: feature/windows-launch
 commit: 37a683e
@@ -219,7 +219,7 @@ unfinished:
 
 ## 2026-09-22T20:27:04+03:00 — Ревью фабрики по философии + план усиления (task-improvements.yaml)
 title: Проверка фабрики на соблюдение философии и план её усиления по материалам
-project: automated_vode_factory_v_12.15.1
+project: repo
 timestamp: 2026-09-22T20:27:04+03:00
 branch: feature/philosophy-review
 commit: (none)

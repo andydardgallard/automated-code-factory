@@ -356,10 +356,13 @@ $CfPatterns       = @('.agents/', '.code-factory/', '__pycache__/', '*.pyc', '.e
 $GitignoreExists  = Test-Path -LiteralPath $Gitignore -PathType Leaf
 $GitignoreText    = ''
 if ($GitignoreExists) { $GitignoreText = [System.IO.File]::ReadAllText($Gitignore) }
+# Построчно: сравнение ровно со строкой, а не с подстрокой (".env" не должен «находиться»
+# внутри "my.env.bak"). CRLF-файл при этом не мешает проверке.
+$GitignoreLines   = @($GitignoreText -split "`r?`n")
 
 $NeedGitignore = $false
 foreach ($pat in $CfPatterns) {
-    if (-not $GitignoreText.Contains($pat)) { $NeedGitignore = $true }
+    if ($GitignoreLines -notcontains $pat) { $NeedGitignore = $true }
 }
 
 if ($NeedGitignore) {
@@ -368,7 +371,7 @@ if ($NeedGitignore) {
     if ($GitignoreText -match "`r`n") { $nl = "`r`n" }
     $add = ''
     if ($GitignoreExists -and $GitignoreText.Length -gt 0) { $add += $nl }
-    $add += "# --- Code Factory (auto-added by prepare_factory.sh) ---" + $nl
+    $add += "# --- Code Factory (auto-added by prepare_factory.ps1) ---" + $nl
     foreach ($pat in $CfPatterns) { $add += $pat + $nl }
     Write-FileStrict -Path $Gitignore -Text $add -Encoding $EncNoBom -Append | Out-Null
 }
@@ -409,7 +412,8 @@ $ShOk     = if (Test-Path -LiteralPath $LauncherSh  -PathType Leaf) { 'OK ✓' }
 $CmdOk    = if (Test-Path -LiteralPath $LauncherCmd -PathType Leaf) { 'OK ✓' } else { 'ОТСУТСТВУЕТ ✗' }
 $GitOk    = if (Test-Path -LiteralPath (Join-Path $ProjectDir '.git') -PathType Container) { 'OK ✓' } else { 'ОТСУТСТВУЕТ ✗' }
 $GiText   = if (Test-Path -LiteralPath $Gitignore -PathType Leaf) { [System.IO.File]::ReadAllText($Gitignore) } else { '' }
-$GiOk     = if ($GiText.Contains('.agents/') -and $GiText.Contains('.code-factory/')) { 'OK ✓ (.agents/ + .code-factory/)' } else { 'нет .agents/ или .code-factory/ ✗' }
+$GiLines  = @($GiText -split "`r?`n")
+$GiOk     = if ($GiLines -contains '.agents/' -and $GiLines -contains '.code-factory/') { 'OK ✓ (.agents/ + .code-factory/)' } else { 'нет .agents/ или .code-factory/ ✗' }
 
 Write-Host ""
 Info "==> Проверка готовности:"

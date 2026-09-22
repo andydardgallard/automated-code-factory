@@ -84,7 +84,12 @@ if [[ -d "$PROJECT_DIR/.git" ]]; then
     info "    Git: репозиторий уже существует ✓"
 else
     warn "    Git: репозитория нет — создаю git init"
-    git -C "$PROJECT_DIR" init -b main
+    # `git init -b main` есть только с git 2.28; на старых git делаем init + symbolic-ref
+    # (unborn-ветка переименовывается без создания коммита).
+    if ! git -C "$PROJECT_DIR" init -b main 2>/dev/null; then
+        git -C "$PROJECT_DIR" init
+        git -C "$PROJECT_DIR" symbolic-ref HEAD refs/heads/main
+    fi
 fi
 
 # --- 2. Копирование фабрики --------------------------------------------------
@@ -198,13 +203,15 @@ info "    Launcher: создан $LAUNCHER"
 # (кэш, история, контекст) — фабрика работает с .agents/ напрямую через файловую
 # систему, а не через git.
 GITIGNORE="$PROJECT_DIR/.gitignore"
+# Точное совпадение строки (-x): подстрочный матч считал паттерн добавленным, хотя в
+# .gitignore была лишь похожая строка. `tr -d '\r'` — чтобы CRLF-файл (Windows) не
+# ломал проверку и паттерны не дублировались при повторном запуске.
+gitignore_has() {
+    [[ -f "$GITIGNORE" ]] && tr -d '\r' < "$GITIGNORE" | grep -qxF "$1"
+}
 NEED_GITIGNORE=false
 for pat in ".agents/" ".code-factory/" "__pycache__/" "*.pyc" ".env" ".env.*" "*.env" "*.pem" "*.key"; do
-    if [[ -f "$GITIGNORE" ]] && grep -qF "$pat" "$GITIGNORE"; then
-        :
-    else
-        NEED_GITIGNORE=true
-    fi
+    gitignore_has "$pat" || NEED_GITIGNORE=true
 done
 
 if [[ "$NEED_GITIGNORE" == true ]]; then
@@ -260,7 +267,7 @@ info "==> Проверка готовности:"
 echo "    • .agents/:            $([ -f "$PROJECT_DIR/.agents/skills/code-factory/SKILL.md" ] && echo 'OK ✓' || echo 'ОТСУТСТВУЕТ ✗')"
 echo "    • start.sh:            $([ -x "$LAUNCHER" ] && echo 'OK ✓' || echo 'ОТСУТСТВУЕТ ✗')"
 echo "    • .git/:               $([ -d "$PROJECT_DIR/.git" ] && echo 'OK ✓' || echo 'ОТСУТСТВУЕТ ✗')"
-echo "    • .gitignore:          $(grep -qF '.agents/' "$PROJECT_DIR/.gitignore" 2>/dev/null && grep -qF '.code-factory/' "$PROJECT_DIR/.gitignore" 2>/dev/null && echo 'OK ✓ (.agents/ + .code-factory/)' || echo 'нет .agents/ или .code-factory/ ✗')"
+echo "    • .gitignore:          $(gitignore_has '.agents/' && gitignore_has '.code-factory/' && echo 'OK ✓ (.agents/ + .code-factory/)' || echo 'нет .agents/ или .code-factory/ ✗')"
 echo "    • memory/:              $MEM_LINE"
 echo "    • git status:"
 git -C "$PROJECT_DIR" status --short | head -20 || true

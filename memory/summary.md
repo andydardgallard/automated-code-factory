@@ -1,7 +1,7 @@
 # Project Summary — Code Factory
 
 <!-- code-factory-memory: summary -->
-project: automated_vode_factory_v_12.15.1
+project: repo
 repo_path: .
 
 Сжатая сводка проекта. Сворачивается из старых записей `memory/change-log.md` при компакции

@@ -71,6 +71,6 @@ the run report.
 ## Deterministic reuse
 
 `skill_base.py` provides: `hash <path>` (SHA-256 of file or folder), `lookup <name>` (resolve and
-report reuse/update/error), `record <name> <source> <hash> <task_id>` (update the manifest),
-`list` (dump the manifest). Reuse vs regeneration is decided by the content hash, never by the
-LLM.
+report reuse/update/error), `record <name> <source> <hash> [--task-id <id>]` (update the manifest;
+`--task-id` is optional and only appends to the recorded `task_ids`), `list` (dump the manifest).
+Reuse vs regeneration is decided by the content hash, never by the LLM.

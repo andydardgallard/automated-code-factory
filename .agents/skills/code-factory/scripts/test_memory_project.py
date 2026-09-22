@@ -9,7 +9,16 @@ Deterministic self-test for `memory_project.py` (zero LLM tokens).
   - `check` passes for empty/single-project memory and takes the owner from summary.md while
     the journal has no records yet, fails on a mixed journal, on a summary/journal mismatch
     and on a project mismatch (`--expect`), tolerates a missing journal (fresh project), and
-    reports a record-free-of-`project` journal as legacy (never as a mismatch).
+    reports a record-free-of-`project` journal as legacy (never as a mismatch),
+  - `check` enforces the owner by default: memory declaring another project than
+    basename(resolved --repo) fails with a `rename` hint (`--no-owner-check` drops only that
+    comparison) and passes again after `rename`,
+  - `rename` rewrites every journal record and the summary declaration, leaves the template's
+    fenced example untouched and is idempotent (second run reports 0 records, byte-identical),
+  - `compact-check` fails when a severity=critical or follow_up=true item is missing after a
+    compaction and passes when all of them survived,
+  - `validate-fix-tasks` accepts a well-formed generated fix-task file and rejects a file that
+    misses a required field or carries an invalid task_type, naming the offending line.
 
 Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
 """
@@ -37,10 +46,11 @@ def expect(cond: bool, msg: str) -> None:
         raise AssertionError(msg)
 
 
-def journal_entry(timestamp: str, project: str = "") -> str:
+def journal_entry(timestamp: str, project: str = "", unfinished: str = "") -> str:
     """A minimal but format-valid journal record belonging to `project`.
 
-    `project=""` builds a legacy record without the `project:` field.
+    `project=""` builds a legacy record without the `project:` field; `unfinished` is an
+    optional ready-made `unfinished:` block appended to the record.
     """
     name = project or "legacy"
     project_line = f"project: {project}\n" if project else ""
@@ -58,7 +68,16 @@ results: integration=PASS; regression=PASS; business=PASS; review=approve
 decisions: (none)
 assumptions: (none)
 models_used: analyzer=primary
-"""
+{unfinished}"""
+
+
+def unfinished_block(*items: tuple[str, str, str]) -> str:
+    """Build an `unfinished:` block from (item, severity, follow_up) triples."""
+    lines = ["unfinished:"]
+    for item, severity, follow_up in items:
+        lines += [f"  - item: {item}", "    reason: demo reason",
+                  f"    severity: {severity}", f"    follow_up: {follow_up}"]
+    return "\n".join(lines) + "\n"
 
 
 def write_journal(root: pathlib.Path, *entries: str) -> None:
@@ -97,6 +116,9 @@ def main() -> int:
         expect(CHANGE_LOG_MARKER in clog_text, "change-log.md must carry the canonical marker")
         expect(SUMMARY_MARKER in sum_text, "summary.md must carry the canonical marker")
         expect(declares_project(sum_text, "demo_proj"), "summary.md must declare 'project: demo_proj'")
+        # The nit fix: the declaration carries the RESOLVED repo path, not the raw argument.
+        expect(f"repo_path: {root.resolve()}" in sum_text,
+               f"summary.md must declare the resolved repo_path: {sum_text!r}")
         expect(clog_text.splitlines()[0] == "# Change Log — demo_proj",
                f"unexpected change-log title: {clog_text.splitlines()[0]!r}")
         for section in ("## Current state", "## Key decisions", "## Recent history"):
@@ -197,8 +219,147 @@ def main() -> int:
         expect(run("check", "--repo", str(legacy), "--expect", "legacy_proj").returncode == 0,
                "legacy memory must not be treated as a project mismatch")
 
-    print("PASS - memory_project.py behaves as expected (init creates once, never rewrites, "
-          "check passes/cli-fails on single/mixed/mismatched/missing/legacy memory).")
+        # 12. Enforced owner: memory declaring (and recording) another project than
+        #     basename(resolved --repo) fails with a rename hint; --no-owner-check drops only
+        #     that comparison; --expect always wins.
+        foreign = tmp / "foreign_proj"
+        foreign.mkdir()
+        f_clog = foreign / "memory" / "change-log.md"
+        f_sum = foreign / "memory" / "summary.md"
+        expect(run("init", "--repo", str(foreign), "--project", "renamed_proj").returncode == 0,
+               "init of the mis-named project must exit 0")
+        # The records are APPENDED to the freshly initialised journal, so the template's own
+        # `project:` examples (fenced code block, prose) are still in the file and must survive
+        # a rename untouched.
+        f_clog.write_text(f_clog.read_text(encoding="utf-8") + "\n\n"
+                          + journal_entry("2026-09-03T00:00:00Z", "renamed_proj")
+                          + journal_entry("2026-09-04T00:00:00Z", "renamed_proj"),
+                          encoding="utf-8")
+        res = run("check", "--repo", str(foreign))
+        expect(res.returncode == 1, "memory owned by another project must exit 1")
+        expect("renamed_proj" in res.stderr and "foreign_proj" in res.stderr,
+               f"the owner mismatch must name both projects: {res.stderr!r}")
+        expect("rename" in res.stderr, f"the owner mismatch must hint at `rename`: {res.stderr!r}")
+        expect("--no-owner-check" in res.stderr,
+               f"the hint must cover the subdirectory case: {res.stderr!r}")
+        expect(run("check", "--repo", str(foreign), "--no-owner-check").returncode == 0,
+               "--no-owner-check must drop the basename comparison")
+        expect(run("check", "--repo", str(foreign), "--expect", "renamed_proj").returncode == 0,
+               "--expect must override the basename comparison")
+
+        # 13. `rename` rewrites every record and the summary declaration, leaves the template's
+        #     fenced example alone, and a second run is a byte-identical no-op (idempotent).
+        res = run("rename", "--repo", str(foreign), "--to", "foreign_proj")
+        expect(res.returncode == 0, "rename must exit 0")
+        expect("2 record(s) rewritten" in res.stdout,
+               f"rename must count the rewritten records: {res.stdout!r}")
+        expect("declaration updated" in res.stdout,
+               f"rename must report the updated declaration: {res.stdout!r}")
+        clog_after = f_clog.read_text(encoding="utf-8")
+        expect(clog_after.count("project: foreign_proj") == 2,
+               f"rename must rewrite every record: {clog_after!r}")
+        expect(declares_project(f_sum.read_text(encoding="utf-8"), "foreign_proj"),
+               "rename must rewrite the summary declaration")
+        expect(any(ln.startswith("project: <") and "renamed_proj" in ln
+                   for ln in clog_after.splitlines()),
+               "rename must not rewrite the template's fenced example")
+        expect(run("check", "--repo", str(foreign)).returncode == 0,
+               "check must pass after rename")
+
+        renamed = (clog_after, f_sum.read_text(encoding="utf-8"))
+        res = run("rename", "--repo", str(foreign), "--to", "foreign_proj")
+        expect(res.returncode == 0, "repeated rename must exit 0")
+        expect("0 record(s) rewritten" in res.stdout,
+               f"repeated rename must rewrite nothing: {res.stdout!r}")
+        expect("declaration unchanged" in res.stdout,
+               f"repeated rename must leave the declaration: {res.stdout!r}")
+        expect((f_clog.read_text(encoding="utf-8"), f_sum.read_text(encoding="utf-8")) == renamed,
+               "repeated rename must be idempotent (byte-identical files)")
+        expect(run("rename", "--repo", str(foreign), "--to", "").returncode == 1,
+               "an empty --to must exit 1")
+
+        # 14. Compact-preservation: every severity=critical / follow_up=true item must still be
+        #     in the compacted file; a dropped one is an error listing it, the kept ones are not.
+        before_file = tmp / "compact_before.md"
+        after_file = tmp / "compact_after.md"
+        before_file.write_text(
+            "# Change Log — compact\n\n" + CHANGE_LOG_MARKER + "\n\n"
+            + journal_entry("2026-09-05T00:00:00Z", "compact_proj", unfinished_block(
+                ("critical review finding", "critical", "false"),
+                ("small nit", "warning", "false"),
+                ("idea for later", "info", "true"))), encoding="utf-8")
+        after_file.write_text(
+            "# Project Summary — compact\n\n" + SUMMARY_MARKER + "\n\n## Unfinished\n\n"
+            + unfinished_block(("critical review finding", "critical", "false")), encoding="utf-8")
+        res = run("compact-check", "--before", str(before_file), "--after", str(after_file))
+        expect(res.returncode == 1, "a dropped follow_up item must exit 1")
+        expect("idea for later" in res.stderr,
+               f"the dropped item must be listed: {res.stderr!r}")
+        expect("critical review finding" not in res.stderr,
+               f"preserved items must not be reported: {res.stderr!r}")
+        after_file.write_text(
+            after_file.read_text(encoding="utf-8")
+            + unfinished_block(("idea for later", "info", "true")), encoding="utf-8")
+        res = run("compact-check", "--before", str(before_file), "--after", str(after_file))
+        expect(res.returncode == 0, f"a lossless compaction must exit 0: {res.stderr!r}")
+        expect("preserved all 2" in res.stdout,
+               f"compact-check must count the preserved items: {res.stdout!r}")
+        expect(run("compact-check", "--before", str(before_file),
+                   "--after", str(tmp / "missing_after.md")).returncode == 1,
+               "a missing file must exit 1")
+
+        # 15. `validate-fix-tasks`: a well-formed generated file passes; a missing required field
+        #     or an invalid task_type fails, naming the offending line.
+        fix_ok = tmp / "fix-tasks.yaml"
+        fix_ok.write_text(
+            "# generated by the security_audit flow\n"
+            "tasks:\n"
+            '  - title: "Drop hardcoded credentials"\n'
+            "    task_type: implement\n"
+            '    description: "Read tokens from the environment."\n'
+            "    acceptance_criteria:\n"
+            '      - "No token in tracked files"\n'
+            '      - "Deployment reads tokens from env"\n'
+            "    commit_exclude: .env\n"
+            '  - title: "Harden the container"\n'
+            "    task_type: implement\n"
+            '    description: "Run the app as a non-root user."\n'
+            "    acceptance_criteria:\n"
+            '      - "USER is not root in the image"\n', encoding="utf-8")
+        res = run("validate-fix-tasks", str(fix_ok))
+        expect(res.returncode == 0, f"a valid fix-task file must exit 0: {res.stderr!r}")
+        expect("2 task(s)" in res.stdout,
+               f"the validator must count the tasks: {res.stdout!r}")
+
+        fix_bad = tmp / "fix-tasks-broken.yaml"
+        fix_bad.write_text(
+            "tasks:\n"
+            '  - title: "Drop hardcoded credentials"\n'
+            "    task_type: implement\n"
+            '    description: "Read tokens from the environment."\n'
+            "    acceptance_criteria:\n"
+            '      - "No token in tracked files"\n'
+            '  - title: "Harden the container"\n'
+            "    task_type: patch\n"
+            "    acceptance_criteria:\n"
+            '      - "USER is not root in the image"\n', encoding="utf-8")
+        res = run("validate-fix-tasks", str(fix_bad))
+        expect(res.returncode == 1, "a fix-task file missing a required field must exit 1")
+        expect("line 7: task 2 'Harden the container' missing required field 'description'"
+               in res.stderr, f"the missing field must be reported with its line: {res.stderr!r}")
+        expect("line 8: task 2 'Harden the container' has invalid task_type 'patch'" in res.stderr,
+               f"the invalid task_type must be reported with its line: {res.stderr!r}")
+        fix_empty = tmp / "fix-tasks-empty.yaml"
+        fix_empty.write_text("# nothing was generated\n", encoding="utf-8")
+        expect(run("validate-fix-tasks", str(fix_empty)).returncode == 1,
+               "a task-less file must exit 1")
+        expect(run("validate-fix-tasks", str(tmp / "missing.yaml")).returncode == 1,
+               "a missing fix-task file must exit 1")
+
+    print("PASS - memory_project.py behaves as expected (init creates once, never rewrites; "
+          "check enforces a single owner and fails on mixed/mismatched/missing/legacy memory; "
+          "rename rewrites the owner and is idempotent; compact-check keeps critical/follow_up "
+          "items; validate-fix-tasks checks the fix-task schema).")
     return 0
 
 

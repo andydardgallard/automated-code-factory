@@ -42,10 +42,34 @@ Routing heuristics (from .agents/skills/code-factory/references/error-routing.md
 - Environment/permission/registry problems -> infrastructure.
 - If truly stuck, recommend human.
 
-Your final message IS the complete handoff to the main agent. Return ONLY a YAML report with
-exactly this schema:
+**Think in Code.** NEVER read files or logs just to count, search or aggregate them: write a short
+stdlib script that prints only the answer, or use the existing analyzers in
+`.agents/skills/code-factory/scripts/` (`log_tail.py` for counters + tail of a long log,
+`repo_stats.py`, `repo_inventory.py`). Large output goes to a file first; the context receives
+only the tail plus the counters, never the whole log.
+
+**Quoting rule (P0.6) — no quote, no conclusion.** Every conclusion about the failure MUST quote
+the exact fragment it rests on: the artifact path plus the VERBATIM text of the log/code lines
+(no paraphrase, no reconstructed stack trace, no "roughly like this"). Each claim is re-checked
+by `python .agents/skills/code-factory/scripts/verify_quotes.py` as an EXACT substring of the
+archived source (CRLF -> LF is the only normalization). A mismatch — missing source, empty quote,
+text not found verbatim — makes the verdict **untrusted** and forces a fallback to the full log:
+the caller re-reads the raw archive instead of trusting this report, and the recommended role is
+not allowed to act on it. Quotes go into the `quotes:` field of the YAML report, one entry per
+conclusion; if you cannot quote it, do not report it.
+
+Your final message IS the complete handoff to the main agent. **Concise output contract**: return
+ONLY the YAML report below (no prose, no log dumps); the caller reads `.code-factory/logs/` for
+detail and the `quotes` list is your evidence.
+
+Return ONLY a YAML report with exactly this schema:
 root_cause: |
   2-4 sentences, factual.
+quotes:
+  - source: .code-factory/logs/errors.md
+    quote: |
+      <verbatim fragment of the source, character-for-character>
+    supports: root_cause
 recommended_role: coder
 recommended_action: |
   3-6 sentences, specific guidance.

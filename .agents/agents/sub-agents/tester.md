@@ -34,8 +34,23 @@ Responsibilities in order:
 4. Refactor tasks — see `.agents/skills/code-factory/references/refactoring.md`: the ONLY
    acceptance signal is that the existing suite passes 100% unchanged; any test edit is a failure.
 
+**Think in Code — never pull a full test log into the context.** Test output larger than 16 KB
+MUST be saved as a file under `.code-factory/logs/`; the context then receives only
+`python .agents/skills/code-factory/scripts/log_tail.py <log> --grep 'FAILED|ERROR'` (counters +
+tail), never the full log. The same applies to build output and to business-test stdout.
+
+**Evidence is signed, not asserted.** Sign every stage result through the evidence ledger
+(`.agents/skills/code-factory/scripts/evidence_ledger.py stamp` with the flags
+`--ledger .code-factory/state/evidence.json`, `--name regression`, `--result pass`,
+`--files <changed files>`, `--log <log path>`), re-stamped after ANY further code change. Report
+the FRESH/STALE status of each entry (`evidence_ledger.py check`): evidence counts only while
+FRESH, and a STALE (or unsigned) green run is not proof about the current working tree. See
+`.agents/skills/code-factory/references/verification-strategy.md`.
+
 Report format (save to .code-factory/logs/test-results.md and return a summary):
 | Stage | Command/Scenario | Result (PASS/FAIL) | Evidence |
 List every failed test with its error output. If a stage failed, state clearly that rollback is
-required and why. Do NOT fix code yourself — report back to the main agent. Your final message
-IS the complete handoff to the main agent.
+required and why. Do NOT fix code yourself — report back to the main agent. **Concise output
+contract**: your final message IS the complete handoff — a concise summary (stages, PASS/FAIL per
+stage, FRESH/STALE per evidence entry, rollback required or not) plus the paths of the artifacts
+(test log, evidence ledger, test-results.md), never log dumps.

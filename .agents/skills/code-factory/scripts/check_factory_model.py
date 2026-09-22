@@ -4,8 +4,14 @@ Deterministic check of the Code Factory's project model (zero LLM tokens).
 
 Checks four invariants of the durable project model:
   1. AGENTS.md exists and has EXACTLY the 8 canonical `##` sections.
-  2. The fingerprint embedded in AGENTS.md matches the fingerprint recomputed from the
-     project's current structural signals (project unchanged -> model is current).
+  2. The fingerprint line embedded in AGENTS.md (line 1) matches the fingerprints recomputed
+     from the project's current signals. The current format carries BOTH levels:
+     `<!-- code-factory-fingerprint: <structural-64-hex> content: <content-64-hex> -->`.
+     A structural mismatch means the project structure/stack/entry points changed, and a
+     content mismatch means a tracked file changed without touching the structural signals
+     (edits at depth >= 2) — both are errors, because either way the model is stale and must
+     be regenerated. The LEGACY single-hash format is still accepted, but only with a WARNING
+     (it cannot see content-only changes); its structural hash is still verified.
   3. The portable long-term memory is well-formed: `memory/change-log.md` is an
      append-only journal (each entry has the required keys, plus the optional
      `unfinished`, `factory_version` and `project` keys) and `memory/summary.md` exists with
@@ -17,15 +23,15 @@ Checks four invariants of the durable project model:
      errors, and so is a `project` key that is present but empty (never silent legacy).
 
 Usage:
-  python3 check_factory_model.py [--repo <path>] [--memory-only]
+  python check_factory_model.py [--repo <path>] [--memory-only]
 
-  --memory-only   skip the AGENTS.md checks (sections + fingerprint) and only validate
+  --memory-only   skip the AGENTS.md checks (sections + fingerprints) and only validate
                   the memory files. Useful for the factory's own root, whose AGENTS.md
                   is a hand-authored manual rather than a generated 8-section model.
 
 Exit code 0 = PASS, 1 = FAIL (each failure printed to stderr). Warnings are printed to
 stderr but do not fail (legacy memory missing the newer optional keys or the `project:`
-ownership declaration). stdlib only.
+ownership declaration; legacy single-hash fingerprint line). stdlib only.
 """
 from __future__ import annotations
 
@@ -34,7 +40,7 @@ import pathlib
 import re
 import sys
 
-from project_fingerprint import compute_fingerprint
+from project_fingerprint import compute_content_fingerprint, compute_fingerprint
 
 CANONICAL_SECTIONS = [
     "Project Overview",
@@ -47,7 +53,13 @@ CANONICAL_SECTIONS = [
     "Known Constraints & Limitations",
 ]
 
-FINGERPRINT_RE = re.compile(r"^<!--\s*code-factory-fingerprint:\s*([0-9a-f]{64})\s*-->$")
+# Line 1 of a generated AGENTS.md. The `content:` part is optional so a legacy (single-hash)
+# model is still accepted — with a warning, see `check_agents_model`.
+FINGERPRINT_RE = re.compile(
+    r"^<!--\s*code-factory-fingerprint:\s*([0-9a-f]{64})"
+    r"(?:\s+content:\s*([0-9a-f]{64}))?\s*-->$"
+)
+FINGERPRINT_HINT = "<!-- code-factory-fingerprint: <64-hex> content: <64-hex> -->"
 CHANGE_LOG_MARKER = "<!-- code-factory-memory: change-log -->"
 SUMMARY_MARKER = "<!-- code-factory-memory: summary -->"
 ENTRY_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2}.*)$")
@@ -76,24 +88,34 @@ UNFINISHED_SEVERITIES = {"critical", "warning", "info"}
 UNFINISHED_BOOLS = {"true", "false"}
 
 
-def check_agents(root: pathlib.Path) -> list[str]:
-    """Return a list of errors for the AGENTS.md model (empty = OK)."""
+def check_agents_model(root: pathlib.Path) -> tuple[list[str], list[str]]:
+    """Return (errors, warnings) for the AGENTS.md model (empty lists = OK)."""
     errors: list[str] = []
+    warnings: list[str] = []
     agents = root / "AGENTS.md"
     if not agents.is_file():
-        return ["AGENTS.md not found"]
+        return ["AGENTS.md not found"], warnings
 
     lines = agents.read_text(encoding="utf-8").splitlines()
     first = lines[0] if lines else ""
 
     m = FINGERPRINT_RE.match(first.strip())
     if not m:
-        errors.append("AGENTS.md line 1 must be '<!-- code-factory-fingerprint: <64-hex> -->'")
+        errors.append(f"AGENTS.md line 1 must be '{FINGERPRINT_HINT}'")
     else:
-        embedded = m.group(1)
+        embedded, embedded_content = m.group(1), m.group(2)
         current = compute_fingerprint(root)
         if embedded != current:
             errors.append(f"fingerprint mismatch: embedded={embedded[:12]}… != current={current[:12]}…")
+        if embedded_content is None:
+            warnings.append("AGENTS.md line 1 uses the legacy single-hash fingerprint (no "
+                            "'content:' part): content-only changes are invisible to the model "
+                            f"— regenerate AGENTS.md as '{FINGERPRINT_HINT}'")
+        else:
+            current_content = compute_content_fingerprint(root)
+            if embedded_content != current_content:
+                errors.append("content fingerprint mismatch: "
+                              f"embedded={embedded_content[:12]}… != current={current_content[:12]}…")
 
     headings = [ln.strip() for ln in lines if ln.startswith("## ")]
     missing = [s for s in CANONICAL_SECTIONS if f"## {s}" not in headings]
@@ -102,7 +124,12 @@ def check_agents(root: pathlib.Path) -> list[str]:
         errors.append(f"missing sections: {missing}")
     if extra:
         errors.append(f"unexpected sections: {extra}")
-    return errors
+    return errors, warnings
+
+
+def check_agents(root: pathlib.Path) -> list[str]:
+    """Errors only for the AGENTS.md model (empty = OK); see `check_agents_model` for warnings."""
+    return check_agents_model(root)[0]
 
 
 def _parse_entry_body(body: list[str]) -> tuple[dict[str, str], list[dict[str, str]]]:
@@ -264,9 +291,11 @@ def main() -> int:
     if args.memory_only:
         errors, warnings = validate_memory(root)
     else:
-        errors = check_agents(root)
+        a_errs, a_warns = check_agents_model(root)
         m_errs, m_warns = validate_memory(root)
+        errors += a_errs
         errors += m_errs
+        warnings += a_warns
         warnings += m_warns
 
     for w in warnings:

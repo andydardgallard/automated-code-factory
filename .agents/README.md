@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.7.0 -->
+<!-- code-factory-version: 12.8.0 -->
 
 Автономная фабрика по написанию кода. Принимает бизнес-задачу от пользователя, который не
 разбирается в программировании, анализирует проект, планирует изменения, уточняет только
@@ -28,12 +28,15 @@
 │       │   ├── refactoring.md       # тип задачи refactor: заморозка функциональности
 │       │   ├── security-audit.md    # тип задачи security_audit: адаптивный полный аудит
 │       │   ├── documentation.md     # сабагент документирования: методология + валидатор
+│       │   ├── handoff-briefing.md  # обязательный шаблон брифинга сабагентов (файлы путями)
 │       │   └── reference-docs.md    # reference_docs/reference_skills: база навыков + матрица
 │       ├── scripts/
 │       │   ├── gen_code_changes_report.py  # генератор report_code_changes.md (diff было→стало)
-│       │   ├── project_fingerprint.py      # детерминированный fingerprint структурных сигналов
-│       │   ├── check_factory_model.py      # проверка: 8 секций + fingerprint + формат памяти
+│       │   ├── project_fingerprint.py      # двухуровневый fingerprint: структурный + контентный
+│       │   ├── check_factory_model.py      # проверка: 8 секций + оба fingerprint + формат памяти
 │       │   ├── test_factory_model.py       # self-тест скриптов модели
+│       │   ├── memory_project.py           # память проекта: init/name/check/rename/compact-check/validate-fix-tasks
+│       │   ├── test_memory_project.py      # self-тест скрипта памяти проекта
 │       │   ├── test_prompt_structure.py    # self-тест: append-only структура промптов
 │       │   ├── test_env_propagation.sh     # self-тест: перенос env-флага моделей
 │       │   ├── validate_documentation.py   # валидатор документации (сабагент документирования)
@@ -44,6 +47,27 @@
 │       │   ├── test_version_manager.py     # self-тест скрипта версий (≥12 кейсов)
 │       │   ├── validate_mermaid.py         # структурный валидатор Mermaid-диаграмм
 │       │   ├── test_validate_mermaid.py    # self-тест валидатора Mermaid
+│       │   ├── repo_inventory.py           # инвентарь репозитория + шарды (shard-протокол)
+│       │   ├── test_repo_inventory.py      # self-тест инвентаря
+│       │   ├── merge_findings.py           # детерминированное слияние findings шардов + вердикт
+│       │   ├── test_merge_findings.py      # self-тест слияния findings
+│       │   ├── repo_stats.py               # анализы репозитория кодом: sizes/entry-points/imports
+│       │   ├── test_repo_stats.py          # self-тест анализов
+│       │   ├── log_tail.py                 # счётчики + хвост длинного лога (без вытягивания в контекст)
+│       │   ├── test_log_tail.py            # self-тест хвоста лога
+│       │   ├── factory_preflight.py        # pre-flight окружения (python/python3/py и др.)
+│       │   ├── test_factory_preflight.py   # self-тест pre-flight
+│       │   ├── action_gate.py              # классификация деструктивных действий (ALLOW/CONFIRM/HARD_DENY)
+│       │   ├── test_action_gate.py         # self-тест action gate
+│       │   ├── task_graph.py               # граф задач на диске: create/claim/complete/ready/list
+│       │   ├── test_task_graph.py          # self-тест графа задач
+│       │   ├── evidence_ledger.py          # ledger доказательств с подписями FRESH/STALE
+│       │   ├── test_evidence_ledger.py     # self-тест ledger'а доказательств
+│       │   ├── verify_acceptance.py        # машинная проверка критериев приёмки (анти-тавтология)
+│       │   ├── test_verify_acceptance.py   # self-тест проверки приёмки
+│       │   ├── verify_quotes.py            # дословность цитат-доказательств (Evidence-Preserving Reducer)
+│       │   ├── test_verify_quotes.py       # self-тест проверки цитат
+│       │   ├── test_review_gate.py         # self-тест канонического review-гейта (5 документов)
 │       │   └── test_windows_scripts.py     # self-тест Windows-скриптов развёртывания/запуска
 │       └── assets/
 │           └── task-template.yaml   # шаблон бизнес-задачи
@@ -54,6 +78,7 @@
         ├── coder.md                 # сабагент: реализация кода
         ├── tester.md                # сабагент: тесты и проверка результатов
         ├── diagnostician.md         # сабагент: глубокий анализ ошибок (read-only)
+        ├── advisor.md               # сабагент: второе мнение по ошибке после Diagnostician
         ├── code-reviewer.md         # сабагент: статическое ревью кода (read-only)
         ├── refactorer.md            # сабагент: рефакторинг без изменения поведения
         ├── security-auditor.md      # сабагент: аудит безопасности (read-only)
@@ -62,8 +87,9 @@
 ```
 
 Рантайм-состояние фабрики живёт в `.code-factory/` внутри проекта (не коммитится):
-`state/` (задача, план), `backups/` (бэкапы изменяемых файлов), `manifest.json` (список
-изменённых/созданных файлов), `logs/` (ошибки, результаты тестов, code review).
+`state/` (задача, план, pipeline.yaml, acceptance.md, ledger доказательств, граф задач),
+`backups/` (бэкапы изменяемых файлов), `manifest.json` (список изменённых/созданных файлов),
+`logs/` (ошибки, результаты тестов, code review, findings шардов).
 
 Переносимая долгосрочная память живёт в коммитимом каталоге `memory/` ТОГО проекта, который указан в
 `repo_path` задачи (НЕ в `.gitignore`): `memory/change-log.md` (append-only журнал прогонов, одна
@@ -141,10 +167,13 @@ kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и 
 - генерирует ровно 8 секций `##` (Project Overview, Technology Stack, Architecture Overview,
   Directory Structure, Key Configuration Files, Build & Run Instructions,
   Dependencies & Integrations, Known Constraints & Limitations) и встраивает в первую строку
-  детерминированный fingerprint структурных сигналов;
-- fingerprint считается скриптом `scripts/project_fingerprint.py` (манифесты стека, CI-конфиги,
-  README, список каталогов; собственные артефакты фабрики исключены). Совпал — анализ/Scout
-  пропускается; не совпал — AGENTS.md перегенерируется;
+  детерминированный ДВУХУРОВНЕВЫЙ fingerprint — структурный + контентный:
+  `<!-- code-factory-fingerprint: <64-hex> content: <64-hex> -->`;
+- fingerprint считается скриптом `scripts/project_fingerprint.py --all`: структурный уровень —
+  манифесты стека, CI-конфиги, README, список каталогов; контентный — SHA-256 проиндексированных
+  git-файлов (собственные артефакты фабрики исключены в обоих уровнях). Совпали ОБА — анализ/Scout
+  и перегенерация пропускаются; не совпал любой — AGENTS.md перегенерируется (правки глубже
+  первого уровня видит контентный уровень);
 - обновляется в двух точках: начало задачи (внешние изменения) и конец задачи (собственные
   изменения фабрики), после чего коммитится; фабрика делает хороший AGENTS.md сама, без
   отдельного init-шага.
@@ -158,7 +187,7 @@ kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и 
 обязательный для новых записей признак `project: <имя проекта>`) и `summary.md` (сводка с
 объявлением `project:`/`repo_path:` сразу после канонического маркера; компакция журнала по порогу
 50 записей). При первом обращении к проекту, если `memory/` отсутствует, она создаётся командой
-`python3 .agents/skills/code-factory/scripts/memory_project.py init --repo <корень развёртывания>
+`python .agents/skills/code-factory/scripts/memory_project.py init --repo <корень развёртывания>
 --project <basename разрешённого repo_path>` (имя фиксируется в объявлении `project:` сводки).
 Проверка модели — скрипт `scripts/check_factory_model.py` (8 секций + fingerprint + формат журнала),
 self-тест — `scripts/test_factory_model.py`; принадлежность памяти проекту — `memory_project.py
@@ -178,10 +207,18 @@ user_story: |                # опционально, но рекомендуе
   Как трейдер, я хочу сигналы по CNY, чтобы торговать дробным инструментом как Si.
 mode: hitl                   # hitl (по умолчанию) | auto
 task_type: implement         # implement | review | refactor | security_audit
-acceptance_criteria:
+acceptance_criteria:         # у критерия опционально есть verify: <команда> и derived: true
   - "Стратегия генерирует не менее 5 сигналов LONG/SHORT для CNY"
+  - criterion: "Поведение для инструмента Si не изменилось"
+    verify: "python -m pytest -q tests/test_si_regression.py"
+business_tests:              # опционально: сценарий, конфиги и ожидаемые бизнес-результаты
+  - scenario: "Запустить стратегию на данных CNY"
+    config: "path/to/config.toml"
+    expected_results: "Не менее 5 сигналов LONG/SHORT и положительная кривая капитала"
 ```
 Поля `priority` нет — все задачи по умолчанию обрабатываются с наивысшим приоритетом.
+`business_tests` читается в Phase 0 вместе с задачей; если поля нет, фабрика уточняет сценарий,
+конфиги и ожидаемые бизнес-результаты у пользователя на этапе планирования (hitl).
 
 `task_type: review` — задача «сделать code review существующего кода»: фабрика запускает
 ревьюера по **всему** коду в начале, его замечания становятся планом работ.
@@ -213,12 +250,26 @@ acceptance_criteria:
 Перед приёмкой каждая задача проходит через сабагента `factory-code-reviewer`:
 
 - **обычная задача** — ревьюер смотрит **diff** изменений (не весь проект);
-- **задача `task_type: review`** — ревьюер смотрит **весь код** в начале, его замечания
-  становятся планом.
+- **`task_type: review` / `security_audit`** — ревью/аудит **всего кода** ШАРДАМИ в начале:
+  `scripts/repo_inventory.py shards --max-lines 20000` → по одному сабагенту на шард →
+  детерминированный merged verdict скриптом `scripts/merge_findings.py` (каждый сабагент
+  видит только файлы своего шарда); замечания review-задачи становятся планом.
 
 Вердикт `approve` → задача идёт на приёмку; `request_changes` → формируется список переделки
-для coder-а, после правок повторно гоняются тесты и ревью. Задача не может быть принята, пока
-ревьюер не дал добро. Бюджет ревью = 2 итерации (см. `references/code-review.md`).
+для coder-а, после правок повторно гоняются тесты и ревью. При исчерпании бюджета действует
+auto-escape политика: в режиме auto допускается только conditional pass с пометкой критерия
+`unverified_review` (см. канонический блок ниже), в режиме hitl фабрика останавливается.
+
+<!-- review-gate-policy: begin -->
+**Review-гейт (каноническая формулировка):** задача НЕ принимается, пока у ревьюера открыты замечания severity=critical (вердикт `request_changes` с open critical findings). Бюджет ревьюера = 2 итерации. Если бюджет исчерпан, а critical findings остались: в режиме hitl фабрика ОСТАНАВЛИВАЕТСЯ и спрашивает пользователя; в режиме auto допускается только conditional pass — соответствующий критерий помечается `unverified_review` в `.code-factory/state/acceptance.md`, а нерешённые findings попадают в `.code-factory/report.md` (раздел unresolved findings), никогда молча. Полный SUCCESS при открытых critical findings невозможен.
+<!-- review-gate-policy: end -->
+
+Приёмка дополнительно проверяется машинно: критерии с `verify` исполняются по-настоящему
+(`scripts/verify_acceptance.py` → `.code-factory/state/acceptance.md`), и SUCCESS (exit 0)
+требует, чтобы хотя бы один критерий нёс `verify`, все критерии с `verify` были MET и
+регрессионный baseline был доказан. Прогон без единого `verify` или с устаревшими
+доказательствами получает DEGRADED, а не SUCCESS: подписи FRESH/STALE доказательств считает
+`scripts/evidence_ledger.py`, поэтому зелёный лог старой ревизии приёмкой не считается.
 
 ## Откат изменений и маршрутизация ошибок
 
@@ -228,10 +279,12 @@ acceptance_criteria:
    wrong results/unknown→Diagnostician (см. `references/error-routing.md`).
 2. **Роллбэк**: восстанавливает файлы из `.code-factory/backups/`, удаляет созданные файлы
    (по `manifest.json`), возвращает проект в до-изменённое состояние.
-3. **Retry-бюджеты**: coder=1, BA=2, Planner=2, Diagnostician=1, infrastructure=3, reviewer=2.
-   При исчерпании — эскалация на Diagnostician (LLM-анализ, пишет
-   `.code-factory/logs/diagnostic.md`).
-4. **Human**: если Diagnostician рекомендует — показать пользователю и спросить.
+3. **Retry-бюджеты**: coder=1, BA=2, Planner=2, Diagnostician=1, advisor=1, infrastructure=3,
+   reviewer=2. При исчерпании — эскалация на Diagnostician (LLM-анализ, пишет
+   `.code-factory/logs/diagnostic.md`), затем на Advisor (`factory-advisor`, secondary-модель
+   контрастного семейства, read-only, бюджет 1; маршрут решает машинное поле `agreement`
+   доклада — см. `references/error-routing.md` §4.1).
+4. **Human**: если Advisor или Diagnostician рекомендует — показать пользователю и спросить.
 5. **FAILED**: только при исчерпании всех бюджетов, с полным логом в
    `.code-factory/logs/errors.md`. Фабрика никогда не падает молча.
 
@@ -300,10 +353,13 @@ follow_up.
 аутентификацией, не ломая уже подключённые модели. Подробности, конфиги и обработка ошибок —
 в `references/providers.md` и `references/error-routing.md` §1.1.
 
-Главный агент НЕ передаёт имя модели в Agent tool (не поддерживается) и записывает фактическую
-модель в `.code-factory/state/pipeline.yaml` (`models_used`) и в `report.md` (раздел
-«Models used»). Если после прогона в `pipeline.yaml` все роли показывают одну модель — значит,
-модели не разделялись. Для разделения обязателен флаг
+Главный агент передаёт модель каждому сабагенту явно: аргумент `model:` в Agent tool
+поддерживается CLI — модель берётся из матрицы `models` задачи по правилу generator≠judge
+(кодер/тестер и ревьюер/диагностик/advisor — разные семейства моделей), а `model_preference`
+(`primary|secondary`) в `.md`-сабагентах служит fallback для ролей, которые задача не назвала.
+Фактическая модель записывается в `.code-factory/state/pipeline.yaml` (`models_used`) и в
+`report.md` (раздел «Models used»). Если после прогона в `pipeline.yaml` все роли показывают одну
+модель — значит, модели не разделялись. Для разделения обязателен флаг
 `export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — без него coder/tester уйдут на primary.
 Фабрика проверяет это в pre-flight и пишет `models_warning` в pipeline.yaml/report.md.
 

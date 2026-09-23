@@ -1,0 +1,3 @@
+# Машиночитаемый слепок error-routing таблиц: тест test_error_router.py требует LF
+# (детерминированный JSON, CRLF от core.autocrlf ломает побайтовую проверку).
+.agents/skills/code-factory/references/error-patterns.default.json text eol=lf

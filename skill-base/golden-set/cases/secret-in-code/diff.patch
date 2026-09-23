@@ -1,0 +1,16 @@
+diff --git a/src/deploy.py b/src/deploy.py
+--- a/src/deploy.py
++++ b/src/deploy.py
+@@ -1,8 +1,11 @@
+ import requests
+ 
+ API_URL = "https://api.example.com/v1"
+ TIMEOUT = 30
++AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
++DB_PASSWORD = "prod-password-123"
+ 
+ 
+ def push(payload):
+-    return requests.post(API_URL, json=payload, timeout=TIMEOUT)
++    headers = {"X-Api-Key": AWS_SECRET_ACCESS_KEY}
++    return requests.post(API_URL, json=payload, timeout=TIMEOUT, headers=headers)

@@ -1,0 +1,3 @@
+# Parameterized query replaced by an f-string: SQL injection = critical.
+verdict: request_changes
+severities: [critical]

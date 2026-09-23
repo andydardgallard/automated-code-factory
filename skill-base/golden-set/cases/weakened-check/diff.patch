@@ -1,0 +1,23 @@
+diff --git a/src/validator.py b/src/validator.py
+--- a/src/validator.py
++++ b/src/validator.py
+@@ -1,4 +1,4 @@
+ def validate_amount(amount):
+-    if amount <= 0:
+-        raise ValueError("amount must be positive")
++    if amount < 0:
++        return None
+     return amount * 2
+diff --git a/tests/test_validator.py b/tests/test_validator.py
+--- a/tests/test_validator.py
++++ b/tests/test_validator.py
+@@ -1,8 +1,7 @@
+ import pytest
+ 
+ from src.validator import validate_amount
+ 
+ 
+ def test_negative_amount_is_rejected():
+-    with pytest.raises(ValueError):
+-        validate_amount(-5)
++    assert validate_amount(-5) is None

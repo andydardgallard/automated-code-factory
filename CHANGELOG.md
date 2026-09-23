@@ -5,6 +5,48 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.10.1] — 2026-09-23
+
+### Added
+- **`test_gen_code_changes_report.py`** — self-тест генератора `report_code_changes.md`: `--help` и
+  ошибки использования на cp1251/cp866-консоли, happy-path во временном git-репозитории. Набор
+  self-тестов — 26 (25 существующих без ослабления).
+- **Предупреждение о dirty-дереве** (`project_fingerprint.py`, `check_factory_model.py`): контентный
+  хэш по-прежнему читает git-индекс (решение сохранено — индекс commit-стабилен и платформенно
+  нейтрален, а AGENTS.md может встроить пару своих хэшей), но слепое пятно больше не молчит:
+  `--content`/`--all` печатают stderr-заметку, а проверка модели — предупреждение о N
+  unstaged/untracked правках, которых индекс не видит. Хэши и exit-коды не меняются.
+- **`.gitattributes`: `*.cmd`/`*.ps1` → `text eol=crlf`** — Windows-лаунчеры (`prepare_factory.cmd`,
+  `prepare_factory.ps1`, `start.cmd`) получают CRLF при checkout независимо от `core.autocrlf`;
+  блобы остаются LF, ренормализация не требуется. Анти-регрессионная проверка обеих строк добавлена
+  в `test_windows_scripts.py`.
+
+### Changed
+- **`action_gate.py`: новый exit code 3** (инфраструктурная ошибка журнала) — незаписываемый журнал
+  (OSError) печатает классификацию на stdout, `error: cannot write the action-gate journal …` на
+  stderr и завершает работу кодом 3 вместо traceback; коды решений 0/1/2 не изменены, молчаливого
+  ALLOW по-прежнему нет.
+- **Калибровка ревьюера (§7)**: правило про нейтральный ре-нейминг уточнено —
+  `references/code-review.md` §3 и `sub-agents/code-reviewer.md` требуют молчания (не nit) при
+  равно ясных именах. После правки промпта ревьюер перекалиброван: accuracy 7/7, macro precision
+  1.000 (было 0.857), recall 1.000 (`logs/reviewer-calibration.md`).
+- **Golden set закоммичен**: 7 кейсов калибровки ревьюера в `skill-base/golden-set/` стали частью
+  репозитория (ранее каталог исключался как фикстура через `commit_exclude`) — свежий клон
+  воспроизводит калибровку без восстановления из соседнего развёртывания. В FTS5-индекс прецедентов
+  кейсы по-прежнему не попадают.
+- **Гигиена документации**: устаревшие советы `--memory-only` для корня фабрики убраны из
+  `references/tech-stack-detection.md` и шаблона журнала `memory_project.py` — авто-детект корня
+  (3 сигнала) делает `SKIP` сам, сам флаг сохранён как живой CLI-контракт. `AGENTS.md`,
+  `.agents/README.md` и `references/tech-stack-detection.md` описывают dirty-worktree warning и
+  актуальные метрики калибровки.
+
+### Fixed
+- **`gen_code_changes_report.py`: `--help` без traceback** — `main()` переводит stdout/stderr в
+  UTF-8 (`reconfigure(encoding="utf-8", errors="replace")` под try/except), поэтому не-ASCII
+  help-текст (`→`, кириллица) больше не падает `UnicodeEncodeError` на консоли с cp1251/cp866;
+  контракт argparse сохранён: `--help` → exit 0, ошибка использования → exit 2, сообщение без
+  traceback.
+
 ## [12.10.0] — 2026-09-23
 
 ### Added

@@ -1,0 +1,4 @@
+# New network + file-write path with no error handling (and no status check): missing error
+# handling is a major defect, not a crash of an existing path.
+verdict: request_changes
+severities: [major]

@@ -22,6 +22,7 @@ import argparse
 import pathlib
 import re
 import subprocess
+import sys
 
 MAX_BLOCK = 30  # max lines shown for a pure add/remove block
 
@@ -168,7 +169,23 @@ def build_report(files: list[dict], commit: str, branch: str, run_id: str = "") 
     return "\n".join(out)
 
 
+def use_utf8_output() -> None:
+    """Force UTF-8 on stdout/stderr so the Russian help survives being piped or redirected.
+
+    A Windows console defaults to a legacy code page (cp866/cp1251) and argparse's `--help` text
+    carries non-ASCII characters (the Cyrillic words and `→`), which that codec cannot encode:
+    `print_help()` would raise UnicodeEncodeError and the user would get a traceback instead of
+    the help. `errors="replace"` keeps a stream that cannot be reconfigured from ever raising.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):      # an old interpreter or a replaced stream
+            pass
+
+
 def main() -> None:
+    use_utf8_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", default=".", help="Path to the git repository (default: cwd)")
     ap.add_argument("--commit", default="HEAD", help="Commit to report (default: HEAD)")

@@ -23,7 +23,9 @@ Verified here:
   4. anti-drift: the inline `start.cmd` template in the .ps1 == the committed `start.cmd`,
   5. anti-drift: the inline `start.sh` template in the .ps1 == the here-doc of `prepare_factory.sh`,
   6. `prepare_factory.sh` was NOT touched (it must not mention `start.cmd` at all),
-  7. end-to-end (Windows only, otherwise SKIPPED): `cmd.exe /c prepare_factory.cmd <fresh tmp>`
+  7. `.gitattributes` pins `*.cmd`/`*.ps1` to CRLF at checkout, so the CRLF-only checks above
+     hold on a clone with `core.autocrlf=false` too (never an LF-only checked-out launcher),
+  8. end-to-end (Windows only, otherwise SKIPPED): `cmd.exe /c prepare_factory.cmd <fresh tmp>`
      into two fresh target paths — one with a space, one with Cyrillic characters — a real
      deployment each, then a second run to prove idempotency (existing project memory is never
      overwritten) and that the project name Python reported back is not mangled.
@@ -55,6 +57,12 @@ PS1_NAME = "prepare_factory.ps1"
 CMD_NAME = "prepare_factory.cmd"
 START_CMD_NAME = "start.cmd"
 SH_NAME = "prepare_factory.sh"
+
+GITATTRIBUTES_NAME = ".gitattributes"
+# Pinned at checkout whatever the machine's core.autocrlf says: an LF-only `*.cmd`/`*.ps1`
+# working copy is a broken launcher, and the CRLF-only checks below only hold if the checkout
+# forced CRLF (a clone with core.autocrlf=false would otherwise hand out LF).
+EOL_PINS = ("*.cmd text eol=crlf", "*.ps1 text eol=crlf")
 
 # The Windows deployer must produce exactly these files in a fresh project.
 CREATED_RELS = (
@@ -102,6 +110,7 @@ PS1 = REPO / PS1_NAME
 CMD = REPO / CMD_NAME
 START_CMD = REPO / START_CMD_NAME
 SH = REPO / SH_NAME
+GITATTRIBUTES = REPO / GITATTRIBUTES_NAME
 
 
 def expect(cond: bool, msg: str) -> None:
@@ -318,6 +327,24 @@ def bash_deployer_untouched() -> None:
            "deployer untouched")
     expect(extract_heredoc(text, "EOF")[0] == "#!/usr/bin/env bash",
            f"{SH_NAME}: the start.sh here-doc must still start with the bash shebang")
+
+
+def gitattributes_pins_crlf() -> None:
+    """The CRLF-only checks above must hold on ANY clone, not just one with core.autocrlf=true.
+
+    Without the pin, git hands the launchers out with LF where core.autocrlf=false, and LF-only
+    .cmd/.ps1 files are broken (cmd.exe and PowerShell 5.1 both expect CRLF).
+    """
+    expect(GITATTRIBUTES.is_file(),
+           f"{GITATTRIBUTES.name} must exist: it is what pins the Windows launchers to CRLF")
+    # splitlines() drops the CRLF terminator of a CRLF working copy as well - git strips that CR
+    # itself, so the pins hold whether or not this machine rewrote the checkout.
+    lines = {line.strip() for line in read_text(GITATTRIBUTES).splitlines()}
+    missing = [pin for pin in EOL_PINS if pin not in lines]
+    expect(not missing,
+           f"{GITATTRIBUTES.name} must contain {missing} - without the pin a clone with "
+           "core.autocrlf=false checks the .cmd/.ps1 launchers out with LF, which no Windows "
+           "shell can run")
 
 
 # --- end-to-end deployment (Windows only) -----------------------------------------------------
@@ -592,7 +619,8 @@ class Checker:
             print(f"FAIL - Windows launcher scripts: {len(self.failed)} check(s) failed.")
             return 1
         print("PASS - Windows launcher scripts behave as expected (encoding, .cmd/.ps1 contracts, "
-              "no drift in the inline start.cmd/start.sh templates, real deployment idempotent).")
+              "CRLF pinned in .gitattributes, no drift in the inline start.cmd/start.sh templates, "
+              "real deployment idempotent).")
         return 0
 
 
@@ -651,7 +679,11 @@ def main() -> int:
     checker.check("prepare_factory.sh: untouched (no mention of start.cmd, here-doc intact)",
                   bash_deployer_untouched)
 
-    # 7. Real deployment (Windows only).
+    # 7. The checkout itself must hand these files over as CRLF, on any machine.
+    checker.check(".gitattributes: pins *.cmd/*.ps1 to CRLF at checkout (any core.autocrlf)",
+                  gitattributes_pins_crlf)
+
+    # 8. Real deployment (Windows only).
     end_to_end(checker)
 
     return checker.finish()

@@ -12,6 +12,9 @@ Checks six invariants of the durable project model:
      (edits at depth >= 2) — both are errors, because either way the model is stale and must
      be regenerated. The LEGACY single-hash format is still accepted, but only with a WARNING
      (it cannot see content-only changes); its structural hash is still verified.
+     The content level reads the git INDEX, so an UNSTAGED working-tree edit does not show up
+     in it: such a dirty worktree is reported with a WARNING — never an error, because the
+     model itself may well be up to date, only the tree is dirty (exit code stays 0).
   3. The portable long-term memory is well-formed: `memory/change-log.md` is an
      append-only journal (each entry has the required keys, plus the optional
      `unfinished`, `factory_version` and `project` keys) and `memory/summary.md` exists with
@@ -54,7 +57,8 @@ everywhere (the model exists and must be regenerated).
 
 Exit code 0 = PASS, 1 = FAIL (each failure printed to stderr). Warnings are printed to
 stderr but do not fail (legacy memory missing the newer optional keys or the `project:`
-ownership declaration; legacy single-hash fingerprint line). A project without a WIP
+ownership declaration; legacy single-hash fingerprint line; a dirty worktree whose unstaged
+edits are invisible to the git-index-based content fingerprint). A project without a WIP
 checkpoint prints `SKIP - …`, which is not a failure either. stdlib only.
 """
 from __future__ import annotations
@@ -64,7 +68,7 @@ import pathlib
 import re
 import sys
 
-from project_fingerprint import compute_content_fingerprint, compute_fingerprint
+from project_fingerprint import compute_content_fingerprint, compute_fingerprint, worktree_dirty
 
 CANONICAL_SECTIONS = [
     "Project Overview",
@@ -167,6 +171,9 @@ def check_agents_model(root: pathlib.Path) -> tuple[list[str], list[str], str]:
     hand-authored manual, not an 8-section model with a fingerprint — so it yields a non-empty skip
     note instead of errors (see `_is_factory_own_root`); the caller prints `SKIP - …`. Memory and
     the WIP checkpoint are out of scope here and are still validated by the caller.
+
+    A WARNING (never an error) is added when the worktree is dirty: the content level reads the git
+    index, so unstaged edits are invisible to it and the model may be legitimately up to date.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -199,6 +206,13 @@ def check_agents_model(root: pathlib.Path) -> tuple[list[str], list[str], str]:
             if embedded_content != current_content:
                 errors.append("content fingerprint mismatch: "
                               f"embedded={embedded_content[:12]}… != current={current_content[:12]}…")
+            # Reading the index is deliberate (see project_fingerprint.py), so unstaged and
+            # untracked edits are invisible to the content level: report them instead of failing.
+            dirty = worktree_dirty(root)
+            if dirty:
+                warnings.append(f"worktree is dirty: {len(dirty)} unstaged/uncommitted change(s) "
+                                "not in the git index — content fingerprint reads the git index and "
+                                "does not see them (stage them to make them visible)")
 
     headings = [ln.strip() for ln in lines if ln.startswith("## ")]
     missing = [s for s in CANONICAL_SECTIONS if f"## {s}" not in headings]

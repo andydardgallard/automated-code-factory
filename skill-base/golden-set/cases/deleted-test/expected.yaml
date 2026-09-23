@@ -1,0 +1,3 @@
+# Two tests removed and nothing replaces them: lost coverage, major (not a crash/security issue).
+verdict: request_changes
+severities: [major]

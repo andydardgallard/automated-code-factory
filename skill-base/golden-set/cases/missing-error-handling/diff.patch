@@ -1,0 +1,19 @@
+diff --git a/src/sync.py b/src/sync.py
+--- a/src/sync.py
++++ b/src/sync.py
+@@ -1,7 +1,15 @@
+ import json
+ import pathlib
+ 
++import requests
++
+ 
+ def load_config(path):
+     with pathlib.Path(path).open(encoding="utf-8") as handle:
+         return json.load(handle)
++
++
++def download_config(url):
++    response = requests.get(url, timeout=10)
++    pathlib.Path("config.json").write_text(response.text, encoding="utf-8")
++    return json.loads(response.text)

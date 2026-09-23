@@ -1,3 +1,6 @@
 # Машиночитаемый слепок error-routing таблиц: тест test_error_router.py требует LF
 # (детерминированный JSON, CRLF от core.autocrlf ломает побайтовую проверку).
 .agents/skills/code-factory/references/error-patterns.default.json text eol=lf
+# Windows-лаунчеры (.cmd/.ps1) должны быть CRLF при checkout независимо от core.autocrlf.
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

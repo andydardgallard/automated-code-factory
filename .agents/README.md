@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.10.0 -->
+<!-- code-factory-version: 12.10.1 -->
 
 Автономная фабрика по написанию кода. Принимает бизнес-задачу от пользователя, который не
 разбирается в программировании, анализирует проект, планирует изменения, уточняет только
@@ -34,6 +34,7 @@
 │       │   └── error-patterns.default.json  # слепок таблиц error-routing для error_router.py
 │       ├── scripts/
 │       │   ├── gen_code_changes_report.py  # генератор report_code_changes.md (diff было→стало)
+│       │   ├── test_gen_code_changes_report.py  # self-тест генератора отчёта (argparse, UTF-8)
 │       │   ├── project_fingerprint.py      # двухуровневый fingerprint: структурный + контентный
 │       │   ├── check_factory_model.py      # проверка: 8 секций + оба fingerprint + формат памяти (корень фабрики — SKIP)
 │       │   ├── test_factory_model.py       # self-тест скриптов модели
@@ -189,6 +190,11 @@ start.cmd --auto
 первом обращении к проекту. Сама фабрика использует Python для скриптов памяти и версии
 (`memory_project.py`, `version_manager.py` и др.).
 
+Windows-лаунчеры получают CRLF при checkout независимо от настройки `core.autocrlf`: файлы `.cmd`
+и `.ps1` помечены в `.gitattributes` как `text eol=crlf` (та же защита, что у
+`error-patterns.default.json` с `eol=lf`), поэтому `.cmd`/`.ps1` на Linux/Windows выглядят
+одинаково и `cmd.exe` не спотыкается о LF-переводы строк.
+
 Или вручную, без launcher-а:
 
 ```sh
@@ -210,9 +216,12 @@ kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и 
   `<!-- code-factory-fingerprint: <64-hex> content: <64-hex> -->`;
 - fingerprint считается скриптом `scripts/project_fingerprint.py --all`: структурный уровень —
   манифесты стека, CI-конфиги, README, список каталогов; контентный — SHA-256 проиндексированных
-  git-файлов (собственные артефакты фабрики исключены в обоих уровнях). Совпали ОБА — анализ/Scout
-  и перегенерация пропускаются; не совпал любой — AGENTS.md перегенерируется (правки глубже
-  первого уровня видит контентный уровень);
+  git-файлов (собственные артефакты фабрики исключены в обоих уровнях). Контентный уровень читает
+  git-индекс, поэтому unstaged/untracked правки ему не видны — об этом он предупреждает, а не
+  молчит: `--content`/`--all` печатают заметку в stderr, а `check_factory_model.py` — warning
+  (хэши и exit-коды при этом не меняются; стейдж правки делает её видимой). Совпали ОБА —
+  анализ/Scout и перегенерация пропускаются; не совпал любой — AGENTS.md перегенерируется (правки
+  глубже первого уровня видит контентный уровень);
 - обновляется в двух точках: начало задачи (внешние изменения) и конец задачи (собственные
   изменения фабрики), после чего коммитится; фабрика делает хороший AGENTS.md сама, без
   отдельного init-шага.
@@ -325,9 +334,12 @@ auto-escape политика: в режиме auto допускается тол
 НОВЫЙ путь или теряет тест-покрытие без замены; одна первопричина — одно finding. §7 требует
 периодической калибровки ревьюера на golden-set (`scripts/calibrate_reviewer.py`): после каждой
 правки промпта ревьюера и не реже одного раза на 5 прогонов ревью, с мягкими порогами verdict
-accuracy 100% и macro precision ≥ 0.8 (прогон 20260923-bcbe68b3: accuracy 7/7, macro precision
-0.619 → 0.857, recall 0.857 → 1.000). Пропущенный дефект и завышение severity — ошибки калибровки,
-и лечатся они правкой промпта ревьюера, а не golden-set.
+accuracy 100% и macro precision ≥ 0.8 (прогон 20260923-3540d5dc: accuracy 7/7, macro precision
+1.000, recall 1.000; предыдущий прогон 20260923-bcbe68b3: macro precision 0.619 → 0.857).
+Нейтральный ре-нейминг между равно ясными именами (`result` → `res` в короткой функции) — это
+молчание, а не nit: именующее finding стоит только когда новое имя материально менее ясно или
+вводит в заблуждение (§3, «Reporting discipline»). Пропущенный дефект и завышение severity — ошибки
+калибровки, и лечатся они правкой промпта ревьюера, а не golden-set.
 
 <!-- factory-rule: review-gate-policy begin -->
 **Review-гейт (каноническая формулировка):** задача НЕ принимается, пока у ревьюера открыты замечания severity=critical (вердикт `request_changes` с open critical findings). Бюджет ревьюера = 2 итерации. Если бюджет исчерпан, а critical findings остались: в режиме hitl фабрика ОСТАНАВЛИВАЕТСЯ и спрашивает пользователя; в режиме auto допускается только conditional pass — соответствующий критерий помечается `unverified_review` в `.code-factory/state/acceptance.md`, а нерешённые findings попадают в `.code-factory/report.md` (раздел unresolved findings), никогда молча. Полный SUCCESS при открытых critical findings невозможен.

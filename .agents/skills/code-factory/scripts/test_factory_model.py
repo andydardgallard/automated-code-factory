@@ -31,6 +31,9 @@ Builds a synthetic project, then verifies `check_factory_model.py`:
   - the content fingerprint catches a change to an EXISTING file at depth >= 2 that the
     structural fingerprint cannot see (git index and git-less fallback), which is the confirmed
     defect reported by the code reviewer on 2026-09-23,
+  - the documented blind spot of that level — it reads the git INDEX, so an UNSTAGED edit is
+    invisible — is reported instead of being silent: `worktree_dirty` detects the dirt, the CLI
+    notes it on stderr and the model check warns while staying green (exit 0),
   - both fingerprints stay stable across a commit of the factory's own artifacts,
   - the CLI modes (default = structural only, `--content`, `--all`) behave as documented.
 
@@ -775,10 +778,78 @@ def main() -> int:
         expect(run_cli("--repo", atd) == 1,
                "a version-marked manual without the flow skill must exit 1")
 
+    # 29. The content fingerprint reads the git INDEX (deliberate: the factory works through git
+    #     and stages its changes, and AGENTS.md embeds its own hash pair), so an UNSTAGED or
+    #     untracked edit does NOT move the hash. That blind spot must not stay silent:
+    #     `worktree_dirty` detects exactly the changes the index lacks, the CLI notes them on stderr
+    #     and the model check warns — while the check still exits 0, because the model is up to date
+    #     and only the tree is dirty. A change already STAGED is not dirt: the index reflects it.
+    with tempfile.TemporaryDirectory() as wtd:
+        wroot = pathlib.Path(wtd)
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=wroot, check=True)
+        build(wroot)
+        subprocess.run(["git", "-C", wtd, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", wtd, "-c", "user.email=a@b.c", "-c", "user.name=t",
+                        "commit", "-q", "-m", "fixture"], check=True)
+        stamp(wroot)  # touches only AGENTS.md, which is excluded from both fingerprints
+        expect(project_fingerprint.worktree_dirty(wroot) == [],
+               "a committed fixture (plus an excluded AGENTS.md edit) must report a clean worktree")
+
+        content_before = project_fingerprint.compute_content_fingerprint(wroot)
+        (wroot / "src" / "main.py").write_text("print('unstaged edit')\n", encoding="utf-8")
+
+        expect(project_fingerprint.worktree_dirty(wroot) == ["src/main.py"],
+               "an unstaged edit of a tracked file must be detected as worktree dirt")
+        expect(project_fingerprint.compute_content_fingerprint(wroot) == content_before,
+               "an unstaged edit must NOT move the index-based content hash (documented blind spot)")
+
+        dirty_warnings = [w for w in agents_warnings(wroot)
+                          if "content fingerprint reads the git index" in w]
+        expect(len(dirty_warnings) == 1 and "1 unstaged" in dirty_warnings[0],
+               f"a dirty worktree must warn once, with the count: {agents_warnings(wroot)}")
+        res = run_cli_out("--repo", wtd)
+        expect(res.returncode == 0,
+               f"a dirty worktree is a warning, not a failure: {res.stderr!r}")
+        expect("WARN" in res.stderr and "content fingerprint reads the git index" in res.stderr,
+               f"the model check must report the invisible unstaged change: {res.stderr!r}")
+
+        note = run_fp("--repo", wtd, "--content")
+        expect(note.stdout.split() == [content_before],
+               f"--content must still print the index-based hash: {note.stdout!r}")
+        expect("note:" in note.stderr and "1 unstaged" in note.stderr
+               and "content fingerprint reads the git index" in note.stderr,
+               f"--content must note the dirty worktree on stderr: {note.stderr!r}")
+        expect("note:" in run_fp("--repo", wtd, "--all").stderr,
+               "--all must note the dirty worktree as well")
+        expect("note:" not in run_fp("--repo", wtd).stderr,
+               "the structural-only default must stay silent (level 1 does not read the index)")
+
+        #     The factory's own artifacts are excluded from both fingerprints, so dirtying AGENTS.md
+        #     must not be reported either — otherwise every model regeneration would warn itself.
+        (wroot / "AGENTS.md").write_text(
+            (wroot / "AGENTS.md").read_text(encoding="utf-8") + "\n<!-- touched -->\n",
+            encoding="utf-8")
+        expect(project_fingerprint.worktree_dirty(wroot) == ["src/main.py"],
+               "a dirty factory artifact (AGENTS.md) must not count as worktree dirt")
+
+        #     Staging the edit puts it into the index, so the content level SEES it (the hash moves)
+        #     and nothing is invisible any more: no dirt, no note, no warning once the model is
+        #     restamped.
+        subprocess.run(["git", "-C", wtd, "add", "-A"], check=True)
+        expect(project_fingerprint.worktree_dirty(wroot) == [],
+               "a staged change is in the index (the content level sees it) and is no worktree dirt")
+        expect(project_fingerprint.compute_content_fingerprint(wroot) != content_before,
+               "a staged change MUST move the content hash")
+        stamp(wroot)
+        res = run_cli_out("--repo", wtd)
+        expect(res.returncode == 0 and "WARN" not in res.stderr,
+               f"a fully staged worktree must be warning-free: {res.stderr!r}")
+
     print("PASS - factory model scripts behave as expected (valid passes, corruptions fail, "
           "unfinished/factory_version/project validated, memory format v2 (run_id + provenance "
           "marks) enforced on current-generation records, WIP checkpoints validated, "
-          "structural+content fingerprints distinguish depth>=2 content changes, the factory's own "
+          "structural+content fingerprints distinguish depth>=2 content changes, the unstaged-edit "
+          "blind spot of the index-based content hash reported as a warning, the factory's own "
           "hand-authored root auto-detected as SKIP).")
     return 0
 

@@ -1,0 +1,4 @@
+# The validation is relaxed (`<= 0` -> `< 0`, raise -> return None) and the test is rewritten to
+# accept it: a silently weakened check on an existing path = critical.
+verdict: request_changes
+severities: [critical]

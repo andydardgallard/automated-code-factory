@@ -8,15 +8,18 @@ repo_path: .
 (порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
 
 ## Current state
-Фабрика v12.10.0: v12.8.0 (шард-протокол, двухуровневый fingerprint, Think in Code, review-гейт,
-верифицируемая приёмка, verify_quotes, evidence ledger, advisor, preflight) + v12.9.0 (rulebook
-factory-rules.md 21 правило с byte-identical носителями, сквозной run_id, provenance-память v2,
-golden-set калибровка ревьюера, вакцинация, WIP-checkpoints, error-patterns JSON) + v12.10.0
-(severity-граница critical=существующий путь / major=новый путь в code-review.md §3 + Reporting
-discipline, норма калибровки §7: accuracy 100% / precision ≥ 0.8; committee при двойном rejection
-плана — planner-2 контрастного семейства + детерминированный plan_arbiter.py; check_factory_model
-авто-детектирует hand-authored корень фабрики → SKIP (3 сигнала); precedent_index.py — FTS5-поиск
-прецедентов по memory/ и коду). Владелец памяти: repo. 25/25 self-тестов PASS.
+Фабрика v12.11.0: v12.8.0 (шард-протокол, двухуровневый fingerprint, Think in Code, review-гейт,
+верифицируемая приёмка, verify_quotes, evidence ledger, advisor, preflight) + v12.9.0 (rulebook,
+сквозной run_id, provenance-память v2, golden-set, вакцинация, WIP, error-patterns JSON) +
+v12.10.0 (severity-граница §3, committee + plan_arbiter, авто-детект корня → SKIP,
+precedent_index FTS5) + v12.10.1/12.10.2 (utf8-guard во всех argparse-скриптах, 22-е правило
+no-shared-tree-git-mutations) + v12.11.0 (явная классификация git stash в action_gate;
+контентный fingerprint по СОДЕРЖИМОМУ рабочего дерева — unstaged виден, blind spot = untracked;
+механизм актуальности памяти: memory_project.py backlog [--check] + протокол closed:+evidence: +
+23-е правило memory-actuality + сверка backlog в начале прогона и актуализация сводки каждым
+прогоном; project-learned overlay error_router §1.2; providers.md §5.2 — правило комитета
+сильнее матрицы models). Rulebook: 23 правила, 86 носителей. Владелец памяти: repo.
+26/26 self-тестов PASS. Открытый backlog: 0 (все 32 исторических follow_up закрыты с evidence).
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле
@@ -38,6 +41,16 @@ discipline, норма калибровки §7: accuracy 100% / precision ≥ 0
 - Документер обновляет только doc-комментарии и `.md` (secondary-модель, валидатор, бюджет 1).
 
 ## Recent history
+- 2026-09-24 — «Фабрика v6 (v12.11.0)» (feature/factory-v6-backlog-20260923, 4b6652c):
+  полная очистка backlog по всей истории (32 follow_up → 0 открытых, все с evidence);
+  явная классификация git stash (мутирующие → CONFIRM, list/show → ALLOW, разбор -m/--message);
+  контентный fingerprint по рабочему дереву (unstaged виден); механизм актуальности памяти
+  (backlog --check + closed:+evidence: + 23-е правило memory-actuality, RCA 5 звеньев);
+  project-learned overlay §1.2; ps1 try/catch, sh короткая причина, .gitattributes *.sh LF;
+  providers.md §5.2. Комитет планов (3 rejection → merged + выбор пользователя). v12.10.2 → v12.11.0 (minor).
+- 2026-09-23 — «Фабрика v5 (v12.10.2)» (feature/factory-v5-backlog-20260923, ed62e88):
+  utf8-guard во всех argparse-скриптах (action_gate --help на cp1251, кейс 16), 22-е правило
+  no-shared-tree-git-mutations (6 носителей). v12.10.1 → v12.10.2 (patch).
 - 2026-09-23 — «Фабрика v3 (v12.10.0)» (feature/factory-v3-backlog-20260923, 3e1a1bb):
   severity-калибровка ревьюера (precision 0.619→0.857, recall→1.000, accuracy 7/7), committee
   при двойном rejection плана (plan-committee + plan_arbiter.py + factory-planner),

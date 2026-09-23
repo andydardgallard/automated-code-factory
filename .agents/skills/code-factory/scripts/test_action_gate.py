@@ -19,12 +19,16 @@ Covers the User Sovereignty contract:
     never rewritten, and its default path is honoured when `--journal` is omitted; an unwritable
     journal (e.g. its parent is an existing regular file, on POSIX and on Windows) is an
     infrastructure error — exit 3 with an `error:` line on stderr and the classification still
-    printed — never a traceback, never a blindly lost verdict.
+    printed — never a traceback, never a blindly lost verdict,
+  - the help text survives a legacy Windows console: the module docstring used as the parser
+    description carries `→`, which cp1251 cannot encode, so `--help` and a usage error are both
+    run under `PYTHONIOENCODING=cp1251` and must answer with help / exit 2 instead of a traceback.
 
 Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import subprocess
@@ -33,6 +37,8 @@ import tempfile
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 TOOL = SCRIPTS / "action_gate.py"
+# A legacy Windows code page: it cannot represent `→` (U+2192), the character that used to blow up.
+LEGACY_ENV = {**os.environ, "PYTHONIOENCODING": "cp1251"}
 
 ROW_RE = re.compile(r"^\| \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 
@@ -231,10 +237,34 @@ def main() -> int:
                f"the decision must still be printed when the journal fails: {output!r}")
         expect(not (blocker / "journal.md").exists(), "no journal file may be created")
 
+        # 16. Encoding contract under a legacy Windows code page: the module docstring used as the
+        #     ArgumentParser description carries `→`, which cp1251 cannot encode — argparse used to
+        #     die with UnicodeEncodeError and a traceback instead of printing help. Both calls below
+        #     run under PYTHONIOENCODING=cp1251 and are captured as BYTES, decoded as UTF-8, because
+        #     the gate now forces UTF-8 on its own streams whatever the console is.
+        legacy = subprocess.run([sys.executable, str(TOOL), "--help"], capture_output=True,
+                                env=LEGACY_ENV)
+        text = (legacy.stdout + legacy.stderr).decode("utf-8", "replace")
+        expect(legacy.returncode == 0,
+               f"--help must exit 0 under PYTHONIOENCODING=cp1251: {text!r}")
+        expect("Traceback" not in text, f"--help must not raise a traceback: {text!r}")
+        expect("\u2192" in text,
+               f"the help must keep its non-ASCII characters, not be stripped to ASCII: {text!r}")
+
+        legacy = subprocess.run([sys.executable, str(TOOL), "--bogus"], capture_output=True,
+                                env=LEGACY_ENV)
+        text = (legacy.stdout + legacy.stderr).decode("utf-8", "replace")
+        expect(legacy.returncode == 2,
+               f"an unknown flag must still exit 2 under PYTHONIOENCODING=cp1251: "
+               f"{legacy.returncode} {text!r}")
+        expect("usage:" in text, f"an unknown flag must print a usage error: {text!r}")
+        expect("Traceback" not in text, f"an unknown flag must not raise a traceback: {text!r}")
+
     print("PASS - action_gate.py hard-denies pushes to main/master (also behind git global options) "
           "and root/out-of-scope deletions; fail-safe CONFIRMs unparsable/unknown git calls; "
           "confirms in-scope destruction in hitl, records an assumption in auto; journal appended "
-          "and an unwritable journal exits 3 instead of raising.")
+          "and an unwritable journal exits 3 instead of raising; --help and usage errors survive a "
+          "legacy cp1251 console without a traceback.")
     return 0
 
 

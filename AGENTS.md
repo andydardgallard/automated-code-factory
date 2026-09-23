@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.10.1 -->
+<!-- code-factory-version: 12.10.2 -->
 # Project: Autonomous Code Factory
 
 Этот проект содержит автономную фабрику по написанию кода для Kimi Code CLI.
@@ -29,7 +29,11 @@
   `calibrate_reviewer.py` (golden-set калибровка ревьюера: precision/recall/accuracy),
   `plan_arbiter.py` (детерминированное слияние двух конкурирующих планов + список расхождений —
   committee при двойном rejection плана), `precedent_index.py` (FTS5-индекс прецедентов: память +
-  кодовая база, `build`/`query` — поиск «как это решали раньше» вместо повторного чтения истории)
+  кодовая база, `build`/`query` — поиск «как это решали раньше» вместо повторного чтения истории).
+  Каждый argparse-скрипт сам переводит stdout/stderr в UTF-8 (`stream.reconfigure(encoding="utf-8",
+  errors="replace")` под try/except), поэтому `--help` и сообщения об ошибках с не-ASCII символами
+  не падают `UnicodeEncodeError` на консоли с legacy-кодовой страницей (cp1251/cp866); контракт
+  argparse при этом не меняется: `--help` → exit 0, ошибка использования → exit 2, без traceback.
 - `.agents/agents/` — главный агент фабрики (Markdown `code-factory.md`) и сабагенты
   (`sub-agents/analyzer|planner|coder|tester|diagnostician|advisor|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
 - `VERSION` — единый источник истины для версии фабрики (одна строка X.Y.Z)
@@ -165,6 +169,9 @@
 <!-- factory-rule: handoff-briefing begin -->
 **Брифинг каждой делегации (каноническая формулировка):** каждая делегация сабагенту — самодостаточный брифинг по `references/handoff-briefing.md` (Task / Context / релевантные файлы ПУТЯМИ, без вставки содержимого / что уже пробовали и почему не сработало). Файлы пишет только главный агент; read-only роли (analyzer, reviewer, security-auditor, diagnostician, advisor) идут с суффиксом «без правок». Сабагент возвращает сжатый структурированный результат с путями к артефактам, а не пересказ контекста.
 <!-- factory-rule: handoff-briefing end -->
+<!-- factory-rule: no-shared-tree-git-mutations begin -->
+**Запрет git-мутаций общего дерева (каноническая формулировка):** сабагенты НЕ выполняют `git stash`, `git reset`, `git checkout` и `git clean` на общем рабочем дереве прогона — оно разделяется главным агентом и другими параллельными сабагентами, такие операции создают риск гонки и потери чужих изменений. Для доказательства пре-существования бага или просмотра базовой версии файла используются `git show HEAD:<file>` или отдельный temp-клон; git-мутации рабочего дерева выполняет только главный агент.
+<!-- factory-rule: no-shared-tree-git-mutations end -->
 
 - **Формат задачи**: `title`, `repo_path`, `description`, опционально `user_story`, `mode`,
   `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria`

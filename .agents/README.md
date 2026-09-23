@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.10.1 -->
+<!-- code-factory-version: 12.10.2 -->
 
 Автономная фабрика по написанию кода. Принимает бизнес-задачу от пользователя, который не
 разбирается в программировании, анализирует проект, планирует изменения, уточняет только
@@ -73,7 +73,7 @@
 │       │   ├── factory_preflight.py        # pre-flight окружения (python/python3/py и др.)
 │       │   ├── test_factory_preflight.py   # self-тест pre-flight
 │       │   ├── action_gate.py              # классификация деструктивных действий (ALLOW/CONFIRM/HARD_DENY)
-│       │   ├── test_action_gate.py         # self-тест action gate
+│       │   ├── test_action_gate.py         # self-тест action gate (+ --help/usage на cp1251)
 │       │   ├── task_graph.py               # граф задач на диске: create/claim/complete/ready/list
 │       │   ├── test_task_graph.py          # self-тест графа задач
 │       │   ├── evidence_ledger.py          # ledger доказательств с подписями FRESH/STALE
@@ -194,6 +194,16 @@ Windows-лаунчеры получают CRLF при checkout независи�
 и `.ps1` помечены в `.gitattributes` как `text eol=crlf` (та же защита, что у
 `error-patterns.default.json` с `eol=lf`), поэтому `.cmd`/`.ps1` на Linux/Windows выглядят
 одинаково и `cmd.exe` не спотыкается о LF-переводы строк.
+
+Legacy-кодовая страница консоли (cp866/cp1251) не ломает CLI фабрики: каждый argparse-скрипт
+`scripts/*.py` первым делом переводит свои stdout/stderr в UTF-8
+(`stream.reconfigure(encoding="utf-8", errors="replace")` под try/except), поэтому `--help` с
+не-ASCII символами (`→`, `—`, кириллица) печатается целиком, а не падает `UnicodeEncodeError`
+трейсбеком; если поток переопределить нельзя (старый интерпретатор, подменённый stream),
+`errors="replace"` не даёт печати упасть. Контракт argparse при этом обычный: `--help` → exit 0,
+ошибка использования → exit 2, никогда traceback. Гарантию пинят self-тесты
+(`test_action_gate.py` — кейс `--help`/usage под `PYTHONIOENCODING=cp1251`,
+`test_gen_code_changes_report.py`).
 
 Или вручную, без launcher-а:
 
@@ -374,6 +384,9 @@ accuracy 100% и macro precision ≥ 0.8 (прогон 20260923-3540d5dc: accura
 <!-- factory-rule: rollback-on-retry begin -->
 **Откат перед ретраем (каноническая формулировка):** каждый провал тестов или сборки сначала маршрутизируется детерминированно (`references/error-routing.md`), затем состояние откатывается: файлы восстанавливаются из `.code-factory/backups/`, созданные фабрикой файлы удаляются, состояние git приводится к зафиксированному. Только после отката ошибка отдаётся роли-исполнителю — иначе повторный прогон идёт по уже испорченному состоянию. Инфраструктурные авто-фиксы (окружение, зависимости) код не откатывают.
 <!-- factory-rule: rollback-on-retry end -->
+<!-- factory-rule: no-shared-tree-git-mutations begin -->
+**Запрет git-мутаций общего дерева (каноническая формулировка):** сабагенты НЕ выполняют `git stash`, `git reset`, `git checkout` и `git clean` на общем рабочем дереве прогона — оно разделяется главным агентом и другими параллельными сабагентами, такие операции создают риск гонки и потери чужих изменений. Для доказательства пре-существования бага или просмотра базовой версии файла используются `git show HEAD:<file>` или отдельный temp-клон; git-мутации рабочего дерева выполняет только главный агент.
+<!-- factory-rule: no-shared-tree-git-mutations end -->
 
 Checkpoint/resume: после каждой фазы пишется `.code-factory/state/pipeline.yaml` — при
 перезапуске фабрика продолжает с того же места.

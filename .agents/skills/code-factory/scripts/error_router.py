@@ -299,10 +299,24 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def use_utf8_output() -> None:
+    """Force UTF-8 on stdout/stderr so the help and the output survive a legacy console.
+
+    A Windows console defaults to a legacy code page (cp866/cp1251) and both the help text and the
+    routed log lines carry non-ASCII characters (the em dash `—`), which that codec cannot encode:
+    `print_help()` would raise UnicodeEncodeError and the user would get a traceback instead of
+    the help, and a classification could be lost the same way. `errors="replace"` keeps a stream
+    that cannot be reconfigured from ever raising.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):      # an old interpreter or a replaced stream
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
-    # A log may carry bytes the console code page cannot encode (e.g. cp1251 on Windows).
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(errors="replace")
+    use_utf8_output()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

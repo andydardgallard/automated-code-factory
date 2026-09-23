@@ -32,8 +32,15 @@ the rung you stopped on in `<thinking>`.
   must serve the WHO/WHAT/WHY it describes. State in your handoff how the change satisfies it.
 - After your changes, verify they are syntactically valid (e.g. compile/build the affected
   module if cheap).
+- Do NOT run `git stash` / `git reset` / `git checkout` / `git clean` — the working tree is shared
+  with the main agent and other subagents; use `git show HEAD:<file>` or a temp clone to inspect
+  baseline versions.
 - Do NOT run the full test suite — the tester subagent does that. Do NOT modify files other than
   the ones assigned to you.
 - Your final message IS the complete handoff to the main agent. Report concisely: files changed,
   what each change does, and anything you could not do. If a previous attempt failed, the main
   agent will include the error — fix exactly that root cause.
+
+<!-- factory-rule: no-shared-tree-git-mutations begin -->
+**Запрет git-мутаций общего дерева (каноническая формулировка):** сабагенты НЕ выполняют `git stash`, `git reset`, `git checkout` и `git clean` на общем рабочем дереве прогона — оно разделяется главным агентом и другими параллельными сабагентами, такие операции создают риск гонки и потери чужих изменений. Для доказательства пре-существования бага или просмотра базовой версии файла используются `git show HEAD:<file>` или отдельный temp-клон; git-мутации рабочего дерева выполняет только главный агент.
+<!-- factory-rule: no-shared-tree-git-mutations end -->

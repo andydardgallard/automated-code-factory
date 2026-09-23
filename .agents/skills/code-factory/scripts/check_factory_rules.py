@@ -161,7 +161,23 @@ def check(root: pathlib.Path, rule_ids: list[str]) -> tuple[int, list[str], int]
     return len(rules), problems, checked_carriers
 
 
+def use_utf8_output() -> None:
+    """Force UTF-8 on stdout/stderr so printed rule ids, paths and messages survive a legacy console.
+
+    A Windows console defaults to a legacy code page (cp866/cp1251) and this report carries rule
+    ids, file paths and messages that codec may not encode: printing them would raise
+    UnicodeEncodeError and the user would get a traceback instead of the report. `errors="replace"`
+    keeps a stream that cannot be reconfigured from ever raising.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):      # an old interpreter or a replaced stream
+            pass
+
+
 def main(argv: list[str]) -> int:
+    use_utf8_output()
     parser = argparse.ArgumentParser(description="Check the factory rulebook against its carriers.")
     parser.add_argument("--rule", action="append", default=[], metavar="ID",
                         help="rule id to check (repeatable; default: every rule)")

@@ -5,6 +5,28 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.10.2] — 2026-09-23
+
+### Fixed
+- **`action_gate.py --help` больше не падает на cp1251-консоли** — модульный docstring содержит `→`
+  (U+2192), которого нет в cp1251, и `description=__doc__` уводил `print_help()` в
+  UnicodeEncodeError с traceback. Добавлен эталонный `use_utf8_output()` (как в
+  `gen_code_changes_report.py`), вызываемый первой строкой `main()`; контракт `--help` → exit 0,
+  ошибки использования → exit 2 без traceback запинен кейсом 16 в `test_action_gate.py`
+  (subprocess под `PYTHONIOENCODING=cp1251`, вакцинация — на pre-fix коде кейс падает).
+
+### Added
+- **UTF-8 guard во всех argparse-скриптах фабрики** — `use_utf8_output()` первой строкой `main()`
+  в 22 `scripts/*.py` (в `log_tail.py`/`precedent_index.py` прежний слабый guard стоял после
+  `parse_args()` и не защищал `--help` — перемещён; в `error_router.py`/`plan_arbiter.py` —
+  усилен до stdout+stderr). cp1251/cp866 sweep `--help`: 24/24 exit 0 без traceback.
+- **22-е правило rulebook `no-shared-tree-git-mutations`** — сабагенты не выполняют
+  `git stash`/`git reset`/`git checkout`/`git clean` на общем рабочем дереве прогона (риск гонки с
+  главным агентом и другими сабагентами); базовая версия файла — через `git show HEAD:<file>` или
+  temp-клон. Byte-identical носители: `AGENTS.md`, `.agents/README.md`, `code-factory.md`,
+  `SKILL.md`, `references/handoff-briefing.md`, `sub-agents/coder.md`; сверка —
+  `check_factory_rules.py` (22 правила, 81 блок, exit 0).
+
 ## [12.10.1] — 2026-09-23
 
 ### Added

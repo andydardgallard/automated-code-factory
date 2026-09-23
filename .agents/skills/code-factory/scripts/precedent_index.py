@@ -349,7 +349,24 @@ def cmd_query(args: argparse.Namespace) -> int:
     return 0
 
 
+def use_utf8_output() -> None:
+    """Force UTF-8 on stdout/stderr so the help survives being piped or redirected.
+
+    A Windows console defaults to a legacy code page (cp866/cp1251) and the help text carries a
+    non-ASCII character (`—`, the em dash), which that codec cannot encode: `print_help()` would
+    raise UnicodeEncodeError and the user would get a traceback instead of the help. Indexed hits
+    need the same protection. `errors="replace"` keeps a stream that cannot be reconfigured from
+    ever raising.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):      # an old interpreter or a replaced stream
+            pass
+
+
 def main() -> int:
+    use_utf8_output()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
@@ -369,10 +386,6 @@ def main() -> int:
     p_query.set_defaults(func=cmd_query)
 
     args = ap.parse_args()
-    # A build/query may print text the console code page cannot encode (e.g. cp1251 on Windows):
-    # show replacement characters instead of dying on a hit.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(errors="replace")
     try:
         return args.func(args)
     except PrecedentError as exc:

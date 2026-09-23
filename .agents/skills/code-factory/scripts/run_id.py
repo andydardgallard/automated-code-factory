@@ -103,7 +103,23 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 1
 
 
+def use_utf8_output() -> None:
+    """Force UTF-8 on stdout/stderr so the help survives being piped or redirected.
+
+    A Windows console defaults to a legacy code page (cp866/cp1251) and the help text carries a
+    non-ASCII character (`—`, the em dash), which that codec cannot encode: `print_help()` would
+    raise UnicodeEncodeError and the user would get a traceback instead of the help.
+    `errors="replace"` keeps a stream that cannot be reconfigured from ever raising.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):      # an old interpreter or a replaced stream
+            pass
+
+
 def main() -> int:
+    use_utf8_output()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)

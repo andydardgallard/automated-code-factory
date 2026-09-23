@@ -12,9 +12,11 @@ The machine-readable source of the patterns is the project's `.code-factory/stat
 .agents/skills/code-factory/scripts/error_router.py merge --project <file>` folds them in,
 project-first); the fallback is the shipped snapshot `references/error-patterns.default.json`.
 Classification is executed by `python .agents/skills/code-factory/scripts/error_router.py classify
---log <file>` (exit 1 = unreadable log, exit 2 = unusable patterns JSON); when a table below
+--log <file>` (exit 1 = unreadable log, exit 2 = unusable patterns JSON; no learned file — or an
+unusable auto-discovered one — just means the defaults alone); when a table below
 disagrees with the JSON, the JSON is authoritative. The tables are kept as documentation of the
-default snapshot.
+default snapshot. How the learned file is located, merged and prioritized — and what happens when
+it is broken — is §1.2.
 
 Known quirks of that snapshot (carried over verbatim so the JSON and the tables below match):
 row 8 keeps `error[E\d+]` as a character class — it matches one of the characters `E`, `\d`, `+`,
@@ -79,6 +81,64 @@ Routing rules:
 - MODEL / FORMAT → PLANNER (the chosen model alias does not resolve to a configured provider, or
   the request shape is wrong for that provider — re-read `providers.md` and fix the mapping).
 - The retry budget for provider errors is INFRASTRUCTURE=3 (see §3).
+
+## 1.2 Project-learned patterns (project-first overlay)
+
+The domains live in DATA, not in code: next to the shipped defaults every project carries its own
+learned patterns, so a new error family is added without touching the router.
+
+- **Location.** `.code-factory/state/error-patterns.json` of the project being run (runtime state,
+  not committed). `classify` finds it through `--repo <root>` (default: the cwd); a single run can
+  point at another file with `classify --project-patterns <json>`. A missing file is the NORMAL
+  mode — the defaults alone, no warning, behavior unchanged.
+- **Format.** Exactly the schema of `references/error-patterns.default.json`: top level
+  `{version, patterns[], provider_patterns[], retry_budgets{}}`, every entry
+  `{id, category, patterns[], route}` with regexes matched case-insensitively and with
+  `re.MULTILINE`. The learned file may be PARTIAL — any subset of the three content keys, any
+  number of entries. An empty document learns nothing and is rejected as unusable (nothing to
+  merge).
+- **Priority.** The learned lists are tried FIRST in their own order, then the default rows whose
+  `id` the learned file does not carry — the merged array order is the priority ("first match
+  wins"). A learned entry reusing an existing `id` REPLACES that default row completely (category,
+  patterns and route together), so a project can re-route a built-in family (e.g. `ModuleNotFound`
+  → PLANNER instead of the built-in BA). `retry_budgets` merge key-wise, the learned value wins;
+  the default rows the learned file never mentions are never lost — a partial file can only add or
+  override, never erase.
+- **Robustness.** An unusable AUTO-DISCOVERED learned file (broken JSON, missing key, wrong type,
+  invalid regex) is not fatal: `classify` prints `warning: ignoring the project-learned patterns
+  (<file>: <problem>); classifying against <default.json> only` on stderr, falls back to the default
+  snapshot alone and still exits 0 — a corrupted learned file must never take the routing down.
+  A file named with `--project-patterns` is a hard input instead: missing or unusable → exit 2,
+  naming the file and the problem.
+- **Writing it.** `error_router.py export-defaults [--out <path>]` copies the default snapshot
+  verbatim as a starter (default target `<repo>/.code-factory/state/error-patterns.json`), and
+  `error_router.py merge --project <json> [--out <path>]` folds a learned file over the defaults
+  into one complete, byte-deterministic and idempotent document (default: written back to the file
+  itself). `merge` never falls back — an unusable input exits 2 instead of writing a wrong union.
+
+Example — learned file, command, resulting route:
+
+```json
+{
+  "version": 1,
+  "patterns": [
+    {"id": "6", "category": "PROJ_MODULE", "patterns": ["ModuleNotFoundError"], "route": "planner"},
+    {"id": "P1", "category": "PROJ_FEED", "patterns": ["FeedError"], "route": "infrastructure"}
+  ],
+  "retry_budgets": {"planner": 3}
+}
+```
+
+```bash
+python .agents/skills/code-factory/scripts/error_router.py classify \
+  --log .code-factory/logs/errors.md --repo .
+# patterns: <.code-factory/state/error-patterns.json> + <references/error-patterns.default.json>
+# category: PROJ_MODULE   route: planner   pattern_id: 6
+```
+
+`ModuleNotFoundError` routes to PLANNER instead of the built-in BA (id 6 is replaced), a log
+carrying `FeedError` routes to INFRASTRUCTURE (learned `P1` is tried before every default row), and
+a log matching none of the learned rows still reaches the shipped ones.
 
 ## 2. Routing decision
 

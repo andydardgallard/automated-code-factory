@@ -5,6 +5,52 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.11.0] — 2026-09-24
+
+### Added
+- **Явная классификация `git stash` в `action_gate.py`** — мутирующие формы
+  (push/pop/apply/drop/clear, голый `git stash`) → CONFIRM с деловым объяснением риска гонки на
+  общем рабочем дереве и отсылкой к правилу `no-shared-tree-git-mutations`; `stash list`/`show`
+  → ALLOW; разбор опций как у git (`-m`/`--message` поглощают значение — мутирующий push не
+  маскируется под чтение, кейс 17 `test_action_gate.py` с negative-control).
+- **23-е правило rulebook `memory-actuality`** — в начале прогона открытый backlog сверяется с
+  деревом (`memory_project.py backlog`), в конце каждый пункт закрывается блоком `closed:` с
+  обязательным `evidence:` или остаётся в `unfinished` с причиной; пункт не может исчезнуть без
+  доказательства закрытия; `summary.md` актуализируется каждым прогоном. Носители (5): `AGENTS.md`,
+  `.agents/README.md`, `code-factory.md`, `SKILL.md`, `references/planning-guide.md`
+  (`check_factory_rules.py` — 23 правила, 86 блоков, exit 0).
+- **`memory_project.py backlog [--check] [--json]`** — детерминированный fold открытых
+  follow_up=true/severity=critical по всей истории журнала; `--check` → exit 1 при открытых
+  пунктах, закрытии без `evidence:` и закрытии несуществующего пункта; WARN при расхождении версии
+  в `## Current state` с VERSION. Протокол `closed:` в формате записи; кейсы 17–23
+  `test_memory_project.py`.
+- **Project-learned patterns — документированный overlay** в `error_router.py`: битый
+  авто-найденный `.code-factory/state/error-patterns.json` деградирует до default с деловым
+  stderr-предупреждением (маскировка невозможна), явный `--project-patterns` остаётся exit 2;
+  справочник `error-routing.md` §1.2; кейсы 9a/9b `test_error_router.py`.
+- **`providers.md` §5.2** — второй планировщик комитета (plan-committee) — единственная роль, где
+  матрица `models` задачи не применяется: контрастное семейство обязательно.
+
+### Changed
+- **Контентный fingerprint видит unstaged-правки** — хэш считается по содержимому рабочего дерева
+  отслеживаемых файлов (CRLF→LF-нормализация, недоступный файл → запись индекса); unstaged-правка
+  двигает хэш и валит `check_factory_model.py` (intended); вне хэша остаются только
+  untracked-файлы (`worktree_dirty` → `untracked_files`, stderr-заметка + WARNING). Кейс 29
+  `test_factory_model.py` переписан строго строже; одноразовая регенерация встроенных
+  fingerprint'ов AGENTS.md у развёрнутых проектов — ожидаемое следствие.
+
+### Fixed
+- **`prepare_factory.ps1`** — fallback копирования `Get-ChildItem | Copy-Item` обёрнут в
+  try/catch (`-ErrorAction Stop`, `$script:HardError`): при жёстком сбое — одна деловая строка
+  вместо сырых записей PowerShell (CategoryInfo/FullyQualifiedErrorId); контракт (exit 1, без
+  баннера «Готово») подтверждён живым ACL-deny воспроизведением.
+- **`prepare_factory.sh`** — при сбое `memory_project.py init` в предупреждение попадает короткая
+  причина (последняя непустая строка) вместо первой строки traceback.
+- **`.gitattributes`** — пин `*.sh text eol=lf` (`.cmd`/`.ps1` уже были покрыты): окончания строк
+  shell-скриптов не зависят от `core.autocrlf`.
+- **`references/planning-guide.md`** — «init --repo \<project root\>» → «--repo \<deployment root\>»
+  (канон memory-ownership).
+
 ## [12.10.2] — 2026-09-23
 
 ### Fixed

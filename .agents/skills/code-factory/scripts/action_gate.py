@@ -34,6 +34,18 @@ CONFIRM rules (destructive but inside the declared scope, and anything the gate 
   * deletion of a path covered by `--scope`,
   * `git checkout -- <path>` / `git restore` of paths inside scope,
   * `git clean` (repo-wide by nature). `git clean -n` / `--dry-run` is a no-op → ALLOW,
+  * `git stash` in its mutating forms: a bare `git stash` (which IS the default `push`), `push`,
+    `pop`, `apply`, `drop`, `clear`. Stashing rewrites the SHARED working tree of the run, where
+    parallel agents keep uncommitted work, so it can race them or lose their changes — therefore
+    the confirmation reason cites the rulebook rule `no-shared-tree-git-mutations` (subagents never
+    stash/reset/checkout/clean; only the main agent confirms such a mutation). The reading forms
+    `git stash list` / `git stash show` (any flags: `show -p`, `list --oneline`) stay ALLOW, and an
+    unknown stash subcommand keeps the fail-safe CONFIRM below like any other unclassified action.
+    The subcommand is read with git's own option parsing (values of `-m`/`--message` are consumed
+    as values), so a mutating push cannot masquerade as a reading form: `git stash -m list` is a
+    push with the message "list" → CONFIRM, while `git stash -m "msg" list` is ALLOW: real git
+    rejects it ("fatal: subcommand wasn't specified; 'push' can't be assumed due to unexpected
+    token 'list'"), so no mutation can hide behind that form.
   * an unparsable git invocation — unknown global option, a valued global option without its value,
     no subcommand at all — and any git subcommand the gate does not know: fail-safe, because what
     the gate cannot read it never calls safe (`git frobnicate` / `git branch -D main` → CONFIRM).
@@ -100,6 +112,18 @@ GIT_READ_ONLY = {"blame", "cat-file", "check-attr", "check-ignore", "count-objec
                  "shortlog", "show", "status", "verify-commit", "verify-tag", "version",
                  "whatchanged"}
 GIT_READ_ONLY_REASON = "reads only; it cannot touch the default branch or the working tree"
+# `git stash` subcommands that only read the stash, and those that rewrite the working tree.
+# A bare `git stash` IS the default `push`, so it mutates too.
+STASH_READ_ONLY = {"list", "show"}
+STASH_MUTATING = {"push", "pop", "apply", "drop", "clear"}
+# `git stash` options that TAKE A VALUE: the token after them is that value, never a subcommand
+# (`git stash -m list` is a push carrying the message "list", not the reading form `git stash
+# list`). Joined forms (`--message=list`) hold their value in the same token, so they hide nothing.
+STASH_VALUE_FLAGS = ("-m", "--message")
+STASH_MUTATING_REASON = ("rewrites the SHARED working tree of the run, where parallel agents keep "
+                         "uncommitted work: stashing can race them or lose their changes (rulebook "
+                         "rule no-shared-tree-git-mutations — subagents never stash/reset/checkout/"
+                         "clean, only the main agent confirms such a mutation)")
 
 
 def tokens(command: str) -> list[str]:
@@ -242,6 +266,46 @@ def classify_clean(argv: list[str], scopes: list[str]) -> tuple[str, str]:
     return CONFIRM, "git clean removes untracked files"
 
 
+def stash_subcommand(argv: list[str]) -> str:
+    """The subcommand git itself would see: the first OPERAND after `git stash`, or "" for none.
+
+    Option VALUES are consumed like git consumes them, so a value can never masquerade as a
+    subcommand: after `-m` / `--message` the next token is skipped (`git stash -m list` is a push
+    with the message "list", NOT the reading form), while a joined `--message=<v>` carries its
+    value in the flag token itself. `--` ends the options, so nothing after it is a subcommand
+    (a bare `git stash -- x` is the default `push` with a pathspec → CONFIRM, the fail-safe).
+    """
+    tokens = argv[2:]
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":
+            break
+        if token in STASH_VALUE_FLAGS:
+            i += 2                                  # this token's value is never a subcommand
+            continue
+        if token.startswith("-") and token != "-":
+            i += 1
+            continue
+        return token
+    return ""
+
+
+def classify_stash(argv: list[str]) -> tuple[str, str] | None:
+    """Classify `git stash` by its SUBCOMMAND (flags change nothing: `git stash show -p` reads,
+    `git stash push -m x` writes). The subcommand is read with git's own option parsing
+    (`stash_subcommand`), so a value flag cannot smuggle a mutating push into the reading forms
+    and a leading flag without a subcommand stays the bare `push` → CONFIRM.
+    `None` = unknown subcommand, so the caller keeps its fail-safe.
+    """
+    sub = stash_subcommand(argv)
+    if sub in STASH_READ_ONLY:
+        return ALLOW, f"git stash {sub} {GIT_READ_ONLY_REASON}"
+    if sub in STASH_MUTATING or not sub:                     # bare `git stash` = default `push`
+        return CONFIRM, f"git stash {sub or 'push'} {STASH_MUTATING_REASON}"
+    return None
+
+
 def classify_delete(argv: list[str], scopes: list[str]) -> tuple[str, str]:
     targets = [t for t in argv[1:]
                if not (t.startswith("-") and t != "-") and not DELETE_FLAG_RE.match(t)]
@@ -277,6 +341,11 @@ def classify_command(argv: list[str], scopes: list[str]) -> tuple[str, str]:
             return classify_checkout(argv, scopes)
         if sub == "clean":
             return classify_clean(argv, scopes)
+        if sub == "stash":
+            # An unknown stash subcommand (`git stash bogus`) stays None -> fail-safe CONFIRM below.
+            classified = classify_stash(argv)
+            if classified is not None:
+                return classified
         if sub == "rm":
             return classify_delete(["rm", *argv[2:]], scopes)
         if sub in GIT_READ_ONLY:

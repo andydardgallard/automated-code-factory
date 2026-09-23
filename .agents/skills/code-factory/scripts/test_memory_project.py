@@ -17,6 +17,12 @@ Deterministic self-test for `memory_project.py` (zero LLM tokens).
     fenced example untouched and is idempotent (second run reports 0 records, byte-identical),
   - `compact-check` fails when a severity=critical or follow_up=true item is missing after a
     compaction and passes when all of them survived,
+  - `backlog` folds the whole journal into the open items (critical or follow_up) minus the ones
+    closed by a `closed:` element: an item neither repeated nor closed stays open with its source
+    record, `--check` exits 1 while anything is open and on every invalid `closed:` element
+    (no `evidence:`, or an item no record ever declared), a valid closure brings `open: 0` and
+    exit 0, `--json` is machine-readable, and a `## Current state` claiming another version than
+    VERSION only warns (stderr, exit untouched),
   - `validate-fix-tasks` accepts a well-formed generated fix-task file and rejects a file that
     misses a required field or carries an invalid task_type, naming the offending line,
   - the memory format v2 (run_id + provenance marks) is enforced on the records of a
@@ -28,6 +34,7 @@ Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import subprocess
 import sys
@@ -51,12 +58,13 @@ def expect(cond: bool, msg: str) -> None:
 
 
 def journal_entry(timestamp: str, project: str = "", unfinished: str = "",
-                  run_id: str = "", factory_version: str = "", marks: bool = False) -> str:
+                  run_id: str = "", factory_version: str = "", marks: bool = False,
+                  closed: str = "") -> str:
     """A minimal but format-valid journal record belonging to `project`.
 
-    `project=""` builds a legacy record without the `project:` field; `unfinished` is an
-    optional ready-made `unfinished:` block appended to the record. The defaults keep every
-    record written before the memory format v2 (no `run_id`, no provenance marks); `run_id`,
+    `project=""` builds a legacy record without the `project:` field; `unfinished` and `closed` are
+    optional ready-made blocks appended to the record (`unfinished:` / `closed:`). The defaults keep
+    every record written before the memory format v2 (no `run_id`, no provenance marks); `run_id`,
     `factory_version` and `marks=True` build a v2 record — marks=True puts a provenance mark
     into BOTH `decisions` and `results`, as the format requires.
     """
@@ -83,7 +91,7 @@ results: {results}
 decisions: {decisions}
 assumptions: (none)
 models_used: analyzer=primary
-{version_line}{unfinished}"""
+{version_line}{unfinished}{closed}"""
 
 
 def unfinished_block(*items: tuple[str, str, str]) -> str:
@@ -92,6 +100,14 @@ def unfinished_block(*items: tuple[str, str, str]) -> str:
     for item, severity, follow_up in items:
         lines += [f"  - item: {item}", "    reason: demo reason",
                   f"    severity: {severity}", f"    follow_up: {follow_up}"]
+    return "\n".join(lines) + "\n"
+
+
+def closed_block(*items: tuple[str, str]) -> str:
+    """Build a `closed:` block from (item, evidence) pairs."""
+    lines = ["closed:"]
+    for item, evidence in items:
+        lines += [f"  - item: {item}", f"    evidence: {evidence}"]
     return "\n".join(lines) + "\n"
 
 
@@ -438,11 +454,174 @@ def main() -> int:
         expect("legacy format" in res.stderr,
                f"the warning must mark the record as legacy: {res.stderr!r}")
 
+        # 17. `backlog` fold: an item declared open by record 1 and neither repeated nor closed by
+        #     record 2 stays open (the silent-disappearance bug this mechanism exists for): the
+        #     report names the item and its source record, and `--check` fails. The template
+        #     documents the closing protocol.
+        bl = tmp / "backlog_proj"
+        bl.mkdir()
+        expect(run("init", "--repo", str(bl)).returncode == 0,
+               "init of the backlog fixture must exit 0")
+        bl_template = (bl / "memory" / "change-log.md").read_text(encoding="utf-8")
+        expect("closed:" in bl_template and "evidence:" in bl_template,
+               "the change-log template must document the `closed:`/`evidence:` protocol")
+        write_journal(bl,
+                      journal_entry("2026-09-26T00:00:00Z", "backlog_proj",
+                                    unfinished=unfinished_block(("silent debt item", "warning",
+                                                                 "true")),
+                                    run_id="20260926-11112233", factory_version="12.9.0",
+                                    marks=True),
+                      journal_entry("2026-09-27T00:00:00Z", "backlog_proj",
+                                    run_id="20260927-44556677", factory_version="12.9.0",
+                                    marks=True))
+        res = run("backlog", "--repo", str(bl))
+        expect(res.returncode == 0, f"backlog without --check must exit 0: {res.stderr!r}")
+        expect("open: 1" in res.stdout, f"the dropped item must stay open: {res.stdout!r}")
+        expect("silent debt item" in res.stdout,
+               f"the open item must be printed: {res.stdout!r}")
+        expect("2026-09-26T00:00:00Z" in res.stdout,
+               f"the source record must be printed: {res.stdout!r}")
+        expect("legacy drift" in res.stdout,
+               f"an unreconciled history must be marked as drift: {res.stdout!r}")
+        res = run("backlog", "--repo", str(bl), "--check")
+        expect(res.returncode == 1, "an open backlog must fail --check")
+        expect("silent debt item" in res.stderr,
+               f"the failing item must be named: {res.stderr!r}")
+
+        # 18. The closing protocol: the same item closed by a `closed:` element WITH `evidence:` in
+        #     record 2 -> open: 0, `--check` exits 0, and `check` (format/owner) still passes on a
+        #     record carrying the new key.
+        write_journal(bl,
+                      journal_entry("2026-09-26T00:00:00Z", "backlog_proj",
+                                    unfinished=unfinished_block(("silent debt item", "warning",
+                                                                 "true")),
+                                    run_id="20260926-11112233", factory_version="12.9.0",
+                                    marks=True),
+                      journal_entry("2026-09-27T00:00:00Z", "backlog_proj",
+                                    closed=closed_block(("silent debt item",
+                                                         "memory_project.py:120 -> exit 0")),
+                                    run_id="20260927-44556677", factory_version="12.9.0",
+                                    marks=True))
+        res = run("backlog", "--repo", str(bl), "--check")
+        expect(res.returncode == 0, f"a closed backlog must pass --check: {res.stderr!r}")
+        expect("open: 0" in run("backlog", "--repo", str(bl)).stdout,
+               "a closed item must not be open any more")
+        expect(run("check", "--repo", str(bl)).returncode == 0,
+               "a record with a `closed:` block must not break `check`")
+
+        # 19. Closing without evidence is invalid: same fixture, `evidence:` dropped -> --check
+        #     exits 1 and says why (the closure is not accepted).
+        write_journal(bl,
+                      journal_entry("2026-09-26T00:00:00Z", "backlog_proj",
+                                    unfinished=unfinished_block(("silent debt item", "warning",
+                                                                 "true")),
+                                    run_id="20260926-11112233", factory_version="12.9.0",
+                                    marks=True),
+                      journal_entry("2026-09-27T00:00:00Z", "backlog_proj",
+                                    closed="closed:\n  - item: silent debt item\n",
+                                    run_id="20260927-44556677", factory_version="12.9.0",
+                                    marks=True))
+        res = run("backlog", "--repo", str(bl), "--check")
+        expect(res.returncode == 1, "a closure without evidence must fail --check")
+        expect("evidence" in res.stderr, f"the missing evidence must be named: {res.stderr!r}")
+        expect("open: 1" in run("backlog", "--repo", str(bl)).stdout,
+               "a closure without evidence must not close the item")
+
+        # 20. `closed:` naming an item no record ever declared open -> --check exits 1.
+        write_journal(bl,
+                      journal_entry("2026-09-26T00:00:00Z", "backlog_proj",
+                                    unfinished=unfinished_block(("silent debt item", "warning",
+                                                                 "true")),
+                                    run_id="20260926-11112233", factory_version="12.9.0",
+                                    marks=True),
+                      journal_entry("2026-09-27T00:00:00Z", "backlog_proj",
+                                    closed=closed_block(("phantom item", "nowhere:1")),
+                                    run_id="20260927-44556677", factory_version="12.9.0",
+                                    marks=True))
+        res = run("backlog", "--repo", str(bl), "--check")
+        expect(res.returncode == 1, "closing an unknown item must fail --check")
+        expect("phantom item" in res.stderr,
+               f"the unknown item must be named: {res.stderr!r}")
+        expect("matches no" in res.stderr,
+               f"the unknown item must be reported as unmatched: {res.stderr!r}")
+        expect("open: 1" in run("backlog", "--repo", str(bl)).stdout,
+               "an unknown closed item must not close anything")
+
+        # 21. An item is open by severity=critical even with follow_up=false (same predicate as
+        #     compact-check: critical or follow_up), and `--json` is valid JSON carrying the count.
+        crit = tmp / "critical_proj"
+        crit.mkdir()
+        expect(run("init", "--repo", str(crit)).returncode == 0,
+               "init of the critical fixture must exit 0")
+        write_journal(crit, journal_entry(
+            "2026-09-28T00:00:00Z", "critical_proj",
+            unfinished=unfinished_block(("critical but not a follow-up", "critical", "false")),
+            run_id="20260928-88990011", factory_version="12.9.0", marks=True))
+        res = run("backlog", "--repo", str(crit), "--check")
+        expect(res.returncode == 1, "an open critical item must fail --check")
+        expect("critical but not a follow-up" in res.stderr,
+               f"the critical item must be named: {res.stderr!r}")
+        res = run("backlog", "--repo", str(crit), "--json")
+        expect(res.returncode == 0, f"backlog --json must exit 0: {res.stderr!r}")
+        payload = json.loads(res.stdout)          # raises when the output is not valid JSON
+        expect(payload["open"] == 1, f"the JSON must carry the open count: {payload!r}")
+        expect(payload["items"][0]["item"] == "critical but not a follow-up",
+               f"the JSON must carry the open item: {payload!r}")
+        expect(payload["items"][0]["timestamp"] == "2026-09-28T00:00:00Z",
+               f"the JSON must carry the source record: {payload!r}")
+        expect(payload["errors"] == [], f"a valid journal must report no errors: {payload!r}")
+
+        # 22. WARN when `## Current state` claims a factory version other than the repo's VERSION:
+        #     printed on stderr, exit code untouched; a matching version stays silent.
+        ver = tmp / "ver_proj"
+        ver.mkdir()
+        expect(run("init", "--repo", str(ver)).returncode == 0,
+               "init of the version fixture must exit 0")
+        (ver / "VERSION").write_text("12.10.2\n", encoding="utf-8")
+        v_sum = ver / "memory" / "summary.md"
+        v_sum.write_text(v_sum.read_text(encoding="utf-8").replace(
+            "## Current state", "## Current state\nФабрика v0.0.0: устаревшая сводка."),
+            encoding="utf-8")
+        res = run("backlog", "--repo", str(ver))
+        expect(res.returncode == 0,
+               f"the stale-version warning must not fail the run: {res.stderr!r}")
+        expect("WARN" in res.stderr and "v0.0.0" in res.stderr and "12.10.2" in res.stderr,
+               f"the stale summary version must be warned about: {res.stderr!r}")
+        expect("open: 0" in res.stdout,
+               f"the empty journal must report 0 open items: {res.stdout!r}")
+        v_sum.write_text(v_sum.read_text(encoding="utf-8").replace("v0.0.0", "v12.10.2"),
+                         encoding="utf-8")
+        res = run("backlog", "--repo", str(ver), "--check")
+        expect(res.returncode == 0, f"a summary matching VERSION must pass --check: {res.stderr!r}")
+        expect("WARN" not in res.stderr, f"a matching version must not warn: {res.stderr!r}")
+
+        # 23. A `closed:` block is not debt: it must not make `compact-check` believe a required
+        #     item "survived" a compaction just because its text also appears in a closure.
+        closed_before = tmp / "closed_before.md"
+        closed_after = tmp / "closed_after.md"
+        closed_before.write_text(
+            "# Change Log — closed\n\n" + CHANGE_LOG_MARKER + "\n\n"
+            + journal_entry("2026-09-29T00:00:00Z", "closed_proj",
+                            unfinished=unfinished_block(("debt still open", "warning", "true"))),
+            encoding="utf-8")
+        closed_after.write_text(
+            "# Project Summary — closed\n\n" + SUMMARY_MARKER + "\n\n## Unfinished\n\n"
+            + journal_entry("2026-09-30T00:00:00Z", "closed_proj",
+                            closed=closed_block(("debt still open", "nowhere:1"))),
+            encoding="utf-8")
+        res = run("compact-check", "--before", str(closed_before), "--after", str(closed_after))
+        expect(res.returncode == 1,
+               f"a closure must not satisfy the compaction check: {res.stdout!r}")
+        expect("debt still open" in res.stderr,
+               f"the dropped item must still be reported: {res.stderr!r}")
+
     print("PASS - memory_project.py behaves as expected (init creates once, never rewrites; "
           "check enforces a single owner and fails on mixed/mismatched/missing/legacy memory; "
           "rename rewrites the owner and is idempotent; compact-check keeps critical/follow_up "
-          "items; validate-fix-tasks checks the fix-task schema; the memory format v2 requires "
-          "run_id + provenance marks on current-generation records).")
+          "items; backlog folds the journal into the open items — closed only by a `closed:` "
+          "element with `evidence:`, never able to disappear silently — and warns on a stale "
+          "summary version; validate-fix-tasks checks the fix-task schema; the memory format v2 "
+          "requires run_id + provenance marks on current-generation records).")
     return 0
 
 

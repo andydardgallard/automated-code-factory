@@ -30,6 +30,20 @@ ownership explicit and machine-checkable:
                                  reports 0 rewritten records). Records without the field stay
                                  legacy; `project:` examples inside the templates' fenced code
                                  blocks are never touched.
+  backlog --repo <root>          fold the WHOLE journal into the set of items that are still open:
+                                 every `unfinished` item with severity=critical or follow_up=true,
+                                 in file order, minus the items closed by a `closed:` block of any
+                                 record (matched by the normalized `item` text, whitespace
+                                 collapsed and case-insensitive); a record closes an item with
+                                 `- item: <text>` + the mandatory `evidence: <command/log/
+                                 file:line>`. Each open item is printed with its source record
+                                 (timestamp + factory_version): an item left open by a record that
+                                 carries no `closed:` block at all is legacy drift — history that
+                                 was never reconciled. `--json` prints the report machine-readably.
+                                 `--check` exits 1 (naming the reason) while any item is open and
+                                 on every invalid `closed:` element — one without `evidence:` or
+                                 one naming an item that no record ever declared as open; the
+                                 validation of the `closed:` blocks runs always, on any record.
   compact-check --before <f> --after <f>
                                  verify that every unfinished item with severity=critical or
                                  follow_up=true of <f> is still present in the compacted <f>
@@ -46,14 +60,22 @@ basename of the resolved deploy root; `init --project <name>` overrides it, e.g.
 task's `repo_path` points to a SUBDIRECTORY of the deploy root — memory/ still lives in the
 deploy root, but the project is named after that subdirectory.
 
+Canon of the closing protocol (see the change-log template): an unfinished item NEVER disappears
+silently. It is either carried as debt, or closed by a `closed:` element whose `evidence:` names a
+real proof (command, test, log, `file:line`); a `closed:` element without evidence does not close
+anything, and `backlog --check` fails on it, exactly as it fails on an open item. So `open: 0` is
+the only accepted state, and every historical item that was never closed shows up as legacy drift.
+
 Exit codes: 0 = OK, 1 = FAIL (memory mixes projects, belongs to an unexpected project, a record
 of the current generation violates the memory format v2, compaction dropped a critical/follow_up
-item, or a fix-task file violates its schema). This script imports nothing from the factory:
+item, `backlog --check` found an open item or an invalid `closed:` element, or a fix-task file
+violates its schema). This script imports nothing from the factory:
 it runs from anywhere.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pathlib
 import re
@@ -67,6 +89,13 @@ FIELD_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
 # One `unfinished` item and its sub-fields (indented under `unfinished:`).
 ITEM_RE = re.compile(r"^\s*-\s*item:\s*(.*)$")
 ITEM_FIELD_RE = re.compile(r"^\s*(reason|severity|follow_up):\s*(.*)$")
+# Item blocks of a record body: `unfinished` (the debt) and `closed` (the closing protocol).
+ITEM_SECTIONS = ("unfinished", "closed")
+# The sub-field of a `closed:` element: the mandatory proof of the closure.
+CLOSED_FIELD_RE = re.compile(r"^\s*(evidence):\s*(.*)$")
+# `## Current state` of memory/summary.md and the factory version it claims as current.
+SUMMARY_STATE_HEADING = "## Current state"
+CLAIMED_VERSION_RE = re.compile(r"\bv(\d+\.\d+\.\d+)\b")
 # The YAML subset of a generated fix-task file: `- title:` starts a task, indented `key:`
 # lines are its fields, indented `- value` lines are the items of the current field.
 FIX_TASK_RE = re.compile(r"^(?P<indent>\s*)-\s+(?P<key>[A-Za-z_][A-Za-z0-9_]*):\s*(?P<val>.*)$")
@@ -169,6 +198,7 @@ assumptions: <допущения>
 models_used: analyzer=<модель>; coder=<модель>; tester=<модель>; reviewer=<модель>
 factory_version: <X.Y.Z — версия фабрики на момент прогона>
 unfinished: нет незавершённых элементов
+closed: (опционально) по элементу на закрытый пункт — item: <текст пункта> + evidence: <доказательство>
 ```
 
 Однострочный пример записи (одна запись — один блок, поля построчно):
@@ -202,6 +232,25 @@ unfinished:
 `нет незавершённых элементов`). При компакции элементы с severity=critical или follow_up=true
 сохраняются обязательно. Записи без `project`, `unfinished` или `factory_version` проходят
 валидацию с предупреждением (не ошибкой) — это legacy-совместимость.
+
+**Протокол закрытия: пункт НЕ исчезает без доказательства.** Если долг закрыт (исправлен кодом
+или признан неактуальным), запись-закрытие несёт блок `closed:` рядом с `unfinished:` — по
+элементу на закрытый пункт; для каждого элемента обязательны `item` (текст пункта, по которому
+он сопоставляется с исходным) и `evidence` (команда/тест/лог/`файл:строка`, доказывающие
+закрытие):
+
+```
+closed:
+  - item: замечания код-ревьюера приняты как есть
+    evidence: scripts/memory_project.py:120 -> exit 0 (закрыто v12.10.1)
+```
+
+Закрытие без `evidence:` недействительно, как и `closed:` на пункт, которого нет ни в одной
+записи журнала: оба случая — ошибка `scripts/memory_project.py backlog --check` (наравне с
+открытыми пунктами). Сверка выполняется по ВСЕМ записям журнала, поэтому закрывать можно и
+исторические долги: пункт, который не закрыт и не закрывается, остаётся открытым и печатается
+`backlog` как legacy-drift вместе с записью-источником. Проверка актуальности памяти:
+`python scripts/memory_project.py backlog --repo . --check`.
 """
 
 
@@ -503,13 +552,24 @@ def unfinished_items(path: pathlib.Path) -> list[dict[str, str]]:
 
     Works on both file kinds: an item is any `- item: <text>` line, and the following
     `reason:`/`severity:`/`follow_up:` lines belong to it (same rule as
-    scripts/check_factory_model.py).
+    scripts/check_factory_model.py). Items inside a `closed:` block are skipped — they are
+    closures, not debt, and counting them as "present" would weaken a compaction check. An item
+    that belongs to no top-level block key (e.g. one under a `## Unfinished` heading) is still read,
+    so files written before the `closed:` protocol keep behaving exactly as they did.
     """
     items: list[dict[str, str]] = []
     cur: dict[str, str] | None = None
+    in_closed = False
     for line in path.read_text(encoding="utf-8").splitlines():
+        m = FIELD_RE.match(line)
+        if m:
+            in_closed = m.group(1) == "closed" and not m.group(2).strip()
+        elif line.startswith("## "):
+            in_closed = False               # a new section always ends the `closed:` block
         m = ITEM_RE.match(line)
         if m:
+            if in_closed:
+                continue
             cur = {"item": m.group(1).strip()}
             items.append(cur)
             continue
@@ -545,6 +605,231 @@ def cmd_compact_check(args: argparse.Namespace) -> int:
 
     print(f"ok - compaction preserved all {len(required)} critical/follow_up item(s) "
           f"({len(present)} item(s) in {after.name})")
+    return 0
+
+
+def journal_blocks(change_log: pathlib.Path) -> list[dict]:
+    """Parse the journal into records carrying their fields AND their item blocks.
+
+    Every record is `{"heading": str, "fields": {key: value}, "blocks": {"unfinished": [...],
+    "closed": [...]}}`. An item block is opened by the top-level key of that name with an EMPTY
+    value (`unfinished:`, `closed:`) and ends at the next top-level `key: value` line; inside it a
+    `- item: <text>` line starts an element and the indented sub-fields belong to it (`reason`,
+    `severity`, `follow_up` — and `evidence` for a `closed:` element). Lines before the first
+    record and the template's fenced examples are never read, so the format examples stay inert.
+    """
+    records: list[dict] = []
+    cur: dict | None = None
+    section: str | None = None
+    item: dict[str, str] | None = None
+    for line in change_log.read_text(encoding="utf-8").splitlines():
+        if ENTRY_RE.match(line):
+            cur = {"heading": line.strip(), "fields": {},
+                   "blocks": {s: [] for s in ITEM_SECTIONS}}
+            records.append(cur)
+            section, item = None, None
+            continue
+        if cur is None:
+            continue
+        m = FIELD_RE.match(line)
+        if m:
+            key, value = m.group(1), m.group(2).strip()
+            cur["fields"][key] = value
+            section = key if not value and key in ITEM_SECTIONS else None
+            item = None
+            continue
+        if section is None:
+            continue
+        m = ITEM_RE.match(line)
+        if m:
+            item = {"item": m.group(1).strip()}
+            cur["blocks"][section].append(item)
+            continue
+        m = ITEM_FIELD_RE.match(line) or CLOSED_FIELD_RE.match(line)
+        if m and item is not None:
+            item[m.group(1)] = m.group(2).strip()
+    return records
+
+
+def normalize_item(text: str) -> str:
+    """Item identity for matching: whitespace collapsed, case-insensitive (see `backlog`)."""
+    return " ".join(text.split()).casefold()
+
+
+def is_open_item(item: dict[str, str]) -> bool:
+    """True when an `unfinished` item is debt that stays open: severity=critical or follow_up=true.
+
+    The same predicate as `must_survive_compaction`, so "must survive a compaction" and "must
+    appear in the backlog" can never drift apart.
+    """
+    return bool(must_survive_compaction([item]))
+
+
+def record_timestamp(record: dict) -> str:
+    """The `timestamp:` of a record, falling back to the date that opens its heading."""
+    stamp = record["fields"].get("timestamp", "").strip()
+    return stamp or (record["heading"][3:].split() or [""])[0]
+
+
+def backlog_report(root: pathlib.Path) -> dict:
+    """Fold a whole journal into the open item set and the validity of its `closed:` blocks.
+
+    The fold runs over every record in FILE ORDER: a record first contributes its open items
+    (severity=critical or follow_up=true) and then applies its own `closed:` elements, so an item
+    declared again after an earlier closure is open again. An element closes the item whose
+    normalized text matches one declared as open SOMEWHERE in the journal — an element naming an
+    unknown item, or one without `evidence:`, is an error regardless of the record's age (the
+    validation is never gated by a version) and closes NOTHING, so a broken closure can never hide
+    a debt. Open items keep the record that declared them, which is what makes an unreconciled
+    history readable as legacy drift.
+
+    Returns `{"open": int, "items": [...], "closed": int, "legacy_drift": int, "errors": [...],
+    "warnings": [...]}`; `items` keeps the file order of the declaring record.
+    """
+    change_log = root / "memory" / "change-log.md"
+    records = journal_blocks(change_log) if change_log.is_file() else []
+
+    declared: set[str] = set()
+    for record in records:
+        for item in record["blocks"]["unfinished"]:
+            if is_open_item(item) and item["item"]:
+                declared.add(normalize_item(item["item"]))
+
+    open_items: dict[str, dict] = {}
+    errors: list[dict] = []
+    closed_total = 0
+    for record in records:
+        heading = record["heading"]
+        version = record["fields"].get("factory_version", "")
+        has_closed_block = bool(record["blocks"]["closed"])
+        for item in record["blocks"]["unfinished"]:
+            if is_open_item(item) and item["item"]:
+                open_items[normalize_item(item["item"])] = {
+                    "item": item["item"],
+                    "source": heading,
+                    "timestamp": record_timestamp(record),
+                    "factory_version": version,
+                    "severity": item.get("severity", ""),
+                    "follow_up": item.get("follow_up", ""),
+                    "source_closed": has_closed_block,
+                }
+        for closed in record["blocks"]["closed"]:
+            closed_total += 1
+            text = closed.get("item", "")
+            if not text:
+                errors.append({"kind": "closed-without-item", "record": heading, "item": "",
+                               "message": f"entry '{heading}': a 'closed:' element carries no "
+                                          f"'item:' text"})
+                continue
+            key = normalize_item(text)
+            evidence = closed.get("evidence", "").strip()
+            if not evidence:
+                errors.append({"kind": "closed-without-evidence", "record": heading, "item": text,
+                               "message": f"entry '{heading}': closed item '{text}' carries no "
+                                          f"'evidence:' (closing without evidence is invalid)"})
+            if key not in declared:
+                errors.append({"kind": "closed-unknown-item", "record": heading, "item": text,
+                               "message": f"entry '{heading}': closed item '{text}' matches no "
+                                          f"follow_up/critical item of the journal"})
+            # Only a VALID closure (evidence + an item the journal declared) actually closes the
+            # item: an unsupported `closed:` element leaves the debt open, so it cannot hide it.
+            if evidence and key in declared:
+                open_items.pop(key, None)
+
+    items = list(open_items.values())
+    drift = sum(1 for item in items if not item["source_closed"])
+    return {
+        "open": len(items),
+        "closed": closed_total,
+        "legacy_drift": drift,
+        "items": [{k: v for k, v in item.items() if k != "source_closed"} for item in items],
+        "errors": errors,
+        "warnings": [],
+    }
+
+
+def current_state_text(summary: pathlib.Path) -> str:
+    """Body of the `## Current state` section of memory/summary.md ("" when the section is absent).
+
+    Only that section counts: the rest of the summary (history, key decisions) is allowed to name
+    older versions, exactly like the `project:` declaration area rule used by `check`.
+    """
+    if not summary.is_file():
+        return ""
+    lines = summary.read_text(encoding="utf-8").splitlines()
+    start = next((i + 1 for i, ln in enumerate(lines)
+                  if ln.startswith(SUMMARY_STATE_HEADING)), None)
+    if start is None:
+        return ""
+    body: list[str] = []
+    for line in lines[start:]:
+        if line.startswith("## "):
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
+def summary_version_warnings(root: pathlib.Path) -> list[str]:
+    """WARN when `## Current state` claims a factory version other than the repo's VERSION.
+
+    The version the section claims as CURRENT is its first `vX.Y.Z` mention (e.g. "Фабрика
+    v12.10.0: …"); the older versions it name-drops later are history and never warn. Nothing is
+    claimed (or there is no VERSION file) — nothing to compare, so no warning.
+    """
+    version_file = root / "VERSION"
+    if not version_file.is_file():
+        return []
+    version = version_file.read_text(encoding="utf-8").strip()
+    claimed = CLAIMED_VERSION_RE.search(current_state_text(root / "memory" / "summary.md"))
+    if not version or not claimed or claimed.group(1) == version:
+        return []
+    return [f"memory/summary.md '{SUMMARY_STATE_HEADING}' claims factory version "
+            f"v{claimed.group(1)} but VERSION says {version} — the summary is stale, refresh "
+            f"'{SUMMARY_STATE_HEADING}'"]
+
+
+def cmd_backlog(args: argparse.Namespace) -> int:
+    root = pathlib.Path(args.repo).resolve()
+    report = backlog_report(root)
+    report["warnings"] = summary_version_warnings(root)
+
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(f"open: {report['open']}")
+        for item in report["items"]:
+            print(f"  - {item['item']} "
+                  f"[source: {item['timestamp']}, "
+                  f"factory_version={item['factory_version'] or '?'}]")
+        if report["closed"]:
+            print(f"closed: {report['closed']} item(s) with evidence")
+        if report["legacy_drift"]:
+            print(f"note: {report['legacy_drift']} of these item(s) come from record(s) without a "
+                  f"'closed:' block (legacy drift) — close them in a new record with 'closed:' "
+                  f"+ 'evidence:'")
+
+    for warning in report["warnings"]:
+        print(f"WARN - {warning}", file=sys.stderr)
+    # The `closed:` blocks are validated on every run, but they only fail under `--check`: without
+    # it they are reported, exactly like the open items themselves.
+    verdict = "FAIL" if args.check else "WARN"
+    for problem in report["errors"]:
+        print(f"{verdict} - {problem['message']}", file=sys.stderr)
+    if not args.check:
+        return 0
+
+    if report["open"]:
+        print(f"FAIL - memory backlog is not actual: {report['open']} open item(s), oldest source "
+              f"{report['items'][0]['timestamp']}", file=sys.stderr)
+        for item in report["items"]:
+            print(f"  - {item['item']} [source: {item['timestamp']}]", file=sys.stderr)
+    if report["open"] or report["errors"]:
+        print("FAIL - backlog --check requires 'open: 0' and a valid closing protocol (every "
+              "'closed:' element carrying 'evidence:' and naming an existing item)",
+              file=sys.stderr)
+        return 1
+
+    print(f"ok - backlog is actual (open: 0, {report['closed']} closed item(s) with evidence)")
     return 0
 
 
@@ -684,6 +969,15 @@ def main() -> int:
     p_rename.add_argument("--repo", required=True, help="Deploy root that holds memory/")
     p_rename.add_argument("--to", required=True, help="New project name")
     p_rename.set_defaults(func=cmd_rename)
+
+    p_backlog = sub.add_parser("backlog",
+                               help="fold the open critical/follow_up items and their closures")
+    p_backlog.add_argument("--repo", required=True, help="Deploy root that holds memory/")
+    p_backlog.add_argument("--check", action="store_true",
+                           help="Exit 1 unless 'open: 0' and every 'closed:' element is valid "
+                                "(carries 'evidence:' and names an existing item)")
+    p_backlog.add_argument("--json", action="store_true", help="Print the report as JSON")
+    p_backlog.set_defaults(func=cmd_backlog)
 
     p_compact = sub.add_parser("compact-check",
                                help="verify that compaction kept critical/follow_up items")

@@ -132,6 +132,13 @@ explicitly so both the journal and the summary call it the same way:
 `python .agents/skills/code-factory/scripts/memory_project.py init --repo <deployment root>
 --project <basename of the resolved repo_path>` — the name is pinned in the summary's `project:`
 declaration.
+**Memory actuality**: reading the memory includes reconciling it with the tree. Run
+`python .agents/skills/code-factory/scripts/memory_project.py backlog --repo <deployment root>` — an
+item of the journal's `unfinished` sections is OPEN while it carries `follow_up=true` or
+`severity=critical`, folded over the WHOLE journal, not just the last entry. Every open item is
+re-checked against the actual code BEFORE it is planned again (an item already fixed is not
+re-declared open), and the items this run really fixes come back in Phase 9 as `closed:` blocks with
+their evidence.
 **Checkpoint**: if `.code-factory/state/pipeline.yaml` exists and the task is unchanged, resume
 from the recorded phase. Every run carries the deterministic
 `run_id = YYYYMMDD-<sha256(task.yaml)[:8]>`, generated now with
@@ -402,12 +409,25 @@ and FAILED. The entry counts as a **v2 memory record** when its `factory_version
 `[inferred]` — in BOTH `decisions` and `results`; a v2 entry missing them is a format ERROR
 (`memory_project.py check`, `scripts/check_factory_model.py`), while an entry written by factory
 12.8.0 or older that carries no v2 field is only warned about.
+**Backlog closure + actual summary**: every open memory item this run touched is handled in the entry
+just written — either CLOSED by a `closed:` block that names the item and carries the mandatory
+`evidence:` (a `closed:` element without `evidence:`, or one naming an item that exists in no record,
+is an error, exactly like an item that silently disappears), or carried over in `unfinished` with its
+reason — an item never vanishes without proof of closure. Then actualize the `## Current state`
+section of `memory/summary.md` on EVERY run, not only when the journal is compacted: the version,
+test counts and open backlog it claims must match reality (a version there that differs from `VERSION`
+is a warning). Verify with
+`python .agents/skills/code-factory/scripts/memory_project.py backlog --repo <deployment root> --check`
+— exit 0 means `open: 0` with every `closed:` element valid.
 <!-- factory-rule: memory-ownership begin -->
 **Владение памятью (каноническая формулировка):** одна память принадлежит ровно одному проекту — тому, что назван в `repo_path` задачи; каталог `memory/` живёт в КОРНЕ РАЗВЁРТЫВАНИЯ, базовое имя проекта = basename разрешённого `repo_path` и фиксируется в объявлении `project:` сводки. Единственный писатель — главный агент: одна запись в `memory/change-log.md` на прогон, компакция в `memory/summary.md` при пороге 50 записей (остаются последние 20, элементы severity=critical и follow_up=true сохраняются всегда). Записи разных проектов в одном журнале — ошибка (`check_factory_model.py`, `memory_project.py check`), записи без `project:` — legacy (предупреждение, не ошибка). История разработки самой фабрики в память целевого проекта не попадает.
 <!-- factory-rule: memory-ownership end -->
 <!-- factory-rule: memory-provenance begin -->
 **Происхождение записей памяти (каноническая формулировка):** запись считается записью формата v2, если её `factory_version` новее 12.8.0 ИЛИ она уже несёт v2-поле (`run_id` или метку происхождения) — так полумигрированная запись тоже проверяется; у такой записи обязательны `run_id` формата `YYYYMMDD-<8 hex>` (`scripts/run_id.py`) и метки происхождения в полях `decisions` и `results`: `[verified: <evidence>]` — утверждение подтверждено доказательством прогона (лог, acceptance, цитата), `[inferred]` — вывод без прямого доказательства. Запись формата v2 без `run_id` или без меток в этих полях — ошибка формата (`memory_project.py check`, `check_factory_model.py`), тогда как записи, написанные фабрикой не новее 12.8.0 и не несущие v2-полей, и legacy-записи без `project:` дают только предупреждение. Метка `[verified: ...]` обязана ссылаться на конкретное доказательство (команда/тест/лог); валидаторы проверяют наличие и форму метки.
 <!-- factory-rule: memory-provenance end -->
+<!-- factory-rule: memory-actuality begin -->
+**Актуальность памяти (каноническая формулировка):** в начале прогона открытый backlog сверяется с деревом (`memory_project.py backlog --repo <root>` — fold всех follow_up=true/severity=critical по истории журнала); в конце прогона каждый пункт либо закрывается блоком `closed:` с обязательным `evidence:` в записи прогона, либо остаётся в `unfinished` с причиной — пункт не может исчезнуть без доказательства закрытия: `backlog --check` даёт exit 1 при открытых пунктах, закрытии без `evidence:` и закрытии несуществующего пункта. Сводка `summary.md` (`## Current state`) актуализируется КАЖДЫМ прогоном, а не только при компакции; расхождение заявленной в ней версии с VERSION — предупреждение механизма.
+<!-- factory-rule: memory-actuality end -->
 
 Write `.code-factory/report.md` — one self-contained file with the full history (task, plan,
 errors, diagnostic, results, factory_version) for hand-off to the factory developer. Write

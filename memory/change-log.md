@@ -460,3 +460,86 @@ unfinished:
     reason: задокументированный nit с v12.8.0; в task-v6.yaml как P2
     severity: info
     follow_up: true
+
+## 2026-09-24T00:47:29+03:00 — Фабрика v6 (v12.11.0): полная очистка backlog — stash в action_gate, механизм актуальности памяти (backlog/closed: + 23-е правило), fingerprint по рабочему дереву, project-learned overlay, гигиена деплойеров
+title: Фабрика v6: явная классификация git stash в action_gate, гигиена советов --memory-only, старые nit'ы (ps1 try/catch, planning-guide wording) + закрытие ВСЕГО backlog разработкой + механизм актуальности памяти
+project: repo
+timestamp: 2026-09-24T00:47:29+03:00
+run_id: 20260923-271a9782
+branch: feature/factory-v6-backlog-20260923
+commit: 4b6652c
+task_type: implement
+goal: backlog прогона v12.10.2 + все открытые follow_up истории (32 пункта) закрыты разработкой/доказательствами; по требованию пользователя — расследование устаревания памяти и механизм «память всегда актуальна»
+changed_files: 25 файлов (коммит 4b6652c) — action_gate.py (+classify_stash, разбор -m/--message), project_fingerprint.py + check_factory_model.py (хэш по рабочему дереву, untracked_files), error_router.py (overlay fallback), memory_project.py (backlog/closed:), factory-rules.md + 5 носителей (23-е правило), SKILL.md + code-factory.md (шаги flow), providers.md §5.2, planning-guide.md, tech-stack-detection.md §7, prepare_factory.ps1/.sh, .gitattributes, тесты ×5, VERSION/CHANGELOG/README/AGENTS.md
+created_files: .code-factory/{state/*,logs/*,manifest.json,report.md,report_code_changes.md}; новых файлов кода нет
+results: integration=PASS (26/26 test_*.py без ослабления) [verified: .code-factory/logs/test-results.md]; regression=PASS (check_factory_rules 23 правила/86 блоков exit 0, check_factory_model SKIP+exit 0, version_manager validate 12.11.0 exit 0, run_id check exit 0) [verified: .code-factory/logs/test-results.md]; business=PASS 6/6 (BT-1 stash CONFIRM/ALLOW живьём; BT-2 fingerprint видит unstaged; BT-3 деплойеры деловые сообщения; BT-4 канон 23 правила + grep-контроль; BT-5 backlog --check ловит молчаливое исчезновение; BT-6 open:32 как промежуточный) [verified: .code-factory/logs/business-tests.md]; review=approve (итерация 2/2: critical classify_stash -m/--message закрыт rework + negative-control, minor docstring закрыт, nit закрыт) [verified: .code-factory/logs/code-review.md]; acceptance=SUCCESS [verified: .code-factory/state/acceptance.md]; backlog=0 открытых по всей истории [verified: memory_project.py backlog --repo . --check exit 0]
+decisions: P0.1 stash -> CONFIRM с объяснением (решение пользователя, не HARD_DENY) [verified: task.yaml + диалог]; P0.2 --memory-only — широкий sweep, 0 носителей (советы удалены в v12.10.1) [verified: BT-4]; пользователь потребовал backlog пуст РАЗРАБОТКОЙ по всей истории (32 пункта) — 7 закрыты кодом v6, 25 закрыты ранее с доказательствами [verified: logs/memory-actuality-rca.md таблица]; первопричина устаревания памяти — 5 звеньев (нет переноса/идентификатора/проверки закрытия/актуализации сводки/шага сверки) [verified: logs/memory-actuality-rca.md]; механизм — вариант B комитета: closed:+evidence: + backlog --check + 23-е правило (выбор пользователя при approval) [verified: state/plan.md, factory-rules.md]; доменные regex — реализованы (решение пользователя): overlay уже был в v12.9.0, v6 добавил fallback+§1.2+тесты [verified: test_error_router.py 9a/9b]; версия minor 12.10.2 -> 12.11.0 (матрица --new-field, ревьюер валидировал без override) [verified: version_manager.py validate exit 0, logs/code-review.md]
+assumptions: staged-new файл двигает хэш (git add вводит в tracked set) — задокументировано [verified: кейс 29d]; planner-2 комитета запущен на deepseek-flash по правилу plan-committee (контрастное семейство сильнее матрицы) — теперь задокументировано в providers.md §5.2 [verified: providers.md:152]
+models_used: main=primary (kimi-code/k3); analyzer=kimi-code/k3; planner-2=deepseek-flash (комитет); coder=deepseek-flash ×5 (task_01/07/15/03+05+06/02+04+16) + rework ×1 + task_11 + task_12; tester=deepseek-flash; reviewer=kimi-code/k3 (2 итерации + валидация версии); documenter=deepseek-flash; RCA-разведка=explore kimi-code/k3; diagnostician=unused; advisor=unused
+factory_version: 12.11.0
+unfinished: нет незавершённых элементов
+closed:
+  - item: references/planning-guide.md всё ещё говорит «init --repo <project root>» вместо «корень развёртывания»
+    evidence: v6 task_04: planning-guide.md:37 -> init --repo <deployment root> [verified: git grep "deployment root" -- references/planning-guide.md]
+  - item: при сбое init скрипт prepare_factory.sh вставляет в предупреждение первую строку traceback («Traceback (most recent call last):»)
+    evidence: v6 task_05: короткая причина через awk last non-empty [verified: test_windows_scripts.py PASS + business-tests.md BT-3]
+  - item: глобальный конфиг ~/.kimi-code/config.toml — [secondary_model] содержит таблицу models без обязательного default_model, запуск сабагента падает без явного model
+    evidence: исправлено вне репо ранее: config.toml:5 default_model = "kimi-code/k3" под [secondary_model] [verified: чтение ~/.kimi-code/config.toml, RCA #3]
+  - item: prepare_factory.ps1 — при жёстком сбое копирования .agents/ в вывод попадают сырые записи PowerShell (CategoryInfo, FullyQualifiedErrorId CopyContainerItemToLeafError): fallback Get-ChildItem | Copy-Item не обёрнут в try/catch
+    evidence: v6 task_03: try/catch + -ErrorAction Stop + $script:HardError [verified: BT-3 живое ACL-deny: exit 1, без баннера, 0 сырых записей]
+  - item: check_factory_model.py без флага падает на корне фабрики (AGENTS.md hand-authored — без fingerprint и с русскими секциями)
+    evidence: v12.10.0 (3e1a1bb): трёхсигнальный авто-детект корня фабрики -> SKIP [verified: check_factory_model.py:150-154, BT-4 exit 0]
+  - item: git-блобы .cmd/.ps1 хранятся с LF (i/lf) — CRLF восстанавливается только при core.autocrlf=true; .gitattributes в репозитории нет (касается и prepare_factory.sh)
+    evidence: v12.10.1 (d07bded): .gitattributes:5-6 cmd/ps1 eol=crlf; остаток *.sh закрыт v6 task_06 (.gitattributes:9) [verified: git check-attr eol -> lf]
+  - item: references/planning-guide.md говорит «init --repo <project root>» вместо «корень развёртывания»
+    evidence: как пункт #1 — v6 task_04 [verified: git grep "deployment root"]
+  - item: глобальный конфиг ~/.kimi-code/config.toml — [secondary_model] без обязательного default_model: запуск сабагента без явного model падает
+    evidence: как пункт #3 — config.toml:5 [verified: чтение файла]
+  - item: реализовать план усиления task-improvements.yaml (P0×7 — шарды, двухуровневый fingerprint, Think in Code, унификация review-гейта, верифицируемая приёмка, verify_quotes, handoff-шаблоны; P1×8; P2 backlog)
+    evidence: v12.8.0 (cf0f4e1): план реализован [verified: repo_inventory.py, verify_acceptance.py, handoff-briefing.md существуют]
+  - item: вердикт код-ревьюера request_changes (1 critical + 1 major + 16 minor/nit) не исправлен в коде, а перенесён в план
+    evidence: v12.8.0: замечания стали планом P0.4/P1.14/P1.15 и реализованы [verified: запись v12.8.0 в change-log.md]
+  - item: декларация project: automated_vode_factory_v_12.15.1 в памяти ложна (опечатка, ≠ basename), но проходит оба валидатора
+    evidence: v12.8.0: владелец мигрирован -> repo [verified: все записи журнала project: repo; check_factory_model exit 0]
+  - item: P2 backlog — единый rulebook references/factory-rules.md + consistency-checker (B5)
+    evidence: v12.9.0 (23236b1): references/factory-rules.md + scripts/check_factory_rules.py [verified: 23 правила, 86 блоков, exit 0]
+  - item: P2 backlog — вынос доменных regex из error-routing в project-learned patterns (B3)
+    evidence: v12.9.0: error_router.py + error-patterns.default.json; v6 task_15: overlay §1.2 + fallback + кейсы 9a/9b [verified: test_error_router.py PASS]
+  - item: P2 backlog — evaluate-your-evaluator: golden-set diff'ов для калибровки ревьюера
+    evidence: v12.9.0: calibrate_reviewer.py + skill-base/golden-set (7 кейсов) [verified: test_calibrate_reviewer.py PASS]
+  - item: P2 backlog — вакцинация: баг после приёмки → регрессионный тест до фикса (норма)
+    evidence: v12.9.0: правило vaccination в factory-rules.md [verified: check_factory_rules.py exit 0]
+  - item: P2 backlog — provenance/confidence метки (verified/inferred) в памяти
+    evidence: v12.9.0: формат v2 с метками [verified: memory_project.py:177-187, записи v12.9.0+]
+  - item: P2 backlog — сквозной run_id во всех артефактах .code-factory/
+    evidence: v12.9.0: scripts/run_id.py; записи несут run_id [verified: run_id.py check --dir .code-factory exit 0]
+  - item: P2 backlog — WIP-checkpoints со структурированным телом; committee при двойном rejection плана; FTS5-индекс memory/ и кодовой базы (stdlib sqlite3)
+    evidence: WIP — v12.9.0 (pipeline.yaml ключи); committee + FTS5 — v12.10.0 (3e1a1bb) [verified: plan_arbiter.py, precedent_index.py существуют]
+  - item: P2 backlog — committee при двойном rejection плана (второй независимый planner + детерминированный arbiter)
+    evidence: v12.10.0: plan_arbiter.py + sub-agents/planner.md + правило plan-committee [verified: check_factory_rules.py exit 0]
+  - item: P2 backlog — FTS5-индекс memory/ и кодовой базы (stdlib sqlite3) для поиска прецедентов
+    evidence: v12.10.0: precedent_index.py [verified: test_precedent_index.py PASS]
+  - item: калибровка выявила систематическое завышение severity ревьюером (deleted-test: ожидался major, дан critical; missing-error-handling: лишние critical/minor)
+    evidence: v12.10.0: граница §3 code-review.md -> precision 0.857; v12.10.1 -> 1.000 [verified: CHANGELOG.md:51-54]
+  - item: check_factory_model.py без --memory-only падает на hand-authored корневом AGENTS.md фабрики
+    evidence: как пункт #5 — авто-детект v12.10.0 [verified: check_factory_model.py:150-154]
+  - item: P2 backlog — gen_code_changes_report.py падает traceback'ом на --help
+    evidence: v12.10.1 (d07bded): test_gen_code_changes_report.py [verified: PASS в регрессии 26/26]
+  - item: P2 backlog — контентный fingerprint читает git-индекс, unstaged-правки невидимы
+    evidence: v12.10.1 dirty-warning; полное закрытие — v6 task_07: хэш по рабочему дереву [verified: кейс 29a-e test_factory_model.py, BT-2]
+  - item: P2 backlog — action_gate.py uncaught OSError при незаписываемом журнале (fails closed)
+    evidence: v12.10.1: action_gate.py except OSError -> exit 3 без traceback [verified: кейс 15 test_action_gate.py]
+  - item: P2 backlog — git-блобы .cmd/.ps1 с LF; .gitattributes покрывает только error-patterns.default.json
+    evidence: как пункт #6 — .gitattributes:5-6 (v12.10.1) + :9 *.sh (v6) [verified: git ls-files --eol]
+  - item: устаревшие советы --memory-only для корня фабрики в tech-stack-detection.md:176 и memory_project.py:150
+    evidence: v12.10.1 (d07bded): советы удалены; v6 task_02 sweep подтвердил 0 носителей [verified: BT-4 grep-контроль]
+  - item: action_gate.py --help падает UnicodeEncodeError на cp1251-консоли (docstring содержит «→») — пре-существующий баг, найден кодером task_03; фикс = тот же паттерн use_utf8_output(), что и P0.1
+    evidence: v12.10.2 (ed62e88): use_utf8_output во всех argparse-скриптах [verified: кейс 16 test_action_gate.py]
+  - item: гигиена процесса — coder task_03 использовал git stash/pop на ОБЩЕМ дереве параллельного прогона (риск гонки); кандидат в правило брифинга coder'ов
+    evidence: v12.10.2: 22-е правило no-shared-tree-git-mutations [verified: factory-rules.md, 6 носителей byte-identical]
+  - item: action_gate.py не классифицирует git stash явно (fail-safe CONFIRM) — после 22-го правила стоит явная классификация; вынесено в task-v6.yaml P0.1
+    evidence: v6 task_01: classify_stash + разбор -m/--message + кейс 17 [verified: BT-1 живые прогоны, ревью итерация 2 approve]
+  - item: устаревшие советы --memory-only для корня фабрики в tech-stack-detection.md (~176) и memory_project.py (~150) — после авто-детекта v12.10.0 совет избыточен; вынесено в task-v6.yaml P0.2
+    evidence: ложноживой дубль пункта #27 — закрыт в v12.10.1; перенесён без сверки (звено 5 RCA) [verified: BT-4 grep-контроль 0 носителей]
+  - item: P2 backlog — контентный fingerprint читает git-индекс, unstaged-правки невидимы (dirty-warning смягчает)
+    evidence: как пункт #24 — v6 task_07 [verified: кейс 29a-e, BT-2]

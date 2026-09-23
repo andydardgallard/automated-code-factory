@@ -404,3 +404,29 @@ unfinished:
     reason: precision 0.857 при цели ≥0.8 достигнута; дальнейшее подавление nit'ов рискует over-suppression
     severity: info
     follow_up: false
+
+## 2026-09-23T11:20:00+03:00 — Фабрика v4 (v12.10.1): P0-хвосты backlog v12.10.0 (argparse-контракт, fingerprint dirty-warning, action_gate exit 3, CRLF-пины, гигиена --memory-only) + nit-naming precision 1.000 + golden-set в git
+title: Фабрика v4: argparse-контракт gen_code_changes_report, контентный fingerprint и unstaged-правки, action_gate OSError, CRLF для .cmd/.ps1, гигиена --memory-only + P1 nit-naming
+project: repo
+timestamp: 2026-09-23T11:20:00+03:00
+run_id: 20260923-3540d5dc
+branch: feature/factory-v4-backlog-20260923
+commit: d07bded
+task_type: implement
+goal: реализовать backlog прогона v12.10.0: P0 (gen_code_changes_report --help без traceback, fingerprint dirty-warning, action_gate OSError → exit 3, CRLF-пины *.cmd/*.ps1, гигиена --memory-only), P1 (nit-naming false positive), плюс по решению пользователя — golden-set в git
+changed_files: .agents/skills/code-factory/scripts/{gen_code_changes_report.py,project_fingerprint.py,check_factory_model.py,action_gate.py,memory_project.py,test_action_gate.py,test_factory_model.py,test_windows_scripts.py}; .gitattributes; references/{code-review.md,tech-stack-detection.md}; sub-agents/code-reviewer.md; AGENTS.md; .agents/README.md; CHANGELOG.md; README.md; VERSION
+created_files: scripts/test_gen_code_changes_report.py; skill-base/golden-set/ (7 кейсов + README — восстановлен из ../automated_code_factory_v12.9.1 и ВПЕРВЫЕ закоммичен); .code-factory/{state/*,logs/*,backups/*,manifest.json,report.md,report_code_changes.md}
+results: integration=PASS (26/26 test_*.py: 25 существующих без ослабления + test_gen_code_changes_report) [verified: .code-factory/logs/test-results.md]; regression=PASS (check_factory_rules 21/75 exit 0, validate_mermaid 85 edges, check_factory_model SKIP+exit 0) [verified: .code-factory/logs/test-results.md]; business=PASS 3/3 (BT-1 живой прогон report_code_changes.md 34 файла exit 0; BT-2 калибровка accuracy 7/7, macro precision 0.857→1.000, recall 1.000, nit-naming чист; BT-3 ls-files --eol i/lf w/crlf + attr/text eol=crlf) [verified: .code-factory/logs/business-tests.md, .code-factory/logs/reviewer-calibration.md]; review=approve (итерация 1/2, findings=[], вакцинация подтверждена, commit hygiene чист) [verified: .code-factory/logs/code-review.md]; acceptance=SUCCESS (7 verified MET + 1 derived, ledger FRESH×2, exit 0) [verified: .code-factory/state/acceptance.md]
+decisions: P0.2 — индексное хэширование fingerprint СОХРАНЕНО + dirty-tree warning (решение делегировано агенту: платформенная/CRLF-стабильность, commit-стабильность, дешёвая проверка при каждом старте; хэш рабочего дерева дал бы вечные ложные перегенерации AGENTS.md) [verified: test_factory_model.py кейс 29]; action_gate — новый exit 3 (journal write failure), решение печатается ДО записи журнала [verified: test_action_gate.py кейс 15]; golden-set коммитится в git — решение пользователя при rejection #1 плана (фикстура нужна постоянно: test_calibrate_reviewer падает без неё, §7 требует периодической калибровки); commit_exclude прогона = task*.yaml + reference_docs/** [verified: git show --stat d07bded — 34 файла, golden-set включён]; версия 12.10.0 → 12.10.1 (patch по матрице --fix; ревьюер валидировал без override: exit 3 — документированное сужение crash-контракта, patch-класс) [verified: version_manager.py validate exit 0]
+assumptions: nit-naming FP устранён правкой промпта §3 (нейтральный rename — тишина, не nit), эталоны не сдвигались [verified: reviewer-calibration.md round 2]; round 1 калибровки 5/7 — ошибка брифинга главного агента (verdict-правило «только critical» вместо «critical OR major», code-review.md:200), не промпта [verified: .code-factory/logs/reviewer-calibration.md rounds]; предупреждения git «LF will be replaced by CRLF» при коммите — следствие новых CRLF-пинов, блобы корректны (i/lf) [inferred]
+models_used: main=primary; analyzer=kimi-code/k3 ×1; coder=deepseek-flash ×6; reviewer=kimi-code/k3 ×11 (1 ревью + 9 калибровка + 1 версия); documenter=deepseek-flash; diagnostician=unused; advisor=unused
+factory_version: 12.10.1
+unfinished:
+  - item: action_gate.py --help падает UnicodeEncodeError на cp1251-консоли (docstring содержит «→») — пре-существующий баг, найден кодером task_03; фикс = тот же паттерн use_utf8_output(), что и P0.1
+    reason: вне scope задачи v4; зафиксирован эмпирически (HEAD-версия тоже падает)
+    severity: info
+    follow_up: true
+  - item: гигиена процесса — coder task_03 использовал git stash/pop на ОБЩЕМ дереве параллельного прогона (риск гонки); кандидат в правило брифинга coder'ов
+    reason: инцидент прогона без последствий (дерево проверено, stash пуст), но паттерн опасен
+    severity: info
+    follow_up: true

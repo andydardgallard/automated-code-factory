@@ -14,14 +14,15 @@ Append-only журнал прогонов фабрики. Одна запись 
 title: <строка>
 project: <имя проекта>
 timestamp: <ISO8601 дата>
+run_id: <YYYYMMDD-8hex — идентификатор прогона, scripts/run_id.py>
 branch: <ветка или "(none)">
 commit: <sha или "(none)">
 task_type: implement | review | refactor | security_audit
 goal: <краткая цель>
 changed_files: <список через "; ">
 created_files: <список через "; ">
-results: integration=<PASS|FAIL|SKIP>; regression=<...>; business=<...>; review=<approve|request_changes|SKIP>
-decisions: <принятые решения и допущения>
+results: integration=<PASS|FAIL|SKIP>; regression=<...>; business=<...>; review=<approve|request_changes|SKIP> — ключевые значения с меткой [verified: <команда/тест/лог>] или [inferred]
+decisions: <принятые решения и допущения; каждое ключевое утверждение с меткой [verified: <команда/тест/лог>] или [inferred]>
 assumptions: <допущения>
 models_used: analyzer=<модель>; planner=<модель>; coder=<модель>; tester=<модель>; reviewer=<модель>; diagnostician=<модель>; documenter=<модель>
 factory_version: <X.Y.Z — версия фабрики на момент прогона>
@@ -29,14 +30,30 @@ unfinished: нет незавершённых элементов
 ```
 
 Однострочный пример записи (одна запись — один блок, поля построчно):
-`title: Короткий заголовок | project: automated_vode_factory_v_12.15.1 | timestamp: 2026-01-01T00:00:00+0300 | task_type: implement`
+`title: Короткий заголовок | project: repo | timestamp: 2026-01-01T00:00:00+0300 | run_id: 20260101-1a2b3c4d | task_type: implement`
 
 Память `memory/` принадлежит ТОЛЬКО одному проекту — тому, что указан в поле `repo_path`
 задачи; `project:` = basename разрешённого `repo_path`. Для этого репозитория целевой проект —
-сама фабрика, поэтому во всех записях `project: automated_vode_factory_v_12.15.1`. Разные
+сама фабрика (каталог `repo`), поэтому во всех записях `project: repo`. Разные
 значения `project:` в одном журнале — ошибка (память смешивает проекты; ловят
 `scripts/check_factory_model.py` и `scripts/memory_project.py check`); записи без `project:` —
 legacy (предупреждение, не ошибка).
+
+**Формат v2 (введённый после v12.8.0): `run_id` + provenance-метки.** Поле `run_id` —
+идентификатор прогона (`YYYYMMDD-<8 hex>`, см. `scripts/run_id.py`), который связывает запись с
+артефактами прогона (pipeline.yaml, acceptance.md, logs/*.md, report.md). Каждое ключевое
+утверждение записи в полях `decisions` и `results` несёт инлайн-метку:
+`[verified: <команда/тест/лог, подтверждающий утверждение>]` — утверждение подтверждено
+доказательством прогона, или `[inferred]` — выведено, но не проверено. Пример:
+`results: integration=PASS [verified: .code-factory/logs/code-results.md]; review=approve [inferred]`.
+
+Записью формата v2 считается запись, у которой `factory_version` НОВЕЕ 12.8.0 ИЛИ которая уже
+несёт v2-поле (`run_id` или метку происхождения) — так полумигрированная запись тоже
+проверяется. Для v2-записи отсутствие `run_id` (или `run_id` не по формату `YYYYMMDD-<8 hex>`)
+либо отсутствие метки в `decisions`/`results` — ОШИБКА формата; записи, написанные фабрикой не
+новее 12.8.0 и не несущие v2-полей, и legacy-записи без `project:` проходят валидацию с
+предупреждением (не ошибкой). Проверяют `scripts/memory_project.py check` и
+`scripts/check_factory_model.py`.
 
 Если долг есть — вместо одной строки `unfinished:` пишется многострочный список; для каждого
 элемента обязательны 4 поля (`item`, `reason`, `severity` critical|warning|info, `follow_up`
@@ -54,7 +71,8 @@ unfinished:
 маркер `нет незавершённых элементов`). При компакции журнала в сводку элементы с
 severity=critical или follow_up=true сохраняются обязательно. Существующие записи без секции
 `unfinished`/`factory_version` или без поля `project` проходят валидацию с предупреждением
-(не ошибкой).
+(не ошибкой); так же (предупреждением, не ошибкой) проходят записи, написанные фабрикой не
+новее 12.8.0 и не несущие v2-полей (`run_id` или provenance-метки).
 
 ## 2026-09-01T01:01:45+0300 — AGENTS.md как единый источник правды + переносимая память
 title: AGENTS.md как единый источник правды + переносимая долгосрочная память
@@ -306,3 +324,41 @@ unfinished:
     reason: память repo (целевого проекта) мигрирована; корневая память — отдельный deployment, вне scope задачи
     severity: info
     follow_up: false
+
+## 2026-09-23T00:19:00+03:00 — Фабрика v2 (v12.9.0): rulebook + consistency-checker, run_id, provenance-память, калибровка ревьюера, WIP-checkpoints, error-patterns
+title: Фабрика v2: единый rulebook с consistency-checker, сквозной run_id, provenance-метки памяти, golden-set калибровка ревьюера, вакцинация, WIP-checkpoints, project-learned error-patterns
+project: repo
+timestamp: 2026-09-23T00:19:00+03:00
+run_id: 20260922-442cd2f8
+branch: feature/factory-v2-rulebook-runid
+commit: 23236b1
+task_type: implement
+goal: реализовать P2-backlog прогона v12.8.0: P0 (rulebook + check_factory_rules, сквозной run_id, provenance-метки verified/inferred в памяти), P1 (golden-set калибровка ревьюера, вакцинация, WIP-checkpoints, error-patterns JSON), P2 — backlog
+changed_files: AGENTS.md; .agents/README.md; .agents/agents/code-factory.md; .agents/agents/sub-agents/code-reviewer.md; .agents/skills/code-factory/SKILL.md; .agents/skills/code-factory/references/code-review.md; .agents/skills/code-factory/references/error-routing.md; .agents/skills/code-factory/scripts/test_review_gate.py (тонкая обёртка); verify_acceptance.py; gen_code_changes_report.py; evidence_ledger.py (--run-id); memory_project.py; check_factory_model.py (v2 + check_pipeline_checkpoints); test_memory_project.py; test_factory_model.py; test_verify_acceptance.py; test_evidence_ledger.py (только расширения); memory/change-log.md (заголовок v2); README.md; CHANGELOG.md; VERSION
+created_files: references/factory-rules.md (20 правил); references/error-patterns.default.json (20+6 паттернов); scripts/check_factory_rules.py; scripts/run_id.py; scripts/calibrate_reviewer.py; scripts/error_router.py + 4 test_*.py; skill-base/golden-set/ (7 кейсов, commit_exclude — не коммитится)
+results: integration=PASS (23/23 test_*.py) [verified: .code-factory/logs/test-results.md]; regression=PASS (19 существующих без ослабления + 4 новых; check_factory_rules 20 правил/71 блок exit 0) [verified: .code-factory/logs/test-results.md]; business=PASS (калибровка ревьюера на golden-set: verdict accuracy 7/7 (100%), macro precision 0.619 / recall 0.857 — ревьюер склонен завышать severity) [verified: .code-factory/logs/reviewer-calibration.md]; review=approve (итерация 2/2: 1 critical — мёртвый version-триггер _v2_record, 1 major — запечатлённая дата в test_run_id, 5 minor/nit; все закрыты и проверены эмпирически, цитаты 19/19 VERIFIED) [verified: .code-factory/logs/code-review.md]
+decisions: «новая» memory-запись определена гейтом factory_version>12.8.0 ИЛИ наличием v2-полей — иначе все 8 существующих записей с project: стали бы ошибками [verified: scripts/test_factory_model.py]; маркер review-gate-policy заменён на factory-rule: review-gate-policy в 5 носителях с дословным текстом, test_review_gate.py слит в обёртку без ослабления [verified: test_review_gate.py PASS, REQUIRED_MARKERS сохранены]; evidence ledger требует единого scope --files на stamp и check, иначе STALE [verified: evidence_ledger.py evaluate()]; классификация ошибок — JSON-first (project error-patterns.json > default), таблицы error-routing.md оставлены справочными, quirks слепка задокументированы [verified: references/error-routing.md §1]; версия 12.8.0 → 12.9.0 (minor по матрице --new-field/--new-subagent, валидировано ревьюером без override) [verified: version_manager.py validate exit 0]
+assumptions: golden-set не коммитится (commit_exclude задачи) [verified: task.yaml]; пункт «версия в README не обновлена» снят пользователем — симптом не воспроизвёлся (локально и origin/main везде 12.8.0) [verified: git show origin/main:README.md]
+models_used: main=primary; analyzer=kimi-code/k3 ×2; coder=deepseek-flash ×6 (rulebook, run_id, golden-set, error-patterns, память+checkpoints, rework); documenter=deepseek-flash; reviewer=kimi-code/k3 ×9 (7 калибровочных кейсов + 2 итерации ревью); diagnostician=unused; advisor=unused
+factory_version: 12.9.0
+unfinished:
+  - item: P2 backlog — committee при двойном rejection плана (второй независимый planner + детерминированный arbiter)
+    reason: P2 задачи — осознанно не реализованы, зафиксированы как backlog
+    severity: info
+    follow_up: true
+  - item: P2 backlog — FTS5-индекс memory/ и кодовой базы (stdlib sqlite3) для поиска прецедентов
+    reason: P2 задачи — осознанно не реализованы
+    severity: info
+    follow_up: true
+  - item: калибровка выявила систематическое завышение severity ревьюером (deleted-test: ожидался major, дан critical; missing-error-handling: лишние critical/minor)
+    reason: вердикты точны (7/7), но severity-калибровка промпта ревьюера — кандидат на следующий прогон
+    severity: info
+    follow_up: true
+  - item: quirks слепка error-patterns: строка 8 (error[E\d+] — character class), строка 18 (незаэкранированные скобки), 16 затеняет 17, нюанс §2 WRONG_RESULTS/regression мёртв при JSON-first
+    reason: перенесены дословно как слепок таблиц; задокументированы в Known quirks error-routing.md §1
+    severity: info
+    follow_up: false
+  - item: check_factory_model.py без --memory-only падает на hand-authored корневом AGENTS.md фабрики
+    reason: предсуществующее (см. запись v12.7.0); для корня фабрики предписан режим --memory-only
+    severity: warning
+    follow_up: true

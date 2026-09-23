@@ -39,8 +39,10 @@ def sign(tmp: pathlib.Path, *files: str) -> tuple[str, int]:
 
 
 def stamp(tmp: pathlib.Path, ledger: pathlib.Path, name: str, result: str,
-          *files: str, log: str = "") -> subprocess.CompletedProcess[str]:
+          *files: str, log: str = "", run_id: str = "") -> subprocess.CompletedProcess[str]:
     extra = ["--log", log] if log else []
+    if run_id:
+        extra += ["--run-id", run_id]
     return run("stamp", "--repo", str(tmp), "--ledger", str(ledger), "--name", name,
                "--result", result, "--files", *files, *extra)
 
@@ -165,8 +167,31 @@ def main() -> int:
         res = run("sign", "--repo", str(tmp / "does-not-exist"), "--files", "a.py")
         expect(res.returncode == 0, "sign over a missing repo is still deterministic, not an error")
 
+        # 10. --run-id attributes a stamped entry to its run; an entry without the field (written
+        #     before it existed) still loads and checks, and `sign` keeps working with the flag.
+        ledger_run = tmp / "run" / "evidence.json"
+        res = stamp(tmp, ledger_run, "regression", "pass", "a.py", run_id="20260922-442cd2f8")
+        expect(res.returncode == 0, f"stamping with --run-id must exit 0: {res.stderr!r}")
+        entry_run = json.loads(ledger_run.read_text(encoding="utf-8"))["entries"][0]
+        expect(entry_run.get("run_id") == "20260922-442cd2f8",
+               f"the stamped entry must carry the run id: {entry_run!r}")
+        expect(entry_run["fingerprint"] == sign(tmp, "a.py")[0],
+               "the run id must not disturb the evidence fingerprint")
+        expect(check(tmp, ledger_run, "a.py").returncode == 0,
+               "an entry with a run id must still be judged FRESH")
+        legacy = tmp / "legacy" / "evidence.json"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy_entry = {k: v for k, v in entry_run.items() if k != "run_id"}
+        legacy.write_text(json.dumps({"version": 1, "entries": [legacy_entry]}), encoding="utf-8")
+        res = check(tmp, legacy, "a.py")
+        expect(res.returncode == 0,
+               f"an entry written without run_id must keep working: {res.stdout!r}")
+        res = run("sign", "--repo", str(tmp), "--files", "a.py", "--run-id", "20260922-442cd2f8")
+        expect(res.returncode == 0 and res.stdout.strip() == sign(tmp, "a.py")[0],
+               f"sign must accept --run-id and stay unchanged: {res.stdout!r}")
+
     print("PASS - evidence_ledger.py behaves as expected (deterministic sign, atomic stamp, "
-          "FRESH/STALE check with stale evidence rejected).")
+          "FRESH/STALE check with stale evidence rejected, run id attributed per entry).")
     return 0
 
 

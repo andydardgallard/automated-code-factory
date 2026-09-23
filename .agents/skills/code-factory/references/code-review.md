@@ -10,9 +10,9 @@ This block is the normative statement of the acceptance rule: where any other se
 file, in an agent instruction or in a run document phrases it differently, this block wins. The
 wording is byte-identical everywhere it is quoted.
 
-<!-- review-gate-policy: begin -->
+<!-- factory-rule: review-gate-policy begin -->
 **Review-гейт (каноническая формулировка):** задача НЕ принимается, пока у ревьюера открыты замечания severity=critical (вердикт `request_changes` с open critical findings). Бюджет ревьюера = 2 итерации. Если бюджет исчерпан, а critical findings остались: в режиме hitl фабрика ОСТАНАВЛИВАЕТСЯ и спрашивает пользователя; в режиме auto допускается только conditional pass — соответствующий критерий помечается `unverified_review` в `.code-factory/state/acceptance.md`, а нерешённые findings попадают в `.code-factory/report.md` (раздел unresolved findings), никогда молча. Полный SUCCESS при открытых critical findings невозможен.
-<!-- review-gate-policy: end -->
+<!-- factory-rule: review-gate-policy end -->
 
 The reviewer does NOT fix code and does NOT run the full test suite. Its job is a fresh,
 critical look at the code itself.
@@ -38,6 +38,9 @@ repository exceeds the size budget — **N = 20 000 lines by default** (`--max-l
 whole-repo review runs sharded, and **no subagent ever receives the whole-repo context**. Small
 repos and the ordinary diff-scope `implement` task keep the single-reviewer flow: the protocol
 bounds context, it is not extra ceremony.
+<!-- factory-rule: shard-protocol begin -->
+**Шард-протокол (каноническая формулировка):** whole-repo ревью и security_audit никогда не помещаются в один контекст: `scripts/repo_inventory.py shards --max-lines 20000` режет репозиторий на шарды ≤20000 строк, каждый шард обрабатывает свой параллельный сабагент (ревьюер или аудитор) и пишет один findings-файл. Итог даёт детерминированный `scripts/merge_findings.py` (дедупликация, сортировка по severity, merged verdict), и канонический review-гейт применяется к MERGED findings, а не к отдельным шардам. Обычная задача `implement` ревьюится по diff и шардирования не требует.
+<!-- factory-rule: shard-protocol end -->
 
 1. **Inventory (deterministic, zero LLM).** `repo_inventory.py` walks the tree (VCS/build/vendor
    dirs excluded, symlinks never followed, binaries skipped) and greedily packs the sorted file
@@ -100,34 +103,41 @@ For every file in scope, assess:
 
 1. **Correctness vs plan** — does the change implement exactly what the plan/task asked, and
    nothing unrelated? No scope creep, no silently dropped requirements.
-2. **Style / format** — run the project's formatter/linter if present
+2. **Vaccination of a post-acceptance fix (P1.5)** — a bug found AFTER the task was accepted must
+   first get a regression test that reproduces it (the test fails on the pre-fix code), written
+   BEFORE the fix. A post-acceptance fix without such a reproducing test is a finding
+   (severity ≥ major) — see the canonical vaccination rule below.
+3. **Style / format** — run the project's formatter/linter if present
    (`cargo fmt --check`, `cargo clippy`, `ruff check`, `eslint`, `gofmt -l`, `black --check`…)
    and report violations. Follow the existing project style.
-3. **Dead code** — unused functions, imports, variables, commented-out blocks, unreachable paths.
-4. **Unreadable code** — misleading names, overly complex/obfuscated constructs, magic numbers
+4. **Dead code** — unused functions, imports, variables, commented-out blocks, unreachable paths.
+5. **Unreadable code** — misleading names, overly complex/obfuscated constructs, magic numbers
    without meaning, missing comments where the intent is non-obvious.
-5. **Inefficient code** — obviously wasteful patterns: unnecessary clones/allocations, O(n²)
+6. **Inefficient code** — obviously wasteful patterns: unnecessary clones/allocations, O(n²)
    where O(n) is trivial, repeated computation, needless re-reads of files/config.
-6. **Unsafe / panic-prone code** — `unsafe` blocks, `unwrap`/`expect`/`panic!`/`assert!` on the
+7. **Unsafe / panic-prone code** — `unsafe` blocks, `unwrap`/`expect`/`panic!`/`assert!` on the
    production (non-test) path, unchecked indexing, integer overflow, division by zero, missing
    error handling.
-7. **Duplication** — copy-pasted logic that should be factored into a shared helper.
-8. **Documentation** — public API / new modules / new config fields are documented; README or
+8. **Duplication** — copy-pasted logic that should be factored into a shared helper.
+9. **Documentation** — public API / new modules / new config fields are documented; README or
    in-project docs updated where the task requires it.
-9. **Artifacts / commit hygiene** — no build artifacts, temp files, output dirs (`target/`,
-   `node_modules/`, `__pycache__/`, `opt_results/`, logs) accidentally included in the change;
-   `commit_exclude` patterns from the task are not staged.
-10. **Run trajectory (P1.13 — "trajectory is the truth")** — the diff is not the whole story.
+10. **Artifacts / commit hygiene** — no build artifacts, temp files, output dirs (`target/`,
+    `node_modules/`, `__pycache__/`, `opt_results/`, logs) accidentally included in the change;
+    `commit_exclude` patterns from the task are not staged.
+11. **Run trajectory (P1.13 — "trajectory is the truth")** — the diff is not the whole story.
     Read `.code-factory/state/pipeline.yaml` (`retry_counters`, `models_used`),
     `.code-factory/logs/errors.md`, `diagnostic.md` and the stage logs and judge HOW the code
     turned green: how many retries preceded the first green run, which roles were escalated and
     why, where the run got stuck, whether the same step was "fixed" twice. A change that only
     passes after repeated rollbacks, or one made green by weakening a test instead of fixing the
     code, is a finding (severity ≥ major), not a footnote. Retry counts and stuck points are
-    quoted like code (item 11).
-11. **Evidence quotes** — every finding carries a verbatim quote of the code or log it refers to
+    quoted like code (item 12).
+12. **Evidence quotes** — every finding carries a verbatim quote of the code or log it refers to
     (file:line + exact fragment). An unquoted finding is UNTRUSTED and must not influence the
     verdict — see §2.1.
+<!-- factory-rule: vaccination begin -->
+**Вакцинация (каноническая формулировка):** баг, найденный ПОСЛЕ приёмки задачи, сначала получает регрессионный тест, который его воспроизводит (тест падает на текущем коде), и только потом исправление. Фикс без воспроизводящего теста не принимается, а сам тест остаётся в наборе как вакцина против повторения. Код-ревьюер проверяет наличие такого теста у каждого пост-приёмочного фикса и считает его отсутствие замечанием severity ≥ major.
+<!-- factory-rule: vaccination end -->
 
 ## 2.1 Evidence: verbatim quotes (P0.6)
 
@@ -252,3 +262,27 @@ The main agent writes the verdict to `.code-factory/logs/code-review.md` (or app
 `verify_quotes.py` over the quotes (§2.1), and records `models_used.reviewer` in
 `.code-factory/state/pipeline.yaml`. For a sharded review the merged verdict from
 `merge_findings.py` is the file that lands there (§1.1).
+
+## 7. Reviewer calibration (golden set)
+
+The reviewer is calibrated against known cases before it is trusted with a real gate. The golden
+set lives in `skill-base/golden-set/cases/<id>/` — one small synthetic `diff.patch` plus a flat
+`expected.yaml` (`verdict`, `severities`) per case. Run the reviewer over those diffs with one
+subagent per case (each returning the ordinary output contract of §6), writing one result file
+`<results>/<id>.json` per case, then score the run:
+
+```bash
+python .agents/skills/code-factory/scripts/calibrate_reviewer.py score \
+  --golden skill-base/golden-set/cases \
+  --results .code-factory/logs/golden-results \
+  --out .code-factory/logs/reviewer-calibration.md \
+  --run-id <run_id>
+```
+
+The report gives the severity precision/recall (per case and pooled) and the verdict accuracy
+(agreement with the golden verdict), so a reviewer that misses real defects or invents findings is
+visible as data instead of as an opinion. `--run-id` is optional for the script, but the report is a
+`logs/*.md` artifact of the run and the run-id rule expects every such artifact to carry the id.
+Scoring is not a gate: a complete run exits 0, while exit 2 means the run was incomplete, unscorable
+or unreportable — a golden case without a result (the missing ids are listed), an unreadable or
+malformed case/result file (the file and the problem are named), or a report that cannot be written.

@@ -1,0 +1,230 @@
+{
+  "version": 1,
+  "patterns": [
+    {
+      "id": "1",
+      "category": "MISSING_INPUT",
+      "patterns": ["Task file not found", "Work dir not found"],
+      "route": "human"
+    },
+    {
+      "id": "2",
+      "category": "WRONG_RESULTS",
+      "patterns": [
+        "zero Total_Return",
+        "no trades occurred",
+        "all combinations produced identical",
+        "expected .* but got",
+        "regression",
+        "no meaningful signals",
+        "no nonzero",
+        "zero return"
+      ],
+      "route": "diagnostician"
+    },
+    {
+      "id": "3",
+      "category": "INFRASTRUCTURE",
+      "patterns": ["Merge conflict in (target/|node_modules/|__pycache__/|build/|dist/)"],
+      "route": "infrastructure"
+    },
+    {
+      "id": "4",
+      "category": "INFRASTRUCTURE",
+      "patterns": ["(build artifacts|target/|node_modules/) (tracked|committed) in git"],
+      "route": "infrastructure"
+    },
+    {
+      "id": "5",
+      "category": "MISSING_FILE",
+      "patterns": ["No such file or directory", "cannot open file", "file not found", "does not exist"],
+      "route": "ba"
+    },
+    {
+      "id": "6",
+      "category": "MISSING_FILE",
+      "patterns": ["ModuleNotFoundError", "ImportError.*No module named"],
+      "route": "ba"
+    },
+    {
+      "id": "7",
+      "category": "BAD_COMMAND",
+      "patterns": [
+        "command not found",
+        ": not found",
+        "No such command",
+        "unknown option",
+        "syntax error near unexpected token"
+      ],
+      "route": "planner"
+    },
+    {
+      "id": "8",
+      "category": "COMPILE_ERROR",
+      "patterns": ["error[E\\d+]", "^error: ", "cannot find", "failed to compile", "no member named"],
+      "route": "coder"
+    },
+    {
+      "id": "9",
+      "category": "COMPILE_ERROR",
+      "patterns": ["SyntaxError", "IndentationError", "NameError.*not defined"],
+      "route": "coder"
+    },
+    {
+      "id": "10",
+      "category": "COMPILE_ERROR",
+      "patterns": ["npm ERR!", "error TS\\d+", "Type error:", "cannot find module"],
+      "route": "coder"
+    },
+    {
+      "id": "11",
+      "category": "COMPILE_ERROR",
+      "patterns": ["go: cannot find", "cannot find package", "\\.go:\\d+:\\d+: .* undefined"],
+      "route": "coder"
+    },
+    {
+      "id": "12",
+      "category": "COMPILE_ERROR",
+      "patterns": ["cannot find symbol", "\\.java:\\d+: error:"],
+      "route": "coder"
+    },
+    {
+      "id": "13",
+      "category": "LINK_ERROR",
+      "patterns": [
+        "linking",
+        "undefined reference",
+        "cannot find -l",
+        "ld returned",
+        "library not found"
+      ],
+      "route": "coder"
+    },
+    {
+      "id": "14",
+      "category": "DEPENDENCY",
+      "patterns": [
+        "cargo.*could not compile.*dependency",
+        "npm ERR! 404",
+        "pip.*No matching distribution"
+      ],
+      "route": "infrastructure"
+    },
+    {
+      "id": "15",
+      "category": "PERMISSION",
+      "patterns": ["Permission denied", "EACCES", "operation not permitted", "sudo required"],
+      "route": "human"
+    },
+    {
+      "id": "16",
+      "category": "TIMEOUT",
+      "patterns": ["timed?\\s*out", "timeout", "TimeoutExpired", "operation timed out"],
+      "route": "planner"
+    },
+    {
+      "id": "17",
+      "category": "TIMEOUT",
+      "patterns": ["timed?\\s*out", "timeout", "TimeoutExpired", "operation timed out"],
+      "route": "coder"
+    },
+    {
+      "id": "18",
+      "category": "RUNTIME_CRASH",
+      "patterns": [
+        "thread .* panicked",
+        "Segmentation fault",
+        "core dumped",
+        "Fatal error",
+        "Traceback (most recent call last)",
+        "panic:"
+      ],
+      "route": "coder"
+    },
+    {
+      "id": "19",
+      "category": "ASSERTION",
+      "patterns": ["AssertionError", "assert .* failed", "test.*failed", "FAILED.*test"],
+      "route": "coder"
+    },
+    {
+      "id": "20",
+      "category": "UNKNOWN",
+      "patterns": [],
+      "route": "diagnostician"
+    }
+  ],
+  "provider_patterns": [
+    {
+      "id": "A",
+      "category": "PROVIDER_AUTH",
+      "patterns": [
+        "401",
+        "unauthorized",
+        "invalid api key",
+        "authentication failed",
+        "api key (missing|expired)"
+      ],
+      "route": "infrastructure"
+    },
+    {
+      "id": "B",
+      "category": "PROVIDER_AUTH",
+      "patterns": ["403", "forbidden", "access denied", "insufficient permission"],
+      "route": "infrastructure"
+    },
+    {
+      "id": "C",
+      "category": "PROVIDER_RATE",
+      "patterns": [
+        "429",
+        "rate limit",
+        "too many requests",
+        "quota exceeded",
+        "billing",
+        "insufficient.*balance"
+      ],
+      "route": "infrastructure"
+    },
+    {
+      "id": "D",
+      "category": "PROVIDER_MODEL",
+      "patterns": ["model (not found|does not exist|not available|invalid.*model)"],
+      "route": "planner"
+    },
+    {
+      "id": "E",
+      "category": "PROVIDER_UPSTREAM",
+      "patterns": [
+        "502",
+        "503",
+        "504",
+        "5\\d\\d",
+        "upstream",
+        "temporarily unavailable",
+        "connection (refused|reset)"
+      ],
+      "route": "infrastructure"
+    },
+    {
+      "id": "F",
+      "category": "PROVIDER_FORMAT",
+      "patterns": [
+        "unsupported.*format",
+        "malformed.*request",
+        "invalid_request_error",
+        "base_url.*not reachable"
+      ],
+      "route": "planner"
+    }
+  ],
+  "retry_budgets": {
+    "coder": 1,
+    "ba": 2,
+    "planner": 2,
+    "diagnostician": 1,
+    "advisor": 1,
+    "infrastructure": 3,
+    "reviewer": 2
+  }
+}

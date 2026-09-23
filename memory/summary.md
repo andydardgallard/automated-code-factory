@@ -8,14 +8,15 @@ repo_path: .
 (порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
 
 ## Current state
-Фабрика v12.8.0: shard-протокол whole-repo review/security_audit (repo_inventory + merge_findings);
-двухуровневый fingerprint (структурный + контентный `git ls-files -s`, SKIP регенерации AGENTS.md
-только при совпадении обоих); Think in Code (log_tail, repo_stats); канонический review-гейт в 5 документах
-(консистентность — test_review_gate.py); верифицируемая приёмка (verify_acceptance.py: verify/derived/unverified, DEGRADED без регрессии);
-verify_quotes.py (цитаты = точные подстроки); evidence ledger FRESH/STALE; advisor-сабагент (лестница
-regex→Diagnostician→Advisor→Human→FAILED); action_gate/factory_preflight/task_graph; память enforced owner=basename
-(repo, мигрировано rename'ом); model diversity generator≠judge, модели передаются явно в Agent tool.
-Владелец памяти: repo (rename). 19/19 self-тестов PASS.
+Фабрика v12.10.0: v12.8.0 (шард-протокол, двухуровневый fingerprint, Think in Code, review-гейт,
+верифицируемая приёмка, verify_quotes, evidence ledger, advisor, preflight) + v12.9.0 (rulebook
+factory-rules.md 21 правило с byte-identical носителями, сквозной run_id, provenance-память v2,
+golden-set калибровка ревьюера, вакцинация, WIP-checkpoints, error-patterns JSON) + v12.10.0
+(severity-граница critical=существующий путь / major=новый путь в code-review.md §3 + Reporting
+discipline, норма калибровки §7: accuracy 100% / precision ≥ 0.8; committee при двойном rejection
+плана — planner-2 контрастного семейства + детерминированный plan_arbiter.py; check_factory_model
+авто-детектирует hand-authored корень фабрики → SKIP (3 сигнала); precedent_index.py — FTS5-поиск
+прецедентов по memory/ и коду). Владелец памяти: repo. 25/25 self-тестов PASS.
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле
@@ -37,6 +38,11 @@ regex→Diagnostician→Advisor→Human→FAILED); action_gate/factory_preflight
 - Документер обновляет только doc-комментарии и `.md` (secondary-модель, валидатор, бюджет 1).
 
 ## Recent history
+- 2026-09-23 — «Фабрика v3 (v12.10.0)» (feature/factory-v3-backlog-20260923, 3e1a1bb):
+  severity-калибровка ревьюера (precision 0.619→0.857, recall→1.000, accuracy 7/7), committee
+  при двойном rejection плана (plan-committee + plan_arbiter.py + factory-planner),
+  check_factory_model SKIP на корне фабрики (трёхсигнальный детектор), FTS5 precedent_index.py,
+  test_run_id перепинован на fixture. v12.9.1 → v12.10.0 (minor).
 - 2026-09-21 — «Развёртывание и запуск фабрики в Windows» (feature/windows-launch, 37a683e):
   Windows-версии обеих операций (`prepare_factory.ps1` + `prepare_factory.cmd`, `start.cmd`),
   паритет с bash-путём, жёсткий сбой развёртывания → exit 1 без баннера «Готово» (ожидаемые

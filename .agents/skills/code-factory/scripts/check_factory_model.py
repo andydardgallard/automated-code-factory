@@ -37,9 +37,20 @@ Usage:
   python check_factory_model.py [--repo <path>] [--memory-only]
 
   --memory-only   skip the AGENTS.md checks (sections + fingerprints) and only validate
-                  the memory files and the WIP checkpoint. Useful for the factory's own
-                  root, whose AGENTS.md is a hand-authored manual rather than a generated
-                  8-section model.
+                  the memory files and the WIP checkpoint.
+
+The factory's OWN root is auto-detected by THREE signals that must hold together: line 1 of
+`AGENTS.md` carries NO `code-factory-fingerprint` marker, it DOES carry the factory's own
+`code-factory-version` marker (the hand-authored manual starts with
+`<!-- code-factory-version: X.Y.Z -->`), and `<repo>/.agents/skills/code-factory/SKILL.md` is
+deployed next to it. Such a root holds the factory's hand-authored manual, not a generated
+8-section model — the AGENTS.md checks are then a SKIP with a note (memory and the WIP checkpoint
+are still validated), so the factory's own root passes without `--memory-only`. The version marker
+is what keeps that detector narrow: `prepare_factory` deploys the flow skill into EVERY target
+project, so the skill alone would turn an ordinary target project with a hand-authored AGENTS.md
+into a SKIP instead of the documented `line 1 must be …` error. Every project without the
+fingerprint is still an error, and a fingerprint that is PRESENT but stale stays an error
+everywhere (the model exists and must be regenerated).
 
 Exit code 0 = PASS, 1 = FAIL (each failure printed to stderr). Warnings are printed to
 stderr but do not fail (legacy memory missing the newer optional keys or the `project:`
@@ -73,6 +84,18 @@ FINGERPRINT_RE = re.compile(
     r"(?:\s+content:\s*([0-9a-f]{64}))?\s*-->$"
 )
 FINGERPRINT_HINT = "<!-- code-factory-fingerprint: <64-hex> content: <64-hex> -->"
+# Marker that identifies a GENERATED AGENTS.md model. Its absence in line 1 is what makes a model
+# hand-authored — see `_is_factory_own_root`.
+FINGERPRINT_MARKER = "code-factory-fingerprint"
+# The factory's OWN version marker: the hand-authored manual at the factory's root starts with
+# `<!-- code-factory-version: X.Y.Z -->`. It is a REQUIRED signal of the factory-own-root detector
+# (see `_is_factory_own_root`), because no generated model and no target project carries it.
+VERSION_MARKER = "code-factory-version"
+# The factory's flow skill. Its presence next to a version-marked, fingerprint-less AGENTS.md is the
+# third signal of the factory-own-root detector: a target project the factory still has to model
+# lacks the version marker, and that one must stay an error. The skill ALONE is useless as a signal
+# — `prepare_factory` deploys it into EVERY target project.
+FACTORY_SKILL_REL = ".agents/skills/code-factory/SKILL.md"
 CHANGE_LOG_MARKER = "<!-- code-factory-memory: change-log -->"
 SUMMARY_MARKER = "<!-- code-factory-memory: summary -->"
 ENTRY_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2}.*)$")
@@ -119,16 +142,45 @@ UNFINISHED_SEVERITIES = {"critical", "warning", "info"}
 UNFINISHED_BOOLS = {"true", "false"}
 
 
-def check_agents_model(root: pathlib.Path) -> tuple[list[str], list[str]]:
-    """Return (errors, warnings) for the AGENTS.md model (empty lists = OK)."""
+def _is_factory_own_root(root: pathlib.Path, first_line: str) -> bool:
+    """True when `root` is the factory's OWN root, whose AGENTS.md is a hand-authored manual.
+
+    Three signals, ALL required: line 1 of AGENTS.md carries no `code-factory-fingerprint` marker
+    (a generated model always does), it DOES carry the factory's own `code-factory-version` marker
+    (the hand-authored manual starts with `<!-- code-factory-version: X.Y.Z -->`), and the factory's
+    flow skill `<root>/.agents/skills/code-factory/SKILL.md` is deployed next to it. The skill alone
+    would be far too wide a signal: `prepare_factory` deploys it into EVERY target project, so a
+    target project with a hand-authored AGENTS.md would silently become a SKIP instead of the
+    documented `line 1 must be …` error — the version marker is what separates the two. A project
+    whose fingerprint IS there takes the normal path, where a stale fingerprint is an error — the
+    skip never swallows an existing-but-stale model.
+    """
+    return (FINGERPRINT_MARKER not in first_line
+            and VERSION_MARKER in first_line
+            and (root / FACTORY_SKILL_REL).is_file())
+
+
+def check_agents_model(root: pathlib.Path) -> tuple[list[str], list[str], str]:
+    """Return (errors, warnings, skip note) for the AGENTS.md model (empty lists/note = OK).
+
+    The factory's own root has no generated model to validate — its AGENTS.md is the factory's
+    hand-authored manual, not an 8-section model with a fingerprint — so it yields a non-empty skip
+    note instead of errors (see `_is_factory_own_root`); the caller prints `SKIP - …`. Memory and
+    the WIP checkpoint are out of scope here and are still validated by the caller.
+    """
     errors: list[str] = []
     warnings: list[str] = []
     agents = root / "AGENTS.md"
     if not agents.is_file():
-        return ["AGENTS.md not found"], warnings
+        return ["AGENTS.md not found"], warnings, ""
 
     lines = agents.read_text(encoding="utf-8").splitlines()
     first = lines[0] if lines else ""
+
+    if _is_factory_own_root(root, first):
+        return [], warnings, (f"AGENTS.md is the factory's own hand-authored manual "
+                              f"(no '{FINGERPRINT_MARKER}' marker, '{VERSION_MARKER}' present, "
+                              f"{FACTORY_SKILL_REL} present): AGENTS.md model checks skipped")
 
     m = FINGERPRINT_RE.match(first.strip())
     if not m:
@@ -155,11 +207,12 @@ def check_agents_model(root: pathlib.Path) -> tuple[list[str], list[str]]:
         errors.append(f"missing sections: {missing}")
     if extra:
         errors.append(f"unexpected sections: {extra}")
-    return errors, warnings
+    return errors, warnings, ""
 
 
 def check_agents(root: pathlib.Path) -> list[str]:
-    """Errors only for the AGENTS.md model (empty = OK); see `check_agents_model` for warnings."""
+    """Errors only for the AGENTS.md model (empty = OK); see `check_agents_model` for warnings
+    and for the skip note of the factory's own root."""
     return check_agents_model(root)[0]
 
 
@@ -353,14 +406,30 @@ def validate_memory(root: pathlib.Path) -> tuple[list[str], list[str]]:
     return errors, warnings
 
 
+def _scalar_or_none(value: str) -> object:
+    """Turn the inline value of a `key: value` line into its Python form.
+
+    An empty value stays `None`, which the validators report as missing. The empty flow
+    collections `[]` and `{}` are the empty list / mapping they spell, not opaque strings, so a
+    checkpoint writing `files_touched: []` satisfies the contract of that key instead of failing
+    the type check.
+    """
+    if value == "[]":
+        return []
+    if value == "{}":
+        return {}
+    return value or None
+
+
 def _parse_flat_yaml(text: str) -> dict[str, object]:
     """Parse the flat YAML subset the pipeline checkpoint uses (no PyYAML in the factory).
 
-    A top-level `key: value` is a scalar; a top-level `key:` without a value opens a block of
-    indented children — `- item` lines make it a list, `sub: value` lines a mapping. Comments
-    and blank lines are skipped, and anything nested deeper is folded into the same block
-    (`retry_counters`/`models_used` are one level deep by contract). A key declared with an
-    empty value and no children stays `None`, which the validators report as missing.
+    A top-level `key: value` is a scalar (or an empty flow collection, see `_scalar_or_none`); a
+    top-level `key:` without a value opens a block of indented children — `- item` lines make it a
+    list, `sub: value` lines a mapping. Comments and blank lines are skipped, and anything nested
+    deeper is folded into the same block (`retry_counters`/`models_used` are one level deep by
+    contract). A key declared with an empty value and no children stays `None`, which the validators
+    report as missing.
     """
     data: dict[str, object] = {}
     cur: str | None = None
@@ -372,8 +441,7 @@ def _parse_flat_yaml(text: str) -> dict[str, object]:
             m = KV_RE.match(line)
             if m:
                 cur = m.group(1)
-                value = m.group(2).strip()
-                data[cur] = value or None
+                data[cur] = _scalar_or_none(m.group(2).strip())
             continue
         if cur is None:
             continue
@@ -446,15 +514,21 @@ def main() -> int:
     root = pathlib.Path(args.repo).resolve()
     errors: list[str] = []
     warnings: list[str] = []
+    a_skip = ""
     if args.memory_only:
         errors, warnings = validate_memory(root)
     else:
-        a_errs, a_warns = check_agents_model(root)
+        a_errs, a_warns, a_skip = check_agents_model(root)
         m_errs, m_warns = validate_memory(root)
         errors += a_errs
         errors += m_errs
         warnings += a_warns
         warnings += m_warns
+
+    # A hand-authored AGENTS.md at the factory's own root is a SKIP: there is no generated model to
+    # validate there. Memory and the WIP checkpoint are still checked below.
+    if a_skip:
+        print("SKIP - " + a_skip, file=sys.stderr)
 
     # The WIP checkpoint is validated in both modes: it belongs to the run, not to the model.
     p_errs, p_skip = check_pipeline_checkpoints(root)
@@ -473,7 +547,9 @@ def main() -> int:
             print("  " + e, file=sys.stderr)
         return 1
 
-    scope = "memory" if args.memory_only else "AGENTS.md + memory"
+    scope = "memory" if (args.memory_only or a_skip) else "AGENTS.md + memory"
+    if a_skip:
+        scope += " — AGENTS.md check skipped"
     checkpoint = "no WIP checkpoint" if p_skip else f"WIP checkpoint {PIPELINE_REL} valid"
     print(f"PASS - factory model is consistent ({scope}; {checkpoint}).")
     return 0

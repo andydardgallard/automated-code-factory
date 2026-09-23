@@ -362,3 +362,45 @@ unfinished:
     reason: предсуществующее (см. запись v12.7.0); для корня фабрики предписан режим --memory-only
     severity: warning
     follow_up: true
+
+## 2026-09-23T02:00:00+03:00 — Фабрика v3 (v12.10.0): severity-калибровка ревьюера, committee при двойном rejection плана, FTS5-индекс, check_factory_model на корне фабрики
+title: Фабрика v3: committee при двойном rejection плана, FTS5-индекс memory и кодовой базы, severity-калибровка ревьюера по golden-set, корректный режим check_factory_model для корня фабрики
+project: repo
+timestamp: 2026-09-23T02:00:00+03:00
+run_id: 20260923-bcbe68b3
+branch: feature/factory-v3-backlog-20260923
+commit: 3e1a1bb
+task_type: implement
+goal: реализовать backlog прогона v12.9.0: P0 (severity-калибровка ревьюера, committee при двойном rejection плана, check_factory_model на корне фабрики), P1 (FTS5-индекс, норма калибровки §7), P2 — backlog; дополнительно одобрено: починка test_run_id.py и финальный backlog-task.yaml
+changed_files: references/code-review.md (§3 граница critical/major + Reporting discipline, §7 норма калибровки); sub-agents/code-reviewer.md; scripts/check_factory_model.py (трёхсигнальный авто-детект корня фабрики → SKIP); scripts/test_factory_model.py (кейсы 28a-d); scripts/test_run_id.py (пин на fixture 4b918a06); references/factory-rules.md (21-е правило plan-committee); SKILL.md (mermaid-ветка committee); .agents/agents/code-factory.md (Phase 3 + frontmatter factory-planner); references/planning-guide.md (§4 контракт арбитра, §6 committee); AGENTS.md; .agents/README.md; CHANGELOG.md; VERSION; README.md; sub-agents/{analyzer,diagnostician}.md (precedent_index)
+created_files: scripts/plan_arbiter.py + test_plan_arbiter.py; scripts/precedent_index.py + test_precedent_index.py; sub-agents/planner.md; .code-factory/{state/*,logs/*,backups/*,manifest.json,report.md,report_code_changes.md}
+results: integration=PASS (25/25 self-тестов: 23 существующих без ослабления + test_plan_arbiter + test_precedent_index) [verified: .code-factory/logs/test-results.md]; regression=PASS (check_factory_rules 21 правило/75 блоков, validate_mermaid 85 edges, check_factory_model --repo . SKIP+exit 0, run_id check 4/4) [verified: .code-factory/logs/test-results.md]; business=PASS 3/3 (калибровка: accuracy 7/7, macro precision 0.619→0.857, recall 0.857→1.000; check_factory_model на корне — SKIP без traceback; plan_arbiter на двух планах — merged + расхождения) [verified: .code-factory/logs/business-tests.md, .code-factory/logs/reviewer-calibration.md]; review=approve (итерация 3 по решению пользователя: critical детектора закрыт трёхсигнальной проверкой, major pi.SYMLINK_REL закрыт, открытых findings нет; цитаты 3/3 VERIFIED) [verified: .code-factory/logs/code-review.md, .code-factory/logs/quotes-review-1.md]; acceptance=SUCCESS (5 verified MET, 2 unverified, ledger FRESH×2, exit 0) [verified: .code-factory/state/acceptance.md]
+decisions: golden-set восстановлен копированием из ../automated_code_factory_v12.8.0 (решение пользователя; commit_exclude, не коммитится) [verified: skill-base/golden-set/cases — 7 кейсов]; эталоны expected.yaml НЕ сдвигались — точность поднята промптом §3 (Reporting discipline: одна первопричина = одно finding; субъективное не сообщается) [verified: .code-factory/logs/reviewer-calibration.md раунды 0.786→0.857]; детектор корня фабрики = 3 сигнала (нет fingerprint + code-factory-version в line 1 + развёрнут SKILL.md) — SKILL.md alone слишком широкий (развёрнут в каждом целевом проекте), critical ревьюера итерации 1 [verified: test_factory_model.py кейсы 28a-d]; test_run_id перепинован на закоммиченный fixture assets/task-template.yaml вместо эфемерного .code-factory/state/task.yaml [verified: test_run_id.py PASS без .code-factory]; committee: planner-2 из контрастного семейства (kimi-k3→deepseek-flash), арбитр детерминированный stdlib, committee не более одного раза на задачу [verified: SKILL.md mermaid, plan_arbiter.py]; версия 12.9.1 → 12.10.0 (minor по матрице --new-subagent, валидировано ревьюером без override) [verified: version_manager.py validate exit 0]
+assumptions: норма калибровки §7 — мягкий гейт (пороги accuracy 100%, precision ≥ 0.8 — повод перекалибровать промпт, не сдвигать эталоны) [verified: references/code-review.md §7]; symlink-под-проверка test_precedent_index self-skip'ается на хостах без прав (на этом хосте skip; гард доказан пробой со stub is_symlink) [verified: .code-factory/logs/code-review.md итерация 3]; корневая memory развёртывания и repo/memory — зеркала, запись внесена в обе [inferred]
+models_used: main=primary; analyzer=kimi-code/k3 ×2; coder=deepseek-flash ×5; reviewer=kimi-code/k3 (14 калибровка + 3 ревью); documenter=deepseek-flash; diagnostician=unused; advisor=unused
+factory_version: 12.10.0
+unfinished:
+  - item: P2 backlog — gen_code_changes_report.py падает traceback'ом на --help
+    reason: P2 задачи — осознанно не реализованы, зафиксированы как backlog (вынесено в task.yaml следующего прогона)
+    severity: info
+    follow_up: true
+  - item: P2 backlog — контентный fingerprint читает git-индекс, unstaged-правки невидимы
+    reason: P2; задокументированный nit с v12.8.0
+    severity: info
+    follow_up: true
+  - item: P2 backlog — action_gate.py uncaught OSError при незаписываемом журнале (fails closed)
+    reason: P2; nit с v12.8.0
+    severity: info
+    follow_up: true
+  - item: P2 backlog — git-блобы .cmd/.ps1 с LF; .gitattributes покрывает только error-patterns.default.json
+    reason: P2; прогон v12.9.1
+    severity: info
+    follow_up: true
+  - item: устаревшие советы --memory-only для корня фабрики в tech-stack-detection.md:176 и memory_project.py:150
+    reason: после авто-детекта v12.10.0 совет избыточен; кодер task_01 зафиксировал как out-of-scope
+    severity: info
+    follow_up: true
+  - item: nit-naming — последний false positive калибровки (ревьюер сообщает nit при expected=[])
+    reason: precision 0.857 при цели ≥0.8 достигнута; дальнейшее подавление nit'ов рискует over-suppression
+    severity: info
+    follow_up: false

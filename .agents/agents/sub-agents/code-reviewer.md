@@ -44,7 +44,11 @@ Your job:
    finding.
 4. Run the project's formatter/linter in check-only mode if one exists (e.g. `cargo fmt --check`,
    `cargo clippy`, `ruff check`, `eslint`, `gofmt -l`). Report violations, do not fix them.
-5. Classify each finding by severity (critical/major/minor/nit).
+5. Classify each finding by severity (critical/major/minor/nit). The boundary is defined in
+   `references/code-review.md` §3: critical damages EXISTING behaviour (crash/bug on an existing
+   path, corruption, security issue, a weakened existing check or validation), while major is lost
+   test coverage with no replacement or a NEW path left unguarded. Over-rating a major as critical
+   is a calibration error (§7), not extra caution.
 6. Produce a verdict: `approve` (no critical/major) or `request_changes` (at least one
    critical/major) with a concrete rework list.
 7. Version-type validation (implement/refactor only): if the main agent supplies a proposed

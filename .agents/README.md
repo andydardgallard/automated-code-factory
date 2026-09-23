@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.9.1 -->
+<!-- code-factory-version: 12.10.0 -->
 
 Автономная фабрика по написанию кода. Принимает бизнес-задачу от пользователя, который не
 разбирается в программировании, анализирует проект, планирует изменения, уточняет только
@@ -35,7 +35,7 @@
 │       ├── scripts/
 │       │   ├── gen_code_changes_report.py  # генератор report_code_changes.md (diff было→стало)
 │       │   ├── project_fingerprint.py      # двухуровневый fingerprint: структурный + контентный
-│       │   ├── check_factory_model.py      # проверка: 8 секций + оба fingerprint + формат памяти
+│       │   ├── check_factory_model.py      # проверка: 8 секций + оба fingerprint + формат памяти (корень фабрики — SKIP)
 │       │   ├── test_factory_model.py       # self-тест скриптов модели
 │       │   ├── memory_project.py           # память проекта: init/name/check/rename/compact-check/validate-fix-tasks
 │       │   ├── test_memory_project.py      # self-тест скрипта памяти проекта
@@ -47,6 +47,8 @@
 │       │   ├── test_error_router.py        # self-тест маршрутизатора ошибок
 │       │   ├── calibrate_reviewer.py       # golden-set калибровка ревьюера: precision/recall/accuracy
 │       │   ├── test_calibrate_reviewer.py  # self-тест калибровки ревьюера
+│       │   ├── precedent_index.py          # FTS5-индекс прецедентов: память + кодовая база (build/query)
+│       │   ├── test_precedent_index.py     # self-тест индекса прецедентов
 │       │   ├── test_prompt_structure.py    # self-тест: append-only структура промптов
 │       │   ├── test_env_propagation.sh     # self-тест: перенос env-флага моделей
 │       │   ├── validate_documentation.py   # валидатор документации (сабагент документирования)
@@ -61,6 +63,8 @@
 │       │   ├── test_repo_inventory.py      # self-тест инвентаря
 │       │   ├── merge_findings.py           # детерминированное слияние findings шардов + вердикт
 │       │   ├── test_merge_findings.py      # self-тест слияния findings
+│       │   ├── plan_arbiter.py             # слияние двух конкурирующих планов + список расхождений
+│       │   ├── test_plan_arbiter.py        # self-тест арбитра планов
 │       │   ├── repo_stats.py               # анализы репозитория кодом: sizes/entry-points/imports
 │       │   ├── test_repo_stats.py          # self-тест анализов
 │       │   ├── log_tail.py                 # счётчики + хвост длинного лога (без вытягивания в контекст)
@@ -85,6 +89,7 @@
     ├── code-factory.md              # главный агент (Kimi Code 0.34+, --agent-file Markdown)
     └── sub-agents/
         ├── analyzer.md              # сабагент: анализ проекта (read-only)
+        ├── planner.md               # сабагент: независимый альтернативный план (committee, read-only)
         ├── coder.md                 # сабагент: реализация кода
         ├── tester.md                # сабагент: тесты и проверка результатов
         ├── diagnostician.md         # сабагент: глубокий анализ ошибок (read-only)
@@ -97,7 +102,8 @@
 ```
 
 Рантайм-состояние фабрики живёт в `.code-factory/` внутри проекта (не коммитится):
-`state/` (задача, план, pipeline.yaml, acceptance.md, ledger доказательств, граф задач),
+`state/` (задача, план, pipeline.yaml, acceptance.md, ledger доказательств, граф задач,
+FTS5-индекс прецедентов `precedents.db`),
 `backups/` (бэкапы изменяемых файлов), `manifest.json` (список изменённых/созданных файлов),
 `logs/` (ошибки, результаты тестов, code review, findings шардов).
 <!-- factory-rule: run-id begin -->
@@ -110,7 +116,7 @@
 WIP-фиксатора `state/pipeline.yaml`: обязательные ключи `run_id`, `phase`, `status`
 (`ok|failed|in_progress`), `updated_at`; опциональные `files_touched`, `pending_decision`,
 `resume_hint`, `retry_counters`, `models_used` (валидирует `scripts/check_factory_model.py`,
-отсутствие файла — SKIP).
+отсутствие файла — SKIP; опциональный список/маппинг может быть пустым: `files_touched: []`).
 
 Переносимая долгосрочная память живёт в коммитимом каталоге `memory/` ТОГО проекта, который указан в
 `repo_path` задачи (НЕ в `.gitignore`): `memory/change-log.md` (append-only журнал прогонов, одна
@@ -224,7 +230,13 @@ kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и 
 --project <basename разрешённого repo_path>` (имя фиксируется в объявлении `project:` сводки).
 Проверка модели — скрипт `scripts/check_factory_model.py` (8 секций + fingerprint + формат журнала),
 self-тест — `scripts/test_factory_model.py`; принадлежность памяти проекту — `memory_project.py
-check`.
+check`. На КОРНЕ САМОЙ ФАБРИКИ скрипт работает без флага `--memory-only`: он авто-детектирует
+hand-authored `AGENTS.md` по ТРЁМ сигналам — в первой строке НЕТ маркера `code-factory-fingerprint`,
+но ЕСТЬ собственный маркер фабрики `code-factory-version`, и рядом развёрнут
+`.agents/skills/code-factory/SKILL.md` — и печатает `SKIP` с пояснением: это не ошибка, память и
+WIP-фиксатор проверяются как обычно. Для целевых проектов поведение прежнее: skill разворачивается
+`prepare_factory` в КАЖДЫЙ проект, поэтому одного его недостаточно — AGENTS.md без fingerprint
+остаётся ошибкой, а устаревший fingerprint остаётся ошибкой даже в корне фабрики.
 
 ## Формат бизнес-задачи
 
@@ -275,6 +287,16 @@ business_tests:              # опционально: сценарий, кон�
 - **auto** — фабрика принимает разумные допущения (записывает их в план как assumptions) и
   работает без вопросов.
 
+В hitl пользователь может отклонить план: ПЕРВОЕ отклонение возвращает план на доработку, второе
+(двойное) запускает committee — второго независимого planner-сабагента (`sub-agents/planner.md`,
+контрастное семейство моделей, план отклонённого варианта он не видит) и детерминированный
+`scripts/plan_arbiter.py` (`--plan-a` / `--plan-b` / `--out`), который сливает оба плана по
+машиночитаемым секциям (`## Tasks (DAG)`, `## Risks`, `## Business tests`) и печатает список
+расхождений; пользователю представляется merged-план, и дальнейшие правки идут уже по нему.
+<!-- factory-rule: plan-committee begin -->
+**Committee при двойном rejection плана (каноническая формулировка):** если пользователь дважды отклонил план (hitl, ветка Revise), главный агент запускает второго независимого planner-сабагента из контрастного семейства моделей, который строит альтернативный план по той же задаче и накопленным замечаниям пользователя; детерминированный `scripts/plan_arbiter.py` (stdlib) сравнивает оба плана по машиночитаемым секциям (DAG-задачи, verify-команды, риски, бизнес-тесты) и формирует merged-вариант со списком расхождений; пользователю представляется merged-план и расхождения, дальнейшие правки идут уже по нему.
+<!-- factory-rule: plan-committee end -->
+
 > **Важно:** `mode: auto` управляет ТОЛЬКО бизнес-вопросами фабрики и согласованием плана.
 > Он НЕ отключает запросы разрешения Kimi Code CLI на выполнение инструментов (Bash, Write,
 > Edit и т.д.). Для полностью автономного прогона (без запросов разрешения) запускайте
@@ -295,6 +317,17 @@ business_tests:              # опционально: сценарий, кон�
 для coder-а, после правок повторно гоняются тесты и ревью. При исчерпании бюджета действует
 auto-escape политика: в режиме auto допускается только conditional pass с пометкой критерия
 `unverified_review` (см. канонический блок ниже), в режиме hitl фабрика останавливается.
+
+**Граница severity и калибровка.** Каждое замечание классифицируется по шкале
+`critical/major/minor/nit`; где проходит граница critical/major и как оформлять findings, задаёт
+`references/code-review.md` §3: critical повреждает СУЩЕСТВУЮЩЕЕ поведение (crash/bug на
+существующем пути, порча данных, безопасность, ослабленная проверка), major оставляет незащищённым
+НОВЫЙ путь или теряет тест-покрытие без замены; одна первопричина — одно finding. §7 требует
+периодической калибровки ревьюера на golden-set (`scripts/calibrate_reviewer.py`): после каждой
+правки промпта ревьюера и не реже одного раза на 5 прогонов ревью, с мягкими порогами verdict
+accuracy 100% и macro precision ≥ 0.8 (прогон 20260923-bcbe68b3: accuracy 7/7, macro precision
+0.619 → 0.857, recall 0.857 → 1.000). Пропущенный дефект и завышение severity — ошибки калибровки,
+и лечатся они правкой промпта ревьюера, а не golden-set.
 
 <!-- factory-rule: review-gate-policy begin -->
 **Review-гейт (каноническая формулировка):** задача НЕ принимается, пока у ревьюера открыты замечания severity=critical (вердикт `request_changes` с open critical findings). Бюджет ревьюера = 2 итерации. Если бюджет исчерпан, а critical findings остались: в режиме hitl фабрика ОСТАНАВЛИВАЕТСЯ и спрашивает пользователя; в режиме auto допускается только conditional pass — соответствующий критерий помечается `unverified_review` в `.code-factory/state/acceptance.md`, а нерешённые findings попадают в `.code-factory/report.md` (раздел unresolved findings), никогда молча. Полный SUCCESS при открытых critical findings невозможен.
@@ -420,7 +453,10 @@ follow_up.
 
 Рекомендуемое соответствие ролей:
 - primary (рассуждающие): main/planner, analyzer, diagnostician, reviewer;
-- secondary (быстрые): coder, tester.
+- secondary (быстрые): coder, tester;
+- planner-2 (committee при двойном rejection): модель КОНТРАСТНОГО семейства к planner
+  (`sub-agents/planner.md`, `model_preference: secondary` — только fallback), чтобы второй план был
+  действительно независимым, а не пересказом первого.
 
 ## Кэширование промптов (DeepSeek)
 

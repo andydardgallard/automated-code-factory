@@ -15,8 +15,15 @@ Builds a synthetic project, then verifies `check_factory_model.py`:
     `decisions`/`results`, fails, while records written before the format and legacy records
     without `project` only warn,
   - the WIP checkpoint `.code-factory/state/pipeline.yaml` is validated when it exists (required
-    keys, `status` enum, `run_id` format, list/mapping types of the optional keys) and a missing
-    one is a SKIP, never a failure,
+    keys, `status` enum, `run_id` format, list/mapping types of the optional keys, empty flow
+    collections `[]`/`{}` count as the list/mapping they spell) and a missing one is a SKIP, never
+    a failure,
+  - the factory's OWN root is auto-detected by THREE signals — a hand-authored AGENTS.md whose line 1
+    carries no fingerprint marker but DOES carry the factory's own `code-factory-version` marker,
+    plus the deployed flow skill `.agents/skills/code-factory/SKILL.md` — and SKIPPED with a note
+    (exit 0), while a target project missing ANY of them still fails: without the version marker
+    (though `prepare_factory` deploys the skill into every target project) and with a model whose
+    fingerprint went stale,
   - the two-level fingerprint line is validated: the `... content: <hash>` format passes, a
     forged or stale CONTENT hash fails, and a legacy single-hash line only warns.
 
@@ -189,6 +196,18 @@ SUMMARY = ("# Project Summary — Code Factory\n\n<!-- code-factory-memory: summ
 # Legacy summary without the `project:` declaration -> warning, but never an error.
 SUMMARY_NO_PROJECT = SUMMARY.replace("project: demo\nrepo_path: .\n", "")
 
+# The factory's OWN root carries a hand-authored AGENTS.md: line 1 is the factory version marker,
+# there is no fingerprint marker and the sections are free-form prose rather than the 8-section
+# model. Together with the deployed flow skill that makes it a SKIP for the AGENTS.md checks.
+HAND_AUTHORED_AGENTS = """\
+<!-- code-factory-version: 12.9.1 -->
+# Project: Autonomous Code Factory
+
+## Структура
+
+- `task.yaml` — пример бизнес-задачи
+"""
+
 
 def build(root: pathlib.Path, entry: str = VALID_ENTRY) -> None:
     """Write a synthetic but valid project model into `root` (fingerprints stamped on top)."""
@@ -255,6 +274,13 @@ def pipeline_errors(root: pathlib.Path, text: str) -> list[str]:
     state.mkdir(parents=True, exist_ok=True)
     (state / "pipeline.yaml").write_text(text, encoding="utf-8")
     return check_factory_model.check_pipeline_checkpoints(root)[0]
+
+
+def deploy_flow_skill(root: pathlib.Path) -> None:
+    """Put the factory's flow skill where the "factory's own root" auto-detect looks for it."""
+    skill = root / check_factory_model.FACTORY_SKILL_REL
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    skill.write_text("# code-factory skill\n", encoding="utf-8")
 
 
 def run_fp(*args: str) -> subprocess.CompletedProcess:
@@ -654,6 +680,16 @@ def main() -> int:
             "files_touched: src/main.py\n")
         expect(any("files_touched" in e for e in pipeline_errors(proot, scalar_touched)),
                "a scalar files_touched must fail")
+        #     Empty flow collections are the list/mapping they spell, not opaque scalars: a run
+        #     writing `files_touched: []` / `retry_counters: {}` is valid as it stands.
+        empty_touched = VALID_PIPELINE.replace(
+            "files_touched:\n  - src/main.py\n  - memory/change-log.md\n", "files_touched: []\n")
+        expect(pipeline_errors(proot, empty_touched) == [],
+               "an empty flow list for files_touched must be accepted")
+        empty_counters = VALID_PIPELINE.replace("retry_counters:\n  coder: 0\n  reviewer: 0\n",
+                                                "retry_counters: {}\n")
+        expect(pipeline_errors(proot, empty_counters) == [],
+               "an empty flow mapping for retry_counters must be accepted")
         #     Every required status of the schema is accepted.
         for status in ("ok", "failed", "in_progress"):
             expect(pipeline_errors(proot, VALID_PIPELINE.replace("status: in_progress",
@@ -662,10 +698,88 @@ def main() -> int:
         expect(run_cli("--repo", ptd, "--memory-only") == 0,
                "the last valid checkpoint must exit 0")
 
+    # 28. The factory's OWN root: a hand-authored AGENTS.md (line 1 = the factory's own version
+    #     marker, no fingerprint, free-form sections) next to the deployed flow skill is
+    #     auto-detected by ALL THREE signals, so the AGENTS.md model checks become a SKIP with a note
+    #     (exit 0) — while memory and the WIP checkpoint keep being validated. The skip must NOT
+    #     spread: an ordinary target project of the factory — whose AGENTS.md carries neither the
+    #     fingerprint NOR the version marker, exactly like the tree `prepare_factory` deploys the
+    #     flow skill into — stays an error, a version-marked manual without the deployed skill is an
+    #     error too, and a model whose fingerprint is present but stale stays an error.
+    with tempfile.TemporaryDirectory() as atd:
+        aroot = pathlib.Path(atd)
+
+        # 28a. Factory root -> SKIP with a reason, exit 0.
+        build(aroot)
+        deploy_flow_skill(aroot)
+        (aroot / "AGENTS.md").write_text(HAND_AUTHORED_AGENTS, encoding="utf-8")
+        expect(check_factory_model.VERSION_MARKER in HAND_AUTHORED_AGENTS.splitlines()[0],
+               "the factory-root fixture must carry the version marker in its line 1")
+        a_errs, _, a_skip = check_factory_model.check_agents_model(aroot)
+        expect(a_errs == [] and a_skip, f"the factory root must be a SKIP: {a_errs} / {a_skip!r}")
+        expect(check_factory_model.check_agents(aroot) == [],
+               "check_agents must stay error-free for the factory root")
+        expect(check_factory_model._is_factory_own_root(aroot, HAND_AUTHORED_AGENTS.splitlines()[0]),
+               "the factory-root detector must fire on a marker-less AGENTS.md + the flow skill")
+        res = run_cli_out("--repo", atd)
+        expect(res.returncode == 0, f"the factory root must exit 0: {res.stderr!r}")
+        expect("SKIP" in res.stderr and "hand-authored" in res.stderr,
+               f"the factory root must print the skip with its reason: {res.stderr!r}")
+        expect("AGENTS.md check skipped" in res.stdout,
+               f"the PASS line must say the AGENTS.md check was skipped: {res.stdout!r}")
+
+        # 28b. Regression: a valid model passes, the SAME model with a stale fingerprint fails
+        #      (exit 1) — the flow skill must never hide a model that exists but went stale.
+        build(aroot)
+        expect(run_cli("--repo", atd) == 0, "the freshly stamped model must exit 0")
+        (aroot / "src" / "main.py").write_text("print('drift')\n", encoding="utf-8")
+        a_errs, _, a_skip = check_factory_model.check_agents_model(aroot)
+        expect(a_errs != [] and a_skip == "",
+               f"a stale fingerprint must stay an error next to the flow skill: {a_errs}")
+        expect(run_cli("--repo", atd) == 1, "a stale fingerprint must exit 1")
+
+        # 28c. Ordinary target project AS DEPLOYED: `prepare_factory` copies the flow skill into
+        #      EVERY target project, so a hand-authored AGENTS.md without the factory's version
+        #      marker must stay the documented error ("line 1 must be …"), exit 1 — the deployed
+        #      skill alone buys no SKIP. This is the regression guard for the detector that was
+        #      widened by the flow skill alone.
+        build(aroot)
+        deploy_flow_skill(aroot)
+        (aroot / "AGENTS.md").write_text(HAND_AUTHORED_AGENTS.replace(
+            "<!-- code-factory-version: 12.9.1 -->\n", "# Demo project\n\n"), encoding="utf-8")
+        expect((aroot / check_factory_model.FACTORY_SKILL_REL).is_file(),
+               "the target-project fixture must have the flow skill deployed")
+        expect(check_factory_model.VERSION_MARKER not in
+               (aroot / "AGENTS.md").read_text(encoding="utf-8").splitlines()[0],
+               "the target-project AGENTS.md fixture must NOT carry the version marker")
+        a_errs, _, a_skip = check_factory_model.check_agents_model(aroot)
+        expect(a_skip == "" and any("line 1 must be" in e for e in a_errs),
+               f"a deployed target project without the fingerprint must stay an error: "
+               f"{a_errs} / {a_skip!r}")
+        res = run_cli_out("--repo", atd)
+        expect(res.returncode == 1, f"an ordinary project must exit 1: {res.stderr!r}")
+        expect("line 1 must be" in res.stderr,
+               f"an ordinary project must report the missing fingerprint: {res.stderr!r}")
+
+        # 28d. The third signal matters just as much: the version-marked hand-authored manual
+        #      WITHOUT the deployed flow skill is no factory root either — a copied marker must not
+        #      buy a SKIP, the error stays.
+        build(aroot)
+        (aroot / "AGENTS.md").write_text(HAND_AUTHORED_AGENTS, encoding="utf-8")
+        shutil.rmtree(aroot / ".agents")
+        expect(not (aroot / check_factory_model.FACTORY_SKILL_REL).is_file(),
+               "the 28d fixture must not have the flow skill deployed")
+        a_errs, _, a_skip = check_factory_model.check_agents_model(aroot)
+        expect(a_skip == "" and any("line 1 must be" in e for e in a_errs),
+               f"the version marker alone must not buy a SKIP: {a_errs} / {a_skip!r}")
+        expect(run_cli("--repo", atd) == 1,
+               "a version-marked manual without the flow skill must exit 1")
+
     print("PASS - factory model scripts behave as expected (valid passes, corruptions fail, "
           "unfinished/factory_version/project validated, memory format v2 (run_id + provenance "
           "marks) enforced on current-generation records, WIP checkpoints validated, "
-          "structural+content fingerprints distinguish depth>=2 content changes).")
+          "structural+content fingerprints distinguish depth>=2 content changes, the factory's own "
+          "hand-authored root auto-detected as SKIP).")
     return 0
 
 

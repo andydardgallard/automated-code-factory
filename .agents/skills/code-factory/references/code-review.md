@@ -168,10 +168,29 @@ Classify every finding by severity:
 
 | Severity | Meaning | Blocks acceptance? |
 |----------|---------|--------------------|
-| critical | bug, crash, data corruption, security issue, violates an acceptance criterion | yes |
-| major | bad design, significant inefficiency, dead code in the hot path, scope creep, missing required docs | yes |
+| critical | defect or weakening of EXISTING behaviour: crash/bug on an existing path, data corruption, security issue (committed secret, injection), a weakened existing check/validation, violates an acceptance criterion | yes |
+| major | coverage or a NEW path left unguarded: a test removed with nothing replacing it, missing error handling on a new network/filesystem operation, bad design, significant inefficiency, dead code in the hot path, scope creep, missing required docs | yes |
 | minor | style nit, duplication, unclear naming, minor missing comment | no (reported) |
 | nit | cosmetic, optional | no (reported) |
+
+**Boundary — existing behaviour vs new path.** The critical/major line is whether the change DAMAGES
+something that already worked (critical) or merely LEAVES something new unguarded (major). A new code
+path that is not yet robust is a major defect, not a crash of an existing one; lost test coverage that
+nothing replaces is major too, because nothing existing broke. Over-rating a major as critical is a
+calibration error exactly like missing a real defect — it blocks acceptance without cause (§7).
+
+Examples on that boundary:
+- a deleted test with nothing replacing it — lost coverage, not a crash or a security issue → **major**;
+- a new network call with no error handling and no status check — a new path, not a broken existing one → **major**;
+- a validation relaxed on an existing path (`<= 0` → `< 0`, `raise` → `return None`) — the existing check is weakened → **critical**;
+- a committed credential or an injected query — security of existing behaviour → **critical**.
+
+**Reporting discipline.** One root cause = one finding, at the highest applicable severity: do not
+split a defect and the change that merely enables or legalizes it (e.g. a weakened check plus the
+test rewritten to accept it) into two findings with different severities. And report only what is
+worth the author's action: a purely subjective taste call with no concrete readability or
+behaviour impact (e.g. a neutral rename) is not a finding — silence is the correct answer. Padding
+the findings list is a calibration error exactly like over-rating severity (§7).
 
 **Verdict:**
 - `approve` — no critical/major findings. minor/nit findings are listed but do NOT block.
@@ -286,3 +305,16 @@ visible as data instead of as an opinion. `--run-id` is optional for the script,
 Scoring is not a gate: a complete run exits 0, while exit 2 means the run was incomplete, unscorable
 or unreportable — a golden case without a result (the missing ids are listed), an unreadable or
 malformed case/result file (the file and the problem are named), or a report that cannot be written.
+
+**Calibration is periodic, not one-off (P1.5).** Re-calibration is mandatory after EVERY edit to a
+reviewer prompt (`references/code-review.md` itself or `.agents/agents/sub-agents/code-reviewer.md`)
+and at least once per 5 runs that use the review gate — whichever comes first. Soft targets for a
+trusted reviewer:
+
+- **verdict accuracy: 100%** — every golden verdict is agreed with;
+- **macro precision (severity) ≥ 0.8** — the reviewer rarely invents findings or over-rates severity.
+
+Falling below a target is a signal to tighten the PROMPT (the §3 critical/major boundary is the
+usual culprit), never to move the golden set: `expected.yaml` encodes the rule, so softening a case
+to match the reviewer would hide the defect the case exists to catch. Missing a real defect counts
+the same way in the other direction (recall), and is fixed in the prompt too.

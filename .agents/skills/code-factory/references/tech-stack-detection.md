@@ -94,16 +94,21 @@ whether re-analysis + AGENTS.md regeneration are skipped:
   README and the sorted top-level directory listing. It is commit-stable, but **blind to an edit
   inside an existing file deeper than the signal list** (e.g. `src/a/b/c.py` changes while no root
   manifest, CI config, README or top-level entry does).
-- **content** — SHA-256 over the tracked content, read from the git index (`git ls-files -s`:
-  `mode SHA path` of every non-excluded entry, sorted), so ANY modification of a tracked file
-  changes it, including changes level 1 cannot see. Without a usable git repository/index it falls
-  back to hashing the working-tree contents (which also catches uncommitted edits). Reading the
-  INDEX is deliberate — it is commit-stable, platform-neutral and lets AGENTS.md embed its own hash
-  pair — so an UNSTAGED or untracked edit does not move the hash; that blind spot is reported
-  instead of hidden: `--content`/`--all` print a stderr note with the count of such changes
-  (`worktree_dirty`, the factory's own artifacts excluded), and `check_factory_model.py` raises a
-  WARNING when the tree is dirty. Neither ever changes a printed hash or an exit code, and `git add`
-  makes the edit visible to the fingerprint.
+- **content** — SHA-256 over the tracked content, read from the WORKING TREE of the tracked set
+  (`git ls-files -s` supplies the list and the modes: a `mode sha256(worktree content) path` record
+  per non-excluded entry, sorted), so ANY modification of a tracked file changes it — an UNSTAGED
+  edit included, plus changes level 1 cannot see. Content is CRLF→LF normalized, so the value does
+  not depend on the checkout's line endings (`.cmd`/`.ps1` are pinned to eol=crlf by
+  .gitattributes); a tracked file absent from the worktree falls back to its index record
+  (`mode index-sha path`); without a usable git repository the level hashes every non-excluded
+  working-tree file instead (same normalization and exclusions). Reading the WORKING TREE is what
+  makes unstaged edits visible, while the value stays commit-stable (a commit changes no worktree
+  file) and platform-neutral, so AGENTS.md can still embed its own hash pair. UNTRACKED files are
+  outside `git ls-files` and therefore outside the hash; that boundary is reported instead of
+  hidden: `--content`/`--all` print a stderr note with the count of untracked files
+  (`untracked_files`, the factory's own artifacts excluded), and `check_factory_model.py` raises a
+  WARNING about them. Neither ever changes a printed hash or an exit code, and `git add` brings an
+  untracked file into the tracked set (which does move the hash).
 
 Both levels exclude the factory's own artifacts (`AGENTS.md`, `memory/`, `task.yaml`, the launchers
 `start.sh`/`start.cmd` and the deployers `prepare_factory.sh`/`prepare_factory.cmd`/

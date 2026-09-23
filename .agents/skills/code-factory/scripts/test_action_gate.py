@@ -260,9 +260,74 @@ def main() -> int:
         expect("usage:" in text, f"an unknown flag must print a usage error: {text!r}")
         expect("Traceback" not in text, f"an unknown flag must not raise a traceback: {text!r}")
 
+        # 17. `git stash` is classified explicitly instead of falling into the generic fail-safe:
+        #     stashing rewrites the SHARED working tree of the run, where parallel agents keep
+        #     uncommitted work, so every mutating form — bare (default `push`), push, pop, apply,
+        #     drop, clear, whatever the flags — is CONFIRM with its own business reason citing the
+        #     rulebook rule `no-shared-tree-git-mutations`, and never the generic fail-safe text.
+        #     The reading forms (list/show, flags included) stay ALLOW, an unknown stash
+        #     subcommand keeps the fail-safe CONFIRM, and the subcommand is read with git's own
+        #     option parsing: the VALUES of -m/--message are consumed as values, so the mutating
+        #     `git stash -m list` (a push with the message "list") can no longer buy an ALLOW — a
+        #     negative control pins that hole shut, and `git stash -m "msg" list` still reads.
+        fail_safe = "is not a subcommand the gate can prove harmless"
+        for action in ("git stash", "git stash push", 'git stash push -m "wip"', "git stash pop",
+                       "git stash apply stash@{0}", "git stash drop stash@{1}", "git stash clear"):
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                if mode == "hitl":
+                    expect(res.returncode == 2,
+                           f"{action!r} in hitl must require confirmation: {res.returncode} "
+                           f"{res.stdout!r}")
+                    expect("decision: CONFIRM_REQUIRED" in res.stdout,
+                           f"{action!r} must report CONFIRM_REQUIRED: {res.stdout!r}")
+                else:
+                    expect(res.returncode == 0 and "decision: ALLOW_WITH_ASSUMPTION" in res.stdout,
+                           f"{action!r} in auto must be a recorded assumption: {res.stdout!r}")
+                expect("decision: ALLOW\n" not in res.stdout,
+                       f"{action!r} must never be a blind ALLOW: {res.stdout!r}")
+            expect("no-shared-tree-git-mutations" in res.stdout,
+                   f"{action!r} must cite the rulebook rule it protects: {res.stdout!r}")
+            expect(fail_safe not in res.stdout,
+                   f"{action!r} must carry its own reason, not the generic fail-safe: {res.stdout!r}")
+        for action in ("git stash list", "git stash list --oneline", "git stash show -p"):
+            res = gate("--action", action)
+            expect(res.returncode == 0 and "decision: ALLOW\n" in res.stdout,
+                   f"{action!r} only reads the stash and must be ALLOW: {res.stdout!r}")
+        #     Negative control: a value flag must not smuggle a mutating push into a reading form.
+        #     git parses `-m`/`--message` as taking a VALUE, so `git stash -m list` is a push whose
+        #     message happens to be "list" — it must be CONFIRM, never the ALLOW of `git stash list`.
+        for action in ("git stash -m list", "git stash --message show", "git stash -m show",
+                       'git stash --message "wip"', "git stash -m"):
+            res = gate("--action", action)
+            expect(res.returncode == 2,
+                   f"{action!r} mutates the working tree and must require confirmation: "
+                   f"{res.returncode} {res.stdout!r}")
+            expect("no-shared-tree-git-mutations" in res.stdout,
+                   f"{action!r} must carry the mutating-stash reason: {res.stdout!r}")
+            expect("decision: ALLOW\n" not in res.stdout,
+                   f"{action!r} must never be a blind ALLOW: {res.stdout!r}")
+        #     A real subcommand AFTER a consumed value is still read correctly both ways.
+        for action in ('git stash -m "msg" list', "git stash --message=wip list"):
+            res = gate("--action", action)
+            expect(res.returncode == 0 and "decision: ALLOW\n" in res.stdout,
+                   f"{action!r} ends in the reading form `list` and must be ALLOW: {res.stdout!r}")
+        res = gate("--action", "git stash push -m list")
+        expect(res.returncode == 2 and "no-shared-tree-git-mutations" in res.stdout,
+               f"'git stash push -m list' must stay CONFIRM (push wins, whatever -m says): "
+               f"{res.returncode} {res.stdout!r}")
+        res = gate("--action", "git stash bogus")
+        expect(res.returncode == 2,
+               f"an unknown stash subcommand must require confirmation: {res.returncode} {res.stdout!r}")
+        expect(fail_safe in res.stdout,
+               f"an unknown stash subcommand must keep the fail-safe reason: {res.stdout!r}")
+
     print("PASS - action_gate.py hard-denies pushes to main/master (also behind git global options) "
           "and root/out-of-scope deletions; fail-safe CONFIRMs unparsable/unknown git calls; "
-          "confirms in-scope destruction in hitl, records an assumption in auto; journal appended "
+          "confirms in-scope destruction in hitl, records an assumption in auto; classifies git "
+          "stash explicitly (mutating forms CONFIRM with the no-shared-tree-git-mutations rule, "
+          "list/show ALLOW, and values of -m/--message are consumed so they cannot hide a push); "
+          "journal appended "
           "and an unwritable journal exits 3 instead of raising; --help and usage errors survive a "
           "legacy cp1251 console without a traceback.")
     return 0

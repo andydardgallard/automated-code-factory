@@ -34,9 +34,16 @@ one named by the task's `repo_path`, not of the factory (if the task targets the
 repository, the factory is that project). Read the entries whose `project:` matches it; entries
 without `project:` are legacy, entries of another project mean the journal is wrong. On first
 contact with a project, create the memory with
-`python3 .agents/skills/code-factory/scripts/memory_project.py init --repo <project root>
+`python3 .agents/skills/code-factory/scripts/memory_project.py init --repo <deployment root>
 --project <basename of the resolved repo_path>`. Pass the relevant AGENTS.md sections and memory
-entries to the analyzer.
+entries to the analyzer. Reconciling the memory with the tree is part of reading it: fold the OPEN
+backlog over the WHOLE journal with `python .agents/skills/code-factory/scripts/memory_project.py
+backlog --repo <deployment root>` — every open `follow_up=true`/`severity=critical` item must be
+re-checked against the code, so an item fixed earlier is closed with evidence instead of being
+re-declared open.
+<!-- factory-rule: memory-actuality begin -->
+**Актуальность памяти (каноническая формулировка):** в начале прогона открытый backlog сверяется с деревом (`memory_project.py backlog --repo <root>` — fold всех follow_up=true/severity=critical по истории журнала); в конце прогона каждый пункт либо закрывается блоком `closed:` с обязательным `evidence:` в записи прогона, либо остаётся в `unfinished` с причиной — пункт не может исчезнуть без доказательства закрытия: `backlog --check` даёт exit 1 при открытых пунктах, закрытии без `evidence:` и закрытии несуществующего пункта. Сводка `summary.md` (`## Current state`) актуализируется КАЖДЫМ прогоном, а не только при компакции; расхождение заявленной в ней версии с VERSION — предупреждение механизма.
+<!-- factory-rule: memory-actuality end -->
 
 Delegate heavy exploration to `factory-analyzer` subagents (parallel, isolated contexts). Each
 returns a concise summary. Combine into one picture:

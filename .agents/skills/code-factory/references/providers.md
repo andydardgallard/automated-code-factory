@@ -149,6 +149,24 @@ still the same judge.
   is the same pre-flight slot that already reports a missing
   `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`.
 
+### 5.2 Plan committee (комитет) — the ONE exception to the task's matrix
+
+The second planner of the plan committee (the `plan-committee` rule: hitl, double rejection of the
+plan) is the ONLY role where the task's `models` matrix is NOT applied — the committee rule
+OUTRANKS the matrix. Every other rule states "the role's model comes from the task's matrix" with
+no exceptions; this is the single documented one, and it is narrower than it looks: only the
+SECOND planner is affected, the first planner keeps its matrix value.
+
+- The family is fixed by the rule, not by the matrix: the second planner always comes from a family
+  CONTRASTING the first planner's (the same family test as §5.1), because the whole point of the
+  committee is independent verification of a plan the user rejected twice. A matrix that puts both
+  planners in one family is overridden — `models.planner: kimi-k3` (Kimi) ⇒ second planner
+  `deepseek-flash` (DeepSeek), and vice versa.
+- `model_preference` is NOT the answer either: the exception is resolved deterministically from the
+  first planner's model alias (§2), never from `config.toml` defaults.
+- As for every role, the model actually used is logged to `.code-factory/state/pipeline.yaml`
+  (`models_used`) and `report.md`; the override is visible there, not silent.
+
 ## 6. Error handling
 
 Provider-side failures (auth 401/403, rate limit 429, upstream 5xx, unknown model, malformed

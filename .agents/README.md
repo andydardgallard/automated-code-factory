@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.10.2 -->
+<!-- code-factory-version: 12.11.0 -->
 
 Автономная фабрика по написанию кода. Принимает бизнес-задачу от пользователя, который не
 разбирается в программировании, анализирует проект, планирует изменения, уточняет только
@@ -31,20 +31,20 @@
 │       │   ├── handoff-briefing.md  # обязательный шаблон брифинга сабагентов (файлы путями)
 │       │   ├── reference-docs.md    # reference_docs/reference_skills: база навыков + матрица
 │       │   ├── factory-rules.md     # единый rulebook обязательных правил + строка carriers
-│       │   └── error-patterns.default.json  # слепок таблиц error-routing для error_router.py
+│       │   └── error-patterns.default.json  # слепок таблиц error-routing: дефолты, поверх которых ложится project-learned overlay проекта
 │       ├── scripts/
 │       │   ├── gen_code_changes_report.py  # генератор report_code_changes.md (diff было→стало)
 │       │   ├── test_gen_code_changes_report.py  # self-тест генератора отчёта (argparse, UTF-8)
 │       │   ├── project_fingerprint.py      # двухуровневый fingerprint: структурный + контентный
 │       │   ├── check_factory_model.py      # проверка: 8 секций + оба fingerprint + формат памяти (корень фабрики — SKIP)
 │       │   ├── test_factory_model.py       # self-тест скриптов модели
-│       │   ├── memory_project.py           # память проекта: init/name/check/rename/compact-check/validate-fix-tasks
+│       │   ├── memory_project.py           # память проекта: init/name/check/rename/backlog/compact-check/validate-fix-tasks
 │       │   ├── test_memory_project.py      # self-тест скрипта памяти проекта
 │       │   ├── check_factory_rules.py      # сверка rulebook и носителей: блоки factory-rule байт-в-байт
 │       │   ├── test_factory_rules.py       # self-тест сверки правил
 │       │   ├── run_id.py                   # run_id прогона: gen по task.yaml / check — артефакты без run_id
 │       │   ├── test_run_id.py              # self-тест run_id
-│       │   ├── error_router.py             # JSON-first классификация ошибок: classify/merge/export-defaults
+│       │   ├── error_router.py             # JSON-first классификация ошибок: classify/merge/export-defaults; project-learned patterns проекта ПОВЕРХ дефолтов (битый авто-найденный файл — warning + дефолты)
 │       │   ├── test_error_router.py        # self-тест маршрутизатора ошибок
 │       │   ├── calibrate_reviewer.py       # golden-set калибровка ревьюера: precision/recall/accuracy
 │       │   ├── test_calibrate_reviewer.py  # self-тест калибровки ревьюера
@@ -72,7 +72,7 @@
 │       │   ├── test_log_tail.py            # self-тест хвоста лога
 │       │   ├── factory_preflight.py        # pre-flight окружения (python/python3/py и др.)
 │       │   ├── test_factory_preflight.py   # self-тест pre-flight
-│       │   ├── action_gate.py              # классификация деструктивных действий (ALLOW/CONFIRM/HARD_DENY)
+│       │   ├── action_gate.py              # деструктивные действия: ALLOW/CONFIRM/HARD_DENY (мутирующий git stash → CONFIRM, `stash list/show` → ALLOW)
 │       │   ├── test_action_gate.py         # self-тест action gate (+ --help/usage на cp1251)
 │       │   ├── task_graph.py               # граф задач на диске: create/claim/complete/ready/list
 │       │   ├── test_task_graph.py          # self-тест графа задач
@@ -139,6 +139,9 @@ WIP-фиксатора `state/pipeline.yaml`: обязательные ключ�
 <!-- factory-rule: memory-provenance begin -->
 **Происхождение записей памяти (каноническая формулировка):** запись считается записью формата v2, если её `factory_version` новее 12.8.0 ИЛИ она уже несёт v2-поле (`run_id` или метку происхождения) — так полумигрированная запись тоже проверяется; у такой записи обязательны `run_id` формата `YYYYMMDD-<8 hex>` (`scripts/run_id.py`) и метки происхождения в полях `decisions` и `results`: `[verified: <evidence>]` — утверждение подтверждено доказательством прогона (лог, acceptance, цитата), `[inferred]` — вывод без прямого доказательства. Запись формата v2 без `run_id` или без меток в этих полях — ошибка формата (`memory_project.py check`, `check_factory_model.py`), тогда как записи, написанные фабрикой не новее 12.8.0 и не несущие v2-полей, и legacy-записи без `project:` дают только предупреждение. Метка `[verified: ...]` обязана ссылаться на конкретное доказательство (команда/тест/лог); валидаторы проверяют наличие и форму метки.
 <!-- factory-rule: memory-provenance end -->
+<!-- factory-rule: memory-actuality begin -->
+**Актуальность памяти (каноническая формулировка):** в начале прогона открытый backlog сверяется с деревом (`memory_project.py backlog --repo <root>` — fold всех follow_up=true/severity=critical по истории журнала); в конце прогона каждый пункт либо закрывается блоком `closed:` с обязательным `evidence:` в записи прогона, либо остаётся в `unfinished` с причиной — пункт не может исчезнуть без доказательства закрытия: `backlog --check` даёт exit 1 при открытых пунктах, закрытии без `evidence:` и закрытии несуществующего пункта. Сводка `summary.md` (`## Current state`) актуализируется КАЖДЫМ прогоном, а не только при компакции; расхождение заявленной в ней версии с VERSION — предупреждение механизма.
+<!-- factory-rule: memory-actuality end -->
 Запись формата v2 несёт `run_id: <YYYYMMDD-8hex>` и provenance-метки `[verified: <evidence>]` /
 `[inferred]` в полях `decisions` и `results`. Записью v2 считается запись, у которой
 `factory_version` новее 12.8.0 ИЛИ которая уже несёт v2-поле (`run_id` или метку): для неё
@@ -225,11 +228,12 @@ kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и 
   детерминированный ДВУХУРОВНЕВЫЙ fingerprint — структурный + контентный:
   `<!-- code-factory-fingerprint: <64-hex> content: <64-hex> -->`;
 - fingerprint считается скриптом `scripts/project_fingerprint.py --all`: структурный уровень —
-  манифесты стека, CI-конфиги, README, список каталогов; контентный — SHA-256 проиндексированных
-  git-файлов (собственные артефакты фабрики исключены в обоих уровнях). Контентный уровень читает
-  git-индекс, поэтому unstaged/untracked правки ему не видны — об этом он предупреждает, а не
+  манифесты стека, CI-конфиги, README, список каталогов; контентный — SHA-256 содержимого
+  отслеживаемых файлов рабочего дерева с нормализацией CRLF→LF (собственные артефакты фабрики
+  исключены в обоих уровнях). Контентный уровень читает рабочее дерево, поэтому unstaged-правки ему
+  видны, а вне хэша остаются только untracked-файлы — об этом он предупреждает, а не
   молчит: `--content`/`--all` печатают заметку в stderr, а `check_factory_model.py` — warning
-  (хэши и exit-коды при этом не меняются; стейдж правки делает её видимой). Совпали ОБА —
+  (хэши и exit-коды при этом не меняются; `git add` вводит untracked-файл в хэш). Совпали ОБА —
   анализ/Scout и перегенерация пропускаются; не совпал любой — AGENTS.md перегенерируется (правки
   глубже первого уровня видит контентный уровень);
 - обновляется в двух точках: начало задачи (внешние изменения) и конец задачи (собственные
@@ -244,7 +248,15 @@ kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и 
 разрешённого `repo_path`. Файлы: `change-log.md` (журнал прогонов, одна запись на задачу,
 обязательный для новых записей признак `project: <имя проекта>`) и `summary.md` (сводка с
 объявлением `project:`/`repo_path:` сразу после канонического маркера; компакция журнала по порогу
-50 записей). При первом обращении к проекту, если `memory/` отсутствует, она создаётся командой
+50 записей).
+
+Журнал читается вместе со сверкой с деревом: `memory_project.py backlog --repo <корень
+развёртывания>` сворачивает открытые пункты (`follow_up=true`/`severity=critical`) по ВСЕЙ истории
+журнала, а в конце прогона каждый пункт либо закрывается блоком `closed:` с обязательным
+`evidence:`, либо остаётся в `unfinished` с причиной — пункт не исчезает без доказательства
+закрытия. `memory_project.py backlog --check` даёт exit 0 только при `open: 0`; раздел
+`## Current state` сводки актуализируется КАЖДЫМ прогоном, а не только при компакции. При первом
+обращении к проекту, если `memory/` отсутствует, она создаётся командой
 `python .agents/skills/code-factory/scripts/memory_project.py init --repo <корень развёртывания>
 --project <basename разрешённого repo_path>` (имя фиксируется в объявлении `project:` сводки).
 Проверка модели — скрипт `scripts/check_factory_model.py` (8 секций + fingerprint + формат журнала),
@@ -370,7 +382,13 @@ accuracy 100% и macro precision ≥ 0.8 (прогон 20260923-3540d5dc: accura
 При неудаче любого теста фабрика НЕ откатывается вслепую:
 1. **Классифицирует ошибку** детерминированно (regex, ~90% случаев, 0 токенов) —
    compile→coder, missing file→BA, bad command→Planner, инфраструктура→автофикс,
-   wrong results/unknown→Diagnostician (см. `references/error-routing.md`).
+   wrong results/unknown→Diagnostician (см. `references/error-routing.md`). Таблицы шаблонов живут
+   в данных: проект дописывает свои семейства ошибок в `.code-factory/state/error-patterns.json`,
+   и `error_router.py classify` пробует их ПЕРВЫМИ — project-first поверх вшитого слепка
+   (совпавший `id` заменяет вшитую строку, частичный файл ничего не теряет). Битый авто-найденный
+   файл маршрутизацию не роняет: `warning:` в stderr и классификация по одним дефолтам; негодный
+   файл, переданный явно (`--project-patterns`), — жёсткая ошибка (exit 2)
+   (см. `references/error-routing.md` §1.2).
 2. **Роллбэк**: восстанавливает файлы из `.code-factory/backups/`, удаляет созданные файлы
    (по `manifest.json`), возвращает проект в до-изменённое состояние.
 3. **Retry-бюджеты**: coder=1, BA=2, Planner=2, Diagnostician=1, advisor=1, infrastructure=3,
@@ -463,6 +481,9 @@ follow_up.
 поддерживается CLI — модель берётся из матрицы `models` задачи по правилу generator≠judge
 (кодер/тестер и ревьюер/диагностик/advisor — разные семейства моделей), а `model_preference`
 (`primary|secondary`) в `.md`-сабагентах служит fallback для ролей, которые задача не назвала.
+Единственное исключение, где матрица НЕ применяется, — второй planner комитета (двойной rejection
+плана): правило committee сильнее матрицы, и его семейство выбирается детерминированно —
+контрастное первому planner (`references/providers.md` §5.2).
 Фактическая модель записывается в `.code-factory/state/pipeline.yaml` (`models_used`) и в
 `report.md` (раздел «Models used»). Если после прогона в `pipeline.yaml` все роли показывают одну
 модель — значит, модели не разделялись. Для разделения обязателен флаг

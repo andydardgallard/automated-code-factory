@@ -4,3 +4,6 @@
 # Windows-лаунчеры (.cmd/.ps1) должны быть CRLF при checkout независимо от core.autocrlf.
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
+# bash-скрипты (*.sh) — наоборот, LF при checkout на любой машине: bash-скрипт с CRLF ломается,
+# а сам деплойер пишет start.sh именно с LF (побайтовая проверка в test_windows_scripts.py).
+*.sh text eol=lf

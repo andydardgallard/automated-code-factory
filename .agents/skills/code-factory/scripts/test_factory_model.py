@@ -29,11 +29,13 @@ Builds a synthetic project, then verifies `check_factory_model.py`:
 
 `project_fingerprint.py` is covered as well:
   - the content fingerprint catches a change to an EXISTING file at depth >= 2 that the
-    structural fingerprint cannot see (git index and git-less fallback), which is the confirmed
+    structural fingerprint cannot see (worktree content and git-less fallback), which is the confirmed
     defect reported by the code reviewer on 2026-09-23,
-  - the documented blind spot of that level — it reads the git INDEX, so an UNSTAGED edit is
-    invisible — is reported instead of being silent: `worktree_dirty` detects the dirt, the CLI
-    notes it on stderr and the model check warns while staying green (exit 0),
+  - the content fingerprint hashes the WORKING-TREE content of the tracked set (`git ls-files`), so
+    an UNSTAGED edit moves the hash while an UNTRACKED file does not; the boundary that remains
+    (untracked files are outside `git ls-files`) is reported instead of being silent:
+    `untracked_files` detects them, the CLI notes them on stderr and the model check warns while
+    staying green (exit 0),
   - both fingerprints stay stable across a commit of the factory's own artifacts,
   - the CLI modes (default = structural only, `--content`, `--all`) behave as documented.
 
@@ -778,12 +780,15 @@ def main() -> int:
         expect(run_cli("--repo", atd) == 1,
                "a version-marked manual without the flow skill must exit 1")
 
-    # 29. The content fingerprint reads the git INDEX (deliberate: the factory works through git
-    #     and stages its changes, and AGENTS.md embeds its own hash pair), so an UNSTAGED or
-    #     untracked edit does NOT move the hash. That blind spot must not stay silent:
-    #     `worktree_dirty` detects exactly the changes the index lacks, the CLI notes them on stderr
-    #     and the model check warns — while the check still exits 0, because the model is up to date
-    #     and only the tree is dirty. A change already STAGED is not dirt: the index reflects it.
+    # 29. The content fingerprint hashes the WORKING-TREE content of the TRACKED set (`git ls-files`,
+    #     CRLF→LF normalized), so an UNSTAGED edit of a tracked file DOES move the hash — the model
+    #     must react to the code as it is on disk, however it got there (the old index-blob variant
+    #     stayed still and only reported the dirt). UNTRACKED files are by definition outside
+    #     `git ls-files`, so they do NOT move the hash; that remaining boundary is reported instead
+    #     of being silent: `untracked_files` detects exactly them, the CLI notes them on stderr and
+    #     the model check warns — while the check still exits 0, because the model is up to date and
+    #     untracked files are not tracked content. The factory's own artifacts stay excluded, so
+    #     dirtying AGENTS.md/memory never looks like drift.
     with tempfile.TemporaryDirectory() as wtd:
         wroot = pathlib.Path(wtd)
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=wroot, check=True)
@@ -792,65 +797,100 @@ def main() -> int:
         subprocess.run(["git", "-C", wtd, "-c", "user.email=a@b.c", "-c", "user.name=t",
                         "commit", "-q", "-m", "fixture"], check=True)
         stamp(wroot)  # touches only AGENTS.md, which is excluded from both fingerprints
-        expect(project_fingerprint.worktree_dirty(wroot) == [],
-               "a committed fixture (plus an excluded AGENTS.md edit) must report a clean worktree")
+        expect(project_fingerprint.untracked_files(wroot) == [],
+               "a committed fixture (plus an excluded AGENTS.md edit) must report no untracked file")
+        expect(check_factory_model.check_agents(wroot) == [] and agents_warnings(wroot) == [],
+               "a clean committed fixture must pass the model check without warnings")
 
+        # 29a. An UNSTAGED edit of a tracked file is now part of the hash: it MUST move, so the
+        #      embedded model goes stale and the check FAILS (exit 1) instead of merely warning.
+        #      Nothing is untracked about it — the edit is tracked content on disk.
         content_before = project_fingerprint.compute_content_fingerprint(wroot)
         (wroot / "src" / "main.py").write_text("print('unstaged edit')\n", encoding="utf-8")
+        expect(project_fingerprint.untracked_files(wroot) == [],
+               "a tracked file with an unstaged edit is NOT an untracked file")
+        expect(project_fingerprint.compute_content_fingerprint(wroot) != content_before,
+               "an unstaged edit of a tracked file MUST move the content hash (worktree content)")
+        expect(any("content fingerprint mismatch" in e
+                   for e in check_factory_model.check_agents(wroot)),
+               "an unstaged edit must make the embedded content hash stale")
+        stale = run_cli_out("--repo", wtd)
+        expect(stale.returncode == 1 and "content fingerprint mismatch" in stale.stderr,
+               f"an unstaged edit must fail the model check, not warn: {stale.stderr!r}")
 
-        expect(project_fingerprint.worktree_dirty(wroot) == ["src/main.py"],
-               "an unstaged edit of a tracked file must be detected as worktree dirt")
-        expect(project_fingerprint.compute_content_fingerprint(wroot) == content_before,
-               "an unstaged edit must NOT move the index-based content hash (documented blind spot)")
+        # 29b. An UNTRACKED file is not tracked content: it must NOT move the hash, and the model
+        #      check warns about it while staying green (exit 0) once the model is restamped.
+        stamp(wroot)  # the unstaged edit just moved the hash -> restamp the embedded pair
+        content_tracked = project_fingerprint.compute_content_fingerprint(wroot)
+        (wroot / "src" / "extra.py").write_text("print('new')\n", encoding="utf-8")
+        expect(project_fingerprint.untracked_files(wroot) == ["src/extra.py"],
+               "a new file in the tree must be reported as untracked")
+        expect(project_fingerprint.compute_content_fingerprint(wroot) == content_tracked,
+               "an untracked file must NOT move the content hash (untracked is not tracked content)")
 
-        dirty_warnings = [w for w in agents_warnings(wroot)
-                          if "content fingerprint reads the git index" in w]
-        expect(len(dirty_warnings) == 1 and "1 unstaged" in dirty_warnings[0],
-               f"a dirty worktree must warn once, with the count: {agents_warnings(wroot)}")
+        untracked_warnings = [w for w in agents_warnings(wroot) if "untracked" in w]
+        expect(len(untracked_warnings) == 1 and "1 untracked" in untracked_warnings[0],
+               f"an untracked file must warn once, with the count: {agents_warnings(wroot)}")
         res = run_cli_out("--repo", wtd)
         expect(res.returncode == 0,
-               f"a dirty worktree is a warning, not a failure: {res.stderr!r}")
-        expect("WARN" in res.stderr and "content fingerprint reads the git index" in res.stderr,
-               f"the model check must report the invisible unstaged change: {res.stderr!r}")
+               f"an untracked file is a warning, not a failure: {res.stderr!r}")
+        expect("WARN" in res.stderr and "untracked" in res.stderr,
+               f"the model check must report the untracked file: {res.stderr!r}")
 
         note = run_fp("--repo", wtd, "--content")
-        expect(note.stdout.split() == [content_before],
-               f"--content must still print the index-based hash: {note.stdout!r}")
-        expect("note:" in note.stderr and "1 unstaged" in note.stderr
-               and "content fingerprint reads the git index" in note.stderr,
-               f"--content must note the dirty worktree on stderr: {note.stderr!r}")
+        expect(note.stdout.split() == [content_tracked],
+               f"--content must print the tracked-content hash: {note.stdout!r}")
+        expect("note:" in note.stderr and "1 untracked" in note.stderr,
+               f"--content must note the untracked file on stderr: {note.stderr!r}")
         expect("note:" in run_fp("--repo", wtd, "--all").stderr,
-               "--all must note the dirty worktree as well")
+               "--all must note the untracked file as well")
         expect("note:" not in run_fp("--repo", wtd).stderr,
-               "the structural-only default must stay silent (level 1 does not read the index)")
+               "the structural-only default must stay silent (level 1 reads no worktree content)")
 
-        #     The factory's own artifacts are excluded from both fingerprints, so dirtying AGENTS.md
-        #     must not be reported either — otherwise every model regeneration would warn itself.
+        # 29c. The factory's own artifacts are excluded from BOTH sides of the contract: editing
+        #      AGENTS.md moves neither the hash nor the untracked list, and an untracked file under
+        #      memory/ is not reported — otherwise every model regeneration and every memory write
+        #      would warn about itself.
+        excluded_before = project_fingerprint.compute_content_fingerprint(wroot)
         (wroot / "AGENTS.md").write_text(
             (wroot / "AGENTS.md").read_text(encoding="utf-8") + "\n<!-- touched -->\n",
             encoding="utf-8")
-        expect(project_fingerprint.worktree_dirty(wroot) == ["src/main.py"],
-               "a dirty factory artifact (AGENTS.md) must not count as worktree dirt")
+        (wroot / "memory" / "notes.md").write_text("notes\n", encoding="utf-8")
+        expect(project_fingerprint.compute_content_fingerprint(wroot) == excluded_before,
+               "dirtying the factory artifacts (AGENTS.md/memory) must not move the content hash")
+        expect(project_fingerprint.untracked_files(wroot) == ["src/extra.py"],
+               "an untracked factory artifact (memory/notes.md) must not count as untracked")
 
-        #     Staging the edit puts it into the index, so the content level SEES it (the hash moves)
-        #     and nothing is invisible any more: no dirt, no note, no warning once the model is
-        #     restamped.
+        # 29d. `git add` puts the new file INTO the tracked set, so the hash starts covering it and
+        #      nothing is left untracked: no note, no warning once the model is restamped.
         subprocess.run(["git", "-C", wtd, "add", "-A"], check=True)
-        expect(project_fingerprint.worktree_dirty(wroot) == [],
-               "a staged change is in the index (the content level sees it) and is no worktree dirt")
-        expect(project_fingerprint.compute_content_fingerprint(wroot) != content_before,
-               "a staged change MUST move the content hash")
+        expect(project_fingerprint.untracked_files(wroot) == [],
+               "staging the new file makes it tracked — nothing is untracked any more")
+        expect(project_fingerprint.compute_content_fingerprint(wroot) != excluded_before,
+               "a staged new file enters the tracked set and MUST move the content hash")
         stamp(wroot)
         res = run_cli_out("--repo", wtd)
         expect(res.returncode == 0 and "WARN" not in res.stderr,
                f"a fully staged worktree must be warning-free: {res.stderr!r}")
 
+        # 29e. Platform neutrality: worktree content is CRLF→LF normalized before hashing, so a
+        #      checkout that materialized CRLF (`.cmd`/`.ps1` are pinned to eol=crlf by
+        #      .gitattributes) hashes like an LF checkout of the same commit. Written as BYTES on
+        #      purpose — `write_text` would translate the `\n` of the LF variant to CRLF on Windows.
+        run_cmd = wroot / "run.cmd"
+        run_cmd.write_bytes(b"@echo off\r\necho hi\r\n")
+        subprocess.run(["git", "-C", wtd, "add", "run.cmd"], check=True)
+        crlf = project_fingerprint.compute_content_fingerprint(wroot)
+        run_cmd.write_bytes(b"@echo off\necho hi\n")
+        expect(project_fingerprint.compute_content_fingerprint(wroot) == crlf,
+               "CRLF and LF content of the same file must hash the same (CRLF→LF normalization)")
+
     print("PASS - factory model scripts behave as expected (valid passes, corruptions fail, "
           "unfinished/factory_version/project validated, memory format v2 (run_id + provenance "
           "marks) enforced on current-generation records, WIP checkpoints validated, "
-          "structural+content fingerprints distinguish depth>=2 content changes, the unstaged-edit "
-          "blind spot of the index-based content hash reported as a warning, the factory's own "
-          "hand-authored root auto-detected as SKIP).")
+          "structural+content fingerprints distinguish depth>=2 content changes, the content hash "
+          "sees UNSTAGED edits of tracked files and reports UNTRACKED files as a warning, the "
+          "factory's own hand-authored root auto-detected as SKIP).")
     return 0
 
 

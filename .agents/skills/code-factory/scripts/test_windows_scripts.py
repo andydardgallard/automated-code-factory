@@ -24,11 +24,16 @@ Verified here:
   5. anti-drift: the inline `start.sh` template in the .ps1 == the here-doc of `prepare_factory.sh`,
   6. `prepare_factory.sh` was NOT touched (it must not mention `start.cmd` at all),
   7. `.gitattributes` pins `*.cmd`/`*.ps1` to CRLF at checkout, so the CRLF-only checks above
-     hold on a clone with `core.autocrlf=false` too (never an LF-only checked-out launcher),
+     hold on a clone with `core.autocrlf=false` too (never an LF-only checked-out launcher), and
+     pins `*.sh` to LF — the bash deployer is an LF file and the deployer writes `start.sh` as LF,
   8. end-to-end (Windows only, otherwise SKIPPED): `cmd.exe /c prepare_factory.cmd <fresh tmp>`
      into two fresh target paths — one with a space, one with Cyrillic characters — a real
      deployment each, then a second run to prove idempotency (existing project memory is never
-     overwritten) and that the project name Python reported back is not mangled.
+     overwritten) and that the project name Python reported back is not mangled,
+  9. the deployers' FAILURE paths stay business-like: the `.ps1` `Copy-Item` fallback turns a copy
+     failure into a message via `Err` plus the hard-error flag (never raw PowerShell records), and
+     a failed memory init in the `.sh` is reported as the short reason — the last non-empty line of
+     the output — never as a dump of the whole output (a traceback).
 
 A project deployed by the factory contains only `.agents/` (plus the generated launchers), so
 there this test SKIPs cleanly instead of failing on a missing factory repo root.
@@ -63,6 +68,24 @@ GITATTRIBUTES_NAME = ".gitattributes"
 # working copy is a broken launcher, and the CRLF-only checks below only hold if the checkout
 # forced CRLF (a clone with core.autocrlf=false would otherwise hand out LF).
 EOL_PINS = ("*.cmd text eol=crlf", "*.ps1 text eol=crlf")
+# The bash side is pinned the other way round: bash scripts are LF files, and the deployer itself
+# writes start.sh with LF, so a CRLF checkout would only diverge from what the deployer produces.
+SH_EOL_PIN = "*.sh text eol=lf"
+
+# Deployment-failure markers, pinned by name (this file never hard-codes a line number).
+PS1_COPY_FUNCTION = "Copy-FactoryTree"
+# The fallback branch itself: the recursive copy of every top-level entry, and the SAME Copy-Item
+# invocation with the failure turned terminating - the flag has to sit ON the call, so a comment
+# that merely mentions it does not satisfy the check (comments are dropped before matching).
+PS1_FALLBACK_TOKENS = ("Get-ChildItem -LiteralPath $Source -Force",
+                       "Copy-Item -LiteralPath $_.FullName -Destination $Destination "
+                       "-Recurse -Force -ErrorAction Stop",
+                       "$script:HardError = $true",
+                       'Err "')
+SH_MEM_FAIL_MARKER = "Память проекта: не удалось создать"
+# The reason shown for a failed init must be the LAST NON-EMPTY line of the output: the whole
+# blob (an interpreter traceback) drowns the actual message, the exception line does not.
+SH_REASON_TOKENS = ("$MEM_INIT_OUT", "awk", "NF", "END", "print last")
 
 # The Windows deployer must produce exactly these files in a fresh project.
 CREATED_RELS = (
@@ -128,8 +151,15 @@ def normalize_newlines(text: str) -> str:
     return text.lstrip("\ufeff").replace("\r\n", "\n").rstrip("\n")
 
 
-def check_text_file(path: pathlib.Path, *, bom: bool) -> str:
-    """Existence, UTF-8 validity, BOM presence/absence and CRLF-only line endings."""
+def check_text_file(path: pathlib.Path, *, bom: bool, crlf_only: bool = True) -> str:
+    """Existence, UTF-8 validity, BOM presence/absence and line endings.
+
+    `crlf_only=True` (the Windows files) demands that every `\\r` and every `\\n` belongs to a
+    `\\r\\n` pair. The bash deployer is checked with `crlf_only=False` instead: its canonical state
+    is LF-only (`.gitattributes` pins `*.sh` to `eol=lf`), but a checkout with `core.autocrlf=true`
+    still hands it out with CRLF - both whole-file states are fine, a file with MIXED line endings
+    never is.
+    """
     expect(path.is_file(), f"{path} must exist")
     data = path.read_bytes()
     if bom:
@@ -142,13 +172,20 @@ def check_text_file(path: pathlib.Path, *, bom: bool) -> str:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise AssertionError(f"{path.name} must be valid UTF-8: {exc}") from None
-    # CRLF-only: every \r belongs to a \r\n and every \n belongs to a \r\n.
+    # A lone \r is never right: it is not a line ending on its own, in any of these files.
     expect(text.count("\r\n") == text.count("\r"),
            f"{path.name} has a lone CR (not part of CRLF): {text.count(chr(13))} CR vs "
            f"{text.count(chr(13) + chr(10))} CRLF")
-    expect(text.count("\r\n") == text.count("\n"),
-           f"{path.name} has a lone LF (not part of CRLF): {text.count(chr(10))} LF vs "
-           f"{text.count(chr(13) + chr(10))} CRLF")
+    if crlf_only:
+        expect(text.count("\r\n") == text.count("\n"),
+               f"{path.name} has a lone LF (not part of CRLF): {text.count(chr(10))} LF vs "
+               f"{text.count(chr(13) + chr(10))} CRLF")
+    else:
+        crlf, lf = text.count("\r\n"), text.count("\n")
+        expect(crlf == 0 or crlf == lf,
+               f"{path.name} mixes line endings: {crlf} CRLF vs {lf} LF - a file is either all LF "
+               "(what `.gitattributes` pins) or all CRLF (what core.autocrlf=true checks out), "
+               "never a mix")
     return text
 
 
@@ -207,6 +244,28 @@ def ps_here_strings(text: str) -> list[list[str]]:
             out.append(body)
         i = j + 1
     return out
+
+
+def ps_function_body(text: str, name: str) -> list[str]:
+    """The lines inside `function <name> {`, brace-counted (the body may contain `{ ... }` blocks).
+
+    Braces inside strings or comments would confuse the counter, so this stays limited to the
+    functions pinned here - none of them contains one.
+    """
+    lines = text.splitlines()
+    head = re.compile(r"^\s*function\s+" + re.escape(name) + r"\s*\{\s*$")
+    for i, line in enumerate(lines):
+        if not head.match(line):
+            continue
+        body: list[str] = []
+        depth = 1
+        for later in lines[i + 1:]:
+            depth += later.count("{") - later.count("}")
+            if depth == 0:
+                return body
+            body.append(later)
+        raise AssertionError(f"{PS1_NAME}: function {name} is never closed")
+    raise AssertionError(f"{PS1_NAME} has no `function {name} {{` definition")
 
 
 def extract_ps_template(text: str, first_line: str) -> list[str]:
@@ -321,12 +380,73 @@ def antidrift_start_sh() -> None:
 
 
 def bash_deployer_untouched() -> None:
-    text = check_text_file(SH, bom=False)
+    text = check_text_file(SH, bom=False, crlf_only=False)
     expect("start.cmd" not in text,
            f"{SH_NAME} must not mention start.cmd: the Windows work must leave the bash "
            "deployer untouched")
     expect(extract_heredoc(text, "EOF")[0] == "#!/usr/bin/env bash",
            f"{SH_NAME}: the start.sh here-doc must still start with the bash shebang")
+
+
+def bash_memory_failure_is_short() -> None:
+    """A failed `memory_project.py init` must be reported by its REASON, not by its whole output.
+
+    The deployer deliberately stays non-fatal there (the factory creates the memory on first use),
+    so the one warning line is all the user sees: dumping the raw output puts a Python traceback
+    into it, where the exception line alone says what went wrong.
+    """
+    text = check_text_file(SH, bom=False, crlf_only=False)
+    fail_lines = [line for line in text.splitlines() if SH_MEM_FAIL_MARKER in line]
+    expect(fail_lines, f"{SH_NAME} must still warn when the memory init fails")
+    for line in fail_lines:
+        expect("MEM_INIT_OUT" not in line,
+               f"{SH_NAME}: the failure warning must not interpolate the whole init output "
+               f"($MEM_INIT_OUT) - that is what puts a traceback there; got {line.strip()!r}")
+    reason_lines = [line for line in text.splitlines() if "$MEM_INIT_OUT" in line and "awk" in line]
+    expect(reason_lines,
+           f"{SH_NAME} must derive a short reason from the init output "
+           "(awk 'NF{last=$0}END{print last}' over $MEM_INIT_OUT)")
+    for line in reason_lines:
+        missing = [token for token in SH_REASON_TOKENS if token not in line]
+        expect(not missing,
+               f"{SH_NAME}: the reason must be the LAST NON-EMPTY line of the init output "
+               f"(missing {missing}); got {line.strip()!r}")
+        name = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)=", line)
+        expect(name is not None,
+               f"{SH_NAME}: the short reason must be stored in a variable, got {line.strip()!r}")
+        expect(any("${" + name.group(1) + "}" in fail or "${" + name.group(1) + ":-" in fail
+                   for fail in fail_lines),
+               f"{SH_NAME}: the failure warning must show the short reason "
+               f"(${{{name.group(1)}}}...), got {fail_lines[0].strip()!r}")
+
+
+def ps1_copy_fallback_is_guarded() -> None:
+    """The non-robocopy fallback must turn a copy failure into a business message + exit 1.
+
+    `Copy-Item` fails NON-terminating: outside a try/catch it prints raw engine records
+    (CategoryInfo, FullyQualifiedErrorId) and the deployer would still end with the «Готово» banner
+    and exit 0 for a half-copied `.agents/` tree - the contract there is exit 1 and no banner.
+    """
+    body = ps_function_body(check_text_file(PS1, bom=True), PS1_COPY_FUNCTION)
+    # Comments are dropped first: a comment that only *mentions* a token must not satisfy the pin.
+    code = "\n".join(line for line in body if not line.lstrip().startswith("#"))
+    for token in PS1_FALLBACK_TOKENS:
+        expect(token in code, f"{PS1_NAME}: {PS1_COPY_FUNCTION} must contain {token!r}")
+    positions = (code.find("try {"), code.find("Get-ChildItem -LiteralPath $Source -Force"),
+                 code.find("catch {"))
+    expect(-1 not in positions and positions[0] < positions[1] < positions[2],
+           f"{PS1_NAME}: the fallback must sit in a try/catch "
+           f"(`try {{` ... Get-ChildItem ... `}} catch {{`), got offsets {positions}")
+
+
+def gitattributes_rules() -> set[str]:
+    """Every rule line of .gitattributes (comments and blanks dropped, CRLF-agnostic)."""
+    expect(GITATTRIBUTES.is_file(),
+           f"{GITATTRIBUTES.name} must exist: it is what pins the deployer files' line endings")
+    # splitlines() drops the CRLF terminator of a CRLF working copy as well - git strips that CR
+    # itself, so the pins hold whether or not this machine rewrote the checkout.
+    return {line.strip() for line in read_text(GITATTRIBUTES).splitlines()
+            if line.strip() and not line.lstrip().startswith("#")}
 
 
 def gitattributes_pins_crlf() -> None:
@@ -335,16 +455,26 @@ def gitattributes_pins_crlf() -> None:
     Without the pin, git hands the launchers out with LF where core.autocrlf=false, and LF-only
     .cmd/.ps1 files are broken (cmd.exe and PowerShell 5.1 both expect CRLF).
     """
-    expect(GITATTRIBUTES.is_file(),
-           f"{GITATTRIBUTES.name} must exist: it is what pins the Windows launchers to CRLF")
-    # splitlines() drops the CRLF terminator of a CRLF working copy as well - git strips that CR
-    # itself, so the pins hold whether or not this machine rewrote the checkout.
-    lines = {line.strip() for line in read_text(GITATTRIBUTES).splitlines()}
+    lines = gitattributes_rules()
     missing = [pin for pin in EOL_PINS if pin not in lines]
     expect(not missing,
            f"{GITATTRIBUTES.name} must contain {missing} - without the pin a clone with "
            "core.autocrlf=false checks the .cmd/.ps1 launchers out with LF, which no Windows "
            "shell can run")
+
+
+def gitattributes_pins_sh_lf() -> None:
+    """The bash side is pinned the other way round, for the mirrored reason.
+
+    `*.sh` is checked out with CRLF wherever core.autocrlf=true, which is not what the deployer
+    produces (it writes `start.sh` with LF) and not what bash expects: a CRLF shebang is a broken
+    script, and the CRLF blob would follow the file into the repository.
+    """
+    lines = gitattributes_rules()
+    expect(SH_EOL_PIN in lines,
+           f"{GITATTRIBUTES.name} must contain {SH_EOL_PIN!r} - without the pin *.sh arrives with "
+           "CRLF wherever core.autocrlf=true, so a Windows checkout diverges from the LF start.sh "
+           "the deployer writes")
 
 
 # --- end-to-end deployment (Windows only) -----------------------------------------------------
@@ -679,11 +809,19 @@ def main() -> int:
     checker.check("prepare_factory.sh: untouched (no mention of start.cmd, here-doc intact)",
                   bash_deployer_untouched)
 
-    # 7. The checkout itself must hand these files over as CRLF, on any machine.
+    # 7. The checkout itself must hand these files over with the right line endings, on any machine.
     checker.check(".gitattributes: pins *.cmd/*.ps1 to CRLF at checkout (any core.autocrlf)",
                   gitattributes_pins_crlf)
+    checker.check(".gitattributes: pins *.sh to LF at checkout (any core.autocrlf)",
+                  gitattributes_pins_sh_lf)
 
-    # 8. Real deployment (Windows only).
+    # 8. Failure paths of both deployers: business message, honest exit code, no raw dumps.
+    checker.check("prepare_factory.ps1: the Copy-Item fallback is in a try/catch (-ErrorAction "
+                  "Stop, Err + $HardError, exit 1 without the banner)", ps1_copy_fallback_is_guarded)
+    checker.check("prepare_factory.sh: a failed memory init is reported as a short reason "
+                  "(last non-empty line, no raw output)", bash_memory_failure_is_short)
+
+    # 9. Real deployment (Windows only).
     end_to_end(checker)
 
     return checker.finish()

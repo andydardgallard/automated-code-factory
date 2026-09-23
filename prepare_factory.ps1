@@ -95,8 +95,18 @@ function Copy-FactoryTree {
         # 0-7 — успех (в т.ч. «файлы скопированы»), 8+ — реальная ошибка.
         if ($LASTEXITCODE -lt 8) { return }
     }
-    Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
+    # Сбой Copy-Item в PowerShell не роняет скрипт (ошибка non-terminating): в вывод попадают
+    # сырые записи движка (CategoryInfo, FullyQualifiedErrorId), которые пользователю ничего не
+    # объясняют. Поэтому переводим ошибку в terminating (-ErrorAction Stop) и сообщаем о сбое
+    # сами — как Write-FileStrict. Скопированное неполностью .agents/ — жёсткая ошибка (то же,
+    # что `set -e` в bash-версии): развёртывание завершится кодом 1 и без баннера «Готово».
+    try {
+        Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force -ErrorAction Stop
+        }
+    } catch {
+        $script:HardError = $true
+        Err "    Фабрика: копирование не удалось — $($_.Exception.Message)"
     }
 }
 

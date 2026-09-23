@@ -9,10 +9,13 @@ against them in array order ("first match wins") and lets a project override pat
 
 Covered here: the snapshot's shape and order (ids 1-20 + A-F, categories, routes, retry budgets),
 sample logs from the tables (WRONG_RESULTS must win over the generic assertion/compile rows, a
-provider `401` line is PROVIDER_AUTH), the unmatched fallback (diagnostician), project priority over
-the built-in rows, the default fallback when no project file exists, deterministic and idempotent
-`merge` output, `export-defaults` as a byte-exact starter, and the exit-code contract (2 for an
-unusable patterns JSON, 1 for an unreadable log), plus the stdlib-only import contract.
+provider `401` line is PROVIDER_AUTH), the unmatched fallback (diagnostician), the default+project
+merge (a learned pattern is tried first, the built-in rows it never touches stay live, the override
+of a built-in id wins), the silent default-only mode when no learned file exists, the tolerated
+broken AUTO-DISCOVERED learned file (warning on stderr + fallback to the defaults, exit 0) versus
+the hard error (exit 2) when the very same file is named with `--project-patterns`, deterministic
+and idempotent `merge` output, `export-defaults` as a byte-exact starter, and the exit-code contract
+(2 for an unusable patterns JSON, 1 for an unreadable log), plus the stdlib-only import contract.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -331,6 +334,78 @@ def main() -> int:
             expect(res.returncode == 2 and name in res.stderr,
                    f"{name} must be rejected by merge too: {res.returncode} {res.stderr!r}")
 
+        # 9a. The AUTO-DISCOVERED learned file is not a hard input: a broken one is reported on
+        #     stderr and falls back to the default snapshot, so a corrupted learned file can never
+        #     take the routing down (exit 0). An explicit --project-patterns stays a hard error
+        #     (case 9): the caller asked for that exact file.
+        broken_repo = tmp / "repo-broken"
+        broken_log = write(logs / "broken.log", "ModuleNotFoundError: No module named 'x'\n")
+        learned = broken_repo / ".code-factory" / "state" / "error-patterns.json"
+        (broken_repo / ".code-factory" / "state").mkdir(parents=True)   # the dir, no learned file
+        res = classify(broken_repo, broken_log)                         # normal mode: defaults only
+        expect(res.returncode == 0 and res.stderr == ""
+               and str(DEFAULT) in field(res.stdout, "patterns"),
+               f"no learned file must classify against the defaults silently: {res.stdout!r} "
+               f"{res.stderr!r}")
+        no_project = res.stdout
+        for name, text, needle in bad:              # every unusable shape of the learned file
+            write(learned, text)
+            res = classify(broken_repo, broken_log)
+            expect(res.returncode == 0,
+                   f"a broken learned file ({name}) must not fail the run: {res.returncode} "
+                   f"{res.stderr!r}")
+            expect("warning: ignoring the project-learned patterns" in res.stderr
+                   and str(learned) in res.stderr and needle in res.stderr,
+                   f"the fallback must name the file and the reason ({name}): {res.stderr!r}")
+            expect(res.stdout == no_project,
+                   f"the fallback must classify exactly as without a learned file ({name}): "
+                   f"{res.stdout!r}")
+            res = classify(broken_repo, broken_log, "--project-patterns", str(learned))
+            expect(res.returncode == 2 and str(learned) in res.stderr,
+                   f"the same file named explicitly must stay a hard error ({name}): "
+                   f"{res.returncode} {res.stderr!r}")
+
+        # 9b. A VALID learned file is MERGED with the defaults: the learned entries are tried first
+        #     (a learned id replaces the built-in row outright), every built-in row they do not
+        #     override stays live, and the `patterns:` line names BOTH sources.
+        write_json(learned, {
+            "version": 1,
+            "patterns": [
+                {"id": "6", "category": "PROJECT_MISSING_MODULE",
+                 "patterns": ["ModuleNotFoundError"], "route": "planner"},
+                {"id": "P1", "category": "LEARNED_ONE", "patterns": ["ErrCode 4242"], "route": "ba"},
+            ],
+            "retry_budgets": {"ba": 0},
+        })
+        res = classify(broken_repo, broken_log)
+        expect(res.returncode == 0 and res.stderr == "",
+               f"a valid learned file must not warn: {res.stderr!r}")
+        expect(field(res.stdout, "patterns") == f"{learned} + {DEFAULT}",
+               f"both sources must be named: {field(res.stdout, 'patterns')!r}")
+        expect(field(res.stdout, "category") == "PROJECT_MISSING_MODULE"
+               and field(res.stdout, "route") == "planner" and field(res.stdout, "pattern_id") == "6",
+               f"the learned conflict winner must apply: {res.stdout!r}")
+        learned_log = write(logs / "learned.log", "ErrCode 4242: boom\n")
+        res = classify(broken_repo, learned_log)
+        expect(field(res.stdout, "category") == "LEARNED_ONE"
+               and field(res.stdout, "route") == "ba" and field(res.stdout, "pattern_id") == "P1",
+               f"a learned entry of a new id must apply: {res.stdout!r}")
+        res = classify(broken_repo, perm_log)        # a built-in row the learned file never touched
+        expect(field(res.stdout, "category") == "PERMISSION"
+               and field(res.stdout, "pattern_id") == "15",
+               f"the built-in rows must stay live next to the learned ones: {res.stdout!r}")
+        # …and the merge rule itself, at library level: project-first order, id-deduplicated union.
+        merged = er.combine(er.load_document(learned, require_full=False), doc)
+        merged_ids = [e["id"] for e in merged["patterns"]]
+        expect(merged_ids[:2] == ["6", "P1"], f"learned entries must come first: {merged_ids}")
+        expect(len(merged_ids) == 21 and merged_ids.count("6") == 1,
+               f"a learned id must replace, not duplicate, its built-in row: {merged_ids}")
+        expect([e["id"] for e in merged["provider_patterns"]]
+               == [e["id"] for e in doc["provider_patterns"]],
+               "the provider rows must all survive a learned file without provider_patterns")
+        expect(merged["retry_budgets"] == {**BUDGETS, "ba": 0},
+               f"the learned budgets must override the defaults key-wise: {merged['retry_budgets']}")
+
         # 10. An unreadable log is an operational error (1); a wrong CLI call is exit 2.
         res = classify(repo, tmp / "missing.log")
         expect(res.returncode == 1 and "cannot read log" in res.stderr,
@@ -346,8 +421,10 @@ def main() -> int:
     expect(imported <= allowed, f"error_router must be stdlib-only, imports={imported}")
 
     print("PASS - error_router.py mirrors the error-routing tables (20 section-1 rows + 6 provider "
-          "rows), classifies samples deterministically, lets project-learned patterns win, merges "
-          "byte-identically and honours the exit-code contract.")
+          "rows), classifies samples deterministically, merges the project-learned patterns over "
+          "the defaults (project-first, both applied), falls back to the defaults with a warning "
+          "when the learned file is unusable, merges byte-identically and honours the exit-code "
+          "contract.")
     return 0
 
 

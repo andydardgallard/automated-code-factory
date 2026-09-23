@@ -9,7 +9,11 @@ rows 1-20 (`patterns`) and section 1.1 provider rows A-F (`provider_patterns`), 
 regex is matched case-insensitively. A project LEARNS its own patterns in
 `.code-factory/state/error-patterns.json`: they are merged PROJECT-FIRST over the defaults
 (deduplicated by id, the project wins), so a learned pattern overrides a built-in one and a partial
-project file never loses the built-in patterns.
+project file never loses the built-in patterns. A missing learned file is the normal mode (the
+defaults alone); an UNUSABLE auto-discovered one is tolerated the same way — the problem is
+reported on stderr and classification falls back to the defaults, because a corrupted learned file
+must not take the routing down. A file passed explicitly via `--project-patterns` is a hard error
+instead (exit 2): the caller asked for this exact file.
 
 Usage:
   python error_router.py classify --log <file> [--project-patterns <json>] [--repo <root>]
@@ -19,7 +23,7 @@ Usage:
 `classify` prints one `key: value` line per field:
 
   log: <path>
-  patterns: <project file> + <default file>     (or just <default file>)
+  patterns: <project file> + <default file>     (or just <default file> — also on fallback)
   category: <category>                          (`unmatched` when nothing matched)
   route: <role>                                 (`diagnostician` when nothing matched)
   pattern_id: <id>                              (`-` when nothing matched)
@@ -27,7 +31,9 @@ Usage:
 
 `merge` writes the project-first union as a complete, valid JSON document — byte-deterministic and
 idempotent — both to `--out` (default: the project file itself) and to stdout. `export-defaults`
-copies the default snapshot verbatim: the starter file for a project.
+copies the default snapshot verbatim: the starter file for a project. Both take the patterns file
+literally: they never fall back, so `merge` on an unusable file stays a hard error (exit 2) rather
+than silently writing a wrong union.
 
 Regexes are compiled with re.IGNORECASE (the tables are case-insensitive) and re.MULTILINE, so
 line-anchored patterns such as `^error: ` keep their meaning inside a multi-line log.
@@ -37,7 +43,8 @@ own order, and it keeps every non-provider log classified as before (e.g. `expec
 stays WRONG_RESULTS instead of being caught by the provider pattern `5\\d\\d`).
 
 Exit codes: 0 = classified / merged / exported; 1 = the log cannot be read; 2 = the patterns JSON is
-unusable (broken JSON, missing keys, wrong types, invalid regex) or the CLI was called wrongly.
+unusable (broken JSON, missing keys, wrong types, invalid regex) or the CLI was called wrongly. An
+auto-discovered project-learned file never causes exit 2 — it warns and falls back to the defaults.
 """
 from __future__ import annotations
 
@@ -218,13 +225,36 @@ def resolve_project(project_arg: str | None, repo_arg: str | None) -> pathlib.Pa
     return path if path.is_file() else None
 
 
+def load_project_patterns(project: pathlib.Path | None,
+                          *, explicit: bool) -> tuple[dict | None, str | None]:
+    """Load the project-learned document; a broken AUTO-DISCOVERED one warns instead of failing.
+
+    A file named by the user (`--project-patterns`) must work — an unusable one stays a hard error
+    (exit 2). The repo's learned file is found automatically, so a corrupted one must not take the
+    routing down with it: the caller gets a `warning:` line naming the file and the problem, and the
+    classification proceeds against the default snapshot alone (the same path as "no learned file").
+    """
+    if project is None:
+        return None, None
+    try:
+        return load_document(project, require_full=False), None
+    except PatternError as exc:
+        if explicit:
+            raise
+        return None, (f"warning: ignoring the project-learned patterns ({exc}); classifying "
+                      f"against {DEFAULT_PATTERNS} only")
+
+
 def cmd_classify(args: argparse.Namespace) -> int:
     default = load_document(DEFAULT_PATTERNS, require_full=True)
     project = resolve_project(args.project_patterns, args.repo)
-    if project is None:
+    learned, warning = load_project_patterns(project, explicit=bool(args.project_patterns))
+    if warning:
+        print(warning, file=sys.stderr)
+    if learned is None:
         doc, source = default, str(DEFAULT_PATTERNS)
     else:
-        doc = combine(load_document(project, require_full=False), default)
+        doc = combine(learned, default)
         source = f"{project} + {DEFAULT_PATTERNS}"
 
     log = pathlib.Path(args.log)
@@ -279,9 +309,11 @@ def build_parser() -> argparse.ArgumentParser:
     classify = sub.add_parser("classify", help="Classify one log file against the patterns")
     classify.add_argument("--log", required=True, help="Log file with the combined error output")
     classify.add_argument("--project-patterns", metavar="JSON", default=None,
-                          help="Project-learned patterns file (overrides the repo lookup)")
+                          help="Project-learned patterns file (overrides the repo lookup; "
+                               "must exist and be usable)")
     classify.add_argument("--repo", metavar="ROOT", default=None,
-                          help="Repo root holding .code-factory/state (default: cwd)")
+                          help="Repo root holding .code-factory/state (default: cwd; a broken "
+                               "learned file there warns and falls back to the defaults)")
     classify.set_defaults(func=cmd_classify)
 
     merge = sub.add_parser("merge", help="Merge a project file over the defaults (project-first)")

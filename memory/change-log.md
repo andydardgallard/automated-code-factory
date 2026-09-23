@@ -430,3 +430,33 @@ unfinished:
     reason: инцидент прогона без последствий (дерево проверено, stash пуст), но паттерн опасен
     severity: info
     follow_up: true
+
+## 2026-09-23T12:56:13+03:00 — Фабрика v5 (v12.10.2): utf8-guard во всех argparse-скриптах (action_gate --help на cp1251) + 22-е правило no-shared-tree-git-mutations
+title: Фабрика v5: action_gate --help без traceback на cp1251, utf8-guard во всех argparse-скриптах, запрет git stash на общем дереве как 22-е правило rulebook
+project: repo
+timestamp: 2026-09-23T12:56:13+03:00
+run_id: 20260923-598c99c1
+branch: feature/factory-v5-backlog-20260923
+commit: ed62e88
+task_type: implement
+goal: реализовать backlog прогона v12.10.1: P0.1 action_gate --help на cp1251 (фикс + вакцина), P0.1b анализ и фикс остальных скриптов, P0.2 запрет git stash на общем дереве; task_05 — follow-up task-файл
+changed_files: 32 файла — 22 scripts/*.py (inline use_utf8_output + вызов первой строкой main); test_action_gate.py (кейс 16 cp1251); references/factory-rules.md (22-е правило); AGENTS.md; .agents/README.md; .agents/agents/code-factory.md; .agents/skills/code-factory/SKILL.md; references/handoff-briefing.md; sub-agents/coder.md; VERSION; CHANGELOG.md; README.md
+created_files: task-v6.yaml (не закоммичен, commit_exclude); .code-factory/{state/*,logs/*,manifest.json,report.md,report_code_changes.md}
+results: integration=PASS (26/26 test_*.py без ослабления) [verified: .code-factory/logs/test-results.md]; regression=PASS (check_factory_rules 22 правила/81 блок exit 0, validate_mermaid 85 edges, check_factory_model SKIP+exit 0, run_id check 3/3) [verified: .code-factory/logs/test-results.md]; business=PASS 3/3 (BT-1 cp1251 sweep 24/24 exit 0; BT-2 rulebook consistent; BT-3 запрет stash в coder.md и handoff-briefing.md) [verified: .code-factory/logs/business-tests.md]; review=approve (итерация 1/2, findings=[], вакцинация кейса 16 подтверждена на pre-fix коде, commit hygiene чист) [verified: .code-factory/logs/code-review.md]; acceptance=SUCCESS (5 verified MET + 1 derived, ledger FRESH×3, exit 0) [verified: .code-factory/state/acceptance.md]
+decisions: эмпирический sweep под PYTHONIOENCODING=cp1251 показал, что реально падает только action_gate.py, но по решению пользователя guard добавлен во все 22 argparse-скрипта с не-ASCII docstring [verified: .code-factory/logs/business-tests.md BT-1]; в error_router/plan_arbiter слабый пре-существующий guard (только stdout) заменён эталонным, в log_tail/precedent_index guard стоял после parse_args и не защищал --help — перемещён; ревьюер проверил все 4 отклонения [verified: .code-factory/logs/code-review.md]; запрет git stash оформлен 22-м правилом rulebook no-shared-tree-git-mutations (решение пользователя), 6 носителей byte-identical [verified: check_factory_rules.py exit 0]; версия 12.10.1 → 12.10.2 (patch по матрице --fix, ревьюер валидировал без override: новое правило — процессная норма, прецедент v12.10.1) [verified: version_manager.py validate exit 0]; follow-up backlog записан в task-v6.yaml по замечанию пользователя при rejection #1 плана [verified: task-v6.yaml]
+assumptions: skill_base.py не трогали (не-ASCII нет) [verified: sweep]; классификация git stash в action_gate.py (сейчас fail-safe CONFIRM) вынесена в backlog task-v6.yaml [inferred]; память repo/memory и корня развёртывания — зеркала, запись внесена в обе [inferred]
+models_used: main=primary; analyzer=explore primary; coder=deepseek-flash ×3; reviewer=kimi-code/k3 ×2 (ревью + валидация версии); documenter=deepseek-flash; diagnostician=unused; advisor=unused
+factory_version: 12.10.2
+unfinished:
+  - item: action_gate.py не классифицирует git stash явно (fail-safe CONFIRM) — после 22-го правила стоит явная классификация; вынесено в task-v6.yaml P0.1
+    reason: вне scope задачи v5 (там — только брифинги/правило); зафиксировано при анализе
+    severity: info
+    follow_up: true
+  - item: устаревшие советы --memory-only для корня фабрики в tech-stack-detection.md (~176) и memory_project.py (~150) — после авто-детекта v12.10.0 совет избыточен; вынесено в task-v6.yaml P0.2
+    reason: follow_up из прогона v12.10.0, в задачу v5 не входило
+    severity: info
+    follow_up: true
+  - item: P2 backlog — контентный fingerprint читает git-индекс, unstaged-правки невидимы (dirty-warning смягчает)
+    reason: задокументированный nit с v12.8.0; в task-v6.yaml как P2
+    severity: info
+    follow_up: true

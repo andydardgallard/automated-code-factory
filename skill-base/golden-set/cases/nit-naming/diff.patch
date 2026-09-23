@@ -1,0 +1,13 @@
+diff --git a/src/report.py b/src/report.py
+--- a/src/report.py
++++ b/src/report.py
+@@ -1,6 +1,6 @@
+ def build_summary(items):
+-    result = []
++    res = []
+     for item in items:
+         if item.active:
+-            result.append(item.name)
++            res.append(item.name)
+-    return ", ".join(result)
++    return ", ".join(res)

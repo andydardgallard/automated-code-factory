@@ -1,0 +1,3 @@
+# Style only: `result` abbreviated to `res`. A nit at most, so it must not block -> approve.
+verdict: approve
+severities: []

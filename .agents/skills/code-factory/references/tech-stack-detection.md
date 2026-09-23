@@ -97,8 +97,13 @@ whether re-analysis + AGENTS.md regeneration are skipped:
 - **content** — SHA-256 over the tracked content, read from the git index (`git ls-files -s`:
   `mode SHA path` of every non-excluded entry, sorted), so ANY modification of a tracked file
   changes it, including changes level 1 cannot see. Without a usable git repository/index it falls
-  back to hashing the working-tree contents (which also catches uncommitted edits); on the git path
-  a modification that was neither staged nor committed is out of scope.
+  back to hashing the working-tree contents (which also catches uncommitted edits). Reading the
+  INDEX is deliberate — it is commit-stable, platform-neutral and lets AGENTS.md embed its own hash
+  pair — so an UNSTAGED or untracked edit does not move the hash; that blind spot is reported
+  instead of hidden: `--content`/`--all` print a stderr note with the count of such changes
+  (`worktree_dirty`, the factory's own artifacts excluded), and `check_factory_model.py` raises a
+  WARNING when the tree is dirty. Neither ever changes a printed hash or an exit code, and `git add`
+  makes the edit visible to the fingerprint.
 
 Both levels exclude the factory's own artifacts (`AGENTS.md`, `memory/`, `task.yaml`, the launchers
 `start.sh`/`start.cmd` and the deployers `prepare_factory.sh`/`prepare_factory.cmd`/
@@ -173,8 +178,8 @@ python3 .agents/skills/code-factory/scripts/check_factory_model.py --repo <proje
 
 It asserts: exactly 8 sections, BOTH fingerprints (structural + content) matching, memory format
 correct — and it warns (does not fail) on a legacy single-hash fingerprint line. Run it in
-`final_integration` (and use `--memory-only` for the factory's own root, whose AGENTS.md is a
-hand-authored manual).
+`final_integration`: on the factory's own root the checker auto-detects that root itself (3-signal
+detector) and SKIPs the AGENTS.md model checks, so no extra flag is needed.
 
 Cache: keep the project model in `.code-factory/state/project-model.yaml`.
 

@@ -25,9 +25,13 @@ re-analysis + AGENTS.md regeneration ("skip Scout if unchanged").
    root that level 1 cannot see. Without a usable git repository/index it falls back to
    hashing the contents of every non-excluded WORKING-TREE file, sorted by path, so the level
    still works outside git (and sees uncommitted edits). Note that the git path reads the
-   INDEX, so a modification that was neither staged nor committed is out of scope there —
-   the factory works through git and stages its changes, while the git-less fallback above
-   covers projects without a repository at all.
+   INDEX, so an UNSTAGED (or untracked) edit is INVISIBLE to it: the hash does not move until the
+   change is `git add`-ed. That is deliberate — the factory works through git and stages its
+   changes, and AGENTS.md must be able to embed its own hash pair — so the blind spot is not
+   removed but made VISIBLE instead: `--content`/`--all` print a stderr note when the worktree
+   holds changes the index does not contain (`worktree_dirty`), and `check_factory_model.py`
+   warns the same way. The note never changes a printed hash or an exit code. The git-less
+   fallback above covers projects without a repository at all.
 
 Because both levels exclude the same factory artifacts, AGENTS.md can embed BOTH hashes on its
 first line and be committed without invalidating them:
@@ -42,7 +46,9 @@ Usage:
   python .agents/skills/code-factory/scripts/project_fingerprint.py [--repo <path>] --content
   python .agents/skills/code-factory/scripts/project_fingerprint.py [--repo <path>] --all
 
-Prints the 64-hex fingerprint(s) to stdout. Zero LLM tokens, stdlib only.
+Prints the 64-hex fingerprint(s) to stdout. In the two content modes (`--content`, `--all`) a
+dirty worktree — changes not in the git index, which the content hash cannot see — adds a note on
+stderr and leaves the hashes and the exit code untouched. Zero LLM tokens, stdlib only.
 """
 from __future__ import annotations
 
@@ -50,6 +56,7 @@ import argparse
 import hashlib
 import pathlib
 import subprocess
+import sys
 
 # Fixed candidate stack-manifest filenames (same signals as tech-stack-detection.md §1).
 MANIFEST_FILES = [
@@ -211,12 +218,66 @@ def _worktree_records(root: pathlib.Path) -> list[str]:
     return records
 
 
+def worktree_dirty(root: pathlib.Path) -> list[str]:
+    """Repo-relative paths of the non-excluded changes NOT in the git index — else an empty list.
+
+    Those are exactly the edits the content fingerprint cannot see: entries whose WORKTREE column
+    is dirty (` M`, `MM`, ` D`, …) plus untracked ones (`??`). A change already recorded in the
+    index (`M `, `A `, …) is deliberately NOT reported — `git ls-files -s` reads it, so the content
+    hash does move. `git status --porcelain -z` is NUL-separated (no C-style path quoting) and a
+    rename/copy entry carries its origin path in the following NUL field, which is skipped. The
+    factory's own artifacts are filtered out with the same `_is_excluded` rule the fingerprints
+    use, so dirtying AGENTS.md/memory/ never looks like drift. An empty list means "no signal": a
+    clean tree, only excluded changes, or no usable git repository — then there is nothing to warn
+    about.
+    """
+    try:
+        proc = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "-z"],
+                              capture_output=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    dirty: list[str] = []
+    skip_next = False  # a rename/copy entry carries its origin path in the NEXT NUL field
+    for entry in proc.stdout.decode("utf-8", "replace").split("\0"):
+        if skip_next:
+            skip_next = False
+            continue
+        if len(entry) < 4 or entry[2] != " ":  # "XY <path>"
+            continue
+        status, path = entry[:2], entry[3:]
+        skip_next = "R" in status or "C" in status
+        if status[0] != "?" and status[1] == " ":  # index-only change: the fingerprint sees it
+            continue
+        if status[0] == "!" or _is_excluded(path):  # ignored entry / factory artifact
+            continue
+        dirty.append(path)
+    return dirty
+
+
 def compute_content_fingerprint(root: pathlib.Path) -> str:
-    """Content fingerprint (level 2): SHA-256 over the tracked content, see module docstring."""
+    """Content fingerprint (level 2): SHA-256 over the tracked content, see module docstring.
+
+    Reads the git INDEX (`git ls-files -s`), so unstaged edits to tracked files do not move the
+    hash — `worktree_dirty` reports that blind spot to the CLI and to `check_factory_model.py`.
+    """
     records = _git_index_records(root)
     if records is None:
         records = _worktree_records(root)
     return _sha256_bytes("\n".join(sorted(records)).encode("utf-8"))
+
+
+def _note_dirty_worktree(root: pathlib.Path) -> None:
+    """Print a stderr note when the worktree holds changes the content fingerprint cannot see.
+
+    The content level reads the git index (see the module docstring), so unstaged and untracked
+    edits leave the hash untouched; saying so keeps the documented blind spot from being silent.
+    Changes already staged are not counted — the index reflects them and the hash does move. The
+    note goes to stderr and changes neither the printed hash nor the exit code.
+    """
+    dirty = worktree_dirty(root)
+    if dirty:
+        print(f"note: {len(dirty)} unstaged/uncommitted change(s) not in the git index — content "
+              f"fingerprint reads the git index and does not see them", file=sys.stderr)
 
 
 def main() -> None:
@@ -230,6 +291,9 @@ def main() -> None:
                       help="Print both fingerprints as 'structural: <hash>' / 'content: <hash>'")
     args = ap.parse_args()
     root = pathlib.Path(args.repo).resolve()
+    if args.content or args.all:
+        # Both modes print the index-based content hash: warn about what it cannot see.
+        _note_dirty_worktree(root)
     if args.content:
         print(compute_content_fingerprint(root))
     elif args.all:

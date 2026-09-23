@@ -16,7 +16,10 @@ Covers the User Sovereignty contract:
   - ALLOW (exit 0): read-only commands (also with global options in front: `git -C repo status`),
     pushes/checkouts that provably stay off the default branch and inside scope, `git clean -n`,
   - the decision journal is created once, appended for EVERY check (timestamp/mode/class/decision),
-    never rewritten, and its default path is honoured when `--journal` is omitted.
+    never rewritten, and its default path is honoured when `--journal` is omitted; an unwritable
+    journal (e.g. its parent is an existing regular file, on POSIX and on Windows) is an
+    infrastructure error — exit 3 with an `error:` line on stderr and the classification still
+    printed — never a traceback, never a blindly lost verdict.
 
 Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
 """
@@ -212,9 +215,26 @@ def main() -> int:
         expect(default_journal.is_file(),
                f"the default journal must be {default_journal}, got {res.stdout!r}")
 
+        # 15. An unwritable journal is an infrastructure error (exit 3), not a traceback: the
+        #     journal's parent is an existing regular FILE (portable — chmod does not block writes
+        #     on Windows), and the classification must survive on stdout.
+        blocker = tmp / "blocker"
+        blocker.write_text("not a directory\n", encoding="utf-8")
+        res = run("--action", "git status", "--journal", str(blocker / "journal.md"))
+        output = res.stdout + res.stderr
+        expect(res.returncode == 3,
+               f"an unwritable journal must exit 3: {res.returncode} {output!r}")
+        expect("cannot write" in res.stderr,
+               f"the journal failure must be explained on stderr: {output!r}")
+        expect("Traceback" not in output, f"the failure must not be a traceback: {output!r}")
+        expect("decision: ALLOW" in res.stdout,
+               f"the decision must still be printed when the journal fails: {output!r}")
+        expect(not (blocker / "journal.md").exists(), "no journal file may be created")
+
     print("PASS - action_gate.py hard-denies pushes to main/master (also behind git global options) "
           "and root/out-of-scope deletions; fail-safe CONFIRMs unparsable/unknown git calls; "
-          "confirms in-scope destruction in hitl, records an assumption in auto; journal appended.")
+          "confirms in-scope destruction in hitl, records an assumption in auto; journal appended "
+          "and an unwritable journal exits 3 instead of raising.")
     return 0
 
 

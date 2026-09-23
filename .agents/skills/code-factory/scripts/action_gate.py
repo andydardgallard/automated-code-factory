@@ -11,6 +11,8 @@ Classes and exit codes:
   CONFIRM               exit 2 in `--mode hitl` (user confirmation required)
                         exit 0 in `--mode auto` (recorded as ALLOW_WITH_ASSUMPTION)
   HARD_DENY             exit 1  — blocked in BOTH modes
+  journal failure       exit 3  — infrastructure error: the journal could not be written (the
+                        classification is still printed, so the decision itself is not lost)
 
 Git commands are classified by their SUBCOMMAND: the leading global options (`-C`, `-c`,
 `--git-dir`, `--work-tree`, `--exec-path`, `-P`/`--paginate`, `--no-pager`, joined forms like
@@ -41,7 +43,9 @@ Usage:
       [--scope src] [--scope tests] [--journal .code-factory/logs/action-gate.md]
 
 Every decision is appended to the journal (timestamp, action, class, mode, decision, scope,
-reason); the journal is created on first use and never rewritten.
+reason); the journal is created on first use and never rewritten. If the journal cannot be
+written (e.g. its parent is a regular file), the classification is printed first and the gate
+exits 3 with an `error:` line on stderr instead of raising a traceback.
 """
 from __future__ import annotations
 
@@ -334,8 +338,6 @@ def main() -> int:
     decision = DECISION[(cls, args.mode)]
     stamp = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     journal = pathlib.Path(args.journal)
-    append_journal(journal, [stamp, args.mode, cls, decision, ",".join(scopes) or "-",
-                             f"`{cell(action)}`", cell(reason)])
 
     print(f"class: {cls}")
     print(f"decision: {decision}")
@@ -353,6 +355,15 @@ def main() -> int:
         print(f"blocked: {reason}")
         if not scopes and "scope" in reason:
             print("hint: pass --scope <path> once the task scope is known")
+
+    # The decision is already on stdout, so an unwritable journal is an infrastructure error
+    # (exit 3), never a lost verdict and never a traceback.
+    try:
+        append_journal(journal, [stamp, args.mode, cls, decision, ",".join(scopes) or "-",
+                                 f"`{cell(action)}`", cell(reason)])
+    except OSError as exc:
+        print(f"error: cannot write the action-gate journal {journal}: {exc}", file=sys.stderr)
+        return 3
     return EXIT_CODE[decision]
 
 

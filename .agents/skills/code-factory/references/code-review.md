@@ -189,8 +189,11 @@ Examples on that boundary:
 split a defect and the change that merely enables or legalizes it (e.g. a weakened check plus the
 test rewritten to accept it) into two findings with different severities. And report only what is
 worth the author's action: a purely subjective taste call with no concrete readability or
-behaviour impact (e.g. a neutral rename) is not a finding — silence is the correct answer. Padding
-the findings list is a calibration error exactly like over-rating severity (§7).
+behaviour impact (e.g. a neutral rename) is not a finding — silence is the correct answer. A rename
+between equally clear names is that case by definition: when the shorter name stays unambiguous in
+its small scope (`result` → `res` in a 5-line function), the correct output is silence, NOT EVEN A
+NIT — a naming finding stands only when the new name is materially less clear or misleading.
+Padding the findings list is a calibration error exactly like over-rating severity (§7).
 
 **Verdict:**
 - `approve` — no critical/major findings. minor/nit findings are listed but do NOT block.

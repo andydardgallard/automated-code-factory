@@ -147,7 +147,7 @@ Append-only журнал прогонов фабрики по проекту `{p
 `project:` = basename каталога `repo_path` (для этого журнала — `{project}`). Разные
 значения `project:` в одном журнале — ошибка; записи без поля `project:` — legacy
 (предупреждение, не ошибка). Проверка: `scripts/memory_project.py check` и
-`scripts/check_factory_model.py --memory-only`.
+`scripts/check_factory_model.py`.
 
 Формат записи (плоский, проверяется `scripts/check_factory_model.py`):
 

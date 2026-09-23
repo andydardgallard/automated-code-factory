@@ -48,7 +48,10 @@ Your job:
    `references/code-review.md` §3: critical damages EXISTING behaviour (crash/bug on an existing
    path, corruption, security issue, a weakened existing check or validation), while major is lost
    test coverage with no replacement or a NEW path left unguarded. Over-rating a major as critical
-   is a calibration error (§7), not extra caution.
+   is a calibration error (§7), not extra caution. A neutral rename between equally clear names
+   (`result` → `res` in a 5-line function) is not a finding either: it is silence, NOT a nit — a
+   naming finding stands only when the new name is materially less clear or misleading
+   (`references/code-review.md` §3, "Reporting discipline").
 6. Produce a verdict: `approve` (no critical/major) or `request_changes` (at least one
    critical/major) with a concrete rework list.
 7. Version-type validation (implement/refactor only): if the main agent supplies a proposed

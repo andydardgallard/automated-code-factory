@@ -1,0 +1,17 @@
+diff --git a/tests/test_auth.py b/tests/test_auth.py
+deleted file mode 100644
+--- a/tests/test_auth.py
++++ /dev/null
+@@ -1,12 +0,0 @@
+-import pytest
+-
+-from src.auth import login, AuthError
+-
+-
+-def test_login_accepts_valid_credentials():
+-    assert login("alice", "correct-horse") is True
+-
+-
+-def test_login_rejects_wrong_password():
+-    with pytest.raises(AuthError):
+-        login("alice", "wrong-pass")

@@ -4,10 +4,12 @@ Deterministic self-test for `run_id.py` (zero LLM tokens).
 
 Checks through the CLI that (a) `gen` is deterministic and follows the documented contract —
 `<YYYYMMDD local date>-<first 8 hex of the SHA-256 of the task file bytes>`, recomputed
-independently here, (b) the digest part of this repository's own task file equals the pinned
-`442cd2f8` — the algorithm proven against a real task, not only against a fixture; the date part
-is TODAY by construction, so only its FORMAT `YYYYMMDD-` is pinned (a pinned date would rot
-overnight) — and
+independently here, (b) the digest of the committed, static fixture
+`assets/task-template.yaml` equals the pinned `4b918a06` — the algorithm proven against a real
+committed task file, not only against a temp fixture; the date part is TODAY by construction, so
+only its FORMAT `YYYYMMDD-` is pinned (a pinned date would rot overnight), and the ephemeral
+runtime task file `.code-factory/state/task.yaml` is never read (its bytes change with every task,
+so pinning them would rot at the next run) — and
 (c) `check` scans exactly the artifacts a run carries (`state/pipeline.yaml`, `state/acceptance.md`,
 `logs/*.md`, `report.md`): an existing artifact without a `run_id: <id>` / `run_id=<id>` line is
 listed and exits 1, a fully marked (or empty / absent) directory exits 0, and any id — not only the
@@ -28,10 +30,11 @@ from datetime import date
 TOOL = pathlib.Path(__file__).with_name("run_id.py")
 # .agents/skills/code-factory/scripts/run_id.py -> repository root
 REPO = TOOL.resolve().parents[4]
-TASK = REPO / ".code-factory" / "state" / "task.yaml"
-# Run of this very repository (pinned in .code-factory/state/pipeline.yaml): the real-data proof.
+TASK = REPO / ".agents" / "skills" / "code-factory" / "assets" / "task-template.yaml"
+# Committed, static fixture task file (same shape as a real task) — pinning it survives every run,
+# unlike the ephemeral `.code-factory/state/task.yaml`.
 # Its DATE is today's by construction, so only the digest half is compared literally.
-KNOWN_TASK_RUN_ID = "20260922-442cd2f8"
+KNOWN_TASK_RUN_ID = "20260923-4b918a06"
 HEX = set("0123456789abcdef")
 
 
@@ -86,19 +89,21 @@ def main() -> int:
         expect(run("gen", "--task", str(other)).stdout.strip() != run_id,
                "two different task files must not share a run id")
 
-        # 2. The real task file of this repository keeps the pinned DIGEST; a missing task file is
-        #    an error, never a fabricated id. Only the digest is compared: `gen` dates the id with
-        #    `date.today()`, so pinning the full literal would make this test fail tomorrow.
+        # 2. The committed fixture task file (`assets/task-template.yaml`) keeps the pinned DIGEST; a
+        #    missing task file is an error, never a fabricated id. Only the digest is compared: `gen`
+        #    dates the id with `date.today()`, so pinning the full literal would make this test fail
+        #    tomorrow. The ephemeral runtime task file (`.code-factory/state/task.yaml`) is NOT read:
+        #    it changes with every run and would turn this pin into a per-task failure.
         expect(TASK.is_file(), f"the fixture task file must exist: {TASK}")
         res = run("gen", "--task", str(TASK))
-        expect(res.returncode == 0, f"gen on the repository task must exit 0: {res.stderr!r}")
-        repo_run_id = res.stdout.strip()
+        expect(res.returncode == 0, f"gen on the fixture task must exit 0: {res.stderr!r}")
+        fixture_run_id = res.stdout.strip()
         _, pinned_digest = KNOWN_TASK_RUN_ID.split("-", 1)
-        date_part, _, repo_digest = repo_run_id.partition("-")
-        expect(re.fullmatch(r"\d{8}", date_part) and repo_run_id.startswith(date_part + "-"),
-               f"the id must start with the date format YYYYMMDD-: {repo_run_id!r}")
-        expect(repo_digest == pinned_digest,
-               f"the repository task must yield the digest {pinned_digest}: {repo_run_id!r}")
+        date_part, _, fixture_digest = fixture_run_id.partition("-")
+        expect(re.fullmatch(r"\d{8}", date_part) and fixture_run_id.startswith(date_part + "-"),
+               f"the id must start with the date format YYYYMMDD-: {fixture_run_id!r}")
+        expect(fixture_digest == pinned_digest,
+               f"the fixture task must yield the digest {pinned_digest}: {fixture_run_id!r}")
         res = run("gen", "--task", str(tmp / "missing.yaml"))
         expect(res.returncode == 1 and "error:" in res.stderr,
                f"an unreadable task file must exit 1 with an error: {res.stderr!r}")
@@ -158,8 +163,8 @@ def main() -> int:
                "artifacts outside the provenance set must not fail the check")
 
     print("PASS - run_id.py behaves as expected (deterministic <date>-<sha256[:8]> id, the pinned "
-          "digest for the repository task, and a check that names existing .code-factory artifacts "
-          "without a run_id).")
+          "digest for the committed task fixture, and a check that names existing .code-factory "
+          "artifacts without a run_id).")
     return 0
 
 

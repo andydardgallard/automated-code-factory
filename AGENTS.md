@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.9.1 -->
+<!-- code-factory-version: 12.10.0 -->
 # Project: Autonomous Code Factory
 
 Этот проект содержит автономную фабрику по написанию кода для Kimi Code CLI.
@@ -26,9 +26,12 @@
   `check_factory_rules.py` (сверка rulebook с носителями: блоки `factory-rule` байт-в-байт),
   `run_id.py` (run_id прогона: `gen` по task.yaml / `check` — артефакты без run_id),
   `error_router.py` (JSON-first классификация ошибок: `classify`/`merge`),
-  `calibrate_reviewer.py` (golden-set калибровка ревьюера: precision/recall/accuracy)
+  `calibrate_reviewer.py` (golden-set калибровка ревьюера: precision/recall/accuracy),
+  `plan_arbiter.py` (детерминированное слияние двух конкурирующих планов + список расхождений —
+  committee при двойном rejection плана), `precedent_index.py` (FTS5-индекс прецедентов: память +
+  кодовая база, `build`/`query` — поиск «как это решали раньше» вместо повторного чтения истории)
 - `.agents/agents/` — главный агент фабрики (Markdown `code-factory.md`) и сабагенты
-  (`sub-agents/analyzer|coder|tester|diagnostician|advisor|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
+  (`sub-agents/analyzer|planner|coder|tester|diagnostician|advisor|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
 - `VERSION` — единый источник истины для версии фабрики (одна строка X.Y.Z)
 - `skill-base/` — персистентная база навыков из `reference_docs`/`reference_skills` (опционально)
 - `.agents/README.md` — полная инструкция по использованию фабрики
@@ -58,7 +61,8 @@
 ## Соглашения
 
 - Рантайм-состояние фабрики — `.code-factory/` внутри проекта (не коммитить):
-  `state/` (задача, план, pipeline.yaml, acceptance.md, ledger доказательств, граф задач),
+  `state/` (задача, план, pipeline.yaml, acceptance.md, ledger доказательств, граф задач,
+  FTS5-индекс прецедентов `precedents.db`),
   `logs/` (baseline, ошибки, результаты, code-review, findings шардов),
   `backups/`, `manifest.json`.
 - **AGENTS.md — единый источник правды**: фабрика генерирует его с ровно 8 секциями `##` и
@@ -125,7 +129,11 @@
   приёмкой. Обычная задача — ревью diff изменений; `task_type: review` и `security_audit` —
   ревью/аудит всего кода ШАРДАМИ (`repo_inventory.py shards --max-lines 20000` → параллельные
   сабагенты по шардам → `merge_findings.py` даёт детерминированный merged verdict), замечания
-  review-задачи становятся планом.
+  review-задачи становятся планом. Границу critical/major задаёт `references/code-review.md` §3
+  (critical — повреждено СУЩЕСТВУЮЩЕЕ поведение, major — незащищённый НОВЫЙ путь или потерянное
+  покрытие), а §7 делает калибровку ревьюера на golden-set периодической: после каждой правки
+  промпта ревьюера и не реже одного раза на 5 прогонов ревью (`scripts/calibrate_reviewer.py`;
+  мягкие пороги — verdict accuracy 100%, macro precision ≥ 0.8).
 <!-- factory-rule: vaccination begin -->
 **Вакцинация (каноническая формулировка):** баг, найденный ПОСЛЕ приёмки задачи, сначала получает регрессионный тест, который его воспроизводит (тест падает на текущем коде), и только потом исправление. Фикс без воспроизводящего теста не принимается, а сам тест остаётся в наборе как вакцина против повторения. Код-ревьюер проверяет наличие такого теста у каждого пост-приёмочного фикса и считает его отсутствие замечанием severity ≥ major.
 <!-- factory-rule: vaccination end -->
@@ -167,6 +175,13 @@
 
 - **User story**: при наличии `user_story` фабрика анализирует и использует его на этапах
   анализа, планирования и реализации (всеми агентами).
+- **Согласование плана (hitl)**: первое отклонение плана возвращает его на доработку, второе —
+  это двойное отклонение: запускается второй независимый planner-сабагент (контрастное семейство
+  моделей), а `scripts/plan_arbiter.py` детерминированно сливает оба плана и печатает список
+  расхождений; пользователю показывается merged-план, дальнейшие правки идут по нему.
+<!-- factory-rule: plan-committee begin -->
+**Committee при двойном rejection плана (каноническая формулировка):** если пользователь дважды отклонил план (hitl, ветка Revise), главный агент запускает второго независимого planner-сабагента из контрастного семейства моделей, который строит альтернативный план по той же задаче и накопленным замечаниям пользователя; детерминированный `scripts/plan_arbiter.py` (stdlib) сравнивает оба плана по машиночитаемым секциям (DAG-задачи, verify-команды, риски, бизнес-тесты) и формирует merged-вариант со списком расхождений; пользователю представляется merged-план и расхождения, дальнейшие правки идут уже по нему.
+<!-- factory-rule: plan-committee end -->
 - **`task_type: refactor`** — заморозка функциональности: 100% существующих тестов проходят без
   изменений, любое изменение поведения — критическая ошибка и автооткат.
 - **`task_type: security_audit`** — адаптивный полный аудит (без живого сканирования сетей и

@@ -92,6 +92,11 @@ Write `.code-factory/state/plan.md` with the high-level structure below, PLUS a 
 list (section "Tasks") that drives implementation. Every task must be independently
 verifiable, have a clear file scope, a verification command, and explicit dependencies.
 
+The sections `## Tasks (DAG)`, `## Risks` and `## Business tests` are a MACHINE-READABLE contract,
+not decoration: `scripts/plan_arbiter.py` parses exactly those three when the plan committee
+reconciles two competing plans, and it refuses (exit 2) a task line without `verification:`. Keep
+those sections well formed and one task per line.
+
 ```markdown
 # Plan: <task title>
 
@@ -175,5 +180,17 @@ task description, and write them into the plan marked as **assumptions**.
 HITL: write the plan file, call `EnterPlanMode`, then `ExitPlanMode`. The user may approve,
 reject or revise. On revision, update the plan and re-present.
 
+Count every rejection in `retry_counters.plan_rejections` of `.code-factory/state/pipeline.yaml`.
+The FIRST rejection sends the plan back to §4 — re-plan in the same context and re-present. The
+SECOND rejection is a double rejection: the main agent launches a second, INDEPENDENT
+`factory-planner` subagent from a contrasting model family (it never sees the rejected plan),
+reconciles both plans deterministically with
+`scripts/plan_arbiter.py --plan-a .code-factory/state/plan.md --plan-b <second plan> --out
+<merged plan>`, and presents the MERGED plan together with the divergence list; the user decides the
+divergences and every further revision applies to the merged plan.
+
 Auto: briefly present the plan in the main thread (assumptions highlighted) and continue
 immediately.
+<!-- factory-rule: plan-committee begin -->
+**Committee при двойном rejection плана (каноническая формулировка):** если пользователь дважды отклонил план (hitl, ветка Revise), главный агент запускает второго независимого planner-сабагента из контрастного семейства моделей, который строит альтернативный план по той же задаче и накопленным замечаниям пользователя; детерминированный `scripts/plan_arbiter.py` (stdlib) сравнивает оба плана по машиночитаемым секциям (DAG-задачи, verify-команды, риски, бизнес-тесты) и формирует merged-вариант со списком расхождений; пользователю представляется merged-план и расхождения, дальнейшие правки идут уже по нему.
+<!-- factory-rule: plan-committee end -->

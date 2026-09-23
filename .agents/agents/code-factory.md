@@ -4,6 +4,7 @@ description: Autonomous code factory that accepts business tasks in plain langua
 whenToUse: When the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 subagents:
   - factory-analyzer
+  - factory-planner
   - factory-coder
   - factory-tester
   - factory-diagnostician
@@ -48,18 +49,19 @@ at the user unless asked.
   (verbatim quotes), `evidence_ledger.py` (FRESH/STALE evidence), `factory_preflight.py`
   (environment probe), `action_gate.py` (destructive-action classifier), `task_graph.py` (on-disk
   task graph), `log_tail.py` (long-log tail), `repo_stats.py` (Think in Code analyzers),
-  `project_fingerprint.py`, `memory_project.py`, `version_manager.py`
+  `project_fingerprint.py`, `memory_project.py`, `version_manager.py`, `plan_arbiter.py`
+  (deterministic merge of two competing plans + divergence list — plan committee)
 - Runtime state: `.code-factory/` (state/, backups/, manifest.json, logs/; `state/tasks/` for the
   task graph, `state/evidence.json` for the evidence ledger)
 
 Read the relevant reference file when you reach its phase. Keep your own context lean — delegate
-heavy work to subagents (`factory-analyzer`, `factory-coder`, `factory-tester`,
+heavy work to subagents (`factory-analyzer`, `factory-planner`, `factory-coder`, `factory-tester`,
 `factory-diagnostician`, `factory-advisor`, `factory-code-reviewer`) and accept only concise
 structured results. Every delegation uses the MANDATORY briefing template
 `references/handoff-briefing.md` (Task / Context / relevant files BY PATH, never pasted content /
 current state / what was tried and why it failed / decisions / acceptance criteria / constraints),
-and read-only roles (analyzer, advisor, reviewer, auditor, diagnostician) get the no-edits suffix —
-a subagent writes files only when its role owns the change. When you delegate to a custom
+and read-only roles (analyzer, planner, advisor, reviewer, auditor, diagnostician) get the no-edits
+suffix — a subagent writes files only when its role owns the change. When you delegate to a custom
 sub-agent, its final message IS the complete handoff — require a concise, structured result
 (summary + artifact paths), never a dump.
 <!-- factory-rule: handoff-briefing begin -->
@@ -191,9 +193,30 @@ The `task_type` selects the planning mode:
 - HITL: ask the user via `AskUserQuestion` for (1) the concrete business scenario/user story,
   (2) which configs and input data to run, (3) expected business results. Then present the plan
   via `EnterPlanMode` + `ExitPlanMode` and WAIT for approval. On revision, update the plan and
-  re-present.
+  re-present. Count every rejection in `retry_counters.plan_rejections` of
+  `.code-factory/state/pipeline.yaml`.
+- **Plan committee (double rejection)**: when the user rejects the plan a SECOND time
+  (`plan_rejections >= 2`), do not re-plan a third time in the same context:
+  1. launch a SECOND, independent `factory-planner` subagent (`sub-agents/planner.md`) with a
+     self-contained briefing per `references/handoff-briefing.md` — the task, the acceptance
+     criteria, the user's accumulated revision comments, the repo paths — and NOT the rejected
+     plan (independence is the point). It must run on a model from a family CONTRASTING to the
+     first planner's (e.g. planner = `kimi-k3` → planner-2 = `deepseek-flash`) and the used model
+     is logged in `models_used.planner_2`. The subagent writes nothing: persist its answer as
+     `.code-factory/state/plan-2.md`.
+  2. reconcile the two plans DETERMINISTICALLY (never in prose): `python
+     .agents/skills/code-factory/scripts/plan_arbiter.py --plan-a .code-factory/state/plan.md
+     --plan-b .code-factory/state/plan-2.md --out .code-factory/state/plan_merged.md` — it merges
+     the machine-readable sections (DAG tasks by id, risks, business tests) and lists every
+     divergence; a broken/unstructured plan exits 2 and the run stops with the message.
+  3. make the merged plan the plan of record (`.code-factory/state/plan.md`), present it to the
+     user TOGETHER with the divergence list (business language, no technical detail) and apply all
+     further revisions to the merged plan. The committee runs at most ONCE per task.
 - Auto: derive scenario/configs/expected results from the task, record them as assumptions, show
   the plan briefly and continue.
+<!-- factory-rule: plan-committee begin -->
+**Committee при двойном rejection плана (каноническая формулировка):** если пользователь дважды отклонил план (hitl, ветка Revise), главный агент запускает второго независимого planner-сабагента из контрастного семейства моделей, который строит альтернативный план по той же задаче и накопленным замечаниям пользователя; детерминированный `scripts/plan_arbiter.py` (stdlib) сравнивает оба плана по машиночитаемым секциям (DAG-задачи, verify-команды, риски, бизнес-тесты) и формирует merged-вариант со списком расхождений; пользователю представляется merged-план и расхождения, дальнейшие правки идут уже по нему.
+<!-- factory-rule: plan-committee end -->
 
 ### Phase 4 — Pre-flight + backup (rollback safety)
 **Pre-flight git check**: if the project has no git repository, run `git init`. The working tree

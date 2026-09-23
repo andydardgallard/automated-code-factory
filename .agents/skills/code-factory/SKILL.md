@@ -3,7 +3,7 @@ name: code-factory
 description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 type: flow
 ---
-<!-- code-factory-version: 12.9.1 -->
+<!-- code-factory-version: 12.10.0 -->
 
 # Code Factory
 
@@ -101,9 +101,13 @@ flowchart TD
     TT -->|security_audit| SA[Security audit flow: detect artifact types, run only the relevant checks with factory-security-auditor (read-only) over the same shards — repo_inventory.py shards ≤20000 lines → parallel auditors → merge_findings.py — write reports + a generated fix-task file. No code change and no auto-fixing. See references/security-audit.md.]
     SA --> W
     G -->|hitl| H[Business test definition: ask the user via AskUserQuestion for 1 a concrete business scenario (user story), 2 which configs and input data to run, 3 expected business results. Only business-logic questions. Store answers in the plan.]
-    H --> I[Present the full plan for approval: write it to the plan file and call EnterPlanMode then ExitPlanMode. Wait for approval or revision comments.]
+    H --> I[Present the full plan for approval: write it to the plan file and call EnterPlanMode then ExitPlanMode. Wait for approval or revision comments. Count every rejection in retry_counters.plan_rejections of .code-factory/state/pipeline.yaml.]
     I --> J{Plan approved?}
-    J -->|Revise| F
+    J -->|Revise - first rejection| F
+    J -->|Revise - second rejection| PC[Plan committee: launch a SECOND independent factory-planner subagent (sub-agents/planner.md) from a CONTRASTING model family (planner = kimi-k3, second planner = deepseek-flash) to build an alternative plan for the same task and the user's accumulated comments; it never sees the rejected plan.]
+    PC --> PC2[Run the deterministic arbiter: python .agents/skills/code-factory/scripts/plan_arbiter.py --plan-a .code-factory/state/plan.md --plan-b .code-factory/state/plan-2.md --out .code-factory/state/plan_merged.md. It merges the machine-readable sections (DAG tasks by id, risks, business tests) and lists every divergence.]
+    PC2 --> PC3[Present the merged plan and the divergence list to the user in business language; the merged plan becomes the plan of record and every further revision applies to it (the committee runs at most once per task).]
+    PC3 --> F
     J -->|Approve| K
     G -->|auto| L[Make reasonable business assumptions from the task description. Record every assumption explicitly in the plan.]
     L --> PF[Pre-flight: probe the real environment first with scripts/factory_preflight.py --out .code-factory/state/preflight.json — it reports the python command that actually works (python / python3 / py), git, bash/sh, the OS and KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL, and every command below is emitted for the capabilities found. Then the git check: if the project has no git repository, run git init. Working tree must be clean: auto-untrack build artifacts (target/, node_modules/, __pycache__/ etc.) and commit factory artifacts (AGENTS.md). Record git HEAD and git status in .code-factory/state/. Also verify model setup: for the new CLI check that KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 is exported (otherwise secondary-model split is INACTIVE); record a models_warning in pipeline.yaml if missing.]
@@ -180,6 +184,14 @@ Rules that always apply:
 
 - **User story**: when present, `user_story` is analyzed and used by the analyzer, planner and
   coder — it disambiguates the business intent and drives decisions.
+- **Plan committee (double rejection)**: in hitl mode the first revision of a rejected plan goes
+  back to planning; a SECOND rejection is a double rejection — a second, independent
+  `factory-planner` subagent from a contrasting model family builds an alternative plan (it never
+  sees the rejected one) and the deterministic `scripts/plan_arbiter.py` merges both plans and
+  lists the divergences, which the user decides.
+<!-- factory-rule: plan-committee begin -->
+**Committee при двойном rejection плана (каноническая формулировка):** если пользователь дважды отклонил план (hitl, ветка Revise), главный агент запускает второго независимого planner-сабагента из контрастного семейства моделей, который строит альтернативный план по той же задаче и накопленным замечаниям пользователя; детерминированный `scripts/plan_arbiter.py` (stdlib) сравнивает оба плана по машиночитаемым секциям (DAG-задачи, verify-команды, риски, бизнес-тесты) и формирует merged-вариант со списком расхождений; пользователю представляется merged-план и расхождения, дальнейшие правки идут уже по нему.
+<!-- factory-rule: plan-committee end -->
 - **Language-agnostic**: detect the stack; never assume a language. The factory serves any
   project type (frontend, backend, CLI, library, green-field) — verification is framework-agnostic.
 - **Token efficiency**: parallel subagents, isolated contexts, concise results, progressive

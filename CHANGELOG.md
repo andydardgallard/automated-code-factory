@@ -5,6 +5,53 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.10.0] — 2026-09-23
+
+### Added
+- **Committee при двойном rejection плана** (hitl): первое отклонение плана возвращает его на
+  доработку, второе запускает второго независимого planner-сабагента (`sub-agents/planner.md`,
+  контрастное семейство моделей, отклонённый план он не видит), а `scripts/plan_arbiter.py`
+  детерминированно сливает оба плана по машиночитаемым секциям (`## Tasks (DAG)`, `## Risks`,
+  `## Business tests`) и печатает список расхождений; пользователю предъявляется merged-план,
+  дальнейшие правки идут по нему, комитет срабатывает не более одного раза на задачу. Новое
+  правило `plan-committee` в `references/factory-rules.md` и его носители (SKILL.md,
+  code-factory.md, AGENTS.md, planning-guide.md) — правило сверяет `check_factory_rules.py`.
+- **`plan_arbiter.py`** (stdlib): слияние задач по id — одинаковое тело схлопывается, одинаковый id
+  с разным телом уходит в `## Расхождения` и НЕ попадает в merged-список; риски и бизнес-тесты
+  объединяются дедуплицированным объединением. Контрактные ошибки (нет секции `## Tasks (DAG)`,
+  пустой список задач, строка задачи без `verification:`, один id дважды в ОДНОМ плане, нечитаемый
+  файл, незаписываемый `--out`) — exit 2 с сообщением и без traceback.
+- **`precedent_index.py`** (stdlib sqlite3): FTS5-индекс прецедентов `build`/`query` — память
+  проекта (`memory/change-log.md`, `memory/summary.md`) плюс кодовая база (`git ls-files`, fallback —
+  обход `repo_inventory.py`; симлинки и бинарные/слишком большие файлы пропускаются) в
+  `.code-factory/state/precedents.db`; детерминированный rebuild, поиск «как это решали раньше»
+  вместо повторного чтения истории. Подключён к analyzer и diagnostician.
+- **Авто-детект hand-authored корня фабрики** в `check_factory_model.py`: три сигнала вместе — в
+  первой строке `AGENTS.md` НЕТ маркера `code-factory-fingerprint`, но ЕСТЬ собственный маркер
+  фабрики `code-factory-version`, и рядом развёрнут `.agents/skills/code-factory/SKILL.md` → проверки
+  AGENTS.md дают `SKIP` с пояснением (память и WIP-фиксатор проверяются как обычно), поэтому корень
+  фабрики проходит без `--memory-only`. У целевого проекта AGENTS.md без fingerprint остаётся
+  ошибкой, а устаревший fingerprint — ошибкой даже в корне фабрики.
+
+### Changed
+- **Граница severity в code review** (`references/code-review.md` §3): critical — дефект или
+  ослабление СУЩЕСТВУЮЩЕГО поведения (crash/bug на существующем пути, порча данных, безопасность,
+  ослабленная проверка), major — незащищённый НОВЫЙ путь или потерянное покрытие без замены; добавлены
+  примеры на границе и Reporting discipline (одна первопричина — одно finding, taste-замечания не
+  заявляются). `references/code-review.md` §7 делает калибровку периодической: обязательна после
+  каждой правки промпта ревьюера и не реже одного раза на 5 прогонов ревью, мягкие пороги — verdict
+  accuracy 100% и macro precision ≥ 0.8. Повторная калибровка на golden-set: verdict accuracy 7/7
+  (100%), macro precision 0.619 → 0.857, recall 0.857 → 1.000 (`logs/reviewer-calibration.md`).
+- Документация затронутого поведения: `AGENTS.md`, `.agents/README.md`, `SKILL.md`,
+  `code-factory.md`, `references/planning-guide.md`, `code-reviewer.md`, `analyzer.md`,
+  `diagnostician.md` описывают committee, индекс прецедентов, границу severity и SKIP-режим корня
+  фабрики.
+
+### Fixed
+- `test_run_id.py` пиннит закоммиченный fixture `assets/task-template.yaml` (digest `4b918a06`)
+  вместо эфемерного `.code-factory/state/task.yaml`: алгоритм доказан против реального файла задачи,
+  и пин не «гниёт» на следующем прогоне — дата проверяется только форматом `YYYYMMDD-`.
+
 ## [12.9.1] — 2026-09-23
 
 ## [12.9.0] — 2026-09-23

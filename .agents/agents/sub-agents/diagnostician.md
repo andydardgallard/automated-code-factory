@@ -26,6 +26,11 @@ diagnose recurring failures with full context (what was tried before, what faile
 That memory belongs to the task's TARGET project (the one named by `repo_path`), not to the
 factory — use the entries whose `project:` matches that project.
 
+**Precedents before re-reading.** Before re-reading code or past runs, search the precedent index:
+`python .agents/skills/code-factory/scripts/precedent_index.py query --repo . "<тема>"` — it holds
+the memory and the code base, so a recurrence is diagnosed from what was already tried. The main
+agent builds it (`… build --repo .`); a missing index just means falling back to the files.
+
 Your task:
 1. Read the error and the previous attempts (read .code-factory/logs/errors.md if needed).
 2. Identify the REAL root cause (not the symptom).

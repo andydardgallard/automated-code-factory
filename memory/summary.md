@@ -22,8 +22,15 @@ committee + plan_arbiter, root auto-detect → SKIP, precedent_index FTS5) + v12
 git stash classification in action_gate; content fingerprint over the working tree; memory
 actuality mechanism: backlog [--check] + closed:+evidence: + 23rd rule memory-actuality;
 project-learned overlay error_router §1.2; providers.md §5.2). Rulebook: 24 rules, 94 carriers.
-Memory owner: repo. 28/28 self-tests PASS (+ test_env_propagation.sh). Open backlog: 0
-(all 32 historical follow_up closed with evidence).
+Memory owner: repo. 28/28 self-tests PASS (+ test_env_propagation.sh).
+v8 whole-project review (run_id 20260924-96879f22, task_type=review, no version change):
+reviewer re-calibrated after the v12.12.0 prompt translation (7/7 golden cases, precision/recall
+1.000); 2 shards reviewed, merged verdict request_changes — 8 findings (0 critical/1 major/6
+minor/1 nit), all 9 quotes verified verbatim, the major finding reproduced independently;
+acceptance SUCCESS (4 MET + 1 derived, regression pass, ledger FRESH). The rework list became
+follow-up `task-v9.yaml`. Open backlog: 2 (the v8 actionable findings, follow_up=true —
+P0: check_translation_structure.py silently passes deleted no-skeleton files; P1: cross-carrier
+and deployer-parity minors); 32 historical items stay closed with evidence.
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле

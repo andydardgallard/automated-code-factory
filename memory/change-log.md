@@ -561,3 +561,33 @@ assumptions: scope = repo/ only (task repo_path); the outer deployment copy is u
 models_used: main=kimi-code/k3; coder=deepseek-flash (task_01 guarantee scripts); refactorer=kimi-code/k3 x7 (waves D, M, S, K, A, P + rulebook R); semantic-audit=deepseek-flash x6 shards; code-reviewer=kimi-code/k3; documenter=deepseek-flash; diagnostician=unused; advisor=unused
 factory_version: 12.12.0
 unfinished: no unfinished items
+
+## 2026-09-24T11:05:00+03:00 — Factory v8 (v12.12.0): whole-project code review after the English-only package
+title: Factory v8: whole-project code review after the v12.12.0 change package (English translation, english-only rule, new guarantee scripts)
+project: repo
+timestamp: 2026-09-24T11:05:00+03:00
+run_id: 20260924-96879f22
+branch: factory/v8-whole-review
+commit: none (review task; memory-only commit)
+task_type: review
+goal: post-package audit of the entire factory after v12.12.0 (RU-to-EN translation + english-only rule + check_english_only/check_translation_structure); deliverable = findings report + deterministic merged verdict; no code changes, no version change
+changed_files: none (review task) — memory/ only
+created_files: .code-factory/{state/*,logs/*,manifest.json,report.md,report_code_changes.md} incl. shard-findings/shard-{1,2}.json, code-review-merged.json, reviewer-calibration.md, golden-results/; task-v9.yaml (follow-up task, uncommitted per commit_exclude task*.yaml)
+results: integration=PASS (28/28 test_*.py + test_env_propagation.sh, tree unchanged by the review) [verified: .code-factory/logs/test-results.md]; business=PASS (shard protocol produced 2 findings files + deterministic merged verdict with every asserted quote re-verified, 0 untrusted; cross-reference spot check 0 mismatches) [verified: .code-factory/logs/code-review-merged.json, verify_quotes.py exit 0]; calibration=PASS (7/7 verdict accuracy, macro precision/recall 1.000 — reviewer re-calibrated after the v12.12.0 prompt translation per code-review.md section 7) [verified: .code-factory/logs/reviewer-calibration.md]; shard-review=DONE (2 shards: shard-1 .agents/** 19920 lines, shard-2 deployers/docs/memory 3209 lines; 8 findings: 0 critical/1 major/6 minor/1 nit) [verified: .code-factory/logs/code-review-merged.json]; merged-verdict=request_changes — the anticipated outcome: the rework list became the plan of follow-up task-v9.yaml [verified: .code-factory/logs/code-review.md]; quotes=VERIFIED (9/9 verbatim, 0 untrusted) [verified: verify_quotes.py exit 0 over .code-factory/logs/claims.json]; major-finding=reproduced independently (deleted data.json exits 0 'ok - structure preserved (checked 0 changed files)') [verified: /tmp/cf_repro run, exit 0]; regression=PASS (28/28 test_*.py + test_env_propagation.sh, tree unchanged) [verified: .code-factory/logs/test-results.md]; review-gate=PASSED (0 open critical findings) [verified: .code-factory/state/acceptance.md]; acceptance=SUCCESS (4 MET, 1 derived, regression pass, ledger FRESH) [verified: verify_acceptance.py exit 0]
+decisions: reviewer re-calibrated BEFORE the shard review because the v12.12.0 translation edited the reviewer prompt and code-review.md section 7 makes re-calibration mandatory after every prompt edit [verified: .code-factory/logs/reviewer-calibration.md]; criterion 1's authored verify used a shell glob that cmd.exe does not expand (exit 2, 'cannot be read') — infrastructure auto-fix 1/3: explicit shard file list + .code-factory/state/check_merged_gate.py asserting the criterion's actual content (merged verdict exists, 0 open critical); merge exit 1 (request_changes) is the review RESULT the task itself anticipates ('the rework list becomes the plan of a follow-up task'), not a criterion failure, while exit 2 stays a failure [verified: .code-factory/logs/errors.md, acceptance.md]; AGENTS.md carrying no fingerprint marker is NOT a violation — check_factory_model.py SKIPs the factory's own hand-authored manual via the three-signal detector (version marker, no fingerprint marker, SKILL.md deployed) [verified: acceptance.md criterion 3 SKIP line]; actionable findings carried as open backlog (follow_up=true) AND as the generated task-v9.yaml, so the debt is visible to the next run's reconciliation instead of being hidden [verified: memory_project.py backlog --repo . output]
+assumptions: the shard reviewers' empirical claims were trusted only after independent reproduction (the major finding) and verbatim quote verification (9/9) [verified: /tmp/cf_repro, verify_quotes.py exit 0]; the outer deployment tree's memory/ is kept byte-identical with repo/memory/ (standing mirror convention) [inferred]
+models_used: main=kimi-code/k3; code-reviewer=kimi-code/k3 x9 (7 calibration cases + 2 shard reviews); tester=unused (deterministic suite run by main); diagnostician=unused; advisor=unused
+factory_version: 12.12.0
+unfinished:
+  - item: check_translation_structure.py silently passes deleted no-skeleton files (.json/.toml/binary) — the gate contract 'deleted files fail the check' is broken for unsupported types (v8 review, major)
+    reason: rework item 1 (P0) of follow-up task-v9.yaml; fix = detect the deleted case before the family check + vaccination regression test deleting a .json
+    severity: warning
+    follow_up: true
+  - item: v8 review minors for task-v9.yaml — security-auditor.md severity mapping contradicts security-audit.md section 5.1; prepare_factory.ps1 parity gaps (old-git fallback, short-reason first-vs-last line); skill_base.py missing utf8-guard and wrong usage lines; README.md structure tree misplaces task-template.yaml
+    reason: rework items 2-7 (P1) of follow-up task-v9.yaml
+    severity: info
+    follow_up: true
+  - item: test_version_manager.py helper suggest() annotated '-> str' but returns a (stdout, exit_code) tuple (v8 review, nit)
+    reason: cosmetic; ride-along in task-v9.yaml P2
+    severity: info
+    follow_up: false

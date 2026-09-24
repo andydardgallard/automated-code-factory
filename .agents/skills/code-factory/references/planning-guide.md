@@ -24,6 +24,9 @@ via `AskUserQuestion`. Example good questions:
 - "What data files should we validate against?"
 
 Never ask: "Should I change type i64 to f64?" — the factory decides technical details.
+<!-- factory-rule: english-only begin -->
+**English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and history (CHANGELOG and old memory entries) is never rewritten.
+<!-- factory-rule: english-only end -->
 
 ## 2. Analyze the project
 
@@ -42,7 +45,7 @@ backlog --repo <deployment root>` — every open `follow_up=true`/`severity=crit
 re-checked against the code, so an item fixed earlier is closed with evidence instead of being
 re-declared open.
 <!-- factory-rule: memory-actuality begin -->
-**Актуальность памяти (каноническая формулировка):** в начале прогона открытый backlog сверяется с деревом (`memory_project.py backlog --repo <root>` — fold всех follow_up=true/severity=critical по истории журнала); в конце прогона каждый пункт либо закрывается блоком `closed:` с обязательным `evidence:` в записи прогона, либо остаётся в `unfinished` с причиной — пункт не может исчезнуть без доказательства закрытия: `backlog --check` даёт exit 1 при открытых пунктах, закрытии без `evidence:` и закрытии несуществующего пункта. Сводка `summary.md` (`## Current state`) актуализируется КАЖДЫМ прогоном, а не только при компакции; расхождение заявленной в ней версии с VERSION — предупреждение механизма.
+**Memory actuality (canonical wording):** at the start of a run the open backlog is reconciled with the tree (`memory_project.py backlog --repo <root>` — a fold of all follow_up=true/severity=critical over the journal history); at the end of a run every item is either closed with a `closed:` block with a mandatory `evidence:` in the run entry, or stays in `unfinished` with a reason — an item cannot disappear without evidence of closing: `backlog --check` gives exit 1 for open items, closing without `evidence:` and closing a nonexistent item. The `summary.md` summary (`## Current state`) is actualized by EVERY run, not only at compaction; a divergence between the version it declares and VERSION is a mechanism warning.
 <!-- factory-rule: memory-actuality end -->
 
 Delegate heavy exploration to `factory-analyzer` subagents (parallel, isolated contexts). Each
@@ -199,5 +202,5 @@ divergences and every further revision applies to the merged plan.
 Auto: briefly present the plan in the main thread (assumptions highlighted) and continue
 immediately.
 <!-- factory-rule: plan-committee begin -->
-**Committee при двойном rejection плана (каноническая формулировка):** если пользователь дважды отклонил план (hitl, ветка Revise), главный агент запускает второго независимого planner-сабагента из контрастного семейства моделей, который строит альтернативный план по той же задаче и накопленным замечаниям пользователя; детерминированный `scripts/plan_arbiter.py` (stdlib) сравнивает оба плана по машиночитаемым секциям (DAG-задачи, verify-команды, риски, бизнес-тесты) и формирует merged-вариант со списком расхождений; пользователю представляется merged-план и расхождения, дальнейшие правки идут уже по нему.
+**Committee on double plan rejection (canonical wording):** if the user rejected the plan twice (hitl, Revise branch), the main agent launches a second independent planner subagent from a contrasting model family, which builds an alternative plan from the same task and the user's accumulated remarks; the deterministic `scripts/plan_arbiter.py` (stdlib) compares both plans by machine-readable sections (DAG tasks, verify commands, risks, business tests) and forms a merged variant with a list of discrepancies; the user is presented with the merged plan and the discrepancies, and further edits are made against it.
 <!-- factory-rule: plan-committee end -->

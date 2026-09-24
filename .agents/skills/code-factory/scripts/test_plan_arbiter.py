@@ -7,7 +7,7 @@ with DIFFERENT bodies (the conflict), ids only one plan carries, overlapping and
 and business tests — and verifies:
 
   - tasks merge BY ID: the identical one appears exactly once, the conflicting id leaves the merged
-    task list and lands in `## Расхождения` with both wordings, one-sided ids are carried over;
+    task list and lands in `## Divergences` with both wordings, one-sided ids are carried over;
   - risks and business tests merge as deduplicated unions (sorted, one copy each);
   - the divergence list names the one-sided risks and business tests of each plan;
   - the CLI contract: the merged plan on stdout, --out holds the same text, exit 0, --help works;
@@ -33,8 +33,9 @@ import plan_arbiter as pa
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 TOOL = SCRIPTS / "plan_arbiter.py"
-# The divergence list is Russian: pin UTF-8 on the child's stdout so the assertions are portable
-# across console code pages (the script itself replaces unencodable characters, never crashes).
+# The divergence list carries non-ASCII characters (the em dash): pin UTF-8 on the child's stdout
+# so the assertions are portable across console code pages (the script itself replaces unencodable
+# characters, never crashes).
 ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
 TASK_01 = "task_01: add the arbiter script; files: [scripts/plan_arbiter.py]; deps: []; " \
@@ -125,7 +126,7 @@ def main() -> int:
                f"business tests must merge as a union: {block(merged, 'Business tests')}")
 
         # 2. the conflict: out of the task list, both wordings in the divergence list.
-        divergent = "\n".join(block(merged, "Расхождения (решение пользователя)"))
+        divergent = "\n".join(block(merged, "Divergences (user decision)"))
         expect("task_02" in divergent, f"the conflicting id must be listed: {divergent!r}")
         expect(pa.normalize(TASK_02_A.split(": ", 1)[1]) in divergent,
                f"plan A's wording of the conflict must be quoted: {divergent!r}")
@@ -135,11 +136,11 @@ def main() -> int:
                "the conflicting id must stay out of the merged task list")
 
         # 3. one-sided risks and business tests are named per plan.
-        expect(f"- риск только в плане A: {RISK_A}" in divergent,
+        expect(f"- risk only in plan A: {RISK_A}" in divergent,
                f"a plan-A-only risk must be listed: {divergent!r}")
-        expect(f"- риск только в плане B: {RISK_B}" in divergent,
+        expect(f"- risk only in plan B: {RISK_B}" in divergent,
                f"a plan-B-only risk must be listed: {divergent!r}")
-        expect(f"- бизнес-тест только в плане B: {TEST_B}" in divergent,
+        expect(f"- business test only in plan B: {TEST_B}" in divergent,
                f"a plan-B-only business test must be listed: {divergent!r}")
 
         # 4. --out carries the same text; --help works.
@@ -167,7 +168,7 @@ def main() -> int:
         same = out(run("--plan-a", str(plan_a), "--plan-b", str(twin)))
         expect(block(same, "Tasks (DAG)") == [f"- {TASK_01}", f"- {TASK_02_A}", f"- {TASK_03}"],
                f"identical plans must merge without duplicates: {block(same, 'Tasks (DAG)')}")
-        expect("расхождений нет" in same, f"identical plans have no divergences: {same!r}")
+        expect("no divergences" in same, f"identical plans have no divergences: {same!r}")
 
         # 7. broken input: exit 2, the file named, never a traceback.
         bare = write_raw(root, "bare.md", "# Plan\n\nJust prose, no machine-readable sections.\n")

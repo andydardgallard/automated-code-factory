@@ -26,7 +26,7 @@ project mean the journal is wrong). Do NOT re-derive from scratch what AGENTS.md
 documents — report only what the model is missing or what the task specifically needs.
 
 **Precedents before re-reading.** Before re-reading history or code, ask the precedent index:
-`python .agents/skills/code-factory/scripts/precedent_index.py query --repo . "<тема>"` returns the
+`python .agents/skills/code-factory/scripts/precedent_index.py query --repo . "<topic>"` returns the
 memory and code hits that already answer the question. The main agent builds the index
 (`… build --repo .`); if it is not there yet, fall back to reading the files.
 

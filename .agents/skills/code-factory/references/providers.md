@@ -149,7 +149,7 @@ still the same judge.
   is the same pre-flight slot that already reports a missing
   `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`.
 
-### 5.2 Plan committee (комитет) — the ONE exception to the task's matrix
+### 5.2 Plan committee — the ONE exception to the task's matrix
 
 The second planner of the plan committee (the `plan-committee` rule: hitl, double rejection of the
 plan) is the ONLY role where the task's `models` matrix is NOT applied — the committee rule

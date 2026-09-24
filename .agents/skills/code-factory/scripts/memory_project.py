@@ -167,89 +167,88 @@ def change_log_template(project: str) -> str:
 
 {CHANGE_LOG_MARKER}
 
-Append-only журнал прогонов фабрики по проекту `{project}`. Одна запись на завершённую
-задачу (успех ИЛИ FAILED), пишет единственный писатель — главный агент в конце задачи.
-Записи не удаляются и не переупорядочиваются; при превышении порога (50 записей) старые
-сворачиваются в `memory/summary.md`, здесь остаётся последние 20 записей.
+Append-only journal of the factory's runs on the project `{project}`. One entry per completed
+task (success OR FAILED), written by the single writer — the main agent at the end of the task.
+Entries are never deleted or reordered; once the threshold (50 entries) is exceeded the old ones
+are folded into `memory/summary.md`, and the last 20 entries stay here.
 
-Память принадлежит ОДНОМУ проекту — тому, что указан в поле `repo_path` задачи. Поле
-`project:` = basename каталога `repo_path` (для этого журнала — `{project}`). Разные
-значения `project:` в одном журнале — ошибка; записи без поля `project:` — legacy
-(предупреждение, не ошибка). Проверка: `scripts/memory_project.py check` и
+The memory belongs to ONE project — the one named in the task's `repo_path` field. The
+`project:` field = the basename of the `repo_path` directory (for this journal — `{project}`).
+Different `project:` values in one journal are an error; entries without the `project:` field
+are legacy (a warning, not an error). Checked by: `scripts/memory_project.py check` and
 `scripts/check_factory_model.py`.
 
-Формат записи (плоский, проверяется `scripts/check_factory_model.py`):
+Entry format (flat, verified by `scripts/check_factory_model.py`):
 
 ```
 ## <ISO timestamp> — <title>
-title: <строка>
-project: <имя проекта — basename(repo_path задачи), здесь всегда {project}>
-timestamp: <ISO8601 дата>
-run_id: <YYYYMMDD-8hex — идентификатор прогона, scripts/run_id.py>
-branch: <ветка или "(none)">
-commit: <sha или "(none)">
+title: <string>
+project: <project name — basename of the task's repo_path, always {project} here>
+timestamp: <ISO8601 date>
+run_id: <YYYYMMDD-8hex — run identifier, scripts/run_id.py>
+branch: <branch or "(none)">
+commit: <sha or "(none)">
 task_type: implement | review | refactor | security_audit
-goal: <краткая цель>
-changed_files: <список через "; ">
-created_files: <список через "; ">
-results: integration=<PASS|FAIL|SKIP>; regression=<...>; business=<...>; review=<approve|request_changes|SKIP> — ключевые результаты с меткой [verified: <команда/тест/лог>] или [inferred]
-decisions: <принятые решения; каждое ключевое утверждение с меткой [verified: <команда/тест/лог>] или [inferred]>
-assumptions: <допущения>
-models_used: analyzer=<модель>; coder=<модель>; tester=<модель>; reviewer=<модель>
-factory_version: <X.Y.Z — версия фабрики на момент прогона>
-unfinished: нет незавершённых элементов
-closed: (опционально) по элементу на закрытый пункт — item: <текст пункта> + evidence: <доказательство>
+goal: <brief goal>
+changed_files: <list separated by "; ">
+created_files: <list separated by "; ">
+results: integration=<PASS|FAIL|SKIP>; regression=<...>; business=<...>; review=<approve|request_changes|SKIP> — key results with a [verified: <command/test/log>] or [inferred] mark
+decisions: <decisions made; every key claim carries a [verified: <command/test/log>] or [inferred] mark>
+assumptions: <assumptions>
+models_used: analyzer=<model>; coder=<model>; tester=<model>; reviewer=<model>
+factory_version: <X.Y.Z — factory version at the time of the run>
+unfinished: no unfinished items
+closed: (optional) one element per closed item — item: <item text> + evidence: <evidence>
 ```
 
-Однострочный пример записи (одна запись — один блок, поля построчно):
-`title: Короткий заголовок | project: {project} | timestamp: 2026-01-01T00:00:00+0300 | task_type: implement | ...`
+A one-line example of an entry (one entry — one block, fields line by line):
+`title: Short title | project: {project} | timestamp: 2026-01-01T00:00:00+0300 | task_type: implement | ...`
 
-**Формат v2 (введён после v12.8.0): `run_id` + provenance-метки.** Поле `run_id` — идентификатор
-прогона (`YYYYMMDD-<8 hex>`, см. `scripts/run_id.py`), по нему запись связывается с артефактами
-прогона. Каждое КЛЮЧЕВОЕ утверждение новой записи в полях `decisions` и `results` несёт
-инлайн-метку прямо в значении поля:
-`[verified: <команда/тест/лог, подтверждающий утверждение>]` — утверждение проверено
-доказательством, или `[inferred]` — выведено, но не проверено. Пример:
+**Format v2 (introduced after v12.8.0): `run_id` + provenance marks.** The `run_id` field is the
+run identifier (`YYYYMMDD-<8 hex>`, see `scripts/run_id.py`); it ties the entry to the run's
+artifacts. Every KEY claim of a new entry in the `decisions` and `results` fields carries an
+inline mark right in the field value:
+`[verified: <command/test/log proving the claim>]` — the claim is verified by evidence, or
+`[inferred]` — inferred but not verified. Example:
 `results: integration=PASS [verified: .code-factory/logs/code-results.md]; review=approve [inferred]`.
-Запись, написанная фабрикой новее v12.8.0, без `run_id` (или с `run_id` не по формату
-`^\\d{{8}}-[0-9a-f]{{8}}$`) либо без метки в `decisions`/`results` — ОШИБКА формата; записи без
-поля `project:` и записи, написанные фабрикой не новее v12.8.0, — legacy (предупреждение, не
-ошибка). Проверяют `scripts/memory_project.py check` и `scripts/check_factory_model.py`.
+An entry written by a factory newer than v12.8.0 without `run_id` (or with a `run_id` not
+matching `^\\d{{8}}-[0-9a-f]{{8}}$`) or without a mark in `decisions`/`results` is a format
+ERROR; entries without the `project:` field and entries written by a factory no newer than
+v12.8.0 are legacy (a warning, not an error). Verified by `scripts/memory_project.py check` and
+`scripts/check_factory_model.py`.
 
-Если долг есть — вместо одной строки `unfinished:` пишется многострочный список; для каждого
-элемента обязательны 4 поля (`item`, `reason`, `severity` critical|warning|info, `follow_up`
-true|false):
+If there is debt, the single `unfinished:` line is replaced by a multi-line list; every element
+requires 4 fields (`item`, `reason`, `severity` critical|warning|info, `follow_up` true|false):
 
 ```
 unfinished:
-  - item: замечания код-ревьюера приняты как есть
-    reason: бюджет ревьюера исчерпан
+  - item: code reviewer findings accepted as-is
+    reason: reviewer budget exhausted
     severity: warning
     follow_up: false
 ```
 
-Секция `unfinished` заполняется обязательно при каждой записи, даже если пуста (явный маркер
-`нет незавершённых элементов`). При компакции элементы с severity=critical или follow_up=true
-сохраняются обязательно. Записи без `project`, `unfinished` или `factory_version` проходят
-валидацию с предупреждением (не ошибкой) — это legacy-совместимость.
+The `unfinished` section is filled in for every entry, even when empty (the explicit `no
+unfinished items` marker). During compaction the elements with severity=critical or
+follow_up=true are always preserved. Entries without `project`, `unfinished` or
+`factory_version` pass validation with a warning (not an error) — this is legacy compatibility.
 
-**Протокол закрытия: пункт НЕ исчезает без доказательства.** Если долг закрыт (исправлен кодом
-или признан неактуальным), запись-закрытие несёт блок `closed:` рядом с `unfinished:` — по
-элементу на закрытый пункт; для каждого элемента обязательны `item` (текст пункта, по которому
-он сопоставляется с исходным) и `evidence` (команда/тест/лог/`файл:строка`, доказывающие
-закрытие):
+**Closing protocol: an item NEVER disappears without evidence.** When a debt is closed (fixed in
+code or deemed obsolete), the closing entry carries a `closed:` block next to `unfinished:` —
+one element per closed item; every element requires `item` (the item text it is matched to the
+original by) and `evidence` (the command/test/log/`file:line` proving the closure):
 
 ```
 closed:
-  - item: замечания код-ревьюера приняты как есть
-    evidence: scripts/memory_project.py:120 -> exit 0 (закрыто v12.10.1)
+  - item: code reviewer findings accepted as-is
+    evidence: scripts/memory_project.py:120 -> exit 0 (closed v12.10.1)
 ```
 
-Закрытие без `evidence:` недействительно, как и `closed:` на пункт, которого нет ни в одной
-записи журнала: оба случая — ошибка `scripts/memory_project.py backlog --check` (наравне с
-открытыми пунктами). Сверка выполняется по ВСЕМ записям журнала, поэтому закрывать можно и
-исторические долги: пункт, который не закрыт и не закрывается, остаётся открытым и печатается
-`backlog` как legacy-drift вместе с записью-источником. Проверка актуальности памяти:
+A closure without `evidence:` is invalid, as is a `closed:` element naming an item that no
+journal entry ever declared: both cases are an error of `scripts/memory_project.py backlog
+--check` (on par with open items). The reconciliation runs over ALL journal entries, so
+historical debts can be closed too: an item that was never closed stays open and is printed by
+`backlog` as legacy drift together with its source entry. Memory actuality check:
 `python scripts/memory_project.py backlog --repo . --check`.
 """
 
@@ -262,8 +261,9 @@ def summary_template(project: str, repo_path: str) -> str:
 project: {project}
 repo_path: {repo_path}
 
-Сжатая сводка проекта. Сворачивается из старых записей `memory/change-log.md` при компакции
-(порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
+A compact summary of the project. Folded from the old entries of `memory/change-log.md` during
+compaction (threshold of 50 entries) and read at the start of every task so the project history
+is not replayed from scratch.
 
 ## Current state
 
@@ -772,7 +772,7 @@ def current_state_text(summary: pathlib.Path) -> str:
 def summary_version_warnings(root: pathlib.Path) -> list[str]:
     """WARN when `## Current state` claims a factory version other than the repo's VERSION.
 
-    The version the section claims as CURRENT is its first `vX.Y.Z` mention (e.g. "Фабрика
+    The version the section claims as CURRENT is its first `vX.Y.Z` mention (e.g. "Factory
     v12.10.0: …"); the older versions it name-drops later are history and never warn. Nothing is
     claimed (or there is no VERSION file) — nothing to compare, so no warning.
     """

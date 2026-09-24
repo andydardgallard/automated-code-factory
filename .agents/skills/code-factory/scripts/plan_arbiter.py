@@ -19,13 +19,13 @@ Both plans are read through their machine-readable sections (`references/plannin
   - <scenario>
 
 Merging rules (the merged sections never depend on the input order — only the A/B labels of
-`## Расхождения` follow which plan was passed as --plan-a):
+`## Divergences` follow which plan was passed as --plan-a):
   - tasks merge BY ID: the same id with an identical (whitespace-normalized) body collapses into
     one task; the same id with a DIFFERENT body is a conflict — both wordings move to the
-    `## Расхождения` section and that id stays OUT of the merged task list; an id carried by only
+    `## Divergences` section and that id stays OUT of the merged task list; an id carried by only
     one plan is taken as it is;
   - `## Risks` and `## Business tests` merge as the deduplicated union of both plans;
-  - `## Расхождения` lists, in a fixed order, every task conflict (both wordings) plus every risk
+  - `## Divergences` lists, in a fixed order, every task conflict (both wordings) plus every risk
     and business test that only one plan carries — the list the user decides on.
 
 The merged plan goes to stdout (and to --out when given) in the same plan format, so it can be
@@ -165,10 +165,10 @@ def render(plan_a: Plan, plan_b: Plan) -> str:
     one_sided = tuple(
         (kind, which, sorted(set(first) - set(second)))
         for kind, which, first, second in (
-            ("риск", "A", plan_a.risks, plan_b.risks),
-            ("риск", "B", plan_b.risks, plan_a.risks),
-            ("бизнес-тест", "A", plan_a.business_tests, plan_b.business_tests),
-            ("бизнес-тест", "B", plan_b.business_tests, plan_a.business_tests),
+            ("risk", "A", plan_a.risks, plan_b.risks),
+            ("risk", "B", plan_b.risks, plan_a.risks),
+            ("business test", "A", plan_a.business_tests, plan_b.business_tests),
+            ("business test", "B", plan_b.business_tests, plan_a.business_tests),
         )
     )
 
@@ -178,7 +178,7 @@ def render(plan_a: Plan, plan_b: Plan) -> str:
         f"<!-- merged deterministically by scripts/plan_arbiter.py; plan A: {plan_a.path}; "
         f"plan B: {plan_b.path} -->",
         "<!-- a task id carried by both plans with different bodies stays OUT of ## Tasks (DAG) "
-        "and appears under ## Расхождения -->",
+        "and appears under ## Divergences -->",
         "",
         "## Tasks (DAG)",
     ]
@@ -187,24 +187,24 @@ def render(plan_a: Plan, plan_b: Plan) -> str:
     lines += [f"- {risk}" for risk in sorted(risks)]
     lines += ["", "## Business tests"]
     lines += [f"- {test}" for test in sorted(tests)]
-    lines += ["", "## Расхождения (решение пользователя)"]
+    lines += ["", "## Divergences (user decision)"]
     if not conflicts and not any(items for _, _, items in one_sided):
-        lines.append("- расхождений нет: оба плана совпадают по машиночитаемым секциям.")
+        lines.append("- no divergences: both plans agree on the machine-readable sections.")
     for task_id, body_a, body_b in conflicts:
-        lines.append(f"- {task_id}: одинаковый id с разным содержимым — задача не включена в "
-                     "merged-план, нужен выбор пользователя:")
-        lines.append(f"  - план A: {body_a}")
-        lines.append(f"  - план B: {body_b}")
+        lines.append(f"- {task_id}: same id with different content — the task is not included in "
+                     "the merged plan, the user must choose:")
+        lines.append(f"  - plan A: {body_a}")
+        lines.append(f"  - plan B: {body_b}")
     for kind, which, items in one_sided:
-        lines += [f"- {kind} только в плане {which}: {item}" for item in items]
+        lines += [f"- {kind} only in plan {which}: {item}" for item in items]
     return "\n".join(lines) + "\n"
 
 
 def use_utf8_output() -> None:
-    """Force UTF-8 on stdout/stderr so the help and the Russian divergence list survive a console.
+    """Force UTF-8 on stdout/stderr so the help and the divergence list survive a console.
 
-    A Windows console defaults to a legacy code page (cp866/cp1251) and the output carries Cyrillic
-    (the `## Расхождения` heading) and the em dash `—`, which that codec cannot encode:
+    A Windows console defaults to a legacy code page (cp866/cp1251) and the output carries
+    non-ASCII characters (the em dash `—`), which that codec cannot encode:
     `print_help()` would raise UnicodeEncodeError and the user would get a traceback instead of
     the merged plan. `errors="replace"` keeps a stream that cannot be reconfigured from ever
     raising.

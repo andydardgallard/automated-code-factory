@@ -2,54 +2,54 @@
 chcp 65001 >nul
 setlocal
 rem ===========================================================================
-rem prepare_factory.cmd — подготовка проекта к запуску Code Factory (Windows).
+rem prepare_factory.cmd — prepare a project for running Code Factory (Windows).
 rem
-rem Использование: prepare_factory.cmd <путь-к-проекту>
+rem Usage: prepare_factory.cmd <path-to-project>
 rem
-rem Git Bash не нужен: файл запускается двойным кликом в Проводнике либо из
-rem cmd/PowerShell. Всю работу делает prepare_factory.ps1 (PowerShell входит в
-rem состав Windows), этот файл только передаёт ему аргументы и его код возврата.
+rem Git Bash is not needed: the file runs by double-clicking in Explorer or from
+rem cmd/PowerShell. All the work is done by prepare_factory.ps1 (PowerShell ships
+rem with Windows); this file only forwards the arguments and its exit code.
 rem ===========================================================================
 
 rem --- 1. PowerShell ----------------------------------------------------------
 where powershell.exe >nul 2>&1
 if errorlevel 1 (
-    echo PowerShell не найден ^(powershell.exe^). Подготовка проекта выполняется
-    echo скриптом prepare_factory.ps1 и требует PowerShell — он входит в состав
-    echo Windows 10/11; при необходимости включите его в компонентах Windows.
+    echo PowerShell was not found ^(powershell.exe^). Project preparation is done
+    echo by the prepare_factory.ps1 script and requires PowerShell — it ships with
+    echo Windows 10/11; if needed, enable it in Windows features.
     echo.
-    echo Использование: prepare_factory.cmd ^<путь-к-проекту^>
+    echo Usage: prepare_factory.cmd ^<path-to-project^>
     set "EXITCODE=1"
     goto :finish
 )
 
-rem --- 2. Скрипт развёртывания ------------------------------------------------
+rem --- 2. Deployment script ---------------------------------------------------
 if not exist "%~dp0prepare_factory.ps1" (
-    echo Не найден скрипт развёртывания prepare_factory.ps1 — он должен лежать
-    echo рядом с этим файлом ^(%~dp0^). Проверьте, что репозиторий фабрики скопирован
-    echo целиком.
+    echo The deployment script prepare_factory.ps1 was not found — it must sit
+    echo next to this file ^(%~dp0^). Make sure the factory repository was copied
+    echo in full.
     echo.
-    echo Использование: prepare_factory.cmd ^<путь-к-проекту^>
+    echo Usage: prepare_factory.cmd ^<path-to-project^>
     set "EXITCODE=1"
     goto :finish
 )
 
-rem --- 3. Запуск развёртывания (аргументы передаются без изменений) ------------
+rem --- 3. Run the deployment (arguments are forwarded unchanged) ---------------
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0prepare_factory.ps1" %*
 set "EXITCODE=%ERRORLEVEL%"
 
 :finish
-rem --- Пауза только при двойном клике ----------------------------------------
-rem При двойном клике окно консоли закрывается сразу после выхода, поэтому ждём
-rem нажатия клавиши. Запуск из консоли, из другого скрипта и из автотеста не
-rem блокируем. Два условия двойного клика:
-rem   1) имя файла есть в командной строке cmd.exe. Ищем через findstr, а не
-rem      через find: find может подменяться одноимённой утилитой из PATH
-rem      (например, из Git Bash) и печатать ошибки;
-rem   2) ввод идёт с консоли окна: timeout.exe отказывается работать при
-rem      перенаправленном вводе (файл или канал) и возвращает код 1 — иначе пауза
-rem      заблокировала бы скрипт или автотест. Путь к timeout.exe указан явно,
-rem      чтобы не поймать одноимённую утилиту из PATH.
+rem --- Pause only on a double-click -------------------------------------------
+rem On a double-click the console window closes right after exit, so we wait for
+rem a keypress. Runs from a console, from another script and from an automated
+rem test are not blocked. Two double-click conditions:
+rem   1) the file name appears in the cmd.exe command line. We search via
+rem      findstr, not find: find can be shadowed by a same-named utility from
+rem      PATH (e.g. from Git Bash) and print errors;
+rem   2) input comes from the window console: timeout.exe refuses to run with
+rem      redirected input (file or pipe) and returns code 1 — otherwise the pause
+rem      would block the script or an automated test. The timeout.exe path is
+rem      explicit so we do not catch a same-named utility from PATH.
 echo %cmdcmdline% | findstr /i /c:"%~nx0" >nul
 if errorlevel 1 goto :no_pause
 "%SystemRoot%\System32\timeout.exe" /t 0 /nobreak >nul 2>&1

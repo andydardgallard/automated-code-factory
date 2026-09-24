@@ -1,194 +1,194 @@
 ---
 name: kaggle-agents-course
-description: Дистилляция Kaggle 5-Day AI Agents Intensive (Google x Kaggle): архитектура агентов, маршрутизация моделей, дизайн инструментов и контракты вывода, оценка качества агентов (trajectory is the truth), переход в продакшн. Справочник для сабагентов автономной код-фабрики.
+description: Distillation of the Kaggle 5-Day AI Agents Intensive (Google x Kaggle): agent architecture, model routing, tool design and output contracts, agent quality evaluation (trajectory is the truth), and the move to production. A reference for the subagents of the autonomous code factory.
 ---
 
 # Kaggle Agents Course
 
-> Источник: транскрипты Kaggle 5-Day AI Agents Intensive Course (whitepaper companion podcasts +
-> дневные livestream'ы, дни 1–5), каталог `../materials` (14 каталогов, .md/.txt транскрипты).
-> Это выжимка идей, а не конспект; полные транскрипты — в источнике.
+> Source: transcripts of the Kaggle 5-Day AI Agents Intensive Course (whitepaper companion podcasts +
+> daily livestreams, days 1–5), the `../materials` directory (14 directories, .md/.txt transcripts).
+> This is a distillation of ideas, not lecture notes; the full transcripts are in the source.
 
-## Оглавление
+## Contents
 
-- [Обзор](#обзор)
-- [Ключевые концепции](#ключевые-концепции)
-  - [Day 1 — Анатомия агента и маршрутизация моделей](#day-1--анатомия-агента-и-маршрутизация-моделей)
-  - [Day 2 — Инструменты и контракт concise output](#day-2--инструменты-и-контракт-concise-output)
-  - [Day 3 — Контекст, сессии, память](#day-3--контекст-сессии-память)
-  - [Day 4 — Качество агента: trajectory is the truth](#day-4--качество-агента-trajectory-is-the-truth)
-  - [Day 5 — Продакшн: generator ≠ judge и model diversity](#day-5--продакшн-generator--judge-и-model-diversity)
-- [Как применять в код-фабрике](#как-применять-в-код-фабрике)
-- [Бизнес-критерии](#бизнес-критерии)
-- [Ограничения и антипаттерны](#ограничения-и-антипаттерны)
+- [Overview](#overview)
+- [Key concepts](#key-concepts)
+  - [Day 1 — Agent anatomy and model routing](#day-1--agent-anatomy-and-model-routing)
+  - [Day 2 — Tools and the concise output contract](#day-2--tools-and-the-concise-output-contract)
+  - [Day 3 — Context, sessions, memory](#day-3--context-sessions-memory)
+  - [Day 4 — Agent quality: trajectory is the truth](#day-4--agent-quality-trajectory-is-the-truth)
+  - [Day 5 — Production: generator ≠ judge and model diversity](#day-5--production-generator--judge-and-model-diversity)
+- [How to apply in the code factory](#how-to-apply-in-the-code-factory)
+- [Business criteria](#business-criteria)
+- [Limitations and anti-patterns](#limitations-and-anti-patterns)
 
-## Обзор
+## Overview
 
-Агент — это не модель в статичном workflow, а приложение: **модель (мозг) + инструменты (руки) +
-оркестрационный слой (дирижёр)**, работающий в цикле **think → act → observe** до достижения цели.
-Курс идёт от анатомии агента (Day 1) через инструменты (Day 2), контекст/память (Day 3), оценку
-качества (Day 4) к продакшну мульти-агентных систем (Day 5). Главный тезис: успех агентной системы
-определяется не «самой умной моделью», а инженерной дисциплиной вокруг неё — архитектурой,
-контрактами, оценкой, наблюдаемостью и управлением.
+An agent is not a model in a static workflow but an application: **model (the brain) + tools (the hands) +
+orchestration layer (the conductor)**, working in a **think → act → observe** loop until the goal is reached.
+The course goes from agent anatomy (Day 1) through tools (Day 2), context/memory (Day 3), quality
+evaluation (Day 4), to production multi-agent systems (Day 5). The main thesis: the success of an agentic system
+is determined not by the "smartest model" but by the engineering discipline around it — architecture,
+contracts, evaluation, observability, and governance.
 
-## Ключевые концепции
+## Key concepts
 
-### Day 1 — Анатомия агента и маршрутизация моделей
+### Day 1 — Agent anatomy and model routing
 
-- **Таксономия агентности L0–L4**: L0 — голая LLM без инструментов; L1 — подключённый решатель
-  (инструменты, реальное время); L2 — стратегический решатель (context engineering: выход одного
-  шага формирует вход следующего); L3 — мульти-агентная система (агенты вызывают агентов как
-  инструменты, делегирование целей); L4 — самоэволюционирующая система (создаёт недостающие
-  инструменты/агентов). Сложность выбирается под задачу, не «максимальную по умолчанию».
-- **Выбор модели — по задаче, не по бенчмаркам**: критерии — качество рассуждения и надёжность
-  tool use на *конкретных* задачах, а не общий рейтинг модели.
-- **Маршрутизация моделей (model routing)**: дорогая сильная модель — на планирование и
-  ответственные решения (низкая «плотность» простых решений), быстрая дешёвая — на массовые простые
-  шаги (суммаризация, извлечение поля, приветствие). Если пользователь говорит «привет», не нужна
-  триллионопараметровая модель, чтобы ответить. Оптимизация стоимости и качества одновременно.
-- **Декомпозиция вместо монолита**: не пихать 50+ инструментов в одного агента — декомпозировать на
-  специалистов по 5–10 инструментов и маршрутизировать к нужному. Рост числа шагов и инструментов =
-  рост стоимости контекста, латентности и риска регрессий.
-- **Agent Ops**: нельзя тестировать `assert output == expected` (недетерминизм); вместо этого —
-  оценка качества по рубрике (LM-as-judge) на golden dataset, OpenTelemetry-трейсы всей траектории
-  как «чёрный ящик» для отладки, превращение каждого зафиксированного сбоя в новый перманентный
-  тест-кейс («вакцинация» системы).
+- **Agency taxonomy L0–L4**: L0 — a bare LLM without tools; L1 — a connected problem-solver
+  (tools, real time); L2 — a strategic problem-solver (context engineering: the output of one
+  step shapes the input of the next); L3 — a multi-agent system (agents call agents as
+  tools, delegating goals); L4 — a self-evolving system (creates missing
+  tools/agents). Complexity is chosen to fit the task, not "maximal by default".
+- **Choose the model by task, not by benchmarks**: the criteria are reasoning quality and
+  tool-use reliability on *specific* tasks, not the model's overall rating.
+- **Model routing**: an expensive, strong model — for planning and
+  high-stakes decisions (low "density" of simple decisions); a fast, cheap one — for mass simple
+  steps (summarization, field extraction, greetings). If a user says "hi", you don't need a
+  trillion-parameter model to reply. Cost and quality optimized simultaneously.
+- **Decomposition instead of a monolith**: don't stuff 50+ tools into one agent — decompose into
+  specialists with 5–10 tools each and route to the right one. More steps and tools =
+  higher context cost, latency, and regression risk.
+- **Agent Ops**: you cannot test with `assert output == expected` (non-determinism); instead —
+  rubric-based quality evaluation (LM-as-judge) on a golden dataset, OpenTelemetry traces of the whole trajectory
+  as a "black box" for debugging, and turning every recorded failure into a new permanent
+  test case ("vaccinating" the system).
 
-### Day 2 — Инструменты и контракт concise output
+### Day 2 — Tools and the concise output contract
 
-- **Типы инструментов**: function tools (явные функции, docstring = контракт входов/выходов),
-  built-in (поиск, code execution — от провайдера), agent tools (вызов другого агента как
-  инструмента: делегирование подзадачи с возвратом результата, контроль остаётся у вызывающего).
-- **Документация инструмента — главный интерфейс**: модель знает об инструменте только из имени,
-  описания и схемы параметров. Имя `create_critical_bug_with_priority` лучше, чем `update_jira`.
-- **Описывать действие, а не реализацию**: «создай баг, описывающий проблему», а не «вызови
-  функцию X». LLM рассуждает, инструмент исполняет.
-- **Публиковать задачи, а не сырые API**: инструмент = одна высокоуровневая задача
-  («забронировать переговорку»), а не тонкая обёртка над endpoint'ом с 15 флагами.
-- **Контракт concise output (ключевое для сабагентов)**: инструмент/сабагент НЕ возвращает сырые
-  массивы данных в контекст. Возвращает: (а) краткую выжимку, (б) подтверждение выполнения, или
-  (в) ссылку (URI/путь к артефакту), где лежат полные данные. Раздувание контекста = рост стоимости
-  и латентности + деградация рассуждения вызывающей модели.
-- **Инструктивные ошибки**: не «error 500», а «rate limit exceeded, повтори через 15 секунд» —
-  ошибка должна давать агенту контекст и путь восстановления. Молчаливые сбои запрещены: вызывающие
-  агенты должны понимать причину и адаптироваться.
-- **Масштабирование инструментов**: при сотнях инструментов их определения не грузят в контекст —
-  сначала семантический поиск (tool retrieval, RAG по реестру инструментов) выбирает top-3–5
-  релевантных, и только они попадают в промпт.
+- **Tool types**: function tools (explicit functions; docstring = input/output contract),
+  built-in (search, code execution — provided by the vendor), agent tools (calling another agent as
+  a tool: delegating a subtask with a result returned; control stays with the caller).
+- **Tool documentation is the main interface**: the model knows a tool only from its name,
+  description, and parameter schema. The name `create_critical_bug_with_priority` is better than `update_jira`.
+- **Describe the action, not the implementation**: "create a bug describing the problem", not "call
+  function X". The LLM reasons; the tool executes.
+- **Publish tasks, not raw APIs**: a tool = one high-level task
+  ("book a meeting room"), not a thin wrapper over an endpoint with 15 flags.
+- **The concise output contract (key for subagents)**: a tool/subagent does NOT return raw
+  arrays of data into the context. It returns: (a) a brief digest, (b) a confirmation of completion, or
+  (c) a reference (URI/path to an artifact) where the full data lives. Context bloat = higher cost
+  and latency + degraded reasoning of the calling model.
+- **Instructive errors**: not "error 500" but "rate limit exceeded, retry in 15 seconds" —
+  an error must give the agent context and a recovery path. Silent failures are forbidden: calling
+  agents must understand the cause and adapt.
+- **Scaling tools**: with hundreds of tools, their definitions are not loaded into the context —
+  first a semantic search (tool retrieval, RAG over the tool registry) picks the top 3–5
+  relevant ones, and only they go into the prompt.
 
-### Day 3 — Контекст, сессии, память
+### Day 3 — Context, sessions, memory
 
-- **Context engineering**: качество ответа определяется не промптом самим по себе, а структурой
-  контекста, который модель видит на каждом шаге.
-- **Краткосрочная память** — рабочий блокнот текущей задачи (история пар action–observation в
-  цикле). **Долгосрочная** — через сессии, персистентная (предпочтения, прошлые взаимодействия),
-  архитектурно — обычный инструмент (RAG поверх хранилища).
-- **Управление окном**: фильтрация, компакция и кэширование контекста — обязательные механизмы для
-  длинных задач; промпт-кэширование повторяющихся префиксов снижает стоимость, латентность и
-  недетерминизм.
+- **Context engineering**: answer quality is determined not by the prompt itself but by the structure
+  of the context the model sees at each step.
+- **Short-term memory** — the working notepad of the current task (the history of action–observation pairs in
+  the loop). **Long-term** — across sessions, persistent (preferences, past interactions);
+  architecturally, an ordinary tool (RAG over a store).
+- **Window management**: filtering, compaction, and caching of context are mandatory mechanisms for
+  long tasks; prompt caching of recurring prefixes reduces cost, latency, and
+  non-determinism.
 
-### Day 4 — Качество агента: trajectory is the truth
+### Day 4 — Agent quality: trajectory is the truth
 
-- **Три столпа**: (1) trajectory is the truth — качество определяется всем путём агента, а не
-  только финальным ответом: правильный ответ «кривым» путём (25 шагов вместо 3, близкие к провалу
-  промахи) — всё равно дефект качества; (2) наблюдаемость — фундамент (логи, трейсы, метрики);
-  (3) оценка — непрерывный цикл (quality flywheel), а не разовый QA-гейт перед запуском.
-- **Коварные сбои**: агент может вернуть «200 OK» с фактически неверным/нечестным результатом.
-  Характерные failure modes: алгоритмическое смещение, галлюцинации, concept drift (мир изменился,
-  агент — нет), эмерджентные нежелательные поведения (лазейки в правилах ради цели).
-- **Четыре измерения качества**: effectiveness (достигнута ли цель пользователя, а не просто
-  «закрыт тикет»), efficiency (латентность, стоимость в токенах, прямота пути), robustness
-  (поведение при ошибках API, неясных инструкциях: retry, уточнение, а не крах или угадывание),
-  safety & alignment (границы, отказ от опасного, устойчивость к prompt injection — без этого
-  остальное не имеет смысла).
-- **Иерархия оценки outside-in**: сначала end-to-end (чёрный ящик: успех/провал, удовлетворённость)
-  → при проблеме открыть «стеклянный ящик» и анализировать траекторию: где сломалось — планирование
-  (зацикливание, потеря контекста), вызов инструмента (галлюцинированный инструмент, неверные
-  параметры) или интерпретация ответа инструмента (проигнорированная 404).
-- **LLM-as-judge делается правильно так**: pairwise comparison (A vs B по рубрике, принудительный
-  выбор победителя → win-rate), а не абсолютные оценки 1–5 (central tendency bias — всё «на троечку»).
-  Дальше — agent-as-judge: специализированный агент оценивает трассу рассуждений другого агента.
-- **Регрессия через траектории**: успешный прогон сохраняется как eval-case (вся последовательность
-  мыслей и вызовов инструментов), отклонение от неё в следующих прогонах = сигнал регрессии.
-- **Наблюдаемость**: структурные логи (JSON: chain-of-thought, входы/выходы инструментов), трейсы
-  (OpenTelemetry, spans связывают причинно-следственную нить), метрики двух видов — системные
-  (P50/P99 latency, error rate, стоимость на задачу — для ops) и качественные (trajectory adherence,
-  helpfulness — для DS/PM). Dynamic sampling: трейсить 100% ошибок и ~10% успешных запросов.
-- **Human-in-the-loop**: люди создают golden set и являются финальным арбитром качества; UI
-  ревьюера показывает диалог и внутреннюю трассу рассуждений рядом; для критических действий
-  (платёж, чувствительное письмо) — обязательное approve/reject человеком.
+- **Three pillars**: (1) trajectory is the truth — quality is determined by the agent's entire path, not
+  only the final answer: a correct answer reached by a "crooked" path (25 steps instead of 3, near-miss
+  blunders) is still a quality defect; (2) observability is the foundation (logs, traces, metrics);
+  (3) evaluation is a continuous cycle (quality flywheel), not a one-off QA gate before launch.
+- **Insidious failures**: an agent may return "200 OK" with an actually wrong/dishonest result.
+  Typical failure modes: algorithmic bias, hallucinations, concept drift (the world changed,
+  the agent did not), emergent undesirable behaviors (exploiting rule loopholes to reach the goal).
+- **Four quality dimensions**: effectiveness (whether the user's goal was achieved, not just
+  "ticket closed"), efficiency (latency, token cost, directness of the path), robustness
+  (behavior under API errors and unclear instructions: retry, clarification, not a crash or guessing),
+  safety & alignment (boundaries, refusal of dangerous actions, resilience to prompt injection — without this
+  the rest is meaningless).
+- **Outside-in evaluation hierarchy**: first end-to-end (black box: success/failure, satisfaction);
+  on a problem, open the "glass box" and analyze the trajectory: where it broke — planning
+  (looping, context loss), the tool call (a hallucinated tool, wrong
+  parameters), or interpretation of the tool's response (an ignored 404).
+- **LLM-as-judge done right**: pairwise comparison (A vs B on a rubric, forced
+  winner choice → win rate), not absolute 1–5 scores (central tendency bias — everything "average").
+  Beyond that — agent-as-judge: a specialized agent evaluates another agent's reasoning trace.
+- **Regression via trajectories**: a successful run is saved as an eval case (the whole sequence
+  of thoughts and tool calls); deviation from it in later runs = a regression signal.
+- **Observability**: structured logs (JSON: chain-of-thought, tool inputs/outputs), traces
+  (OpenTelemetry; spans link the cause-and-effect thread), metrics of two kinds — system
+  (P50/P99 latency, error rate, cost per task — for ops) and quality (trajectory adherence,
+  helpfulness — for DS/PM). Dynamic sampling: trace 100% of errors and ~10% of successful requests.
+- **Human-in-the-loop**: humans create the golden set and are the final arbiter of quality; the reviewer's UI
+  shows the dialogue and the internal reasoning trace side by side; for critical actions
+  (a payment, a sensitive email) — mandatory human approve/reject.
 
-### Day 5 — Продакшн: generator ≠ judge и model diversity
+### Day 5 — Production: generator ≠ judge and model diversity
 
-- **Generator ≠ judge**: проверяющий не должен быть тем же, кто генерирует. Паттерны: supervisor
-  (центральный агент следит за потоком, обрывает петли) и независимый critic-агент (внедряется и
-  верифицирует факты, вплоть до code execution). Это защита от «эхо-камер», где агенты взаимно
-  подтверждают неверное допущение.
-- **Model diversity**: критические проверяющие шаги выполняет другая (обычно более сильная) модель,
-  чем рабочие агенты (например, воркеры — Flash, supervisor — Pro). Иначе проверяющий «слепо
-  соглашается» с работниками из-за общих смещений одной модели.
-- **Команды агентов как организации**: planner → исполнители → reviewer (проверяет, что план
-  выполнен корректно) → optimizer (улучшает план на будущее). Иерархия, KPI по ролям, и обязательный
-  human-in-the-loop для критических решений — человек остаётся accountable.
-- **Безопасная деградация**: retry с exponential backoff; при недоступности специализированного
-  агента — rerouting на генералиста (частичное выполнение задачи лучше, чем отказ); для критических
-  действий — прозрачный UX («сейчас не могу забронировать, вот маршрут и инструкция») вместо
-  молчаливой подмены. Ошибки должны быть описательными, чтобы остальные агенты адаптировались.
-- **Стоимость и латентность под контролем**: prompt caching (повторяющиеся префиксы промптов),
-  model routing по сложности задачи, constraint sampling (генерировать только из допустимого
-  пространства выходов вместо свободного текста), раннее прерывание guardrails-коллбэками.
-- **Оценки — во времени, а не снапшот**: метрики качества мониторятся непрерывно, ловится drift
-  производительности на новых данных/сценариях.
+- **Generator ≠ judge**: the checker must not be the same as the generator. Patterns: supervisor
+  (a central agent watches the flow, breaks loops) and an independent critic agent (deep-dives and
+  verifies facts, up to code execution). This protects against "echo chambers" where agents mutually
+  confirm a wrong assumption.
+- **Model diversity**: critical checking steps are performed by a different (usually stronger) model
+  than the worker agents (e.g., workers — Flash, supervisor — Pro). Otherwise the checker "blindly
+  agrees" with the workers because of the shared biases of one model.
+- **Agent teams as organizations**: planner → executors → reviewer (checks that the plan
+  was executed correctly) → optimizer (improves the plan for the future). Hierarchy, per-role KPIs, and mandatory
+  human-in-the-loop for critical decisions — a human remains accountable.
+- **Graceful degradation**: retry with exponential backoff; when a specialized
+  agent is unavailable — rerouting to a generalist (partial task completion is better than refusal); for critical
+  actions — a transparent UX ("I can't book right now; here is the route and instructions") instead of
+  a silent substitution. Errors must be descriptive so the other agents can adapt.
+- **Cost and latency under control**: prompt caching (recurring prompt prefixes),
+  model routing by task complexity, constraint sampling (generating only from the allowed
+  output space instead of free text), early termination by guardrails callbacks.
+- **Evaluation over time, not a snapshot**: quality metrics are monitored continuously; performance
+  drift on new data/scenarios is caught.
 
-## Как применять в код-фабрике
+## How to apply in the code factory
 
-- **Analyzer / Planner** (сильная модель): это шаги «планирования и ответственных решений» по
-  классификации Day 1 — им оправдана primary-модель; их выход (план) — вход для дешёвых исполнителей.
-- **Coder / Documenter** (routine-шаги): кандидаты на secondary-модель по принципу model routing —
-  простые высокочастотные задачи не требуют топ-модели.
-- **Сабагенты = инструменты**: при проектировании промптов сабагентов применять контракты Day 2 —
-  чёткое имя роли, описание действия (не реализации), один высокоуровневый таск, **concise output**:
-  вернуть выжимку/подтверждение/путь к файлу, а не дамп содержимого.
-- **Tester / Code-reviewer — это judge**: по Day 5 они должны быть независимы от генератора кода
-  и, где возможно, опираться на другую модель (model diversity) — разделяет смещения coder'а и
-  проверяющего.
-- **Оценка прогонов фабрики**: по Day 4 смотреть не только на «тесты прошли», а на траекторию
-  прогона (сколько ретраев, где маршрутизация ошибок, отклонение от эталонного плана); эталонные
-  успешные прогоны — регрессионная база.
-- **HITL**: критические действия фабрики (коммит, откат, изменение публичного API) — через
-  подтверждение пользователя; бизнес-критерии задаёт человек.
+- **Analyzer / Planner** (strong model): these are the "planning and high-stakes decisions" steps in the
+  Day 1 classification — a primary model is justified for them; their output (the plan) is the input for the cheap executors.
+- **Coder / Documenter** (routine steps): candidates for the secondary model per the model routing principle —
+  simple, high-frequency tasks do not need the top model.
+- **Subagents = tools**: when designing subagent prompts, apply the Day 2 contracts —
+  a clear role name, an action description (not implementation), one high-level task, **concise output**:
+  return a digest/confirmation/file path, not a content dump.
+- **Tester / Code-reviewer are the judge**: per Day 5 they must be independent of the code generator
+  and, where possible, rely on a different model (model diversity) — this separates the biases of the coder and
+  the checker.
+- **Evaluating factory runs**: per Day 4, look not only at "tests passed" but at the run's
+  trajectory (how many retries, where error routing fired, deviation from the reference plan); reference
+  successful runs are the regression base.
+- **HITL**: the factory's critical actions (commit, rollback, public API change) go through
+  user confirmation; business criteria are set by a human.
 
-## Бизнес-критерии
+## Business criteria
 
-Проверяемые правила, выводимые из курса (для tester/reviewer):
+Verifiable rules derived from the course (for tester/reviewer):
 
-1. Выход сабагента/инструмента компактен: выжимка, подтверждение или ссылка на артефакт — не сырые
-   данные целиком (контракт concise output, Day 2).
-2. Ошибки описательны и инструктивны: сообщение объясняет причину и путь восстановления; молчаливых
-   сбоев нет (Day 2, Day 5).
-3. Генератор и проверяющий разделены: код проверяет не тот агент (и желательно не та модель), что
-   его написал (generator ≠ judge, model diversity, Day 5).
-4. Качество оценивается по траектории, а не только по финальному результату: фиксируются лишние
-   шаги, петли, проигнорированные ошибки инструментов (Day 4).
-5. Критические действия требуют подтверждения человека (HITL, Day 4–5).
-6. Сложные задачи маршрутизируются на сильную модель, простые массовые — на дешёвую; монолитный
-   агент с десятками инструментов декомпозируется (Day 1, Day 5).
-7. Каждый зафиксированный сбой превращается в перманентный тест-кейс; метрики качества отслеживаются
-   во времени, а не однократно (Day 1, Day 4).
+1. Subagent/tool output is compact: a digest, a confirmation, or a link to an artifact — not the raw
+   data in full (concise output contract, Day 2).
+2. Errors are descriptive and instructive: the message explains the cause and the recovery path; there are no silent
+   failures (Day 2, Day 5).
+3. Generator and checker are separated: code is checked by a different agent (and preferably a different model)
+   than the one that wrote it (generator ≠ judge, model diversity, Day 5).
+4. Quality is evaluated by trajectory, not only by the final result: redundant
+   steps, loops, and ignored tool errors are recorded (Day 4).
+5. Critical actions require human confirmation (HITL, Day 4–5).
+6. Complex tasks are routed to the strong model; simple mass tasks — to the cheap one; a monolithic
+   agent with dozens of tools is decomposed (Day 1, Day 5).
+7. Every recorded failure is turned into a permanent test case; quality metrics are tracked
+   over time, not once (Day 1, Day 4).
 
-## Ограничения и антипаттерны
+## Limitations and anti-patterns
 
-- Не выбирать модель «по бенчмарку» и не использовать топ-модель на все шаги подряд — это трата
-  бюджета без выигрыша качества (Day 1).
-- Не проверять агентов как классический софт (`assert output == expected`): выход недетерминирован;
-  нужны рубрики, pairwise-сравнения, golden dataset (Day 1, Day 4).
-- Не принимать «200 OK» за успех: сбои агентов коварны (галлюцинации, drift, лазейки) и требуют
-  наблюдаемости (Day 4).
-- Не возвращать сырые массивы данных в контекст вызывающей модели — раздувание окна деградирует
-  рассуждение и раздувает стоимость (Day 2).
-- Не давать агенту 50+ инструментов: декомпозиция на специалистов или tool retrieval (Day 1–2).
-- Не строить «меш агентов, которые работали в демо» без оценки: стохастичность требует
-  принципиального дизайна, иначе ответственность за корректность перекладывается на пользователя
+- Do not pick a model "by benchmark" and do not use the top model for every step — that wastes
+  budget with no quality gain (Day 1).
+- Do not test agents like classic software (`assert output == expected`): the output is non-deterministic;
+  rubrics, pairwise comparisons, and a golden dataset are needed (Day 1, Day 4).
+- Do not take "200 OK" as success: agent failures are insidious (hallucinations, drift, loopholes) and require
+  observability (Day 4).
+- Do not return raw arrays of data into the calling model's context — window bloat degrades
+  reasoning and inflates cost (Day 2).
+- Do not give an agent 50+ tools: decompose into specialists or use tool retrieval (Day 1–2).
+- Do not build a "mesh of agents that worked in a demo" without evaluation: stochasticity demands
+  principled design; otherwise the responsibility for correctness is shifted onto the user
   (Day 5).
-- Не полагаться на одну модель и на генерацию = проверке: эхо-камеры и общие смещения (Day 5).
-- Не убирать человека из критических решений: автономность не отменяет accountability (Day 4–5).
+- Do not rely on one model or on generation = checking: echo chambers and shared biases (Day 5).
+- Do not remove the human from critical decisions: autonomy does not cancel accountability (Day 4–5).

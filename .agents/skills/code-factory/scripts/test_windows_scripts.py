@@ -27,7 +27,7 @@ Verified here:
      hold on a clone with `core.autocrlf=false` too (never an LF-only checked-out launcher), and
      pins `*.sh` to LF — the bash deployer is an LF file and the deployer writes `start.sh` as LF,
   8. end-to-end (Windows only, otherwise SKIPPED): `cmd.exe /c prepare_factory.cmd <fresh tmp>`
-     into two fresh target paths — one with a space, one with Cyrillic characters — a real
+     into two fresh target paths — one with a space, one with non-ASCII characters — a real
      deployment each, then a second run to prove idempotency (existing project memory is never
      overwritten) and that the project name Python reported back is not mangled,
   9. the deployers' FAILURE paths stay business-like: the `.ps1` `Copy-Item` fallback turns a copy
@@ -82,7 +82,7 @@ PS1_FALLBACK_TOKENS = ("Get-ChildItem -LiteralPath $Source -Force",
                        "-Recurse -Force -ErrorAction Stop",
                        "$script:HardError = $true",
                        'Err "')
-SH_MEM_FAIL_MARKER = "Память проекта: не удалось создать"
+SH_MEM_FAIL_MARKER = "Project memory: failed to create"
 # The reason shown for a failed init must be the LAST NON-EMPTY line of the output: the whole
 # blob (an interpreter traceback) drowns the actual message, the exception line does not.
 SH_REASON_TOKENS = ("$MEM_INIT_OUT", "awk", "NF", "END", "print last")
@@ -101,7 +101,7 @@ MEMORY_RELS = ("memory/change-log.md", "memory/summary.md")
 GITIGNORE_PATTERNS = (".agents/", ".code-factory/", "__pycache__/", "*.pyc",
                       ".env", ".env.*", "*.env", "*.pem", "*.key")
 
-CMD_USAGE = "Использование: prepare_factory.cmd <путь-к-проекту>"
+CMD_USAGE = "Usage: prepare_factory.cmd <path-to-project>"
 PS_INVOCATION = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0prepare_factory.ps1" %*'
 
 CMD_TOKENS = ("chcp 65001", "-NoProfile", "-ExecutionPolicy Bypass", "-File",
@@ -424,8 +424,8 @@ def ps1_copy_fallback_is_guarded() -> None:
     """The non-robocopy fallback must turn a copy failure into a business message + exit 1.
 
     `Copy-Item` fails NON-terminating: outside a try/catch it prints raw engine records
-    (CategoryInfo, FullyQualifiedErrorId) and the deployer would still end with the «Готово» banner
-    and exit 0 for a half-copied `.agents/` tree - the contract there is exit 1 and no banner.
+    (CategoryInfo, FullyQualifiedErrorId) and the deployer would still end with the "Done"
+    banner and exit 0 for a half-copied `.agents/` tree - the contract there is exit 1 and no banner.
     """
     body = ps_function_body(check_text_file(PS1, bom=True), PS1_COPY_FUNCTION)
     # Comments are dropped first: a comment that only *mentions* a token must not satisfy the pin.
@@ -574,12 +574,12 @@ def collect_deployment_facts(cmd_exe: str, target: pathlib.Path) -> dict:
 
 
 # Every target path is deployed for real. The space proves the argument forwarding quotes the
-# target; the Cyrillic name proves the child Python processes run in UTF-8 - in the local code
+# target; the non-ASCII name proves the child Python processes run in UTF-8 - in the local code
 # page (cp1251) the project name they print back is garbled, or the print fails outright for a
 # character outside cp1251.
 DEPLOY_CASES = (
     ("space in the path", "cf windows deploy "),
-    ("Cyrillic in the path", "cf развёртывание "),
+    ("non-ASCII in the path", "cf déploiement 部署 "),
 )
 
 
@@ -670,15 +670,15 @@ def deploy_case(checker: "Checker", cmd_exe: str, case: str, prefix: str) -> Non
         failure markers are all pinned here.
         """
         output = fact("run1_output")
-        expect("не удалось создать" not in output,
+        expect("failed to create" not in output,
                "the memory step reported a failure although Python is available (a child Python "
                "that cannot encode the project name looks exactly like this); output tail:\n"
                f"{tail(output)}")
-        expect("ОТСУТСТВУЕТ" not in output,
+        expect("MISSING" not in output,
                f"the deployment reported a missing artifact; output tail:\n{tail(output)}")
-        match = re.search(r"•\s*memory/:\s+создана ✓ \(проект (.+)\)", output)
+        match = re.search(r"•\s*memory/:\s+created ✓ \(project (.+)\)", output)
         expect(match is not None,
-               "the readiness report must show the memory as 'создана ✓ (проект <имя>)'; "
+               "the readiness report must show the memory as 'created ✓ (project <name>)'; "
                f"output tail:\n{tail(output)}")
         expect(match.group(1) == temp_root.name,
                f"the project name Python reported back must be {temp_root.name!r}, got "
@@ -755,10 +755,10 @@ class Checker:
 
 
 def use_utf8_output() -> None:
-    """Force UTF-8 on stdout/stderr so Russian text survives being piped or redirected.
+    """Force UTF-8 on stdout/stderr so non-ASCII text survives being piped or redirected.
 
     A Windows console defaults to a legacy code page (cp866/cp1251), which would replace the
-    deployer's Cyrillic messages in failure reports with question marks - the .ps1 itself does
+    deployer's non-ASCII messages in failure reports with question marks - the .ps1 itself does
     the same thing for the same reason.
     """
     for stream in (sys.stdout, sys.stderr):

@@ -17,7 +17,7 @@ NOTE: global options (`--repo`, `--version-file`, `--date`) must come BEFORE the
 e.g. `version_manager.py --repo . validate` (not `validate --repo .`).
 
 `sync` updates:
-  - README.md                title `# Autonomous Code Factory vX.Y.Z` + footer `Текущая версия: **X.Y.Z**`
+  - README.md                title `# Autonomous Code Factory vX.Y.Z` + footer `Current version: **X.Y.Z**`
   - CHANGELOG.md             prepends `## [X.Y.Z] — <date>` when the top section is older
   - AGENTS.md / SKILL.md / .agents/README.md   marker `<!-- code-factory-version: X.Y.Z -->`
 
@@ -42,7 +42,7 @@ import sys
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 MARKER_RE = re.compile(r"<!--\s*code-factory-version:\s*(\d+\.\d+\.\d+)\s*-->")
 README_TITLE_RE = re.compile(r"^(#\s+.*?\s+v)\d+\.\d+\.\d+(\s*)$")
-README_FOOTER_RE = re.compile(r"(Текущая версия:\s*\*\*)\d+\.\d+\.\d+(\*\*)")
+README_FOOTER_RE = re.compile(r"(Current version:\s*\*\*)\d+\.\d+\.\d+(\*\*)")
 CHANGELOG_SECTION_RE = re.compile(r"^##\s+\[(\d+\.\d+\.\d+)\]")
 
 SYNC_FILES = ["README.md", "AGENTS.md", ".agents/skills/code-factory/SKILL.md", ".agents/README.md"]
@@ -161,7 +161,7 @@ def validate(repo: pathlib.Path, v: str) -> tuple[bool, list[str]]:
     if readme.is_file():
         text = readme.read_text(encoding="utf-8")
         title_ok = bool(re.search(rf"#\s+.*?\s+v{v}\s*$", text, flags=re.M))
-        footer_ok = f"Текущая версия: **{v}**" in text
+        footer_ok = f"Current version: **{v}**" in text
         if not title_ok:
             problems.append("README.md: title does not match VERSION")
         if not footer_ok:
@@ -201,7 +201,7 @@ def use_utf8_output() -> None:
     """Force UTF-8 on stdout/stderr so the help survives being piped or redirected.
 
     A Windows console defaults to a legacy code page (cp866/cp1251) and the help text carries
-    Cyrillic (the README footer `Текущая версия`) and the em dash `—`, which that codec cannot
+    non-ASCII characters (the em dash `—`), which that codec cannot
     encode: `print_help()` would raise UnicodeEncodeError and the user would get a traceback
     instead of the help. `errors="replace"` keeps a stream that cannot be reconfigured from ever
     raising.

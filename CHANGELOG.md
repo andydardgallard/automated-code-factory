@@ -5,6 +5,46 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.12.0] — 2026-09-24
+
+### Changed
+- **The entire factory is now English-only** — full RU→EN translation of everything the factory
+  produces: user-facing strings, error messages and argparse help of all `scripts/*.py`, the
+  deployers (`prepare_factory.sh`/`.ps1`/`.cmd`, `start.cmd`), code comments and docstrings,
+  `README.md`, `AGENTS.md`, `.agents/README.md`, the whole skill (`SKILL.md` incl. the mermaid
+  flow labels, all `references/*.md`, `assets/`), all agents (`code-factory.md` + sub-agents),
+  `.example.task.yaml` and `skill-base/`. Behavior, logic, CLI contracts and exit codes are
+  unchanged (freeze-functionality refactor): 26/26 pre-existing self-tests PASS with only
+  synchronous token translation, mermaid edge contract intact (85 edge lines), encoding contracts
+  preserved (BOM/CRLF/LF per `.gitattributes`). History is NOT rewritten: CHANGELOG and old
+  memory/ entries stay in Russian.
+
+### Added
+- **24th rulebook rule `english-only`** — every artifact the factory produces is written in
+  English only (code and comments of target projects, docs, docstrings, commit messages, reports,
+  memory entries, plans, subagent briefings); the factory accepts a task file in any language;
+  exceptions: live communication with the user (user's business language) and history (never
+  rewritten). Carriers (8): `AGENTS.md`, `.agents/README.md`, `code-factory.md`, `SKILL.md`,
+  `references/planning-guide.md`, sub-agents `coder.md`/`tester.md`/`documenter.md`
+  (`check_factory_rules.py` — 24 rules, 94 carrier blocks, exit 0).
+- **`check_english_only.py`** — deterministic guarantee carrier: scans `git ls-files` for
+  Cyrillic outside the exceptions (CHANGELOG.md, memory/, task*.yaml, .code-factory/, .git/),
+  exit 0 only when clean; self-test `test_check_english_only.py`.
+- **`check_translation_structure.py`** — deterministic translation-quality gate: compares the
+  structural skeleton of every changed file against a git base (markdown headings/list
+  items/fences/rule markers/mermaid arrows; Python defs/classes/argparse/raise/print; non-empty
+  and comment lines for scripts/configs), `--allow-added-rule <id>` neutralizes a deliberately
+  added rule on both sides, `--exclude` declares files that are supposed to grow (history);
+  self-test `test_check_translation_structure.py`.
+- **Sharded semantic audit as a run gate** — six parallel LLM auditors compared every translated
+  file against `git show HEAD:<file>` item by item (meaning preserved, glossary terms enforced,
+  verbatim quotes re-checked); deterministic merged verdict via `merge_findings.py`: approve
+  (0 critical / 0 major).
+- **Translation glossary** — the canonical RU→EN terminology map (run, entry, journal, summary,
+  carriers, canonical wording, deployment root, retry budget, evidence ledger, ...) is now
+  mandatory in every translator/QA briefing.
+
+
 ## [12.11.0] — 2026-09-24
 
 ### Added

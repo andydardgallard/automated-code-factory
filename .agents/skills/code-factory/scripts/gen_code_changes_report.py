@@ -99,7 +99,7 @@ def build_report(files: list[dict], commit: str, branch: str, run_id: str = "") 
         "**Branch:** `%s`  ·  **Files:** %d  ·  Generated from `git show %s --unified=0`"
         % (branch, len(files), commit),
         "",
-        "Показаны только изменённые строки (без контекста): было → стало.",
+        "Only the changed lines are shown (no context): was → became.",
         "",
         "---",
         "",
@@ -110,16 +110,16 @@ def build_report(files: list[dict], commit: str, branch: str, run_id: str = "") 
         lines = f["lines"]
 
         if status == "new":
-            out += ["", "**Новый файл** (%d строк добавлено)" % len(lines), "", "```"]
+            out += ["", "**New file** (%d lines added)" % len(lines), "", "```"]
             shown = lines[:MAX_BLOCK]
             out += [l for _, l in shown]
             if len(lines) > MAX_BLOCK:
-                out.append("... (+%d строк, полный код в git)" % (len(lines) - MAX_BLOCK))
+                out.append("... (+%d lines, full code in git)" % (len(lines) - MAX_BLOCK))
             out += ["```", "", "---", ""]
             continue
 
         if status == "deleted":
-            out += ["", "**Файл удалён** (%d строк)" % len(lines), "", "---", ""]
+            out += ["", "**File deleted** (%d lines)" % len(lines), "", "---", ""]
             continue
 
         # group consecutive '-' '+' into pairs
@@ -143,26 +143,26 @@ def build_report(files: list[dict], commit: str, branch: str, run_id: str = "") 
         pairs = [(o, nw) for o, nw in pairs if o != nw]
 
         if pairs:
-            out += ["", "### Изменённые строки (было → стало)", "",
-                    "| Было | Стало |", "|------|-------|"]
+            out += ["", "### Changed lines (was → became)", "",
+                    "| Was | Became |", "|------|-------|"]
             for old, new in pairs:
                 out.append("| `%s` | `%s` |" % (old.strip(), new.strip()))
             out.append("")
 
         if removes:
-            out += ["", "### Удалено", "", "```"]
+            out += ["", "### Removed", "", "```"]
             shown = removes[:MAX_BLOCK]
             out += shown
             if len(removes) > MAX_BLOCK:
-                out.append("... (-%d строк)" % (len(removes) - MAX_BLOCK))
+                out.append("... (-%d lines)" % (len(removes) - MAX_BLOCK))
             out += ["```", ""]
 
         if adds:
-            out += ["", "### Добавлено", "", "```"]
+            out += ["", "### Added", "", "```"]
             shown = adds[:MAX_BLOCK]
             out += shown
             if len(adds) > MAX_BLOCK:
-                out.append("... (+%d строк, полный код в git)" % (len(adds) - MAX_BLOCK))
+                out.append("... (+%d lines, full code in git)" % (len(adds) - MAX_BLOCK))
             out += ["```", ""]
 
         out += ["---", ""]
@@ -170,10 +170,10 @@ def build_report(files: list[dict], commit: str, branch: str, run_id: str = "") 
 
 
 def use_utf8_output() -> None:
-    """Force UTF-8 on stdout/stderr so the Russian help survives being piped or redirected.
+    """Force UTF-8 on stdout/stderr so the non-ASCII help survives being piped or redirected.
 
     A Windows console defaults to a legacy code page (cp866/cp1251) and argparse's `--help` text
-    carries non-ASCII characters (the Cyrillic words and `→`), which that codec cannot encode:
+    carries non-ASCII characters (the `→` arrows), which that codec cannot encode:
     `print_help()` would raise UnicodeEncodeError and the user would get a traceback instead of
     the help. `errors="replace"` keeps a stream that cannot be reconfigured from ever raising.
     """

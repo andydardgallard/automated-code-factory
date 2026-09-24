@@ -273,9 +273,9 @@ python3 .agents/skills/code-factory/scripts/gen_code_changes_report.py \
   --repo <project-root> --commit <sha>
 ```
 
-The report shows for each file: changed lines as a "Было | Стало" table, and pure additions and
+The report shows for each file: changed lines as a "Was | Became" table, and pure additions and
 removals as code blocks. Every block — including a new file's content — is truncated at 30 lines
-(`MAX_BLOCK`) with a `... (+N строк, полный код в git)` pointer to git. Run it after the
+(`MAX_BLOCK`) with a `... (+N lines, full code in git)` pointer to git. Run it after the
 factory's commit so the reported commit sha exists in the repo.
 
 

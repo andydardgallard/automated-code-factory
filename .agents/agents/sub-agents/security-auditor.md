@@ -77,7 +77,7 @@ findings:
     quote: |
       <verbatim fragment of src/auth.py proving the issue (checked by verify_quotes.py)>
 fix_tasks: |
-  title: "Исправить найденные уязвимости безопасности"
+  title: "Fix the found security vulnerabilities"
   task_type: implement
   description: |
     <grouped findings as business-language acceptance criteria>

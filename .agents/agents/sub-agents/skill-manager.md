@@ -41,8 +41,8 @@ Read `.agents/skills/code-factory/references/reference-docs.md` first and follow
    (when the source contains acceptance/business rules — this is what makes a skill readable by
    the tester), `## Constraints`. Only implement what the source actually contains.
 4. For each `reference_skills` name, verify it exists in the base. If it does NOT, do not
-   fabricate anything — report an error: "навык '<name>' не найден в базе; укажите путь к
-   документу в reference_docs".
+   fabricate anything — report an error: "missing: skill '<name>' not found in the base;
+   specify the path to the document in reference_docs".
 5. Update `skill-base/manifest.json` through the script
    (`python3 .agents/skills/code-factory/scripts/skill_base.py record ...`) — never hand-edit the
    manifest.

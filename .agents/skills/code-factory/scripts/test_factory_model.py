@@ -74,12 +74,12 @@ results: integration=PASS; regression=PASS; business=PASS; review=approve
 decisions: regenerate AGENTS.md
 assumptions: (none)
 models_used: analyzer=primary; coder=secondary
-unfinished: нет незавершённых элементов
+unfinished: no unfinished items
 factory_version: 12.5.0
 """
 
 # Same entry but WITHOUT the newer keys -> a legacy entry that must pass with warnings.
-LEGACY_ENTRY = VALID_ENTRY.replace("unfinished: нет незавершённых элементов\n", "").replace(
+LEGACY_ENTRY = VALID_ENTRY.replace("unfinished: no unfinished items\n", "").replace(
     "factory_version: 12.5.0\n", "")
 
 # Legacy entry without the project ownership marker either -> warning about 'project'.
@@ -105,8 +105,8 @@ decisions: reviewer findings accepted as-is
 assumptions: (none)
 models_used: analyzer=primary
 unfinished:
-  - item: замечания ревьюера приняты как есть
-    reason: бюджет ревьюера исчерпан
+  - item: reviewer findings accepted as-is
+    reason: reviewer budget exhausted
     severity: warning
     follow_up: false
 factory_version: 12.5.0
@@ -129,7 +129,7 @@ decisions: (none)
 assumptions: (none)
 models_used: analyzer=primary
 unfinished:
-  - item: замечание без причины
+  - item: finding without a reason
     follow_up: true
 factory_version: 12.5.0
 """
@@ -152,7 +152,7 @@ results: integration=PASS [verified: .code-factory/logs/code-results.md]; regres
 decisions: keep the two-level fingerprint [verified: scripts/test_factory_model.py]; P2 postponed [inferred]
 assumptions: (none)
 models_used: analyzer=primary
-unfinished: нет незавершённых элементов
+unfinished: no unfinished items
 factory_version: 12.9.0
 """
 
@@ -185,7 +185,7 @@ branch: feature/example
 files_touched:
   - src/main.py
   - memory/change-log.md
-pending_decision: нет
+pending_decision: none
 resume_hint: continue with wave 2
 updated_at: 2026-09-22T23:05:00+03:00
 retry_counters:
@@ -208,9 +208,9 @@ HAND_AUTHORED_AGENTS = """\
 <!-- code-factory-version: 12.9.1 -->
 # Project: Autonomous Code Factory
 
-## Структура
+## Structure
 
-- `task.yaml` — пример бизнес-задачи
+- `task.yaml` — an example business task
 """
 
 

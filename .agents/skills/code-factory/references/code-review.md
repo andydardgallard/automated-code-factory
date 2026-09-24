@@ -11,7 +11,7 @@ file, in an agent instruction or in a run document phrases it differently, this 
 wording is byte-identical everywhere it is quoted.
 
 <!-- factory-rule: review-gate-policy begin -->
-**Review-гейт (каноническая формулировка):** задача НЕ принимается, пока у ревьюера открыты замечания severity=critical (вердикт `request_changes` с open critical findings). Бюджет ревьюера = 2 итерации. Если бюджет исчерпан, а critical findings остались: в режиме hitl фабрика ОСТАНАВЛИВАЕТСЯ и спрашивает пользователя; в режиме auto допускается только conditional pass — соответствующий критерий помечается `unverified_review` в `.code-factory/state/acceptance.md`, а нерешённые findings попадают в `.code-factory/report.md` (раздел unresolved findings), никогда молча. Полный SUCCESS при открытых critical findings невозможен.
+**Review gate (canonical wording):** a task is NOT accepted while the reviewer has open severity=critical findings (verdict `request_changes` with open critical findings). The reviewer budget = 2 iterations. If the budget is exhausted and critical findings remain: in hitl mode the factory STOPS and asks the user; in auto mode only a conditional pass is allowed — the corresponding criterion is marked `unverified_review` in `.code-factory/state/acceptance.md`, and the unresolved findings go into `.code-factory/report.md` (unresolved findings section), never silently. A full SUCCESS with open critical findings is impossible.
 <!-- factory-rule: review-gate-policy end -->
 
 The reviewer does NOT fix code and does NOT run the full test suite. Its job is a fresh,
@@ -39,7 +39,7 @@ whole-repo review runs sharded, and **no subagent ever receives the whole-repo c
 repos and the ordinary diff-scope `implement` task keep the single-reviewer flow: the protocol
 bounds context, it is not extra ceremony.
 <!-- factory-rule: shard-protocol begin -->
-**Шард-протокол (каноническая формулировка):** whole-repo ревью и security_audit никогда не помещаются в один контекст: `scripts/repo_inventory.py shards --max-lines 20000` режет репозиторий на шарды ≤20000 строк, каждый шард обрабатывает свой параллельный сабагент (ревьюер или аудитор) и пишет один findings-файл. Итог даёт детерминированный `scripts/merge_findings.py` (дедупликация, сортировка по severity, merged verdict), и канонический review-гейт применяется к MERGED findings, а не к отдельным шардам. Обычная задача `implement` ревьюится по diff и шардирования не требует.
+**Shard protocol (canonical wording):** whole-repo review and security_audit never fit into one context: `scripts/repo_inventory.py shards --max-lines 20000` cuts the repository into shards of ≤20000 lines, each shard is processed by its own parallel subagent (reviewer or auditor) and writes one findings file. The result is produced by the deterministic `scripts/merge_findings.py` (deduplication, sorting by severity, merged verdict), and the canonical review gate is applied to the MERGED findings, not to individual shards. A regular `implement` task is reviewed by diff and needs no sharding.
 <!-- factory-rule: shard-protocol end -->
 
 1. **Inventory (deterministic, zero LLM).** `repo_inventory.py` walks the tree (VCS/build/vendor
@@ -136,7 +136,7 @@ For every file in scope, assess:
     (file:line + exact fragment). An unquoted finding is UNTRUSTED and must not influence the
     verdict — see §2.1.
 <!-- factory-rule: vaccination begin -->
-**Вакцинация (каноническая формулировка):** баг, найденный ПОСЛЕ приёмки задачи, сначала получает регрессионный тест, который его воспроизводит (тест падает на текущем коде), и только потом исправление. Фикс без воспроизводящего теста не принимается, а сам тест остаётся в наборе как вакцина против повторения. Код-ревьюер проверяет наличие такого теста у каждого пост-приёмочного фикса и считает его отсутствие замечанием severity ≥ major.
+**Vaccination (canonical wording):** a bug found AFTER the task's acceptance first gets a regression test that reproduces it (the test fails on the current code), and only then the fix. A fix without a reproducing test is not accepted, and the test itself stays in the suite as a vaccine against recurrence. The code reviewer checks that every post-acceptance fix has such a test and counts its absence as a finding of severity ≥ major.
 <!-- factory-rule: vaccination end -->
 
 ## 2.1 Evidence: verbatim quotes (P0.6)

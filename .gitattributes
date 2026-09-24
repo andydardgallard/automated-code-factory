@@ -1,9 +1,9 @@
-# Машиночитаемый слепок error-routing таблиц: тест test_error_router.py требует LF
-# (детерминированный JSON, CRLF от core.autocrlf ломает побайтовую проверку).
+# Machine-readable snapshot of the error-routing tables: test_error_router.py requires LF
+# (deterministic JSON; CRLF from core.autocrlf breaks the byte-level check).
 .agents/skills/code-factory/references/error-patterns.default.json text eol=lf
-# Windows-лаунчеры (.cmd/.ps1) должны быть CRLF при checkout независимо от core.autocrlf.
+# Windows launchers (.cmd/.ps1) must be CRLF at checkout regardless of core.autocrlf.
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
-# bash-скрипты (*.sh) — наоборот, LF при checkout на любой машине: bash-скрипт с CRLF ломается,
-# а сам деплойер пишет start.sh именно с LF (побайтовая проверка в test_windows_scripts.py).
+# bash scripts (*.sh) — the opposite: LF at checkout on any machine, a bash script with CRLF breaks,
+# and the deployer itself writes start.sh with LF (byte-level check in test_windows_scripts.py).
 *.sh text eol=lf

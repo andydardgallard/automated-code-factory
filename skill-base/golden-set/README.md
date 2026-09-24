@@ -1,23 +1,23 @@
-# Golden set — калибровка код-ревьюера
+# Golden set — code reviewer calibration
 
-Эталонные diff'ы с ожидаемым вердиктом: ревьюер прогоняется по каждому кейсу, его вердикт и
-severity findings сверяются с эталоном (`calibrate_reviewer.py score`), и метрики показывают,
-где ревьюер пере- или недо-ревьюит. Кейсы синтетические и самодостаточные — они не связаны с
-кодом фабрики (репозиторий можно менять, не переписывая эталон).
+Reference diffs with an expected verdict: the reviewer is run against each case, its verdict and
+finding severities are compared with the reference (`calibrate_reviewer.py score`), and the metrics show
+where the reviewer over- or under-reviews. The cases are synthetic and self-contained — they are not tied to the
+factory code (the repository can change without rewriting the reference).
 
-Формат кейса — `cases/<id>/`:
-- `diff.patch` — небольшой unified diff (10–40 строк), ровно то, что видит ревьюер;
-- `expected.yaml` — плоский YAML (`key: value`, список в `[a, b]`, `#` — комментарий):
-  `verdict: approve|request_changes` и `severities: [critical, major, minor, nit]` — severity,
-  которые ревьюер ОБЯЗАН найти; `[]` = идеальный ревьюер не сообщает ничего, а любая лишняя
-  severity в его выводе считается false positive и снижает precision (пере-ревью).
-  `nit`/`minor` не влияют на вердикт: `approve` ожидается при `[]` даже если в diff'е есть nit.
+Case format — `cases/<id>/`:
+- `diff.patch` — a small unified diff (10–40 lines), exactly what the reviewer sees;
+- `expected.yaml` — flat YAML (`key: value`, list as `[a, b]`, `#` — comment):
+  `verdict: approve|request_changes` and `severities: [critical, major, minor, nit]` — the severities
+  the reviewer MUST find; `[]` = a perfect reviewer reports nothing, and any extra
+  severity in its output counts as a false positive and lowers precision (over-reviewing).
+  `nit`/`minor` do not affect the verdict: `approve` is expected with `[]` even if the diff contains a nit.
 
-Результат прогона ревьюера — `<results>/<id>.json` — его штатный вердикт по кейсу
+The result of a reviewer run — `<results>/<id>.json` — is its standard per-case verdict
 (`references/code-review.md` §6: `{"verdict": ..., "findings": [{"file", "line", "severity",
-"issue", "quote", "fix"}, ...]}`; форма findings шарда из §1.1 с `title`/`detail` считается так же).
-Подсчёт читает только `verdict` и `severity` каждого finding, поэтому остальные поля в обеих формах
-произвольны. Кейс без результата или нечитаемый/некорректный файл — exit 2 с указанием проблемы.
+"issue", "quote", "fix"}, ...]}`; the shard findings form from §1.1 with `title`/`detail` counts the same way).
+Scoring reads only the `verdict` and the `severity` of each finding, so the remaining fields in both forms
+are arbitrary. A case without a result, or an unreadable/invalid file, is exit 2 with the problem stated.
 
 ```bash
 python .agents/skills/code-factory/scripts/calibrate_reviewer.py score \

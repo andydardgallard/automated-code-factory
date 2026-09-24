@@ -1,127 +1,129 @@
-# Брифинг сабагента (handoff-шаблон)
+# Subagent Briefing (handoff template)
 
-Единый шаблон брифинга, который главный агент использует при запуске ЛЮБОГО сабагента:
+The single briefing template the main agent uses when launching ANY subagent:
 `factory-analyzer`, `factory-coder`, `factory-tester`, `factory-diagnostician`,
-`factory-code-reviewer`, `factory-advisor`. Брифинг — это единственный вход сабагента: он не
-видит историю диалога главного агента и не должен её запрашивать. Всё, что не попало в брифинг,
-для сабагента не существует.
+`factory-code-reviewer`, `factory-advisor`. The briefing is the subagent's only input: it does not
+see the main agent's dialog history and must not request it. Whatever did not make it into the
+briefing does not exist for the subagent.
 
-Источники: `paseo` (handoff: фиксированный шаблон + файлы путями вместо вставок) и Kaggle 5-Day
-AI Agents Intensive, Day 2 (контракт concise output: сабагент возвращает выжимку и ссылку на
-артефакт, а не сырые данные).
+Sources: `paseo` (handoff: a fixed template + files by path instead of pastes) and Kaggle 5-Day
+AI Agents Intensive, Day 2 (the concise-output contract: the subagent returns a digest and a link
+to the artifact, not raw data).
 
-## 1. Правило «файлы — путями, никогда вставками»
+## 1. The "files — by path, never by paste" rule
 
-Передавать содержимое файлов в промпт сабагента ЗАПРЕЩЕНО — только путь и одна строка
-«почему файл важен». Причины:
+Pasting file contents into the subagent's prompt is FORBIDDEN — only the path and one line
+"why the file matters". Reasons:
 
-- **Изоляция контекста**: сабагент запускается ради чистого окна; вставка чужого содержимого
-  засоряет его и деградирует рассуждение ровно там, где нужна свежая голова.
-- **Двойная оплата**: файл читает главный агент (платит токенами за него) и сабагент всё равно
-  перечитывает его своим инструментом — вставка оплачивается дважды и не экономит ничего.
-- **Устаревание и обрезка**: вставленный фрагмент может быть обрезан или уже устареть; сабагент
-  примет его за истину. Путь заставляет прочитать актуальную версию.
-- **Молчаливая потеря события**: то, что не влезло в вставку, для сабагента не произошло.
+- **Context isolation**: a subagent is launched for a clean window; pasting foreign content
+  clutters it and degrades reasoning exactly where a fresh head is needed.
+- **Double payment**: the main agent reads the file (paying tokens for it) and the subagent
+  re-reads it with its own tool anyway — a paste is paid for twice and saves nothing.
+- **Staleness and truncation**: a pasted fragment may be truncated or already stale; the subagent
+  will take it for truth. A path forces reading the current version.
+- **Silent loss of an event**: whatever did not fit into the paste never happened for the subagent.
 
-Что вместо вставки:
-- путь + назначение файла («здесь лестница эскалации»), и при необходимости строка/секция;
-- для больших логов — `python .agents/skills/code-factory/scripts/log_tail.py <file> --lines N
-  --grep PATTERN`: в брифинг идут счётчики, число совпадений и хвост, а не весь лог;
-- для поиска/подсчёта по файлам — не список файлов в промпте, а сабагенту разрешается самому
-  написать stdlib-скрипт (см. `Think in Code` в `references/verification-strategy.md`).
+What instead of a paste:
+- the path + the file's purpose ("the escalation ladder lives here"), plus a line/section when needed;
+- for large logs — `python .agents/skills/code-factory/scripts/log_tail.py <file> --lines N
+  --grep PATTERN`: the briefing gets the counters, the match count and the tail, not the whole log;
+- for searching/counting across files — not a list of files in the prompt: the subagent is allowed
+  to write its own stdlib script (see `Think in Code` in `references/verification-strategy.md`).
 
-## 2. Шаблон брифинга (обязательный для всех ролей)
+## 2. The briefing template (mandatory for all roles)
 
-Все восемь разделов присутствуют всегда. Раздел без содержания помечается «нет» — молчаливый
-пропуск запрещён: сабагент не отличает «нечего сказать» от «забыли передать».
+All eight sections are always present. A section with no content is marked "none" — a silent
+omission is forbidden: the subagent cannot tell "nothing to say" from "forgot to pass".
 
 ### Task
-Одно предложение: что именно сделать. Формулировать действие, а не реализацию
-(«добавь переход на Advisor в error-routing», а не «вызови функцию X»). Один брифинг — одна
-высокоуровневая задача: если задач две, запускаются два сабагента.
+One sentence: what exactly to do. Phrase the action, not the implementation
+("add the transition to Advisor in error-routing", not "call function X"). One briefing — one
+high-level task: if there are two tasks, two subagents are launched.
 
 ### Context
-Почему задача существует и откуда взялась: бизнес-цель, `user_story` (если есть), этап
-пайплайна, ссылка на план/задачу. Достаточно, чтобы сабагент понял, зачем нужен результат, и
-мог возразить по существу.
+Why the task exists and where it came from: the business goal, `user_story` (if any), the pipeline
+stage, a link to the plan/task. Enough for the subagent to understand why the result is needed and
+to be able to object on substance.
 
 ### Relevant files
-Пути + одна строка «почему файл важен». Содержимое не вставляется (см. §1). Если файлов больше
-~10, перечислять не все: назвать точки входа и дать правило, как остальные найти скриптом.
+Paths + one line "why the file matters". Contents are not pasted (see §1). If there are more than
+~10 files, do not list them all: name the entry points and give a rule for finding the rest with a
+script.
 
 ### Current state
-Что уже сделано к этому моменту: baseline (коммит, ветка, результаты последнего прогона тестов),
-созданные артефакты в `.code-factory/`, состояние рабочего дерева. Сабагент не должен
-переспрашивать то, что уже известно.
+What is already done by this point: the baseline (commit, branch, results of the latest test run),
+the artifacts created in `.code-factory/`, the state of the working tree. The subagent must not
+re-ask what is already known.
 
 ### What was tried — why it failed
-Для ретраев и эскалаций — обязательно. Список попыток: что пробовали, чем закончилось, почему не
-сработало. Роль, которая повторяет отвергнутый подход, — потраченный бюджет. Для первой попытки
-пишется «попыток не было».
+Mandatory for retries and escalations. A list of attempts: what was tried, how it ended, why it did
+not work. A role that repeats a rejected approach is a wasted budget. For the first attempt
+write "no attempts were made".
 
 ### Decisions
-Принятые решения, которые НЕЛЬЗЯ пересматривать в рамках этой задачи (выбор модели, идентификаторы,
-формат артефакта, запрещённые альтернативы). Если у сабагента есть возражение — он сообщает о нём,
-но решение не меняет.
+Decisions already made that MUST NOT be revisited within this task (model choice, identifiers,
+artifact format, forbidden alternatives). If the subagent has an objection — it reports it,
+but does not change the decision.
 
 ### Acceptance criteria
-Как проверяется результат: конкретные команды и ожидаемый вывод (exit code, PASS/FAIL, grep,
-сравнение). Критерий без команды проверки считается непроверяемым и в брифинг не попадает.
+How the result is verified: concrete commands and the expected output (exit code, PASS/FAIL, grep,
+comparison). A criterion without a verification command is considered unverifiable and does not go
+into the briefing.
 
 ### Constraints
-Границы работы: только перечисленные файлы (свои файлы неприкосновенны для других), stdlib-only
-(новые зависимости запрещены), фактическая модель (`model_preference`), интерпретатор окружения
-(в Windows — `python`, `python3` может отсутствовать), запрет на полный прогон тестов там, где это
-делает tester, и no-edits-суффикс для аналитических ролей.
+The boundaries of the work: only the listed files (its own files are untouchable for others),
+stdlib-only (new dependencies are forbidden), the actual model (`model_preference`), the
+environment interpreter (on Windows — `python`, `python3` may be absent), the ban on running the
+full test suite where the tester does that, and the no-edits suffix for analytical roles.
 
-В брифинге `factory-coder` в Constraints всегда попадает запрет git-мутаций общего рабочего дерева:
-`git stash` / `git reset` / `git checkout` / `git clean` на общем дереве не выполняются, базовая
-версия файла смотрится через `git show HEAD:<file>` или отдельный temp-клон — дерево разделяется
-главным агентом и параллельными сабагентами.
+The `factory-coder` briefing always carries the ban on git mutations of the shared working tree in
+Constraints: `git stash` / `git reset` / `git checkout` / `git clean` are not performed on the
+shared tree; the base version of a file is viewed via `git show HEAD:<file>` or a separate temp
+clone — the tree is shared by the main agent and parallel subagents.
 
 <!-- factory-rule: no-shared-tree-git-mutations begin -->
-**Запрет git-мутаций общего дерева (каноническая формулировка):** сабагенты НЕ выполняют `git stash`, `git reset`, `git checkout` и `git clean` на общем рабочем дереве прогона — оно разделяется главным агентом и другими параллельными сабагентами, такие операции создают риск гонки и потери чужих изменений. Для доказательства пре-существования бага или просмотра базовой версии файла используются `git show HEAD:<file>` или отдельный temp-клон; git-мутации рабочего дерева выполняет только главный агент.
+**No shared-tree git mutations (canonical wording):** subagents do NOT run `git stash`, `git reset`, `git checkout` or `git clean` on the run's shared working tree — it is shared by the main agent and other parallel subagents, and such operations create a race risk and the loss of others' changes. To prove a bug pre-existed or to view a file's base version, `git show HEAD:<file>` or a separate temp clone is used; only the main agent performs working-tree git mutations.
 <!-- factory-rule: no-shared-tree-git-mutations end -->
 
-## 3. Контракт concise output
+## 3. The concise-output contract
 
-Финальный ответ сабагента — это handoff, а не отчёт о процессе:
+The subagent's final answer is a handoff, not a process report:
 
-- краткая сводка ≤ 15 строк (что сделано/найдено, статус, ключевые числа) + пути к артефактам;
-- НИКАКИХ дампов файлов и логов в ответе: длинное остаётся в файлах
-  (`.code-factory/logs/...`), в ответ идут tail и счётчики;
-- доказательства — ссылкой (путь + строка/секция) или точной цитатой, а не пересказом;
-- если что-то не сделано — явно указать, что и почему (инструктивная ошибка: причина + путь
-  восстановления), молчаливый сбой запрещён;
-- раздувание ответа = рост стоимости и латентности + деградация рассуждения главного агента,
-  который этот ответ читает.
+- a short summary ≤ 15 lines (what was done/found, the status, the key numbers) + paths to artifacts;
+- NO file or log dumps in the answer: long content stays in files
+  (`.code-factory/logs/...`), the answer carries the tail and the counters;
+- evidence — by reference (path + line/section) or by an exact quote, not by paraphrase;
+- if something was not done — state explicitly what and why (an instructive error: the cause + the
+  recovery path); a silent failure is forbidden;
+- inflating the answer = higher cost and latency + degradation of the reasoning of the main agent,
+  which reads this answer.
 
-## 4. No-edits суффикс
+## 4. The no-edits suffix
 
-Каждая аналитическая роль (`analyzer`, `diagnostician`, `advisor`, `code-reviewer`) получает в
-брифинге явную строку-суффикс: «You MUST NOT create, modify or delete any file». Роль без права
-правок не может «попутно исправить» найденное — она сообщает об этом в handoff, решение принимает
-главный агент. Для `advisor` это дополнительно закреплено в `disallowedTools: Write, Edit`.
+Every analytical role (`analyzer`, `diagnostician`, `advisor`, `code-reviewer`) gets an explicit
+suffix line in the briefing: "You MUST NOT create, modify or delete any file". A role without edit
+rights cannot "fix along the way" what it finds — it reports it in the handoff, and the main agent
+decides. For `advisor` this is additionally pinned by `disallowedTools: Write, Edit`.
 
-## 5. Мини-пример заполненного брифинга
+## 5. A mini-example of a filled-in briefing
 
 ```text
-Task: добавить Advisor в лестницу эскалации references/error-routing.md (§2 и §5).
-Context: прогон task_08 усиливает фабрику; правило уже утверждено в плане, нужны ссылки на нового сабагента.
-Relevant files: .agents/skills/code-factory/references/error-routing.md — лестница эскалации; .agents/agents/sub-agents/advisor.md — описание роли.
-Current state: advisor.md создан; на базовом коммите все self-тесты PASS (test_factory_model.py, test_prompt_structure.py).
-What was tried — why it failed: правка только §2 — ревьюер отклонил: §5 остался без Advisor, документ противоречив.
-Decisions: идентификатор роли — advisor; модель — secondary (контрастное семейство к diagnostician); сама лестница не меняется.
-Acceptance criteria: grep -n "Advisor" references/error-routing.md находит §2 и §5; python scripts/test_factory_model.py PASS.
-Constraints: только два указанных файла; stdlib-only; python (python3 нет); в ответ — сводка ≤ 15 строк, без дампов.
+Task: add Advisor to the escalation ladder of references/error-routing.md (§2 and §5).
+Context: run task_08 hardens the factory; the rule is already approved in the plan, references to the new subagent are needed.
+Relevant files: .agents/skills/code-factory/references/error-routing.md — the escalation ladder; .agents/agents/sub-agents/advisor.md — the role description.
+Current state: advisor.md is created; on the base commit all self-tests PASS (test_factory_model.py, test_prompt_structure.py).
+What was tried — why it failed: editing only §2 — the reviewer rejected it: §5 was left without Advisor, the document is inconsistent.
+Decisions: the role identifier is advisor; the model is secondary (the family contrasting diagnostician); the ladder itself does not change.
+Acceptance criteria: grep -n "Advisor" references/error-routing.md finds §2 and §5; python scripts/test_factory_model.py PASS.
+Constraints: only the two listed files; stdlib-only; python (no python3); in the answer — a summary ≤ 15 lines, no dumps.
 ```
 
-## 6. Чек-лист главного агента перед запуском сабагента
+## 6. The main agent's checklist before launching a subagent
 
-1. Все восемь разделов есть; пустые помечены «нет».
-2. В брифинге нет ни одного вставленного фрагмента файла/лога — только пути.
-3. Перечислены попытки и причины провала (если это не первая попытка).
-4. Критерии приёмки проверяемы командой, а не словами.
-5. Указаны свои файлы, модель, stdlib-ограничение, интерпретатор окружения.
-6. Для аналитической роли добавлен no-edits-суффикс.
-7. Запрошен формат ответа по §3 (сводка + пути к артефактам).
+1. All eight sections are present; the empty ones are marked "none".
+2. The briefing contains not a single pasted file/log fragment — only paths.
+3. The attempts and the reasons for failure are listed (if this is not the first attempt).
+4. The acceptance criteria are verifiable by a command, not by words.
+5. Own files, the model, the stdlib constraint and the environment interpreter are specified.
+6. The no-edits suffix is added for an analytical role.
+7. The answer format per §3 (summary + artifact paths) is requested.

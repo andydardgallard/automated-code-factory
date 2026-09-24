@@ -27,7 +27,7 @@ def build_repo(root: pathlib.Path) -> None:
     (root / ".agents" / "skills" / "code-factory").mkdir(parents=True, exist_ok=True)
     (root / ".agents").mkdir(exist_ok=True)
     (root / "VERSION").write_text("12.1.0\n", encoding="utf-8")
-    (root / "README.md").write_text("# Autonomous Code Factory v12.1.0\n\nТекущая версия: **12.1.0**\n",
+    (root / "README.md").write_text("# Autonomous Code Factory v12.1.0\n\nCurrent version: **12.1.0**\n",
                                     encoding="utf-8")
     (root / "CHANGELOG.md").write_text("# Changelog\n\n## [12.1.0] — 2026-09-01\n", encoding="utf-8")
     (root / "AGENTS.md").write_text("# Project\n", encoding="utf-8")
@@ -75,7 +75,7 @@ def main() -> int:
         # 11. sync propagates to README title/footer + adds markers + CHANGELOG section
         vm.sync(root, "12.5.0", "2026-09-08")
         readme = (root / "README.md").read_text(encoding="utf-8")
-        expect("v12.5.0" in readme and "Текущая версия: **12.5.0**" in readme, "sync must update README")
+        expect("v12.5.0" in readme and "Current version: **12.5.0**" in readme, "sync must update README")
         expect("code-factory-version: 12.5.0" in (root / "AGENTS.md").read_text(encoding="utf-8"),
                "sync must add marker to AGENTS.md")
         expect("code-factory-version: 12.5.0" in (root / ".agents" / "README.md").read_text(encoding="utf-8"),

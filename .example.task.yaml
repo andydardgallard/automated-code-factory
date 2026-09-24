@@ -1,131 +1,131 @@
 # =============================================================================
 # EXAMPLE TASK FILE for the Autonomous Code Factory
 # =============================================================================
-# Скопируйте этот файл в `task.yaml` (или в любое другое имя, например
-# `my-task.yaml`) и заполните поля своими значениями. Не редактируйте сам
-# `.example.task.yaml`.
+# Copy this file to `task.yaml` (or to any other name, e.g.
+# `my-task.yaml`) and fill in the fields with your own values. Do not edit
+# `.example.task.yaml` itself.
 #
-# Обязательные поля:  `title`, `description`.
-# Остальные поля — опциональны (у фабрики есть разумные значения по умолчанию).
+# Required fields:  `title`, `description`.
+# All other fields are optional (the factory has sensible defaults).
 #
-# Важно: файл задачи НЕ должен содержать секретов и личных данных.
+# Important: the task file MUST NOT contain secrets or personal data.
 #
-# Поля `priority` в формате задачи НЕТ: по умолчанию абсолютно все задачи
-# обрабатываются фабрикой с наивысшим приоритетом (high).
+# There is NO `priority` field in the task format: by default absolutely all
+# tasks are handled by the factory with the highest priority (high).
 # =============================================================================
 
-# --- Краткое название задачи (1 предложение, бизнес-язык) --------------------
-# Обязательное поле.
-title: "Краткая цель, например: Стратегия не генерирует сигналы для CNY"
+# --- Short task title (1 sentence, business language) ------------------------
+# Required field.
+title: "Short goal, e.g.: The strategy does not generate signals for CNY"
 
-# --- Путь к существующему репозиторию (для проектов, которые уже есть) -------
-# Опционально. Для нового проекта (green-field) — удалите или оставьте пустым.
-# Путь может быть относительным (от папки, где запускается фабрика) или абсолютным.
+# --- Path to an existing repository (for projects that already exist) --------
+# Optional. For a new project (green-field) — delete it or leave it empty.
+# The path may be relative (to the folder where the factory is launched) or absolute.
 repo_path: ./repo
 
-# --- Описание задачи (бизнес-язык, без технических деталей) ------------------
-# Обязательное поле. Многострочное (используйте | для блока текста).
+# --- Task description (business language, no technical details) --------------
+# Required field. Multi-line (use | for a text block).
 description: |
-  Опишите проблему или желаемую функциональность так, как описал бы её
-  бизнес-пользователь, не знакомый с программированием.
+  Describe the problem or the desired functionality the way a business
+  user unfamiliar with programming would describe it.
 
-  Примеры:
-  - "Торговая стратегия перестала генерировать сигналы для инструмента CNY.
-     Она должна работать так же, как для инструмента Si."
-  - "Создать сервис, который готовит ежемесячный отчёт о продажах и
-     отправляет его по электронной почте."
-  - "Добавить страницу, на которой менеджер видит текущий остаток на складе."
+  Examples:
+  - "The trading strategy stopped generating signals for the CNY instrument.
+     It should work the same way it does for the Si instrument."
+  - "Build a service that prepares the monthly sales report and
+     sends it by email."
+  - "Add a page where the manager sees the current warehouse balance."
 
-  Фабрика сама изучит код проекта и решит, как реализовать задачу.
+  The factory will study the project code itself and decide how to implement the task.
 
-# --- User story (пользовательский сценарий) ----------------------------------
-# Опционально, но настоятельно рекомендуется. Помогает фабрике глубже понять
-# бизнес-потребность. Пишется от лица конечного пользователя.
-# Фабрика анализирует и использует этот контекст на этапах анализа, планирования
-# и реализации.
+# --- User story (user scenario) ----------------------------------------------
+# Optional, but strongly recommended. Helps the factory understand the
+# business need more deeply. Written from the end user's perspective.
+# The factory analyzes and uses this context at the analysis, planning
+# and implementation stages.
 user_story: |
-  Как <кто>, я хочу <что>, чтобы <ценность для бизнеса>.
-  Пример:
-  Как трейдер, я хочу, чтобы стратегия генерировала сигналы для CNY,
-  чтобы я мог торговать дробным инструментом так же, как торгую Si.
+  As a <who>, I want <what>, so that <business value>.
+  Example:
+  As a trader, I want the strategy to generate signals for CNY,
+  so that I can trade the fractional instrument the same way I trade Si.
 
-# --- Режим работы -------------------------------------------------------------
-# Опционально. Допустимо:
-#   hitl (по умолчанию) — фабрика задаёт уточняющие бизнес-вопросы и показывает
-#                          план на согласование перед реализацией.
-#   auto                — фабрика НЕ задаёт бизнес-вопросы и НЕ показывает план
-#                          на согласование, а принимает разумные допущения
-#                          (они фиксируются в плане).
+# --- Operating mode -----------------------------------------------------------
+# Optional. Allowed:
+#   hitl (default) — the factory asks clarifying business questions and shows
+#                    the plan for approval before implementation.
+#   auto           — the factory does NOT ask business questions and does NOT show
+#                    the plan for approval, but makes reasonable assumptions
+#                    (they are recorded in the plan).
 #
-# ВАЖНО: `mode: auto` управляет ТОЛЬКО вопросами фабрики (бизнес-логикой).
-# Запросы разрешения на выполнение инструментов (Bash/Write/Edit и т.д.) — это
-# отдельный режим разрешений Kimi Code CLI. Чтобы фабрика работала вообще без
-# запросов разрешения, запускайте `kimi --auto` (или `--yolo`), либо задайте
-# `default_permission_mode = "auto"` в ~/.kimi-code/config.toml.
+# IMPORTANT: `mode: auto` controls ONLY the factory's questions (business logic).
+# The tool-permission prompts (Bash/Write/Edit etc.) are a separate
+# permission mode of Kimi Code CLI. For the factory to work with no
+# permission prompts at all, launch `kimi --auto` (or `--yolo`), or set
+# `default_permission_mode = "auto"` in ~/.kimi-code/config.toml.
 mode: hitl
 
-# --- Тип задачи ---------------------------------------------------------------
-# Опционально. Допустимо:
-#   implement (по умолчанию) — написать/изменить код для решения бизнес-задачи.
-#   review                  — результатом является code review существующего кода.
-#                             Фабрика запускает ревьюера по ВСЕМУ коду в начале,
-#                             его замечания становятся планом работ.
-#   refactor                — снижение техдолга/дублирования/упрощение архитектуры
-#                             БЕЗ изменения поведения: 100% существующих тестов
-#                             должны пройти без изменений, иначе — автооткат.
-#   security_audit          — полный аудит кибербезопасности проекта (адаптивно,
-#                             по типам артефактов). Результат — отчёты + файл задач
-#                             на исправление. Фабрика НЕ чинит уязвимости сама.
+# --- Task type ----------------------------------------------------------------
+# Optional. Allowed:
+#   implement (default) — write/change code to solve the business task.
+#   review              — the deliverable is a code review of the existing code.
+#                         The factory runs the reviewer over ALL the code first,
+#                         and its findings become the work plan.
+#   refactor            — tech-debt/duplication reduction / architecture simplification
+#                         WITHOUT changing behavior: 100% of the existing tests
+#                         must pass unchanged, otherwise — automatic rollback.
+#   security_audit      — a full cybersecurity audit of the project (adaptive,
+#                         by artifact types). The result is reports + a fix-task
+#                         file. The factory does NOT fix vulnerabilities itself.
 task_type: implement
 
-# --- Критерии приёмки (что считается успехом) --------------------------------
-# Опционально. Список бизнес-критериев, которые пользователь сможет проверить
-# лично после завершения. Фабрика подтверждает каждый критерий с доказательством.
+# --- Acceptance criteria (what counts as success) ----------------------------
+# Optional. A list of business criteria the user will be able to check
+# personally after completion. The factory confirms every criterion with evidence.
 acceptance_criteria:
-  - "Критерий 1, например: Стратегия генерирует не менее 5 сигналов LONG/SHORT для CNY."
-  - "Критерий 2, например: Поведение для инструмента Si не изменилось."
+  - "Criterion 1, e.g.: The strategy generates at least 5 LONG/SHORT signals for CNY."
+  - "Criterion 2, e.g.: Behavior for the Si instrument did not change."
 
-# --- Бизнес-тесты (сценарии проверки) ----------------------------------------
-# Опционально. Если не заполнить — фабрика уточнит их у пользователя на этапе
-# планирования (в режиме hitl).
+# --- Business tests (verification scenarios) ---------------------------------
+# Optional. If not filled in — the factory will ask the user for them at the
+# planning stage (in hitl mode).
 # business_tests:
-#   - scenario: "Запустить стратегию на данных CNY"
+#   - scenario: "Run the strategy on the CNY data"
 #     config: "path/to/config.toml"
-#     expected_results: "Не менее 5 сигналов LONG/SHORT и положительная кривая капитала"
+#     expected_results: "At least 5 LONG/SHORT signals and a positive equity curve"
 
-# --- Внешние знания: документы и навыки (справочники для задачи) --------------
-# Опционально. Позволяет подключить книги/документы (PDF, EPUB, DOCX, Markdown,
-# HTML, папки) как справочники для конкретной задачи. Фабрика конвертирует их в
-# переиспользуемые навыки (skills) и сохраняет в персистентную базу skill-base/.
+# --- External knowledge: documents and skills (references for the task) ------
+# Optional. Lets you attach books/documents (PDF, EPUB, DOCX, Markdown,
+# HTML, folders) as references for a specific task. The factory converts them
+# into reusable skills and stores them in the persistent skill-base/ base.
 #
-# reference_docs — список документов для генерации/обновления навыка.
-#   path  — путь к файлу или папке-источнику.
-#   skill — имя навыка. При первом использовании навык генерируется; при повторе
-#           того же пути переиспользуется (по SHA256-хешу содержимого); при
-#           изменении источника обновляется инкрементально.
-# reference_skills — имена уже созданных навыков для переиспользования без пути.
-#   Если навык не найден в базе — фабрика вернёт ошибку и попросит указать путь
-#   в reference_docs.
+# reference_docs — a list of documents for generating/updating a skill.
+#   path  — path to the source file or folder.
+#   skill — the skill name. On first use the skill is generated; when the same
+#           path repeats it is reused (by the SHA256 hash of the content); when
+#           the source changes it is updated incrementally.
+# reference_skills — names of already created skills to reuse without a path.
+#   If a skill is not found in the base — the factory returns an error and asks
+#   for the path in reference_docs.
 # reference_docs:
 #   - path: "docs/market-making-book.pdf"
 #     skill: "market-making"
 # reference_skills:
 #   - "market-making"
 
-# --- Файлы, которые НЕЛЬЗЯ коммитить в git -----------------------------------
-# Опционально. Glob-паттерны относительно корня репозитория. Фабрика может
-# менять эти файлы (бэкапы/тесты/откат), но никогда не добавит их в коммит.
-# Полезно для личных/закрытых файлов (например, собственные стратегии).
+# --- Files that must NOT be committed to git ---------------------------------
+# Optional. Glob patterns relative to the repository root. The factory may
+# change these files (backups/tests/rollback) but will never add them to a commit.
+# Useful for personal/private files (e.g. your own strategies).
 # commit_exclude:
 #   - "strategy_lib/src/SYMI_Ch_SMA_up_lmt.rs"
 #   - "strategy_lib/**"
 
-# --- Переопределение моделей для ролей ---------------------------------------
-# Опционально. Позволяет переопределить модели ролей для конкретной задачи.
-# Поддерживаются любые семейства провайдера: deepseek, qwen, kimi/moonshot и др.
-# При указании модели Kimi (например, kimi-k3) или Qwen фабрика автоматически
-# маршрутизирует запросы на соответствующий API-эндпоинт с корректной
-# аутентификацией (см. .agents/skills/code-factory/references/providers.md).
+# --- Model overrides per role -------------------------------------------------
+# Optional. Lets you override the role models for a specific task.
+# Any provider families are supported: deepseek, qwen, kimi/moonshot and others.
+# When a Kimi model (e.g. kimi-k3) or Qwen is specified, the factory automatically
+# routes requests to the corresponding API endpoint with the correct
+# authentication (see .agents/skills/code-factory/references/providers.md).
 # models:
 #   analyzer: deepseek-v4-flash
 #   planner: deepseek-v4-pro
@@ -134,10 +134,10 @@ acceptance_criteria:
 #   diagnostician: deepseek-v4-pro
 #   reviewer: deepseek-v4-pro
 
-# --- Версия фабрики -----------------------------------------------------------
-# Обновлять версию фабрики вручную НЕ нужно: после каждого успешного прогона
-# (implement/refactor) фабрика сама определяет тип версии (major/minor/patch/none)
-# детерминированной матрицей, согласует с код-ревьюером и синхронизирует версию
-# во всех файлах (README, CHANGELOG, AGENTS.md, SKILL.md, инструкция). Задачи
-# review и security_audit версию не меняют.
+# --- Factory version ----------------------------------------------------------
+# You do NOT need to update the factory version manually: after every successful run
+# (implement/refactor) the factory itself determines the version type (major/minor/patch/none)
+# with a deterministic matrix, agrees it with the code reviewer and syncs the version in all
+# files (README, CHANGELOG, AGENTS.md, SKILL.md, the instruction). review and security_audit
+# tasks do not change the version.
 

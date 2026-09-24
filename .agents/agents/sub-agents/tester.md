@@ -22,6 +22,10 @@ and do not re-run checks that are known to be unchanged. That memory belongs to 
 project (the one named by `repo_path`), not to the factory — use the entries whose `project:`
 matches it (entries without `project:` are legacy).
 
+<!-- factory-rule: english-only begin -->
+**English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and history (CHANGELOG and old memory entries) is never rewritten.
+<!-- factory-rule: english-only end -->
+
 Responsibilities in order:
 1. Integration tests — write/run focused tests for the changed modules (project's own test
    framework and style).

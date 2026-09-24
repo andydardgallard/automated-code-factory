@@ -36,32 +36,32 @@ import precedent_index as pi
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 TOOL = SCRIPTS / "precedent_index.py"
 
-CHANGE_LOG = """# Журнал прогонов
+CHANGE_LOG = """# Run journal
 
-Формат записи: `## <timestamp> — <title>`, признак проекта — `project: <имя>`.
+Entry format: `## <timestamp> — <title>`, project marker — `project: <name>`.
 
-## 2026-09-22T10:00:00+03:00 — Калибровка ревьюера на golden-set
+## 2026-09-22T10:00:00+03:00 — Reviewer calibration on the golden-set
 project: demo
 alphamarker: verdict accuracy 7/7, macro precision 0.619 / recall 0.857.
-Метрики считает calibrate_reviewer.py по диффам golden-set.
+The metrics are computed by calibrate_reviewer.py from the golden-set diffs.
 
-## 2026-09-23T00:19:00+03:00 — Сквозной run_id в артефактах
+## 2026-09-23T00:19:00+03:00 — End-to-end run_id in the artifacts
 project: demo
-run_id = YYYYMMDD-<sha256(task.yaml)[:8]> проставляется в pipeline.yaml и acceptance.md.
+run_id = YYYYMMDD-<sha256(task.yaml)[:8]> is stamped into pipeline.yaml and acceptance.md.
 
-## 2026-09-24T09:00:00+03:00 — Вакцинация: тест до фикса
+## 2026-09-24T09:00:00+03:00 — Vaccination: test before the fix
 project: demo
-Баг после приёмки сначала получает воспроизводящий регрессионный тест, и только потом фикс.
+A bug found after acceptance first gets a reproducing regression test, and only then the fix.
 """
 
 SUMMARY = """project: demo
 repo_path: .
 
-## Возможности
-Собран FTS5-индекс памяти и кодовой базы (betamarker).
+## Capabilities
+An FTS5 index of the memory and the code base is built (betamarker).
 
-## Незакрытое
-Остался committee при двойном rejection плана.
+## Open items
+The committee on double plan rejection remains.
 """
 
 MODULE_ALPHA = '''"""Demo module for the index self-test (gammamarker)."""
@@ -196,11 +196,11 @@ def check_library() -> None:
            "every `## ` heading starts a record")
 
     records = pi.section_records("memory/summary.md", SUMMARY, "summary")
-    expect([record[2] for record in records] == ["(preamble)", "Возможности", "Незакрытое"],
+    expect([record[2] for record in records] == ["(preamble)", "Capabilities", "Open items"],
            f"summary sections: {[record[2] for record in records]}")
     expect(records[0][3].startswith("project: demo"),
            "the preamble record keeps the declared project")
-    expect(records[1][3].startswith("## Возможности"),
+    expect(records[1][3].startswith("## Capabilities"),
            "a section record's content carries its heading, so a title-only match still shows it")
 
     with tempfile.TemporaryDirectory() as td:
@@ -315,7 +315,7 @@ def main() -> int:
         indexed = rows(db)
         titles = [row[2] for row in indexed if row[0] == "change-log"]
         expect(titles[0] == "(preamble)", f"the first change-log record is the preamble: {titles}")
-        expect(any(title.endswith("Калибровка ревьюера на golden-set") for title in titles),
+        expect(any(title.endswith("Reviewer calibration on the golden-set") for title in titles),
                f"every `## ` heading becomes a record title: {titles}")
         expect(len(titles) == EXPECTED_SOURCES["change-log"], f"change-log records: {titles}")
 

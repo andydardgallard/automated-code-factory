@@ -80,8 +80,8 @@ def cmd_lookup(args) -> int:
     manifest = load_manifest(pathlib.Path(args.base).resolve())
     entry = manifest["skills"].get(args.name)
     if entry is None:
-        print(f"missing: навык '{args.name}' не найден в базе; "
-              f"укажите путь к документу в reference_docs", file=sys.stderr)
+        print(f"missing: skill '{args.name}' not found in the base; "
+              f"specify the path to the document in reference_docs", file=sys.stderr)
         return 1
     if args.hash:
         if entry["sha256"] == args.hash:

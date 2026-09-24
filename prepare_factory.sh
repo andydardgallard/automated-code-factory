@@ -1,55 +1,55 @@
 #!/usr/bin/env bash
 # =============================================================================
-# prepare_factory.sh — подготовка проекта к запуску Code Factory одним действием.
+# prepare_factory.sh — prepare a project for running Code Factory in one action.
 #
-# Назначение: скопировать фабрику (.agents/) в проект, завести память ИМЕННО этого
-# проекта (`memory/` — долгосрочная память целевого проекта: журнал
-# `memory/change-log.md` + сводка `memory/summary.md`), настроить .gitignore, при
-# необходимости инициализировать git-репозиторий, создать launcher `start.sh` (он сам
-# выставляет нужные переменные окружения) и проверить готовность.
+# Purpose: copy the factory (.agents/) into the project, create the memory of
+# THIS specific project (`memory/` — the long-term memory of the target project:
+# journal `memory/change-log.md` + summary `memory/summary.md`), configure
+# .gitignore, initialize a git repository if needed, create the `start.sh`
+# launcher (it sets the required environment variables itself) and verify readiness.
 #
-# Где живёт память и как называется проект:
-#   * `memory/` создаётся В КОРНЕ РАЗВЁРТЫВАНИЯ — в том каталоге, который передан этому
-#     скрипту; базовое имя проекта при развёртывании = basename этого каталога.
-#   * Если `repo_path` задачи указывает на ПОДКАТАЛОГ корня развёртывания, главный агент
-#     заводит память явно, назвав проект:
-#       memory_project.py init --repo <корень развёртывания> --project <basename разрешённого repo_path>
-#     Имя фиксируется в объявлении `project:` сводки `memory/summary.md` (и в `project:`
-#     каждой новой записи журнала), поэтому обе стороны называют проект одинаково.
-# Существующая память проекта НИКОГДА не перезаписывается: недостающие файлы
-# создаются, а уже имеющиеся (история прогонов проекта) остаются нетронутыми. Если
-# память объявлена за ДРУГОЙ проект или смешивает проекты — только предупреждение
-# (скрипт всё равно завершается с exit 0).
+# Where the memory lives and how the project is named:
+#   * `memory/` is created IN THE DEPLOYMENT ROOT — the directory passed to this
+#     script; the base project name at deployment = basename of that directory.
+#   * If the task's `repo_path` points to a SUBDIRECTORY of the deployment root,
+#     the main agent creates the memory explicitly, naming the project:
+#       memory_project.py init --repo <deployment root> --project <basename of the resolved repo_path>
+#     The name is recorded in the `project:` declaration of the `memory/summary.md`
+#     summary (and in the `project:` of every new journal entry), so both sides name the project the same way.
+# Existing project memory is NEVER overwritten: missing files are created, while
+# existing ones (the project's run history) are left untouched. If the memory is
+# declared for ANOTHER project or mixes projects — only a warning (the script
+# still exits with exit 0).
 #
-# Использование:
-#   ./prepare_factory.sh <путь-к-проекту>
+# Usage:
+#   ./prepare_factory.sh <path-to-project>
 #
-# Пример:
+# Example:
 #   ./prepare_factory.sh /home/adar/ai-factories/my-test-project
 #
-# После подготовки достаточно одного действия:
-#   cd <путь-к-проекту> && ./start.sh          # интерактивно (в чате: /skill:code-factory)
-#   cd <путь-к-проекту> && ./start.sh --auto   # полностью автономно
+# After preparation a single action is enough:
+#   cd <path-to-project> && ./start.sh          # interactive (in the chat: /skill:code-factory)
+#   cd <path-to-project> && ./start.sh --auto   # fully autonomous
 #
-# Скрипт НЕ коммитит ничего. Все шаги безопасны и идемпотентны.
+# The script does NOT commit anything. All steps are safe and idempotent.
 # =============================================================================
 set -euo pipefail
 
-# --- Пути -------------------------------------------------------------------
+# --- Paths --------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FACTORY_SRC="$SCRIPT_DIR/.agents"          # готовая фабрика (этот репозиторий)
+FACTORY_SRC="$SCRIPT_DIR/.agents"          # the ready-made factory (this repository)
 PROJECT_DIR="${1:-}"
 
-# --- Цвета ------------------------------------------------------------------
+# --- Colors -------------------------------------------------------------------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info()  { printf "${GREEN}%s${NC}\n" "$*"; }
 warn()  { printf "${YELLOW}%s${NC}\n" "$*"; }
 err()   { printf "${RED}%s${NC}\n" "$*" >&2; }
 
-# --- Интерпретатор Python ----------------------------------------------------
-# Нужен для скриптов фабрики (память проекта). Может быть не найден — это не ошибка.
-# Стаб `python3` из Microsoft Store (Windows) существует как файл, но не работает,
-# поэтому берём первый РАБОЧИЙ интерпретатор (приоритет: python3, затем python).
+# --- Python interpreter --------------------------------------------------------
+# Needed for the factory scripts (project memory). May be missing — that is not an error.
+# The Microsoft Store `python3` stub (Windows) exists as a file but does not work,
+# so we take the first WORKING interpreter (priority: python3, then python).
 PY_BIN="$(command -v python3 || command -v python || true)"
 if [[ -n "$PY_BIN" ]] && ! "$PY_BIN" -c 'pass' >/dev/null 2>&1; then
     PY_BIN=""
@@ -62,67 +62,67 @@ if [[ -n "$PY_BIN" ]] && ! "$PY_BIN" -c 'pass' >/dev/null 2>&1; then
     done
 fi
 
-# --- Проверка аргумента ------------------------------------------------------
+# --- Argument check ------------------------------------------------------------
 if [[ -z "$PROJECT_DIR" ]]; then
-    err "Укажите путь к проекту:  ./prepare_factory.sh <путь-к-проекту>"
+    err "Specify the project path:  ./prepare_factory.sh <path-to-project>"
     exit 1
 fi
 if [[ ! -d "$PROJECT_DIR" ]]; then
-    err "Папка проекта не найдена: $PROJECT_DIR"
+    err "Project folder not found: $PROJECT_DIR"
     exit 1
 fi
 if [[ ! -d "$FACTORY_SRC" ]]; then
-    err "Не найдена фабрика: $FACTORY_SRC (запускайте скрипт из корня репозитория фабрики)"
+    err "Factory not found: $FACTORY_SRC (run the script from the factory repository root)"
     exit 1
 fi
 
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
-info "==> Подготовка проекта: $PROJECT_DIR"
+info "==> Preparing project: $PROJECT_DIR"
 
-# --- 1. Git-репозиторий ------------------------------------------------------
+# --- 1. Git repository ----------------------------------------------------------
 if [[ -d "$PROJECT_DIR/.git" ]]; then
-    info "    Git: репозиторий уже существует ✓"
+    info "    Git: repository already exists ✓"
 else
-    warn "    Git: репозитория нет — создаю git init"
-    # `git init -b main` есть только с git 2.28; на старых git делаем init + symbolic-ref
-    # (unborn-ветка переименовывается без создания коммита).
+    warn "    Git: no repository — running git init"
+    # `git init -b main` exists only since git 2.28; on older git we do init + symbolic-ref
+    # (the unborn branch is renamed without creating a commit).
     if ! git -C "$PROJECT_DIR" init -b main 2>/dev/null; then
         git -C "$PROJECT_DIR" init
         git -C "$PROJECT_DIR" symbolic-ref HEAD refs/heads/main
     fi
 fi
 
-# --- 2. Копирование фабрики --------------------------------------------------
+# --- 2. Copying the factory ------------------------------------------------------
 if [[ "$PROJECT_DIR" == "$SCRIPT_DIR" ]]; then
-    warn "    Проект — сам репозиторий фабрики: .agents/ уже на месте, пропускаю копирование."
+    warn "    The project is the factory repository itself: .agents/ is already in place, skipping the copy."
 elif [[ -d "$PROJECT_DIR/.agents" ]]; then
-    info "    .agents/ уже существует — обновляю содержимое фабрики (фабрика — source of truth)"
-    # Перезаписываем все файлы фабрики актуальными версиями. Пользовательские файлы,
-    # которых нет в фабрике, остаются нетронутыми (cp не удаляет лишнее).
+    info "    .agents/ already exists — updating the factory contents (the factory is the source of truth)"
+    # We overwrite all factory files with the current versions. User files that are not
+    # part of the factory are left untouched (cp does not delete extras).
     cp -r "$FACTORY_SRC"/. "$PROJECT_DIR/.agents/"
 else
-    info "    Фабрика: копирую .agents/ → $PROJECT_DIR/.agents"
+    info "    Factory: copying .agents/ → $PROJECT_DIR/.agents"
     cp -r "$FACTORY_SRC" "$PROJECT_DIR/.agents"
 fi
 
-# --- 3. Память проекта --------------------------------------------------------
-# memory/ — долгосрочная память ТОГО проекта, над которым работает фабрика. Каталог
-# памяти всегда лежит В КОРНЕ РАЗВЁРТЫВАНИЯ ($PROJECT_DIR), а базовое имя проекта при
-# развёртывании = basename этого каталога. Если `repo_path` задачи указывает на
-# ПОДКАТАЛОГ корня развёртывания, главный агент фиксирует имя проекта явно:
-#   memory_project.py init --repo <корень развёртывания> --project <basename разрешённого repo_path>
-# (имя попадает в `project:` записей журнала и в объявление `project:` сводки).
-# Единственный писатель журнала — главный агент фабрики, поэтому здесь только
-# создаются ОТСУТСТВУЮЩИЕ файлы: существующая память (история прогонов проекта) никогда
-# не перезаписывается и не изменяется — проверяется лишь её принадлежность.
+# --- 3. Project memory ------------------------------------------------------------
+# memory/ — the long-term memory of THE project the factory works on. The memory
+# directory always lives IN THE DEPLOYMENT ROOT ($PROJECT_DIR), and the base project name
+# at deployment = basename of that directory. If the task's `repo_path` points to a
+# SUBDIRECTORY of the deployment root, the main agent records the project name explicitly:
+#   memory_project.py init --repo <deployment root> --project <basename of the resolved repo_path>
+# (the name lands in the `project:` of the journal entries and in the `project:`
+# declaration of the summary). The only writer of the journal is the factory's main agent,
+# so here only MISSING files are created: existing memory (the project's run history) is
+# never overwritten or modified — only its ownership is checked.
 MEMORY_DIR="$PROJECT_DIR/memory"
 MEM_DIR_SCRIPT="$PROJECT_DIR/.agents/skills/code-factory/scripts/memory_project.py"
 MEM_STATE="absent"          # created | ok | mixed | other | unavailable
-MEM_PROJECT=""              # имя проекта (состояние created)
-MEM_OWNER=""                # владелец памяти по данным memory_project.py check
+MEM_PROJECT=""              # project name (created state)
+MEM_OWNER=""                # memory owner per memory_project.py check
 MEM_CHECK_OUT=""
-# Ожидаемое имя проекта = basename корня развёртывания. Считаем один раз и устойчиво
-# к set -euo pipefail: ошибка интерпретатора/скрипта не должна прерывать развёртывание.
+# The expected project name = basename of the deployment root. Computed once and
+# resilient to set -euo pipefail: an interpreter/script error must not interrupt the deployment.
 MEM_NAME_EXPECT="$("$PY_BIN" "$MEM_DIR_SCRIPT" name --repo "$PROJECT_DIR" 2>/dev/null || true)"
 
 if [[ ! -f "$MEMORY_DIR/change-log.md" || ! -f "$MEMORY_DIR/summary.md" ]]; then
@@ -130,29 +130,29 @@ if [[ ! -f "$MEMORY_DIR/change-log.md" || ! -f "$MEMORY_DIR/summary.md" ]]; then
         if MEM_INIT_OUT="$("$PY_BIN" "$MEM_DIR_SCRIPT" init --repo "$PROJECT_DIR" 2>&1)"; then
             MEM_STATE="created"
             MEM_PROJECT="$("$PY_BIN" "$MEM_DIR_SCRIPT" name --repo "$PROJECT_DIR" 2>/dev/null || true)"
-            info "    Память проекта: создана — $MEMORY_DIR (проект ${MEM_PROJECT:-?})"
+            info "    Project memory: created — $MEMORY_DIR (project ${MEM_PROJECT:-?})"
             printf '%s\n' "$MEM_INIT_OUT" | sed 's/^/      /'
         else
-            # Причина сбоя — последняя непустая строка вывода (у падения интерпретатора это
-            # строка исключения, а не весь traceback: сырой стек в предупреждении только мешает).
-            # Пустой вывод даёт пустую причину — её подменяет «без вывода».
+            # The failure reason is the last non-empty line of the output (for an interpreter
+            # crash that is the exception line, not the whole traceback: a raw stack in the
+            # warning only gets in the way). Empty output yields an empty reason — replaced by "no output".
             MEM_INIT_REASON="$(printf '%s\n' "$MEM_INIT_OUT" | awk 'NF{last=$0}END{print last}')"
-            warn "    Память проекта: не удалось создать — ${MEM_INIT_REASON:-без вывода}"
-            warn "    Фабрика создаст её при первом обращении к проекту."
+            warn "    Project memory: failed to create — ${MEM_INIT_REASON:-no output}"
+            warn "    The factory will create it on first access to the project."
         fi
     else
         MEM_STATE="unavailable"
         if [[ -z "$PY_BIN" ]]; then
-            warn "    Память проекта: не создана — python не найден"
+            warn "    Project memory: not created — python not found"
         else
-            warn "    Память проекта: не создана — нет скрипта $MEM_DIR_SCRIPT"
+            warn "    Project memory: not created — script $MEM_DIR_SCRIPT is missing"
         fi
-        warn "    Фабрика создаст её при первом обращении к проекту."
+        warn "    The factory will create it on first access to the project."
     fi
 elif [[ -n "$PY_BIN" && -f "$MEM_DIR_SCRIPT" ]]; then
-    # Память уже есть: ничего не меняем (история проекта не перезаписывается). Проверяем
-    # три исхода: журнал смешивает проекты | память объявлена за ДРУГОЙ проект | всё ок.
-    # `|| MEM_CHECK_RC=$?` не роняет скрипт: любое состояние — только предупреждение.
+    # Memory already exists: we change nothing (the project's history is never overwritten).
+    # Check three outcomes: the journal mixes projects | the memory is declared for ANOTHER
+    # project | everything is fine. `|| MEM_CHECK_RC=$?` does not crash the script: any state is only a warning.
     MEM_CHECK_RC=0
     MEM_CHECK_OUT="$("$PY_BIN" "$MEM_DIR_SCRIPT" check --repo "$PROJECT_DIR" 2>&1)" || MEM_CHECK_RC=$?
     MEM_OWNER=""
@@ -163,53 +163,53 @@ elif [[ -n "$PY_BIN" && -f "$MEM_DIR_SCRIPT" ]]; then
     fi
     if [[ "$MEM_CHECK_OUT" == *"mixes projects"* ]]; then
         MEM_STATE="mixed"
-        warn "    Память проекта: НЕСОГЛАСОВАНА — в памяти записи разных проектов ($MEM_CHECK_OUT)"
-        warn "    Проверьте принадлежность: поле project: в записях должно совпадать с проектом."
+        warn "    Project memory: INCONSISTENT — entries from different projects in memory ($MEM_CHECK_OUT)"
+        warn "    Check ownership: the project: field in entries must match the project."
     elif [[ "$MEM_CHECK_OUT" == *"expected"* ]] \
       || { [[ -n "$MEM_OWNER" ]] && [[ "$MEM_OWNER" != "$MEM_NAME_EXPECT" ]] \
            && [[ "$MEM_OWNER" != "(legacy, no project field)" ]]; } \
       || [[ "$MEM_CHECK_RC" -ne 0 ]]; then
-        # Память принадлежит (или объявлена за) ДРУГОЙ проект — разворачиваемся не туда.
+        # The memory belongs to (or is declared for) ANOTHER project — we are deploying to the wrong place.
         MEM_STATE="other"
-        warn "    Память проекта: ПРОВЕРИТЬ — память объявлена за проект '${MEM_OWNER:-?}', а фабрика разворачивается в каталоге '$MEM_NAME_EXPECT' ($MEM_CHECK_OUT)"
-        warn "    Проверьте, что это тот же проект: поле project: в записях memory/change-log.md."
+        warn "    Project memory: CHECK — the memory is declared for project '${MEM_OWNER:-?}', but the factory is being deployed in directory '$MEM_NAME_EXPECT' ($MEM_CHECK_OUT)"
+        warn "    Verify this is the same project: the project: field in the memory/change-log.md entries."
     else
         MEM_STATE="ok"
-        info "    Память проекта: на месте — $MEM_CHECK_OUT"
+        info "    Project memory: in place — $MEM_CHECK_OUT"
     fi
 else
     MEM_STATE="unavailable"
     if [[ -z "$PY_BIN" ]]; then
-        warn "    Память проекта: есть, но не проверена — python не найден"
+        warn "    Project memory: present but not verified — python not found"
     else
-        warn "    Память проекта: есть, но не проверена — нет скрипта $MEM_DIR_SCRIPT"
+        warn "    Project memory: present but not verified — script $MEM_DIR_SCRIPT is missing"
     fi
 fi
 
-# --- 4. Launcher --------------------------------------------------------------
+# --- 4. Launcher --------------------------------------------------------------------
 LAUNCHER="$PROJECT_DIR/start.sh"
 cat > "$LAUNCHER" <<'EOF'
 #!/usr/bin/env bash
-# Launcher Code Factory — создан prepare_factory.sh. Запускайте без лишних команд:
-#   ./start.sh          — интерактивно (в чате: /skill:code-factory)
-#   ./start.sh --auto   — полностью автономно
+# Code Factory launcher — created by prepare_factory.sh. Run it with no extra commands:
+#   ./start.sh          — interactive (in the chat: /skill:code-factory)
+#   ./start.sh --auto   — fully autonomous
 set -euo pipefail
-# Разделение моделей сабагентов (primary/secondary) включается здесь автоматически.
+# Subagent model split (primary/secondary) is enabled here automatically.
 export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1
 exec kimi "$@"
 EOF
 chmod +x "$LAUNCHER"
-info "    Launcher: создан $LAUNCHER"
+info "    Launcher: created $LAUNCHER"
 
-# --- 5. .gitignore -----------------------------------------------------------
-# Примечание: .gitignore влияет только на git-трекинг, но не на доступ к файлам
-# на диске. Игнорирование .agents/ не ломает чтение/запись данных фабрики
-# (кэш, история, контекст) — фабрика работает с .agents/ напрямую через файловую
-# систему, а не через git.
+# --- 5. .gitignore ------------------------------------------------------------------
+# Note: .gitignore only affects git tracking, not access to files on disk.
+# Ignoring .agents/ does not break reading/writing the factory's data (cache,
+# history, context) — the factory works with .agents/ directly through the file
+# system, not through git.
 GITIGNORE="$PROJECT_DIR/.gitignore"
-# Точное совпадение строки (-x): подстрочный матч считал паттерн добавленным, хотя в
-# .gitignore была лишь похожая строка. `tr -d '\r'` — чтобы CRLF-файл (Windows) не
-# ломал проверку и паттерны не дублировались при повторном запуске.
+# Exact line match (-x): a substring match would consider a pattern present even
+# when .gitignore only has a similar line. `tr -d '\r'` — so a CRLF file (Windows)
+# does not break the check and patterns are not duplicated on a rerun.
 gitignore_has() {
     [[ -f "$GITIGNORE" ]] && tr -d '\r' < "$GITIGNORE" | grep -qxF "$1"
 }
@@ -219,7 +219,7 @@ for pat in ".agents/" ".code-factory/" "__pycache__/" "*.pyc" ".env" ".env.*" "*
 done
 
 if [[ "$NEED_GITIGNORE" == true ]]; then
-    warn "    .gitignore: добавляю служебные паттерны фабрики"
+    warn "    .gitignore: adding the factory's utility patterns"
     {
         [[ -f "$GITIGNORE" ]] && echo ""
         echo "# --- Code Factory (auto-added by prepare_factory.sh) ---"
@@ -235,53 +235,53 @@ if [[ "$NEED_GITIGNORE" == true ]]; then
     } >> "$GITIGNORE"
 fi
 
-# --- 6. Проверка готовности --------------------------------------------------
-# Строку про память собираем из состояния шага 3 (повторный init не запускаем). Три
-# различимых состояния: ok — память принадлежит этому проекту; mixed — записи разных
-# проектов; other — память объявлена за другой проект (разворачиваемся не туда).
+# --- 6. Readiness check -------------------------------------------------------------
+# The memory line is assembled from the state of step 3 (we do not run init again).
+# Three distinguishable states: ok — the memory belongs to this project; mixed —
+# entries from different projects; other — the memory is declared for another project (we are deploying to the wrong place).
 case "$MEM_STATE" in
-    created)  MEM_LINE="создана ✓ (проект ${MEM_PROJECT:-?})" ;;
+    created)  MEM_LINE="created ✓ (project ${MEM_PROJECT:-?})" ;;
     ok)
         if [[ "$MEM_CHECK_OUT" =~ project\ \'([^\']+)\'\ \(([0-9]+)\ entries\) ]]; then
             MEM_NAME="${BASH_REMATCH[1]}"
             MEM_COUNT="${BASH_REMATCH[2]}"
-            # Память без признака проекта (ни project: в записях, ни объявления в сводке):
-            # подставляем имя проекта по basename корня развёртывания.
+            # Memory without a project marker (neither project: in entries nor a declaration
+            # in the summary): substitute the project name from the deployment root basename.
             if [[ "$MEM_NAME" == "(legacy, no project field)" ]]; then
                 MEM_NAME="$("$PY_BIN" "$MEM_DIR_SCRIPT" name --repo "$PROJECT_DIR" 2>/dev/null || echo '?')"
             fi
-            MEM_LINE="OK ✓ (проект $MEM_NAME, $MEM_COUNT записей)"
+            MEM_LINE="OK ✓ (project $MEM_NAME, $MEM_COUNT entries)"
         else
             MEM_LINE="OK ✓"
         fi
         ;;
-    mixed)    MEM_LINE="НЕСОГЛАСОВАНА ✗ (в памяти записи разных проектов — проверьте project:)" ;;
-    other)    MEM_LINE="ПРОВЕРИТЬ ✗ (объявлен проект ${MEM_OWNER:-?}, разворачиваем в ${MEM_NAME_EXPECT:-?})" ;;
+    mixed)    MEM_LINE="INCONSISTENT ✗ (entries from different projects in memory — check project:)" ;;
+    other)    MEM_LINE="CHECK ✗ (declared project ${MEM_OWNER:-?}, deploying into ${MEM_NAME_EXPECT:-?})" ;;
     unavailable)
         if [[ -z "$PY_BIN" ]]; then
-            MEM_LINE="не проверено (нет python)"
+            MEM_LINE="not verified (no python)"
         else
-            MEM_LINE="не проверено (нет memory_project.py)"
+            MEM_LINE="not verified (no memory_project.py)"
         fi
         ;;
-    *)        MEM_LINE="ОТСУТСТВУЕТ ✗" ;;
+    *)        MEM_LINE="MISSING ✗" ;;
 esac
 echo ""
-info "==> Проверка готовности:"
-echo "    • .agents/:            $([ -f "$PROJECT_DIR/.agents/skills/code-factory/SKILL.md" ] && echo 'OK ✓' || echo 'ОТСУТСТВУЕТ ✗')"
-echo "    • start.sh:            $([ -x "$LAUNCHER" ] && echo 'OK ✓' || echo 'ОТСУТСТВУЕТ ✗')"
-echo "    • .git/:               $([ -d "$PROJECT_DIR/.git" ] && echo 'OK ✓' || echo 'ОТСУТСТВУЕТ ✗')"
-echo "    • .gitignore:          $(gitignore_has '.agents/' && gitignore_has '.code-factory/' && echo 'OK ✓ (.agents/ + .code-factory/)' || echo 'нет .agents/ или .code-factory/ ✗')"
+info "==> Readiness check:"
+echo "    • .agents/:            $([ -f "$PROJECT_DIR/.agents/skills/code-factory/SKILL.md" ] && echo 'OK ✓' || echo 'MISSING ✗')"
+echo "    • start.sh:            $([ -x "$LAUNCHER" ] && echo 'OK ✓' || echo 'MISSING ✗')"
+echo "    • .git/:               $([ -d "$PROJECT_DIR/.git" ] && echo 'OK ✓' || echo 'MISSING ✗')"
+echo "    • .gitignore:          $(gitignore_has '.agents/' && gitignore_has '.code-factory/' && echo 'OK ✓ (.agents/ + .code-factory/)' || echo 'no .agents/ or .code-factory/ ✗')"
 echo "    • memory/:              $MEM_LINE"
 echo "    • git status:"
 git -C "$PROJECT_DIR" status --short | head -20 || true
-[[ -z "$(git -C "$PROJECT_DIR" status --short)" ]] && echo "      (чистое дерево)"
+[[ -z "$(git -C "$PROJECT_DIR" status --short)" ]] && echo "      (clean tree)"
 echo ""
 
-info "==> Готово! Запуск фабрики — одно действие:"
+info "==> Done! Starting the factory is a single action:"
 echo "    cd $PROJECT_DIR"
-echo "    ./start.sh            # в чате: /skill:code-factory"
-echo "    ./start.sh --auto     # полностью автономно"
+echo "    ./start.sh            # in the chat: /skill:code-factory"
+echo "    ./start.sh --auto     # fully autonomous"
 echo ""
-echo "    Launcher сам выставляет KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 —"
-echo "    дополнительных export-команд запоминать не нужно."
+echo "    The launcher sets KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 itself —"
+echo "    no extra export commands to remember."

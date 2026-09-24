@@ -20,6 +20,10 @@ Read `.agents/skills/code-factory/references/documentation.md` first and follow 
 read the code before writing, separate implemented behavior from future plans, and choose the
 documentation form that fits the reader's task.
 
+<!-- factory-rule: english-only begin -->
+**English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and history (CHANGELOG and old memory entries) is never rewritten.
+<!-- factory-rule: english-only end -->
+
 ## Inputs (from the main agent)
 
 - The list of changed/created files from the run manifest (`.code-factory/manifest.json`,

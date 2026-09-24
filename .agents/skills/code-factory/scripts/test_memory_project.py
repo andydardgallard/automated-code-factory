@@ -580,7 +580,7 @@ def main() -> int:
         (ver / "VERSION").write_text("12.10.2\n", encoding="utf-8")
         v_sum = ver / "memory" / "summary.md"
         v_sum.write_text(v_sum.read_text(encoding="utf-8").replace(
-            "## Current state", "## Current state\nФабрика v0.0.0: устаревшая сводка."),
+            "## Current state", "## Current state\nFactory v0.0.0: stale summary."),
             encoding="utf-8")
         res = run("backlog", "--repo", str(ver))
         expect(res.returncode == 0,

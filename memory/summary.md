@@ -8,12 +8,14 @@ repo_path: .
 (порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
 
 ## Current state
-Factory v12.12.0 — ENGLISH-ONLY: the whole factory (code messages, comments, docs, skill,
+Factory v12.12.1 — ENGLISH-ONLY: the whole factory (code messages, comments, docs, skill,
 agents, rulebook) is translated to English under the freeze-functionality invariant; 24th rule
 `english-only` makes English the norm for every future artifact (exceptions: live user
 communication, history). Translation-quality gates added: `check_english_only.py` (0 Cyrillic
 outside exceptions), `check_translation_structure.py` (skeleton preserved,
-`--allow-added-rule`/`--exclude`), sharded semantic audit (merged verdict approve). History:
+`--allow-added-rule`/`--exclude`; deleted-at-worktree files of ANY type fail the check since
+v12.12.1 — the absence probe runs before the no-skeleton family skip), sharded semantic audit
+(merged verdict approve). History:
 v12.8.0 (shard protocol, two-level fingerprint, Think in Code, review gate, verified acceptance,
 verify_quotes, evidence ledger, advisor, preflight) + v12.9.0 (rulebook, run_id, memory v2
 provenance, golden set, vaccination, WIP, error-patterns JSON) + v12.10.0 (severity boundary §3,
@@ -21,16 +23,20 @@ committee + plan_arbiter, root auto-detect → SKIP, precedent_index FTS5) + v12
 (utf8-guard in all argparse scripts, 22nd rule no-shared-tree-git-mutations) + v12.11.0 (explicit
 git stash classification in action_gate; content fingerprint over the working tree; memory
 actuality mechanism: backlog [--check] + closed:+evidence: + 23rd rule memory-actuality;
-project-learned overlay error_router §1.2; providers.md §5.2). Rulebook: 24 rules, 94 carriers.
+project-learned overlay error_router §1.2; providers.md §5.2) + v12.12.1 (v8-review rework:
+deleted-file gate hole closed with vaccination, security-auditor severity mapping aligned to
+security-audit.md §5.1, ps1 deployer parity — old-git fallback + last-line failure reason,
+skill_base utf8-guard + usage fix, README tree fix). Rulebook: 24 rules, 94 carriers.
 Memory owner: repo. 28/28 self-tests PASS (+ test_env_propagation.sh).
 v8 whole-project review (run_id 20260924-96879f22, task_type=review, no version change):
 reviewer re-calibrated after the v12.12.0 prompt translation (7/7 golden cases, precision/recall
 1.000); 2 shards reviewed, merged verdict request_changes — 8 findings (0 critical/1 major/6
 minor/1 nit), all 9 quotes verified verbatim, the major finding reproduced independently;
 acceptance SUCCESS (4 MET + 1 derived, regression pass, ledger FRESH). The rework list became
-follow-up `task-v9.yaml`. Open backlog: 2 (the v8 actionable findings, follow_up=true —
-P0: check_translation_structure.py silently passes deleted no-skeleton files; P1: cross-carrier
-and deployer-parity minors); 32 historical items stay closed with evidence.
+follow-up `task-v9.yaml`, implemented by run v9 (run_id 20260924-8b9caeeb, v12.12.1, commit
+2f53d2f): all 8 findings fixed with vaccination evidence, review approve, acceptance SUCCESS.
+Open backlog: 0 (the 2 v8 actionable findings closed with evidence by the v9 run; 32 historical
+items stay closed with evidence).
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле
@@ -52,6 +58,11 @@ and deployer-parity minors); 32 historical items stay closed with evidence.
 - Документер обновляет только doc-комментарии и `.md` (secondary-модель, валидатор, бюджет 1).
 
 ## Recent history
+- 2026-09-24 — "Factory v9 (v12.12.1)" (factory/v9-review-rework, 2f53d2f): v8 review rework —
+  deleted no-skeleton files now fail the translation-structure gate (vaccination test first),
+  security-auditor severity mapping aligned to §5.1, ps1 old-git fallback + last-line failure
+  reason, skill_base utf8-guard + usage fix, README tree fix, nit annotation; backlog 2 → 0.
+  v12.12.0 → v12.12.1 (patch).
 - 2026-09-24 — "Factory v7 (v12.12.0)" (factory/v7-english-only, c891a67): full RU→EN translation
   of the factory (freeze-functionality refactor; 46 files); 24th rule english-only (8 carriers);
   quality gates — glossary, check_english_only.py, check_translation_structure.py, 6-shard

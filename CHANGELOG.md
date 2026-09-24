@@ -5,6 +5,29 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.12.1] — 2026-09-24
+
+### Fixed
+- **check_translation_structure.py** — a file deleted from the worktree whose type has no
+  skeleton (.json/.toml/binary) was silently skipped and the check exited 0; the
+  deleted-at-worktree probe now runs BEFORE the no-skeleton family skip, so every file that
+  existed at base but is gone fails the check, per the contract "a translation never removes a
+  file" (v8 whole-project review, major; vaccination regression test
+  `check_deleted_no_skeleton_file_fails`).
+- **security-auditor.md** — severity mapping contradicted `references/security-audit.md` §5.1
+  and inflated shard findings by one grade; now critical→critical, high→major, medium→minor,
+  low→nit.
+- **prepare_factory.ps1** — deployer parity with the sh version: `git init -b main` failure
+  (git < 2.28) falls back to `git init` + `git symbolic-ref` instead of a hard exit 1; the
+  project-memory failure diagnostic shows the LAST non-empty output line (the actual exception)
+  instead of the first ("Traceback…").
+- **skill_base.py** — added the `use_utf8_output()` guard pinned as universal for argparse
+  scripts (cp1251/cp866 consoles) and fixed the docstring usage lines (`--base` is a top-level
+  option and precedes the subcommand).
+- **README.md** — structure tree: `assets/task-template.yaml` moved under
+  `.agents/skills/code-factory/` (its real location).
+- **test_version_manager.py** — `suggest()` helper annotation corrected to `tuple[str, int]`.
+
 ## [12.12.0] — 2026-09-24
 
 ### Changed

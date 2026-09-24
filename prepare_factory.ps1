@@ -176,10 +176,23 @@ if (Test-Path -LiteralPath (Join-Path $ProjectDir '.git') -PathType Container) {
         Err "    Git: the git command was not found — install Git and run again."
         exit 1
     }
-    & $GitExe.Source -C $ProjectDir init -b main
+    # `git init -b main` exists only since git 2.28; on older git we do init + symbolic-ref
+    # (the unborn branch is renamed without creating a commit). Its stderr is dropped: on old git
+    # only "unknown switch" arrives there, and the fallback is the expected path on such machines.
+    & $GitExe.Source -C $ProjectDir init -b main 2>$null
     if ($LASTEXITCODE -ne 0) {
-        Err "    Git: failed to create the repository (git init, code $LASTEXITCODE)."
-        exit 1
+        # Only if THIS also fails is it a hard error — a failure to create the repository means the
+        # deployment has nowhere to work (same as `set -e` in the bash version).
+        & $GitExe.Source -C $ProjectDir init
+        $gitInitRc = $LASTEXITCODE
+        if ($gitInitRc -eq 0) {
+            & $GitExe.Source -C $ProjectDir symbolic-ref HEAD refs/heads/main
+            $gitInitRc = $LASTEXITCODE
+        }
+        if ($gitInitRc -ne 0) {
+            Err "    Git: failed to create the repository (git init, code $gitInitRc)."
+            exit 1
+        }
     }
 }
 
@@ -249,8 +262,11 @@ if (-not $HasChangeLog -or -not $HasSummary) {
             Info "    Project memory: created — $MemoryDir (project $(if ($MemProject) { $MemProject } else { '?' }))"
             foreach ($line in @($initRes.Output)) { Write-Host ("      " + $line) }
         } else {
-            $firstOut = @($initRes.Output) | Select-Object -First 1
-            Warn "    Project memory: failed to create — $(if ($firstOut) { $firstOut } else { 'no output' })"
+            # The failure reason is the LAST non-empty line of the output (for an interpreter crash
+            # that is the exception line, not the whole traceback: a raw stack in the warning only
+            # gets in the way). Empty output yields an empty reason — replaced by "no output".
+            $initReason = @($initRes.Output) | Where-Object { "$_".Trim() -ne '' } | Select-Object -Last 1
+            Warn "    Project memory: failed to create — $(if ($initReason) { $initReason } else { 'no output' })"
             Warn "    The factory will create it on first access to the project."
         }
     } else {

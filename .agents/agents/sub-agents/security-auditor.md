@@ -48,7 +48,7 @@ output goes to a file and only its tail plus counters enter your context.
    "findings": [{"severity": "critical | major | minor | nit", "file": "<path>",
                  "line": <int | null>, "title": "...", "detail": "..."}]}
 
-Map the scales: critical/high -> critical, medium -> major, low -> minor or nit. Put the verbatim
+Map the scales: critical -> critical, high -> major, medium -> minor, low -> nit. Put the verbatim
 quote (below) at the end of `detail`. Return only a short shard summary — the merged report
 (deduplicated, sorted by severity) is produced by the script, never in prose.
 

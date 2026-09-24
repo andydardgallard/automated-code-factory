@@ -14,7 +14,8 @@ worktree:
   - a new file (absent at the base, staged so git lists it) is skipped with a stderr note and the
     run still exits 0, and a changed file whose type has no skeleton (`.json`) is skipped with a
     note as well,
-  - a deleted file fails the check instead of passing silently,
+  - a deleted file fails the check instead of passing silently — including a deleted file whose
+    type has no skeleton (`.json`), which used to be counted as merely "skipped",
   - the text family compares non-empty lines and `#` comment lines: translated comment text keeps
     the counts (exit 0), a removed comment line does not (exit 1, both markers named),
   - a deliberately added factory rule fails without `--allow-added-rule` and passes with it (its
@@ -310,6 +311,29 @@ def check_deleted_file_fails() -> None:
         expect("doc.md" not in text, f"an unchanged file must not be reported: {text!r}")
 
 
+def check_deleted_no_skeleton_file_fails() -> None:
+    """A deleted file of a type WITHOUT a skeleton fails too: skipping must not hide the removal.
+
+    The deletion probe cannot live behind the family check: a `.json` has no skeleton, so the
+    comparison is skipped, but the file is still GONE — `skipped` must never outrank `deleted`.
+    """
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        repo = make_repo(pathlib.Path(raw_tmp),
+                         {"doc.md": DOC_BASE, "data.json": '{"a": 1}\n'})
+        (repo / "doc.md").write_text(DOC_TRANSLATED, encoding="utf-8")
+        (repo / "data.json").unlink()
+        res = run("--root", str(repo))
+        text = decoded(res)
+        expect(res.returncode == 1, f"a deleted no-skeleton file must exit 1: {text!r}")
+        expect("data.json: deleted" in text, f"the deleted file must be named: {text!r}")
+        expect("FAIL - 0 structural mismatch(es), 1 deleted file(s)" in text,
+               f"the verdict must count the deleted file: {text!r}")
+        expect("note: skipped 1 changed file(s) of a type without a skeleton" not in text,
+               f"a deleted file must not be counted as merely skipped: {text!r}")
+        expect("ok - structure preserved" not in text,
+               f"a deleted file must never print the preserved verdict: {text!r}")
+
+
 def check_text_family() -> None:
     """`.sh` files are compared by non-empty lines and `#` comment lines."""
     with tempfile.TemporaryDirectory() as raw_tmp:
@@ -410,6 +434,7 @@ def main() -> int:
             ("def_removed", check_def_removed),
             ("skipped_files", check_skipped_files),
             ("deleted_file_fails", check_deleted_file_fails),
+            ("deleted_no_skeleton_file_fails", check_deleted_no_skeleton_file_fails),
             ("text_family", check_text_family),
             ("allow_added_rule", check_allow_added_rule),
             ("exclude", check_exclude),

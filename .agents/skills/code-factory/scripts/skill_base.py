@@ -6,12 +6,12 @@ Persistent, committable base at `skill-base/` with a manifest that tracks every 
 name, source, sha256, created_at, last_used, task_ids. Freshness is decided ONLY by the SHA-256 of
 the source content (equal -> reuse, different -> update), never by the LLM.
 
-Usage:
-  python3 skill_base.py init [--base skill-base]
-  python3 skill_base.py hash <path>                       # SHA-256 of a file or folder
-  python3 skill_base.py lookup <name> [--hash <hex>]      # reuse | update | found | missing
-  python3 skill_base.py record <name> <source> <hash> [--task-id <id>]
-  python3 skill_base.py list [--base skill-base]
+Usage (`--base` is a TOP-LEVEL option, so it must precede the subcommand):
+  python3 skill_base.py [--base skill-base] init
+  python3 skill_base.py hash <path>                                     # SHA-256 of a file/folder
+  python3 skill_base.py [--base skill-base] lookup <name> [--hash <hex>] # reuse|update|found|missing
+  python3 skill_base.py [--base skill-base] record <name> <source> <hash> [--task-id <id>]
+  python3 skill_base.py [--base skill-base] list
 
 `lookup` exits 1 for a missing skill (the reference_skills error contract). stdlib only.
 """
@@ -126,7 +126,23 @@ def cmd_list(args) -> int:
     return 0
 
 
+def use_utf8_output() -> None:
+    """Force UTF-8 on stdout/stderr so the help and printed names/paths survive a legacy console.
+
+    A Windows console defaults to a legacy code page (cp866/cp1251), which cannot encode every
+    character this manager prints (a skill name, a document path, the argparse help): printing
+    them would raise UnicodeEncodeError and the user would get a traceback instead of the output.
+    `errors="replace"` keeps a stream that cannot be reconfigured from ever raising.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):      # an old interpreter or a replaced stream
+            pass
+
+
 def main() -> int:
+    use_utf8_output()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base", default="skill-base", help="Skill-base directory (default: skill-base)")

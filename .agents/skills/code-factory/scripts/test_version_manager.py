@@ -36,7 +36,7 @@ def build_repo(root: pathlib.Path) -> None:
         "---\nname: code-factory\n---\n# Code Factory\n", encoding="utf-8")
 
 
-def suggest(**flags) -> str:
+def suggest(**flags) -> tuple[str, int]:
     ns = argparse.Namespace(new_subagent=False, new_task_type=False, new_field=False,
                             breaking=False, fix=False, no_change=False)
     for k, v in flags.items():

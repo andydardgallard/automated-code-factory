@@ -1,5 +1,5 @@
-# Autonomous Code Factory v12.12.0
-<!-- code-factory-version: 12.12.0 -->
+# Autonomous Code Factory v12.12.1
+<!-- code-factory-version: 12.12.1 -->
 
 An autonomous code-writing factory for the **Kimi Code CLI** (0.34+, Node).
 
@@ -37,8 +37,8 @@ green-field) — the stack is detected automatically.
 ├── .agents/
 │   ├── README.md                    # full factory manual
 │   ├── skills/code-factory/         # flow skill (SKILL.md) + references + scripts
-│   ├── agents/                      # main agent + subagents (.md)
-│   └── assets/task-template.yaml    # business task template
+│   │   └── assets/task-template.yaml # business task template
+│   └── agents/                      # main agent + subagents (.md)
 ├── AGENTS.md                        # context for Kimi agents
 ├── CHANGELOG.md                     # version history (SemVer)
 ├── prepare_factory.sh               # deploy the factory into a project (1 command)
@@ -152,4 +152,4 @@ change to the beginning or middle of a prompt invalidates the cache.
 ## Version
 
 Versioning follows [Semantic Versioning](https://semver.org/). Change history is in
-[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.12.0**.
+[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.12.1**.

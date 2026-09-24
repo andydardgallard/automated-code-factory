@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.12.0 -->
+<!-- code-factory-version: 12.12.1 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.

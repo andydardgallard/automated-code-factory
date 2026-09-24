@@ -31,9 +31,11 @@ Verified here:
      deployment each, then a second run to prove idempotency (existing project memory is never
      overwritten) and that the project name Python reported back is not mangled,
   9. the deployers' FAILURE paths stay business-like: the `.ps1` `Copy-Item` fallback turns a copy
-     failure into a message via `Err` plus the hard-error flag (never raw PowerShell records), and
-     a failed memory init in the `.sh` is reported as the short reason — the last non-empty line of
-     the output — never as a dump of the whole output (a traceback).
+     failure into a message via `Err` plus the hard-error flag (never raw PowerShell records),
+     a failed memory init is reported in BOTH deployers as the short reason — the last non-empty
+     line of the output — never as a dump of the whole output (a traceback) and never as its first
+     line (`Traceback (most recent call last):`), and the `.ps1` git step falls back to plain
+     `git init` + `symbolic-ref` on git < 2.28 (no `-b`) instead of hard-exiting.
 
 A project deployed by the factory contains only `.agents/` (plus the generated launchers), so
 there this test SKIPs cleanly instead of failing on a missing factory repo root.
@@ -86,6 +88,20 @@ SH_MEM_FAIL_MARKER = "Project memory: failed to create"
 # The reason shown for a failed init must be the LAST NON-EMPTY line of the output: the whole
 # blob (an interpreter traceback) drowns the actual message, the exception line does not.
 SH_REASON_TOKENS = ("$MEM_INIT_OUT", "awk", "NF", "END", "print last")
+
+# The Windows twins of the two markers above (the .ps1 must not drift from the .sh contract).
+PS1_MEM_FAIL_MARKER = "Project memory: failed to create"
+# ... and the last non-empty line is the reason, not the first: a traceback OPENS with
+# `Traceback (most recent call last):`, which names no cause at all.
+PS1_REASON_TAIL = "Select-Object -Last 1"
+PS1_REASON_FILTER_TOKENS = ("Where-Object", ".Trim()", "-ne ''")
+# The git step: `git init -b main` exists only since git 2.28. On older git the first attempt
+# fails with `unknown switch 'b'`, so the deployer has to fall back to plain init + symbolic-ref
+# (the unborn branch is renamed without a commit) and may hard-exit only when THAT fails too.
+PS1_GIT_ATTEMPT = "init -b main"
+PS1_GIT_FALLBACK = "symbolic-ref HEAD refs/heads/main"
+PS1_GIT_HARD_ERROR = "failed to create the repository"
+PS1_HARD_EXIT = re.compile(r"\bexit\s+1\b")
 
 # The Windows deployer must produce exactly these files in a fresh project.
 CREATED_RELS = (
@@ -437,6 +453,91 @@ def ps1_copy_fallback_is_guarded() -> None:
     expect(-1 not in positions and positions[0] < positions[1] < positions[2],
            f"{PS1_NAME}: the fallback must sit in a try/catch "
            f"(`try {{` ... Get-ChildItem ... `}} catch {{`), got offsets {positions}")
+
+
+def ps1_code_lines() -> list[str]:
+    """`prepare_factory.ps1` without comment-only lines (a comment mentioning a token is not code)."""
+    text = check_text_file(PS1, bom=True)
+    return [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+
+
+def ps1_git_init_fallback() -> None:
+    """`git init -b main` exists only since git 2.28 - on older git the deployer must not die.
+
+    The bash deployer already falls back (`git init` + `symbolic-ref HEAD refs/heads/main`, the
+    unborn branch renamed without a commit); the Windows one hard-exited on the very first failure,
+    so every project on git < 2.28 got "unknown switch 'b'" and a broken deployment. The pin here
+    is the ORDER: attempt -> (conditional) plain init -> symbolic-ref -> hard error only after that.
+    """
+    lines = ps1_code_lines()
+    attempt = next((i for i, line in enumerate(lines) if PS1_GIT_ATTEMPT in line), None)
+    expect(attempt is not None,
+           f"{PS1_NAME} must still try `git init -b main` (one command on git >= 2.28)")
+    fallback = next((i for i, line in enumerate(lines[attempt + 1:], attempt + 1)
+                     if PS1_GIT_FALLBACK in line), None)
+    expect(fallback is not None,
+           f"{PS1_NAME}: after the `-b` attempt on line {attempt + 1} the git < 2.28 fallback "
+           f"(`git symbolic-ref HEAD refs/heads/main`) is missing")
+    plain = [i for i in range(attempt + 1, fallback)
+             if re.search(r"\binit\b", lines[i]) and PS1_GIT_ATTEMPT not in lines[i]]
+    expect(plain,
+           f"{PS1_NAME}: the fallback must run plain `git init` first (nothing between lines "
+           f"{attempt + 2} and {fallback} does) - `symbolic-ref` alone fails without a repository")
+    expect(any(re.search(r"if\s*\(\s*\$LASTEXITCODE\s*-ne\s*0", lines[i])
+               for i in range(attempt, plain[0])),
+           f"{PS1_NAME}: the fallback must be conditional on the failed `-b` attempt "
+           "(`if ($LASTEXITCODE -ne 0)`), never run next to it")
+    early = [lines[i].strip() for i in range(attempt + 1, fallback)
+             if PS1_HARD_EXIT.search(lines[i])]
+    expect(not early,
+           f"{PS1_NAME}: {early} - a hard exit sits between the `-b` attempt (line {attempt + 1}) "
+           f"and its fallback (line {fallback + 1}): on git < 2.28 that is 'unknown switch b' plus "
+           "a dead deployment instead of a repository")
+    hard = next((i for i, line in enumerate(lines) if PS1_GIT_HARD_ERROR in line), None)
+    expect(hard is not None,
+           f"{PS1_NAME} must still report a git failure to the user (an `Err` line)")
+    expect(hard > fallback,
+           f"{PS1_NAME}: the git failure message on line {hard + 1} comes BEFORE the fallback on "
+           f"line {fallback + 1} - it may fire only when the fallback failed too")
+    exit_after = next((i for i in range(attempt, len(lines)) if PS1_HARD_EXIT.search(lines[i])), None)
+    expect(exit_after is not None and exit_after > hard,
+           f"{PS1_NAME}: a git failure that survives the fallback must stay a hard error "
+           f"(Err + exit 1, like `set -e` in the bash version)")
+
+
+def ps1_memory_failure_is_short() -> None:
+    """The Windows twin of `bash_memory_failure_is_short`: the reason, not a traceback dump.
+
+    The deployer stays non-fatal there (the factory creates the memory on first use), so the one
+    warning line is all the user sees. It used to show the FIRST output line - for a Python crash
+    that is `Traceback (most recent call last):`, which names no cause; the exception line is the
+    LAST one.
+    """
+    lines = ps1_code_lines()
+    fail_lines = [line for line in lines if PS1_MEM_FAIL_MARKER in line]
+    expect(fail_lines, f"{PS1_NAME} must still warn when the memory init fails")
+    for line in fail_lines:
+        expect("Select-Object -First 1" not in line,
+               f"{PS1_NAME}: the failure warning must not show the FIRST output line "
+               f"(a traceback opens with 'Traceback (most recent call last):'); got {line.strip()!r}")
+        expect("no output" in line,
+               f"{PS1_NAME}: the failure warning must keep its fallback for empty output, "
+               f"got {line.strip()!r}")
+    reason_lines = [line for line in lines if "$initRes.Output" in line and PS1_REASON_TAIL in line]
+    expect(reason_lines,
+           f"{PS1_NAME} must derive a short reason from the init output "
+           f"(@($initRes.Output) ... {PS1_REASON_TAIL})")
+    for line in reason_lines:
+        missing = [token for token in PS1_REASON_FILTER_TOKENS if token not in line]
+        expect(not missing,
+               f"{PS1_NAME}: the reason must be the LAST NON-EMPTY line of the init output "
+               f"(missing {missing}), not merely the last one; got {line.strip()!r}")
+        name = re.match(r"\s*(\$\w+)\s*=", line)
+        expect(name is not None,
+               f"{PS1_NAME}: the short reason must be stored in a variable, got {line.strip()!r}")
+        expect(any(name.group(1) in fail for fail in fail_lines),
+               f"{PS1_NAME}: the failure warning must show the short reason ({name.group(1)}), "
+               f"got {fail_lines[0].strip()!r}")
 
 
 def gitattributes_rules() -> set[str]:
@@ -818,6 +919,11 @@ def main() -> int:
     # 8. Failure paths of both deployers: business message, honest exit code, no raw dumps.
     checker.check("prepare_factory.ps1: the Copy-Item fallback is in a try/catch (-ErrorAction "
                   "Stop, Err + $HardError, exit 1 without the banner)", ps1_copy_fallback_is_guarded)
+    checker.check("prepare_factory.ps1: git init falls back to plain init + symbolic-ref on git "
+                  "< 2.28 (`-b` unsupported) - hard error only if the fallback fails too",
+                  ps1_git_init_fallback)
+    checker.check("prepare_factory.ps1: a failed memory init is reported as a short reason "
+                  "(last non-empty line, no raw output)", ps1_memory_failure_is_short)
     checker.check("prepare_factory.sh: a failed memory init is reported as a short reason "
                   "(last non-empty line, no raw output)", bash_memory_failure_is_short)
 

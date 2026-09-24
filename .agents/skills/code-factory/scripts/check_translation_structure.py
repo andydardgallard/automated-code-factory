@@ -194,6 +194,13 @@ def excluded(path: str, patterns: tuple[str, ...]) -> bool:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
+    """Compare every changed file against the base and return the exit code (0, 1 or 3).
+
+    A file that is gone from the worktree fails the check whatever its type: the absence probe
+    runs BEFORE the family lookup, so a deleted `.json` or binary — a type with no skeleton to
+    compare — is a deletion, never a "skipped" note. A file of such a type is skipped only while
+    it still exists.
+    """
     root = pathlib.Path(args.root)
     try:
         changed = changed_files(root, args.base)
@@ -208,16 +215,16 @@ def cmd_check(args: argparse.Namespace) -> int:
         if excluded(path, tuple(args.exclude)):
             notes["excluded"] += 1
             continue
+        new_path = root / path
+        if not new_path.is_file():                # a file GONE from the worktree fails the check
+            deleted.append(path)                  # whatever its type: the absence outranks the
+            continue                              # "no skeleton, nothing to compare" skip
         if family(path) is None:
             notes["unsupported"] += 1
             continue
         old_raw = base_content(root, args.base, path)
         if old_raw is None:
             notes["new"] += 1
-            continue
-        new_path = root / path
-        if not new_path.is_file():
-            deleted.append(path)
             continue
         try:
             new_raw = new_path.read_bytes()

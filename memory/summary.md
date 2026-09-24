@@ -8,18 +8,22 @@ repo_path: .
 (порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
 
 ## Current state
-Фабрика v12.11.0: v12.8.0 (шард-протокол, двухуровневый fingerprint, Think in Code, review-гейт,
-верифицируемая приёмка, verify_quotes, evidence ledger, advisor, preflight) + v12.9.0 (rulebook,
-сквозной run_id, provenance-память v2, golden-set, вакцинация, WIP, error-patterns JSON) +
-v12.10.0 (severity-граница §3, committee + plan_arbiter, авто-детект корня → SKIP,
-precedent_index FTS5) + v12.10.1/12.10.2 (utf8-guard во всех argparse-скриптах, 22-е правило
-no-shared-tree-git-mutations) + v12.11.0 (явная классификация git stash в action_gate;
-контентный fingerprint по СОДЕРЖИМОМУ рабочего дерева — unstaged виден, blind spot = untracked;
-механизм актуальности памяти: memory_project.py backlog [--check] + протокол closed:+evidence: +
-23-е правило memory-actuality + сверка backlog в начале прогона и актуализация сводки каждым
-прогоном; project-learned overlay error_router §1.2; providers.md §5.2 — правило комитета
-сильнее матрицы models). Rulebook: 23 правила, 86 носителей. Владелец памяти: repo.
-26/26 self-тестов PASS. Открытый backlog: 0 (все 32 исторических follow_up закрыты с evidence).
+Factory v12.12.0 — ENGLISH-ONLY: the whole factory (code messages, comments, docs, skill,
+agents, rulebook) is translated to English under the freeze-functionality invariant; 24th rule
+`english-only` makes English the norm for every future artifact (exceptions: live user
+communication, history). Translation-quality gates added: `check_english_only.py` (0 Cyrillic
+outside exceptions), `check_translation_structure.py` (skeleton preserved,
+`--allow-added-rule`/`--exclude`), sharded semantic audit (merged verdict approve). History:
+v12.8.0 (shard protocol, two-level fingerprint, Think in Code, review gate, verified acceptance,
+verify_quotes, evidence ledger, advisor, preflight) + v12.9.0 (rulebook, run_id, memory v2
+provenance, golden set, vaccination, WIP, error-patterns JSON) + v12.10.0 (severity boundary §3,
+committee + plan_arbiter, root auto-detect → SKIP, precedent_index FTS5) + v12.10.1/12.10.2
+(utf8-guard in all argparse scripts, 22nd rule no-shared-tree-git-mutations) + v12.11.0 (explicit
+git stash classification in action_gate; content fingerprint over the working tree; memory
+actuality mechanism: backlog [--check] + closed:+evidence: + 23rd rule memory-actuality;
+project-learned overlay error_router §1.2; providers.md §5.2). Rulebook: 24 rules, 94 carriers.
+Memory owner: repo. 28/28 self-tests PASS (+ test_env_propagation.sh). Open backlog: 0
+(all 32 historical follow_up closed with evidence).
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле
@@ -41,6 +45,11 @@ no-shared-tree-git-mutations) + v12.11.0 (явная классификация 
 - Документер обновляет только doc-комментарии и `.md` (secondary-модель, валидатор, бюджет 1).
 
 ## Recent history
+- 2026-09-24 — "Factory v7 (v12.12.0)" (factory/v7-english-only, c891a67): full RU→EN translation
+  of the factory (freeze-functionality refactor; 46 files); 24th rule english-only (8 carriers);
+  quality gates — glossary, check_english_only.py, check_translation_structure.py, 6-shard
+  semantic audit (approve); test_run_id digest re-pinned; wave P outer-tree mistake reverted and
+  redone. v12.11.0 → v12.12.0 (minor).
 - 2026-09-24 — «Фабрика v6 (v12.11.0)» (feature/factory-v6-backlog-20260923, 4b6652c):
   полная очистка backlog по всей истории (32 follow_up → 0 открытых, все с evidence);
   явная классификация git stash (мутирующие → CONFIRM, list/show → ALLOW, разбор -m/--message);

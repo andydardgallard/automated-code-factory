@@ -327,6 +327,9 @@ $shLines = @(
     '#   ./start.sh          — interactive (in the chat: /skill:code-factory)',
     '#   ./start.sh --auto   — fully autonomous',
     'set -euo pipefail',
+    '# The launch directory — the absolute path of the directory holding this launcher. It is the',
+    '# machine-checkable anchor against which the instruction layer resolves the task''s repo_path.',
+    'export KIMI_FACTORY_LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
     '# Subagent model split (primary/secondary) is enabled here automatically.',
     'export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1',
     'exec kimi "$@"'
@@ -342,6 +345,10 @@ $cmdLines = @(
     'rem   start.cmd          — interactive (in the chat: /skill:code-factory)',
     'rem   start.cmd --auto   — fully autonomous',
     'cd /d "%~dp0"',
+    'rem The launch directory — the absolute path of the directory holding this launcher (%CD% after',
+    'rem the cd above: no trailing backslash). It is the machine-checkable anchor against which the',
+    'rem instruction layer resolves the task''s repo_path.',
+    'set "KIMI_FACTORY_LAUNCH_DIR=%CD%"',
     'rem Subagent model split (primary/secondary) is enabled here automatically.',
     'set KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1',
     'where kimi >nul 2>&1',
@@ -378,7 +385,10 @@ if ($ShWritten)  { Info "    Launcher: created $LauncherSh" }
 # history, context) — the factory works with .agents/ directly through the file
 # system, not through git.
 $Gitignore        = Join-Path $ProjectDir '.gitignore'
-$CfPatterns       = @('.agents/', '.code-factory/', '__pycache__/', '*.pyc', '.env', '.env.*', '*.env', '*.pem', '*.key')
+# task.yaml / start.cmd / start.sh are the factory's own files in a DEPLOYED project: a leftover
+# task file or launcher sitting in a TARGET project must never be mistaken for a new task and
+# never get committed.
+$CfPatterns       = @('.agents/', '.code-factory/', '__pycache__/', '*.pyc', '.env', '.env.*', '*.env', '*.pem', '*.key', 'task.yaml', 'start.cmd', 'start.sh')
 $GitignoreExists  = Test-Path -LiteralPath $Gitignore -PathType Leaf
 $GitignoreText    = ''
 if ($GitignoreExists) { $GitignoreText = [System.IO.File]::ReadAllText($Gitignore) }

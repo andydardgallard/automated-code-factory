@@ -131,10 +131,13 @@ Example — learned file, command, resulting route:
 
 ```bash
 python .agents/skills/code-factory/scripts/error_router.py classify \
-  --log .code-factory/logs/errors.md --repo .
+  --log .code-factory/logs/errors.md --repo <resolved repo_path>
 # patterns: <.code-factory/state/error-patterns.json> + <references/error-patterns.default.json>
 # category: PROJ_MODULE   route: planner   pattern_id: 6
 ```
+
+The `--log` path is relative to the resolved repo root (the artifact tree lives INSIDE it), while
+`--repo` makes `classify` read the learned patterns of that same repository.
 
 `ModuleNotFoundError` routes to PLANNER instead of the built-in BA (id 6 is replaced), a log
 carrying `FeedError` routes to INFRASTRUCTURE (learned `P1` is tried before every default row), and

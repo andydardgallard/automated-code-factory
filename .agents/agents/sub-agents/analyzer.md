@@ -25,10 +25,12 @@ entries whose `project:` matches it (entries without `project:` are legacy, entr
 project mean the journal is wrong). Do NOT re-derive from scratch what AGENTS.md already
 documents — report only what the model is missing or what the task specifically needs.
 
-**Precedents before re-reading.** Before re-reading history or code, ask the precedent index:
-`python .agents/skills/code-factory/scripts/precedent_index.py query --repo . "<topic>"` returns the
-memory and code hits that already answer the question. The main agent builds the index
-(`… build --repo .`); if it is not there yet, fall back to reading the files.
+**Precedents before re-reading.** Before re-reading history or code, ask the precedent index, always
+passing the repository root from your briefing as `--repo`:
+`python .agents/skills/code-factory/scripts/precedent_index.py query --repo <repository root from the briefing> "<topic>"`
+returns the memory and code hits that already answer the question. The main agent builds the index
+the same way (`… build --repo <repository root from the briefing>`); if it is not there yet, fall back
+to reading the files.
 
 Allowed Bash commands are read-only: `ls`, `find`, `cat`, `head`, `tail`, `grep`, `wc`, and
 read-only test collection (e.g. `cargo test -- --list`, `pytest --collect-only`,

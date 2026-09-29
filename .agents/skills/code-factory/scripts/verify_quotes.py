@@ -17,10 +17,17 @@ re-read the raw archive instead of trusting the reduction. Unreadable input neve
 
 Input (JSON):
   [{"quote": "exact text from the source", "source": ".code-factory/logs/baseline.md"}, ...]
-  A relative `source` is resolved against the current working directory.
+  A relative `source` is resolved against `--repo` when it is given, otherwise against the current
+  working directory.
 
 Usage:
-  python verify_quotes.py --claims claims.json [--report quotes-report.json]
+  python verify_quotes.py --claims claims.json [--report quotes-report.json] [--repo <root>]
+
+`--repo <root>` (a synonym: `--base`) is the resolved repo_path of the run and is OPTIONAL. When it
+is given, the RELATIVE paths of the invocation are resolved against it — the quote sources, the
+`--claims` file and `--report` — while an absolute path is always taken as it is, so quotes taken
+from `.code-factory/` of the target repository are checked against that repository. Without the
+flag nothing changes: every relative path stays relative to the caller's working directory.
 
 Output: the JSON report goes to `--report` when given, otherwise to stdout; the human-readable
 summary always goes to stderr. Exit code 0 only if EVERY quote is verified. stdlib only.
@@ -33,6 +40,22 @@ import pathlib
 import sys
 
 FAIL_SAFE = "fallback to full log"
+REPO_HELP = ("Resolved repo_path of the run: a RELATIVE quote source (and a relative "
+             "--claims/--report) is resolved against it (default: the caller's working directory "
+             "— unchanged without the flag)")
+
+
+def anchored(path: str | pathlib.Path, repo: str | pathlib.Path | None) -> pathlib.Path:
+    """`path` resolved against the explicit `--repo` base; an absolute path is taken as it is.
+
+    Without a base the path is returned unchanged, so the caller's working directory stays the base
+    and a quote is looked for exactly where it was before the flag existed (fail-safe default: a
+    missing anchor must never silently point a quote at the wrong repository).
+    """
+    resolved = pathlib.Path(path)
+    if repo and not resolved.is_absolute():
+        return pathlib.Path(repo) / resolved
+    return resolved
 
 
 def normalize(text: str) -> str:
@@ -51,14 +74,16 @@ def read_source(path: pathlib.Path) -> str | None:
     return normalize(data.decode("utf-8", errors="replace"))
 
 
-def check_claim(quote: str, source: str, cwd: pathlib.Path) -> dict:
-    """Verify one quote against its source; return a report entry."""
+def check_claim(quote: str, source: str, base: pathlib.Path) -> dict:
+    """Verify one quote against its source; return a report entry.
+
+    `base` is what a relative `source` is resolved against: `--repo` when it was given, else the
+    caller's working directory.
+    """
     if not quote:
         return {"quote": quote, "source": source, "reason":
                 f"empty quote is never evidence; {FAIL_SAFE}"}
-    path = pathlib.Path(source)
-    if not path.is_absolute():
-        path = cwd / path
+    path = anchored(source, base)
     text = read_source(path)
     if text is None:
         return {"quote": quote, "source": source, "reason":
@@ -115,19 +140,22 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--claims", required=True, help="Claims JSON file (see module docstring)")
     ap.add_argument("--report", default="", help="Write the JSON report here (default: stdout)")
+    ap.add_argument("--repo", "--base", dest="repo", metavar="ROOT", default=None, help=REPO_HELP)
     args = ap.parse_args()
 
+    # The anchor is optional: without `--repo` the cwd is the base, exactly as before the flag.
+    base = pathlib.Path(args.repo) if args.repo else pathlib.Path.cwd()
+
     try:
-        claims = load_claims(pathlib.Path(args.claims))
+        claims = load_claims(anchored(args.claims, base))
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    cwd = pathlib.Path.cwd()
     verified: list[dict] = []
     untrusted: list[dict] = []
     for claim in claims:
-        entry = check_claim(claim["quote"], claim["source"], cwd)
+        entry = check_claim(claim["quote"], claim["source"], base)
         if "reason" in entry:
             untrusted.append(entry)
         else:
@@ -144,7 +172,7 @@ def main() -> int:
     }
     blob = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.report:
-        out = pathlib.Path(args.report)
+        out = anchored(args.report, base)
         try:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(blob, encoding="utf-8")

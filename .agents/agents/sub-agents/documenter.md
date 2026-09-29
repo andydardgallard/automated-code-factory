@@ -49,12 +49,16 @@ Work in two steps so the validator has a baseline to diff against:
    touch:
    ```bash
    python3 .agents/skills/code-factory/scripts/validate_documentation.py snapshot \
-     --repo . --baseline .code-factory/docs_baseline --files <rel-path> [<rel-path> ...]
+     --repo <repository root from the briefing> \
+     --baseline <repository root from the briefing>/.code-factory/docs_baseline \
+     --files <rel-path> [<rel-path> ...]
    ```
 2. **Edit the docs only**, then **check** the same file list against that snapshot:
    ```bash
    python3 .agents/skills/code-factory/scripts/validate_documentation.py check \
-     --repo . --baseline .code-factory/docs_baseline --files <rel-path> [<rel-path> ...]
+     --repo <repository root from the briefing> \
+     --baseline <repository root from the briefing>/.code-factory/docs_baseline \
+     --files <rel-path> [<rel-path> ...]
    ```
 
 - If `check` PASSES → return the structured report below.

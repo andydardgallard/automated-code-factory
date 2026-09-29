@@ -17,8 +17,15 @@ instead (exit 2): the caller asked for this exact file.
 
 Usage:
   python error_router.py classify --log <file> [--project-patterns <json>] [--repo <root>]
-  python error_router.py merge --project <json> [--out <path>]
+  python error_router.py merge --project <json> [--out <path>] [--repo <root>]
   python error_router.py export-defaults [--out <path>] [--repo <root>]
+
+`--repo <root>` is the resolved repo_path of the run and is OPTIONAL. When it is given, the
+RELATIVE paths of the invocation are resolved against it — `--log`, the patterns files
+(`--project-patterns` / `--project`) and `--out` — while an absolute path is always taken as it
+is; the learned-patterns lookup already defaults to `<root>/.code-factory/state/error-patterns.json`
+and keeps that meaning. Without the flag nothing changes: every relative path stays relative to the
+caller's working directory.
 
 `classify` prints one `key: value` line per field:
 
@@ -213,6 +220,19 @@ def project_patterns_path(repo: pathlib.Path) -> pathlib.Path:
     return repo / PROJECT_RELATIVE
 
 
+def anchored(path: str | pathlib.Path, repo: str | None) -> pathlib.Path:
+    """`path` resolved against the explicit `--repo` root; an absolute path is taken as it is.
+
+    Without `--repo` the path is returned unchanged, so the caller's working directory stays the
+    base and every command behaves exactly as it did before the option existed (fail-safe default:
+    a missing anchor must never silently re-point a path at the wrong repository).
+    """
+    resolved = pathlib.Path(path)
+    if repo and not resolved.is_absolute():
+        return pathlib.Path(repo) / resolved
+    return resolved
+
+
 def resolve_project(project_arg: str | None, repo_arg: str | None) -> pathlib.Path | None:
     """`--project-patterns` (must exist) else the repo's learned file (may be absent)."""
     if project_arg:
@@ -247,7 +267,10 @@ def load_project_patterns(project: pathlib.Path | None,
 
 def cmd_classify(args: argparse.Namespace) -> int:
     default = load_document(DEFAULT_PATTERNS, require_full=True)
-    project = resolve_project(args.project_patterns, args.repo)
+    # `--repo` anchors the run's relative paths (the log and an explicitly named patterns file);
+    # without it the caller's cwd stays the base, exactly as before the option existed.
+    project_arg = str(anchored(args.project_patterns, args.repo)) if args.project_patterns else None
+    project = resolve_project(project_arg, args.repo)
     learned, warning = load_project_patterns(project, explicit=bool(args.project_patterns))
     if warning:
         print(warning, file=sys.stderr)
@@ -257,7 +280,7 @@ def cmd_classify(args: argparse.Namespace) -> int:
         doc = combine(learned, default)
         source = f"{project} + {DEFAULT_PATTERNS}"
 
-    log = pathlib.Path(args.log)
+    log = anchored(args.log, args.repo)
     try:
         text = log.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -278,10 +301,10 @@ def cmd_classify(args: argparse.Namespace) -> int:
 
 def cmd_merge(args: argparse.Namespace) -> int:
     default = load_document(DEFAULT_PATTERNS, require_full=True)
-    project_path = pathlib.Path(args.project)
+    project_path = anchored(args.project, args.repo)
     project = load_document(project_path, require_full=False)
     text = dumps(combine(project, default))
-    write_json(pathlib.Path(args.out) if args.out else project_path, text)
+    write_json(anchored(args.out, args.repo) if args.out else project_path, text)
     sys.stdout.write(text)
     return 0
 
@@ -292,7 +315,7 @@ def cmd_export_defaults(args: argparse.Namespace) -> int:
     except OSError as exc:
         raise PatternError(f"cannot read the default patterns {DEFAULT_PATTERNS}: {exc}") from exc
     if args.out:
-        out = pathlib.Path(args.out)
+        out = anchored(args.out, args.repo)
     else:
         repo = pathlib.Path(args.repo) if args.repo else pathlib.Path.cwd()
         out = project_patterns_path(repo)
@@ -312,21 +335,27 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Project-learned patterns file (overrides the repo lookup; "
                                "must exist and be usable)")
     classify.add_argument("--repo", metavar="ROOT", default=None,
-                          help="Repo root holding .code-factory/state (default: cwd; a broken "
-                               "learned file there warns and falls back to the defaults)")
+                          help="Resolved repo_path of the run: holds .code-factory/state (the "
+                               "learned patterns) and anchors a RELATIVE --log / "
+                               "--project-patterns (default: cwd; a broken learned file there "
+                               "warns and falls back to the defaults)")
     classify.set_defaults(func=cmd_classify)
 
     merge = sub.add_parser("merge", help="Merge a project file over the defaults (project-first)")
     merge.add_argument("--project", required=True, help="Project-learned patterns file")
     merge.add_argument("--out", default=None,
                        help="Where to write the merged JSON (default: the project file itself)")
+    merge.add_argument("--repo", metavar="ROOT", default=None,
+                       help="Resolved repo_path of the run: a RELATIVE --project / --out is "
+                            "resolved against it (default: cwd)")
     merge.set_defaults(func=cmd_merge)
 
     export = sub.add_parser("export-defaults", help="Copy the default snapshot as a starter file")
     export.add_argument("--out", default=None,
                         help="Target path (default: <repo>/.code-factory/state/error-patterns.json)")
     export.add_argument("--repo", metavar="ROOT", default=None,
-                        help="Repo root used when --out is omitted (default: cwd)")
+                        help="Resolved repo_path of the run: a RELATIVE --out is resolved against "
+                             "it and it is the target when --out is omitted (default: cwd)")
     export.set_defaults(func=cmd_export_defaults)
     return ap
 

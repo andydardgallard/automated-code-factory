@@ -5,6 +5,10 @@ rem Code Factory launcher for Windows — created by prepare_factory.
 rem   start.cmd          — interactive (in the chat: /skill:code-factory)
 rem   start.cmd --auto   — fully autonomous
 cd /d "%~dp0"
+rem The launch directory — the absolute path of the directory holding this launcher (%CD% after
+rem the cd above: no trailing backslash). It is the machine-checkable anchor against which the
+rem instruction layer resolves the task's repo_path.
+set "KIMI_FACTORY_LAUNCH_DIR=%CD%"
 rem Subagent model split (primary/secondary) is enabled here automatically.
 set KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1
 where kimi >nul 2>&1

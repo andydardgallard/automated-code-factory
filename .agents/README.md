@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.12.1 -->
+<!-- code-factory-version: 12.13.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -86,6 +86,7 @@ projects or creates projects from scratch.
 │       │   ├── test_verify_acceptance.py   # acceptance check self-test
 │       │   ├── verify_quotes.py            # verbatim quote check of evidence quotes (Evidence-Preserving Reducer)
 │       │   ├── test_verify_quotes.py       # quote check self-test
+│       │   ├── test_repo_scoping.py        # repo-scoping contract self-test: a run with repo_path != cwd keeps every artifact (and the git half) in the resolved repo
 │       │   ├── test_review_gate.py         # canonical review gate self-test (5 documents)
 │       │   └── test_windows_scripts.py     # Windows deployment/launch scripts self-test
 │       └── assets/
@@ -106,11 +107,20 @@ projects or creates projects from scratch.
         └── skill-manager.md         # subagent: skill base management (reference_docs)
 ```
 
-The factory's runtime state lives in `.code-factory/` inside the project (not committed):
+The factory's runtime state lives in `.code-factory/` (not committed) at the ROOT of the RESOLVED
+`repo_path`: the task's `repo_path` is resolved ONCE to an absolute path (relative to the launch
+directory) at the start of the run, and it is that resolved root — not the launch directory — which
+holds the artifact tree; every relative artifact path in this manual is relative to it:
 `state/` (task, plan, pipeline.yaml, acceptance.md, evidence ledger, task graph,
 FTS5 precedent index `precedents.db`),
 `backups/` (backups of modified files), `manifest.json` (list of changed/created files),
 `logs/` (errors, test results, code review, shard findings).
+The deterministic scripts accept an OPTIONAL `--repo <root>` — `run_id.py`, `factory_preflight.py`
+and `task_graph.py` (`--root` is a synonym), `error_router.py`, and `verify_quotes.py` (`--base` is a
+synonym) — which resolves their RELATIVE paths (`--task`, `--dir`, `--out`, `--log`, the patterns
+files, the quote sources, `--claims`, `--report`) against the resolved repo_path; an absolute path is
+always taken as it is, and without the flag a relative path stays relative to the caller's working
+directory (the default is unchanged).
 <!-- factory-rule: run-id begin -->
 **Run identifier (canonical wording):** at the start of a run `run_id = YYYYMMDD-<sha256(task.yaml)[:8]>` is computed deterministically (`scripts/run_id.py`) and stamped into `.code-factory/state/pipeline.yaml`, `state/acceptance.md`, `logs/*.md`, `report.md` and the run's memory entry. One run — one identifier; it links the artifacts to each other. `scripts/run_id.py check` finds the run's artifacts without a `run_id` and lists them.
 <!-- factory-rule: run-id end -->
@@ -161,8 +171,12 @@ Preparation and launch are a single action. First prepare the project:
 ./prepare_factory.sh /path/to/your-project
 ```
 
-The script copies the factory, configures `.gitignore`/git, and creates a `start.sh` launcher in the project
-(with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` already set in it). Then — just launch:
+The script copies the factory, configures `.gitignore`/git (in the prepared project it ignores
+`.agents/`, `.code-factory/`, the secret patterns, and the factory's own `task.yaml`/`start.cmd`/
+`start.sh`, so a leftover task file or launcher is never mistaken for a new task and never
+committed), and creates a `start.sh` launcher in the project (with
+`KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` and `KIMI_FACTORY_LAUNCH_DIR` — the absolute launch
+directory, the anchor against which the task's `repo_path` is resolved — already set in it). Then — just launch:
 
 ```bash
 cd /path/to/your-project
@@ -300,8 +314,11 @@ There is no `priority` field — all tasks are processed with the highest priori
 `business_tests` is read in Phase 0 together with the task; if the field is absent, the factory clarifies the scenario,
 configs, and expected business results with the user at the planning stage (hitl).
 <!-- factory-rule: task-format begin -->
-**Task format (canonical wording):** a task carries `title`, `repo_path`, `description`, optionally `user_story`, `mode` (`hitl`|`auto`), `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria` (a criterion may carry `verify: <command>` and `derived: true`), `business_tests` (scenario, configs, expected business results), `commit_exclude`, `models`, `reference_docs`, `reference_skills`. There is NO `priority` field — all tasks are high by default, the factory does not prioritize them. A missing required field is a task parsing error, not a reason to guess it mid-run.
+**Task format (canonical wording):** a task carries `title`, `repo_path`, `description`, optionally `user_story`, `mode` (`hitl`|`auto`), `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria` (a criterion may carry `verify: <command>` and `derived: true`), `business_tests` (scenario, configs, expected business results), `commit_exclude`, `models`, `reference_docs`, `reference_skills`. `repo_path` is REQUIRED for every task except a green-field one (a brand-new project created in place) and is always resolved ONCE to an absolute path at the start of the run. There is NO `priority` field — all tasks are high by default, the factory does not prioritize them. A missing required field is a task parsing error, not a reason to guess it mid-run.
 <!-- factory-rule: task-format end -->
+<!-- factory-rule: repo-scoping begin -->
+**Repo-path scoping (canonical wording):** at the start of a run the factory resolves the task's `repo_path` ONCE to an absolute path (relative to the launch directory) and then performs EVERYTHING relative to that resolved target repository: the `.code-factory/` artifact tree (`state/`, `logs/`, `backups/`, `manifest.json`, reports), backups, git operations (`git -C <repo>` or an explicit cwd), source edits and rollback. The documented exceptions that stay DEPLOYMENT-ROOT-scoped are `memory/` (the long-term memory lives at the deployment root) and `scripts/version_manager.py` (`VERSION` lives at the deployment root) — they receive their root explicitly, never a silent default to the launch directory.
+<!-- factory-rule: repo-scoping end -->
 
 `task_type: review` — a "do a code review of existing code" task: the factory runs the
 reviewer over **all** the code at the start, and its findings become the work plan.

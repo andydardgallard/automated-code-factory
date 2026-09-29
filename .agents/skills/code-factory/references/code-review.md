@@ -4,6 +4,9 @@ Goal: a static quality gate on the factory's work. The `factory-code-reviewer` s
 the produced code before the task can be accepted. It either **approves** the change or returns a
 **rework list** (a task for the coder).
 
+Every `.code-factory/` path below lives at the root of the RESOLVED `repo_path` (the review
+target), never at the launch folder — see the canonical `repo-scoping` rule.
+
 ## 0. Review gate (canonical policy)
 
 This block is the normative statement of the acceptance rule: where any other sentence in this

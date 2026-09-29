@@ -75,18 +75,26 @@ A green log from an older revision is not proof about the current code. Every te
 result is therefore signed with the fingerprint of the files it depends on, and re-checked before
 anyone relies on it.
 
+The task's `repo_path` is resolved ONCE to an absolute path and the examples below are anchored
+there: every one of them passes `--repo <resolved repo_path>` explicitly, `--files` are
+repo-relative paths, and a `.code-factory/...` path means `<resolved repo_path>/.code-factory/...` —
+the artifact tree lives INSIDE the resolved repository, never in the launch/deployment folder. Run
+the commands with the cwd at the resolved repo root (an explicit cwd), or spell those paths out
+absolutely.
+
 ```bash
-# sign: print the SHA-256 fingerprint of the files this evidence depends on
-python .agents/skills/code-factory/scripts/evidence_ledger.py sign --files src/a.py src/b.py
+# sign: print the SHA-256 fingerprint of the files this evidence depends on (repo-relative)
+python .agents/skills/code-factory/scripts/evidence_ledger.py sign \
+  --repo <resolved repo_path> --files src/a.py src/b.py
 
 # stamp: write/refresh one evidence entry in the ledger
 python .agents/skills/code-factory/scripts/evidence_ledger.py stamp \
-  --ledger .code-factory/state/evidence.json --name regression --result pass \
-  --files src/a.py src/b.py --log .code-factory/logs/regression.log
+  --repo <resolved repo_path> --ledger .code-factory/state/evidence.json --name regression \
+  --result pass --files src/a.py src/b.py --log .code-factory/logs/regression.log
 
 # check: recompute the fingerprints of the signed files and print FRESH/STALE per entry
 python .agents/skills/code-factory/scripts/evidence_ledger.py check \
-  --ledger .code-factory/state/evidence.json --files src/a.py src/b.py
+  --repo <resolved repo_path> --ledger .code-factory/state/evidence.json --files src/a.py src/b.py
 ```
 
 - The fingerprint is SHA-256 over `<relative path>:<content sha256>` lines, sorted and
@@ -107,7 +115,8 @@ python .agents/skills/code-factory/scripts/evidence_ledger.py check \
 
   ```bash
   python .agents/skills/code-factory/scripts/verify_acceptance.py \
-    --input criteria.json --output .code-factory/state/acceptance.md --repo . \
+    --input criteria.json --output .code-factory/state/acceptance.md \
+    --repo <resolved repo_path> \
     --regression pass --ledger .code-factory/state/evidence.json --evidence-files src/a.py
   ```
 
@@ -149,22 +158,33 @@ data, and check that the **business results** match what the user expected.
 
 Trigger: ANY test failure (integration, regression, business) or acceptance-criteria miss.
 
+The task's `repo_path` is resolved ONCE to an absolute path and the whole mechanism is anchored
+there: git always runs as `git -C <resolved repo_path>`, and `.code-factory/` is
+`<resolved repo_path>/.code-factory/` INSIDE the resolved repository — state, backups and manifest
+included. The launch/deployment folder is never written to by the run.
+
 ### 4.1 Prepare before changes (done in Phase 4 of the flow)
 
 ```bash
-# Record git state
-git rev-parse HEAD > .code-factory/state/git-head.txt
-git status --porcelain > .code-factory/state/git-status-before.txt
+# Record git state — every git operation targets the resolved repo
+git -C <resolved repo_path> rev-parse HEAD > <resolved repo_path>/.code-factory/state/git-head.txt
+git -C <resolved repo_path> rev-parse --abbrev-ref HEAD > <resolved repo_path>/.code-factory/state/git-branch.txt
+git -C <resolved repo_path> status --porcelain > <resolved repo_path>/.code-factory/state/git-status-before.txt
 
-# Backup every file that will be modified (preserve relative paths)
-mkdir -p .code-factory/backups
-# example: cp --parents src/lib.rs .code-factory/backups/
-# (copy each changed file into .code-factory/backups/ keeping its path)
+# Backup every file that will be modified (preserve relative paths, INSIDE the resolved repo)
+mkdir -p <resolved repo_path>/.code-factory/backups
+# example: cp --parents src/lib.rs <resolved repo_path>/.code-factory/backups/
+# (copy each changed file into <resolved repo_path>/.code-factory/backups/ keeping its path)
 ```
+
+The feature branch and the run's commits use the same anchored form
+(`git -C <resolved repo_path> switch -c <feature-branch>`, `git -C <resolved repo_path> commit ...`),
+so the branch, the base commit and its HEAD all belong to the resolved repository.
 
 ### 4.2 Manifest
 
-Maintain `.code-factory/manifest.json`:
+Maintain `<resolved repo_path>/.code-factory/manifest.json`. Every path in it is relative to the
+resolved repo root and `backup_root` points INSIDE that repository:
 
 ```json
 {
@@ -178,21 +198,32 @@ Update it after every file operation by the factory.
 
 ### 4.3 Rollback steps (on failure)
 
+Run every step with the cwd at `<resolved repo_path>`, or prefix each path with it.
+
 ```bash
-# 1. Remove files created by the factory
+# 1. Remove files created by the factory (manifest paths are relative to the resolved repo)
 while read -r f; do rm -f "$f"; done < <(python3 -c "import json;print('\n'.join(json.load(open('.code-factory/manifest.json'))['created_files']))")
 
-# 2. Restore modified files from backups
-#    for each changed file: cp .code-factory/backups/<path> <path>
+# 2. If the run moved HEAD (it made commits on the feature branch — the normal implement case),
+#    git restores the base state FIRST; restoring file backups before this step is wasted work,
+#    because the git restore overwrites them again. Reset BEFORE switching — a dirty tree makes
+#    `switch` refuse, and deleting the feature branch afterwards drops the run's commits:
+#    git -C <resolved repo_path> reset --hard <base commit from .code-factory/state/git-head.txt>
+#    git -C <resolved repo_path> switch <pre-run branch from .code-factory/state/git-branch.txt>
+#    git -C <resolved repo_path> branch -D <feature branch>
+#    (the main agent alone performs these working-tree mutations, on the resolved repo)
 
-# 3. If the project uses git and backups are unreliable, restore from git
-#    (only for tracked files, and only if HEAD was not moved):
-#    git checkout -- <changed files>   (created/untracked files must be removed manually)
+# 3. If HEAD was NOT moved (no run commits): restore modified files from backups
+#    (all inside the resolved repo) — for each changed file: cp .code-factory/backups/<path> <path>;
+#    for tracked files git can double-check: git -C <resolved repo_path> checkout -- <changed files>
+#    (created/untracked files must be removed manually — step 1)
 
-# 4. Verify: git status should now match .code-factory/state/git-status-before.txt
+# 4. Verify: git -C <resolved repo_path> status should now match .code-factory/state/git-status-before.txt
 ```
 
-After rollback the project MUST be byte-identical to the pre-change state.
+After rollback the resolved repository MUST be byte-identical to the pre-change state — and the
+launch/deployment root MUST be untouched: no artifact, backup or commit of the run ever lands
+there.
 
 ### 4.4 Iteration
 

@@ -1,11 +1,14 @@
 # Business task template for the Code Factory
 # Fill in ONLY business terms — no code details needed.
-# Only `title` and `description` are required.
+# Only `title`, `description` and (except for green-field projects) `repo_path` are required.
 # NOTE: there is NO priority field — every task is treated as HIGH priority by default.
 
 title: "Short business goal, e.g.: Strategy works wrong for CNY instrument — no trading signals"
 
-# Path to an existing repository. Omit for brand-new projects.
+# Path to an existing repository — REQUIRED for every task except a green-field one
+# (a brand-new project created in place). It is resolved ONCE to an absolute path
+# (relative to the launch directory) at the start of the run, and every artifact path
+# and every command of that run is then relative to the resolved repository.
 repo_path: ./repo
 
 # Business description — plain language, no technical jargon.

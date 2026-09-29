@@ -5,6 +5,71 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.13.0] — 2026-09-29
+
+### Added
+- **25th rulebook rule `repo-scoping`** — at the start of a run the task's `repo_path` is resolved
+  ONCE to an absolute path (relative to the launch directory) and EVERYTHING that follows is
+  relative to that resolved target repository: the `.code-factory/` artifact tree (`state/`,
+  `logs/`, `backups/`, `manifest.json`, reports), backups, git operations (`git -C <repo>` or an
+  explicit cwd), source edits and rollback. The documented exceptions that stay
+  DEPLOYMENT-ROOT-scoped are `memory/` (the long-term memory) and `scripts/version_manager.py`
+  (`VERSION`) — they receive their root explicitly, never a silent default to the launch directory.
+  Carriers (4): `SKILL.md`, `code-factory.md`, `AGENTS.md`, `.agents/README.md`
+  (`check_factory_rules.py` — 25 rules, 98 carrier blocks, exit 0).
+- **`--repo <root>` on the deterministic scripts** — `run_id.py`, `factory_preflight.py` and
+  `task_graph.py` accept `--repo`/`--root` (before or after the subcommand), `verify_quotes.py`
+  accepts `--repo`/`--base`, and `error_router.py` gained the option on `merge` next to the
+  existing `classify`/`export-defaults`. When it is given, the RELATIVE paths of the invocation
+  (`--task`, `--dir`, `--out`, `--log`, the patterns files, the quote sources, `--claims`,
+  `--report`) are resolved against the resolved repo_path, while an absolute path is always taken
+  as it is — so a run whose repo_path is not its launch directory reads and writes the artifacts of
+  that repository and of no other. The flag is OPTIONAL and the default is unchanged (the caller's
+  working directory, fail-safe: a missing anchor never silently re-points a path at the wrong
+  repository), so every earlier invocation behaves exactly as before. Self-tests
+  `test_run_id.py`, `test_factory_preflight.py`, `test_task_graph.py`, `test_error_router.py` and
+  `test_verify_quotes.py` cover the flag and its default.
+- **`scripts/test_repo_scoping.py`** — script-level regression test of the contract: a scripted
+  mini-run whose `repo_path` is NOT the launch directory invokes run_id gen/check, the pre-flight,
+  the task graph, error routing and quote verification with the flag and asserts that every
+  artifact lands under `<repo>/.code-factory/`, that the launch directory, its work tree, its HEAD
+  and its reflog stay byte-identical (the git half runs as `git -C <repo>`), and that the flag-less
+  invocation still resolves against the cwd (backward compatibility).
+- **Launcher anchor `KIMI_FACTORY_LAUNCH_DIR`** — the `start.sh` and `start.cmd` launchers export
+  the absolute path of the launch directory — the machine-checkable anchor against which the
+  instruction layer resolves the task's `repo_path` — next to the already exported
+  `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` (`test_windows_scripts.py` pins both).
+
+### Changed
+- **Instruction layer scoped to the resolved repo_path** — `SKILL.md` and `code-factory.md` gained
+  the mandatory Phase-0 resolve-repo_path step and the warning about a leftover `task.yaml` of a
+  previous run; `references/verification-strategy.md` (git-state recording, evidence ledger and
+  rollback examples), `references/error-routing.md`, `references/documentation.md`,
+  `references/tech-stack-detection.md` (the generated AGENTS.md states the scope) and
+  `references/handoff-briefing.md` (the briefing carries the mandatory
+  `Repository root: <absolute resolved repo_path>` line) now pass the resolved root explicitly; the
+  `analyzer`/`diagnostician`/`documenter` sub-agents pass it as `--repo` instead of the literal
+  `--repo .`; `assets/task-template.yaml` states that `repo_path` is required except for a
+  green-field task.
+- **`git-native` and `task-format` rule wording** — every git operation of a run is spelled
+  `git -C <resolved repo_path>` (init, feature branch per task, recording of the base commit and its
+  HEAD, commits, rollback to the base commit), and `repo_path` is REQUIRED for every task except a
+  green-field one, always resolved ONCE at the start of the run.
+- **`.gitignore` patterns of a deployed project** — `prepare_factory.sh` and `prepare_factory.ps1`
+  additionally ignore `task.yaml`, `start.cmd` and `start.sh`: a leftover task file or launcher in a
+  target project is never mistaken for a new task and never committed.
+
+### Fixed
+- **`references/verification-strategy.md` §4.3** — rollback order for the HEAD-moved case: the git
+  restore runs BEFORE the branch switch — `reset --hard <base commit>` (from
+  `.code-factory/state/git-head.txt`), then `switch <pre-run branch>` (recorded during preparation
+  in `.code-factory/state/git-branch.txt`), then `branch -D <feature branch>` — because a dirty tree
+  makes `switch` refuse and deleting the feature branch first would drop the run's commits.
+- **`test_error_router.py`** — path assertions compare two spellings of one path through
+  `realpath` + `normcase` instead of raw string equality, so a non-ASCII / 8.3 short-name temp base
+  no longer fails a passing tool (vaccination: the failing case was reproduced first); the tool's
+  output is decoded as UTF-8, the encoding the script forces itself.
+
 ## [12.12.1] — 2026-09-24
 
 ### Fixed

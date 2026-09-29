@@ -3,7 +3,7 @@ name: code-factory
 description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 type: flow
 ---
-<!-- code-factory-version: 12.12.1 -->
+<!-- code-factory-version: 12.13.0 -->
 
 # Code Factory
 
@@ -24,9 +24,12 @@ Turns business tasks (described by non-technical users) into working, tested cod
 - `references/factory-rules.md` — the ONE home of the mandatory rules + the documents that must quote each one verbatim (`scripts/check_factory_rules.py` verifies the byte-identical blocks; any phase)
 - `assets/task-template.yaml` — business task template (Phase 0)
 
-## Runtime state (inside the project)
+## Runtime state (at the root of the RESOLVED repo_path)
 
-All runtime artifacts live in `.code-factory/`:
+All runtime artifacts live in `.code-factory/` — at the ROOT of the RESOLVED `repo_path`: the task's
+`repo_path` is resolved ONCE to an absolute path (relative to the launch directory) at the start of
+the run, and `.code-factory/` lives there, NOT in the launch directory when `repo_path` points
+elsewhere. Every artifact path in this document is relative to that resolved repository root:
 
 - `state/` — parsed task, plan, pipeline.yaml (checkpoint/resume), acceptance
 - `backups/` — backups of files before modification
@@ -44,8 +47,8 @@ run that carry no `run_id`.
 The WIP checkpoint `.code-factory/state/pipeline.yaml` carries the REQUIRED keys `run_id`, `phase`,
 `status` (`ok` | `failed` | `in_progress`) and `updated_at`, plus the optional `files_touched`,
 `pending_decision`, `resume_hint`, `retry_counters` and `models_used`;
-`scripts/check_factory_model.py` validates the file when it exists (a project without a checkpoint
-is a SKIP, never a failure).
+`scripts/check_factory_model.py --repo <resolved repo_path>` validates the file when it exists (a
+project without a checkpoint is a SKIP, never a failure).
 
 The portable long-term memory lives in the committable `memory/` directory (NOT ignored, travels
 with the project). It is the memory of THE TARGET PROJECT named by the task's `repo_path` — one
@@ -80,7 +83,7 @@ The factory may create any files, skills, scripts or plugins inside the project 
 
 ```mermaid
 flowchart TD
-    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, user_story (optional), mode (hitl/auto), task_type (implement default | review | refactor | security_audit), acceptance_criteria (each criterion may carry verify and derived), business_tests (scenario, config, expected_results), commit_exclude, models, reference_docs, reference_skills. There is NO priority field — every task is HIGH by default. Save the parsed task to .code-factory/state/task.yaml. Read the long-term memory of the TARGET project from repo_path (memory/summary.md + recent memory/change-log.md entries) — the memory of the project, NOT of the factory; if memory/ is absent (first contact with the project), create it first via memory_project.py init --repo <deployment root> --project <basename of repo_path> (memory/ always lives in the deployment root; the name is pinned in the summary's project: declaration) — so that project's history is not re-derived. Reconcile that memory with the tree in the SAME step: python .agents/skills/code-factory/scripts/memory_project.py backlog --repo <deployment root> folds the OPEN items (follow_up=true or severity=critical) over the WHOLE journal, and every open item is re-checked against the actual code before it is planned again — an item fixed in an earlier run is not re-declared open, and no item disappears without evidence. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
+    A([BEGIN]) --> B[Accept the task: read the user's message or task.yaml. Extract: title, repo_path, description, user_story (optional), mode (hitl/auto), task_type (implement default | review | refactor | security_audit), acceptance_criteria (each criterion may carry verify and derived), business_tests (scenario, config, expected_results), commit_exclude, models, reference_docs, reference_skills. MANDATORY first step after the extraction: resolve repo_path ONCE to an absolute path relative to the launch directory — that resolved repository is the scope of the whole run: every artifact path and every command below, .code-factory/, backups, git operations and rollback all live there; if the launch directory holds only a leftover task.yaml from a previous run and no new task was handed over, WARN the user instead of silently re-running that stale task. There is NO priority field — every task is HIGH by default. Save the parsed task to .code-factory/state/task.yaml. Read the long-term memory of the TARGET project from repo_path (memory/summary.md + recent memory/change-log.md entries) — the memory of the project, NOT of the factory; if memory/ is absent (first contact with the project), create it first via memory_project.py init --repo <deployment root> --project <basename of repo_path> (memory/ always lives in the deployment root; the name is pinned in the summary's project: declaration) — so that project's history is not re-derived. Reconcile that memory with the tree in the SAME step: python .agents/skills/code-factory/scripts/memory_project.py backlog --repo <deployment root> folds the OPEN items (follow_up=true or severity=critical) over the WHOLE journal, and every open item is re-checked against the actual code before it is planned again — an item fixed in an earlier run is not re-declared open, and no item disappears without evidence. If no task file exists, treat the user's message as the task. Checkpoint: if .code-factory/state/pipeline.yaml exists and the task is unchanged, resume from the recorded phase.]
     B --> C{Is the business task clear enough?}
     C -->|No| D[Ask the user business-level clarifying questions via AskUserQuestion. Ask ONLY business logic and expectations, never coding questions. Then update the parsed task.]
     D --> B
@@ -159,9 +162,9 @@ flowchart TD
     X -->|No| RR
     X -->|Yes| DOC{task_type: implement or refactor?}
     DOC -->|Yes| DOC2[Documentation: invoke factory-documenter (secondary) with .code-factory/manifest.json; update only doc-comments and .md files; validator validate_documentation.py with retry budget 1; on exhaustion — the documentation debt goes into the run report, the factory continues.]
-    DOC2 --> VER1[Version — step 1: deterministic matrix version_manager.py suggest → propose the type major|minor|patch|none with an explanation]
+    DOC2 --> VER1[Version — step 1: deterministic matrix version_manager.py --repo <deployment root> suggest → propose the type major|minor|patch|none with an explanation. VERSION lives at the DEPLOYMENT ROOT, so this --repo is the deployment root — a documented exception, NOT blindly the resolved repo_path when that is a subdirectory of it]
     VER1 --> VER2[Version — step 2: the code reviewer validates the proposed type, may override it with an explanation (never from scratch)]
-    VER2 --> VER3[Version — step 3: apply bump|set + sync, validate exit 0; commit with the prefix v<version>: in the same commit as the changes]
+    VER2 --> VER3[Version — step 3: apply version_manager.py --repo <deployment root> bump|set + sync, validate exit 0; commit with the prefix v<version>: in the same commit as the changes. --repo is the DEPLOYMENT ROOT, the documented exception — VERSION lives at the deployment root, not at a resolved repo_path that is a subdirectory of it]
     VER3 --> Y
     DOC -->|No (review/security_audit)| Y
     Y[Finish: remove backups, produce the final report (what changed, test results, business results, acceptance evidence, models_used per role). Regenerate AGENTS.md if structure/stack/entry points changed, then commit AGENTS.md + memory/ to the feature branch respecting commit_exclude. Append one entry to memory/change-log.md (single writer: the main agent) carrying the mandatory project field (project: name of the target project, pinned in summary.md's project: declaration = basename of repo_path) and compact the journal into memory/summary.md when over the threshold; summary.md declares project and repo_path right after the canonical marker. Every open backlog item of the journal is handled in that same entry: closed by a closed: block that names the item and carries the mandatory evidence: (closing without evidence is invalid, and so is a closed: block naming an item that exists in no record) or carried over in unfinished with its reason — nothing disappears without proof of closure. Actualize the Current state section of memory/summary.md on EVERY run, not only on compaction (version, test counts, open backlog), and require memory_project.py backlog --repo <deployment root> --check to exit 0 — open: 0 with every closed: element valid. Update project documentation if the task requires it. Write the self-contained .code-factory/report.md with the full history (task, plan, errors, diagnosis, results, manifest, models_used). Generate .code-factory/report_code_changes.md next to it with the scripts/gen_code_changes_report.py script and --run-id <run_id> (was-became per changed line; the run id stamps the report as belonging to this run). Present the report to the user.]
@@ -179,9 +182,16 @@ Rules that always apply:
   `reference_skills` (names of existing skills to reuse). There is NO `priority` field — every
   task is HIGH by default and the factory never prioritizes.
 <!-- factory-rule: task-format begin -->
-**Task format (canonical wording):** a task carries `title`, `repo_path`, `description`, optionally `user_story`, `mode` (`hitl`|`auto`), `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria` (a criterion may carry `verify: <command>` and `derived: true`), `business_tests` (scenario, configs, expected business results), `commit_exclude`, `models`, `reference_docs`, `reference_skills`. There is NO `priority` field — all tasks are high by default, the factory does not prioritize them. A missing required field is a task parsing error, not a reason to guess it mid-run.
+**Task format (canonical wording):** a task carries `title`, `repo_path`, `description`, optionally `user_story`, `mode` (`hitl`|`auto`), `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria` (a criterion may carry `verify: <command>` and `derived: true`), `business_tests` (scenario, configs, expected business results), `commit_exclude`, `models`, `reference_docs`, `reference_skills`. `repo_path` is REQUIRED for every task except a green-field one (a brand-new project created in place) and is always resolved ONCE to an absolute path at the start of the run. There is NO `priority` field — all tasks are high by default, the factory does not prioritize them. A missing required field is a task parsing error, not a reason to guess it mid-run.
 <!-- factory-rule: task-format end -->
 
+- **Run start (Phase 0)**: resolve the task's `repo_path` ONCE to an absolute path relative to the
+  launch directory and make that resolved repository the scope of everything that follows — the
+  `.code-factory/` tree (state, logs, backups, manifest.json, reports), backups, git commands, source
+  edits and rollback. The documented exceptions that stay at the DEPLOYMENT ROOT are `memory/` and
+  `scripts/version_manager.py` (see the repo-scoping rule below); they receive their root explicitly.
+  When the launch directory holds a leftover `task.yaml` from a previous run and no new task was handed
+  over, WARN the user and ask whether to re-run that stale task — never re-run it silently.
 - **User story**: when present, `user_story` is analyzed and used by the analyzer, planner and
   coder — it disambiguates the business intent and drives decisions.
 - **Plan committee (double rejection)**: in hitl mode the first revision of a rejected plan goes
@@ -277,7 +287,7 @@ Rules that always apply:
   `project:` or the `unfinished`/`factory_version` keys validate with a warning, never an error;
   entries of DIFFERENT projects in one journal are an error (caught by
   `scripts/check_factory_model.py` and `memory_project.py check`). Verify with
-  `scripts/check_factory_model.py` (8 sections + fingerprint + memory format).
+  `scripts/check_factory_model.py --repo <resolved repo_path>` (8 sections + fingerprint + memory format).
 <!-- factory-rule: memory-ownership begin -->
 **Memory ownership (canonical wording):** one memory belongs to exactly one project — the one named in the task's `repo_path`; the `memory/` directory lives at the DEPLOYMENT ROOT, the base project name = basename of the resolved `repo_path` and is fixed in the summary's `project:` declaration. The only writer is the main agent: one entry in `memory/change-log.md` per run, compaction into `memory/summary.md` at the 50-entry threshold (the last 20 remain, severity=critical and follow_up=true items are always preserved). Entries from different projects in one journal are an error (`check_factory_model.py`, `memory_project.py check`), entries without `project:` are legacy (a warning, not an error). The development history of the factory itself never enters the target project's memory.
 <!-- factory-rule: memory-ownership end -->
@@ -340,11 +350,14 @@ Rules that always apply:
 **commit_exclude (canonical wording):** files matching the task's `commit_exclude` patterns are NEVER committed — in no commit of the run, including the version and memory commit. Everything except the excluded patterns is staged; the code reviewer checks commit hygiene and counts an excluded file landing in the index as a finding of severity ≥ major.
 <!-- factory-rule: commit-exclude end -->
 
-- **Git-native**: if the project has no git repository, run `git init`. All changes flow through
+- **Git-native**: if the project has no git repository, run `git -C <resolved repo_path> init`. All changes flow through
   git (feature branch per task), with rollback to the base commit on failure.
 <!-- factory-rule: git-native begin -->
-**Git-native (canonical wording):** if the project has no git repository, the factory runs `git init` — there is no separate init step in the CLI. All changes go through git: a feature branch is created per task, the base commit and its HEAD are recorded in `.code-factory/state/`, and on failure the run rolls back to the base commit. The working tree is kept clean: build artifacts are auto-untracked, factory artifacts are committed.
+**Git-native (canonical wording):** if the target repository has no git repository, the factory runs `git -C <resolved repo_path> init` — there is no separate init step in the CLI. EVERY git operation of the run targets the resolved repo_path — executed as `git -C <resolved repo_path>` (or with the cwd set to it): the init check, the feature branch created per task, the recording of the base commit and its HEAD in `<repo>/.code-factory/state/`, the commits, and the rollback to the base commit on failure. The working tree of the TARGET repository is kept clean: build artifacts are auto-untracked, factory artifacts are committed; a run never touches the factory's own deployment `.git`.
 <!-- factory-rule: git-native end -->
+<!-- factory-rule: repo-scoping begin -->
+**Repo-path scoping (canonical wording):** at the start of a run the factory resolves the task's `repo_path` ONCE to an absolute path (relative to the launch directory) and then performs EVERYTHING relative to that resolved target repository: the `.code-factory/` artifact tree (`state/`, `logs/`, `backups/`, `manifest.json`, reports), backups, git operations (`git -C <repo>` or an explicit cwd), source edits and rollback. The documented exceptions that stay DEPLOYMENT-ROOT-scoped are `memory/` (the long-term memory lives at the deployment root) and `scripts/version_manager.py` (`VERSION` lives at the deployment root) — they receive their root explicitly, never a silent default to the launch directory.
+<!-- factory-rule: repo-scoping end -->
 
 - **Think in Code (analyzer / tester / diagnostician)**: never read files or logs just to count,
   search or summarize — write a small stdlib script and read only its result (ready-made

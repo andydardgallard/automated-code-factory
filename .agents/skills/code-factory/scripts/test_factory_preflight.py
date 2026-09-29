@@ -10,6 +10,9 @@ Verifies that the probe:
     `git`/`git_version` agree with reality, `os` mirrors `platform`, and the secondary-model flag
     follows KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL,
   - prints a human-readable summary naming python, git, bash/sh, the OS and the flag,
+  - anchors a RELATIVE `--out` at the OPTIONAL `--repo`/`--root` anchor (the run's resolved
+    repo_path) instead of the launch directory, while an absolute `--out` stays as it is and the
+    flag-less invocation keeps resolving against the cwd,
   - degrades explicitly: with a PATH that contains no tools it exits 1 and records nulls instead
     of inventing a command.
 
@@ -33,9 +36,10 @@ KEYS = ("python_cmd", "python_version", "git", "git_version", "bash", "sh", "os"
 PYTHON_CANDIDATES = ("python", "python3", "py")
 
 
-def run(*args: str, env: dict | None = None) -> subprocess.CompletedProcess[str]:
+def run(*args: str, env: dict | None = None,
+        cwd: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(TOOL), *args],
-                          capture_output=True, text=True, errors="replace", env=env)
+                          capture_output=True, text=True, errors="replace", env=env, cwd=cwd)
 
 
 def expect(cond: bool, msg: str) -> None:
@@ -109,8 +113,35 @@ def main() -> int:
                f"missing shells must be recorded as null: {degraded!r}")
         expect("FAIL" in res.stderr, f"a degraded probe must say what is missing: {res.stderr!r}")
 
+        # 7. `--repo`/`--root` anchors a RELATIVE --out at the resolved repo_path, so the capability
+        #    file lands in the target repository and never in the launch directory; without the flag
+        #    the cwd stays the base (case 1 uses an absolute --out and is unaffected), and an
+        #    absolute --out is never re-anchored.
+        launch = tmp / "launch"
+        launch.mkdir()
+        repo = tmp / "target" / "repo"
+        res = run("--repo", str(repo), "--out", "state/preflight.json", cwd=str(launch))
+        expect(res.returncode == 0, f"--repo must anchor a relative --out: {res.stderr!r}")
+        anchored = repo / "state" / "preflight.json"
+        expect(anchored.is_file(),
+               "--repo must write a relative --out under the resolved repo_path")
+        expect(str(anchored) in res.stdout,
+               f"the summary must name the file actually written: {res.stdout!r}")
+        expect(not (launch / "state").exists(),
+               "nothing may be written into the launch directory when --repo is given")
+        res = run("--root", str(repo), "--out", "alias.json", cwd=str(launch))
+        expect(res.returncode == 0 and (repo / "alias.json").is_file(),
+               f"--root must be accepted as a synonym of --repo: {res.stderr!r}")
+        res = run("--out", "state/preflight.json", cwd=str(launch))
+        expect(res.returncode == 0 and (launch / "state" / "preflight.json").is_file(),
+               f"without --repo the cwd stays the base: {res.stderr!r}")
+        res = run("--repo", str(repo), "--out", str(tmp / "abs.json"), cwd=str(launch))
+        expect(res.returncode == 0 and (tmp / "abs.json").is_file(),
+               "an absolute --out must be taken as it is, flag or not")
+
     print("PASS - factory_preflight.py reports the real python/git/shell/os capabilities "
-          "(file + summary), follows the secondary-model flag, and degrades to nulls with exit 1.")
+          "(file + summary), follows the secondary-model flag, anchors a relative --out at --repo, "
+          "and degrades to nulls with exit 1.")
     return 0
 
 

@@ -103,7 +103,8 @@ on Windows `python3` usually does not exist.
 <!-- factory-rule: preflight end -->
 
 ### Phase 0 — Accept the task
-Read the user's message or `task.yaml`. Parse: title, repo_path (optional), description,
+Read the user's message or `task.yaml`. Parse: title, repo_path (REQUIRED except for a
+green-field task — a brand-new project created in place), description,
 user_story (optional but strongly used), mode (hitl/auto, default hitl),
 task_type (implement default | review | refactor | security_audit), acceptance_criteria (each
 criterion MAY carry `verify: <command>` and `derived: true`), business_tests (optional scenarios
@@ -112,10 +113,20 @@ they are missing, hitl asks for them while planning), commit_exclude, models,
 and the two optional knowledge fields `reference_docs` (list of
 `{path, skill}` documents) and `reference_skills` (names of existing skills). (There is NO
 priority field — every task is HIGH by default.)
+**Resolve `repo_path` (mandatory, first step)**: resolve the task's `repo_path` ONCE to an absolute
+path relative to the launch directory and make that resolved repository the scope of the whole run —
+every later artifact path and every command is relative to it: `.code-factory/` (state, plan,
+pipeline.yaml, acceptance.md, logs, backups, manifest.json, reports), backups, git operations and
+rollback all live there, and the launch directory is never silently used as the root. The documented
+exceptions that stay DEPLOYMENT-ROOT-scoped are `memory/` (the long-term memory) and
+`scripts/version_manager.py` (`VERSION`) — they receive their root explicitly.
+**Stale task file**: when the launch directory holds a leftover `task.yaml` from a previous run and
+no new task was handed over, WARN the user and ask whether to re-run that stale task — the factory
+never silently re-runs a stale task.
 Save to `.code-factory/state/task.yaml`. If the business task is unclear, ask ONLY business-level
 questions via `AskUserQuestion` (never coding questions).
 <!-- factory-rule: task-format begin -->
-**Task format (canonical wording):** a task carries `title`, `repo_path`, `description`, optionally `user_story`, `mode` (`hitl`|`auto`), `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria` (a criterion may carry `verify: <command>` and `derived: true`), `business_tests` (scenario, configs, expected business results), `commit_exclude`, `models`, `reference_docs`, `reference_skills`. There is NO `priority` field — all tasks are high by default, the factory does not prioritize them. A missing required field is a task parsing error, not a reason to guess it mid-run.
+**Task format (canonical wording):** a task carries `title`, `repo_path`, `description`, optionally `user_story`, `mode` (`hitl`|`auto`), `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria` (a criterion may carry `verify: <command>` and `derived: true`), `business_tests` (scenario, configs, expected business results), `commit_exclude`, `models`, `reference_docs`, `reference_skills`. `repo_path` is REQUIRED for every task except a green-field one (a brand-new project created in place) and is always resolved ONCE to an absolute path at the start of the run. There is NO `priority` field — all tasks are high by default, the factory does not prioritize them. A missing required field is a task parsing error, not a reason to guess it mid-run.
 <!-- factory-rule: task-format end -->
 
 **Long-term memory**: `memory/` is the long-term memory of THE TARGET PROJECT named by the task's
@@ -149,8 +160,8 @@ one id (`python .agents/skills/code-factory/scripts/run_id.py check --dir .code-
 artifacts that carry none). The checkpoint `.code-factory/state/pipeline.yaml` carries the
 REQUIRED keys `run_id`, `phase`, `status` (`ok|failed|in_progress`) and `updated_at`, plus the
 optional `files_touched`, `pending_decision`, `resume_hint`, `retry_counters` and `models_used`;
-`scripts/check_factory_model.py` validates it whenever the file exists (a missing file is a SKIP,
-never a failure).
+`scripts/check_factory_model.py --repo <resolved repo_path>` validates it whenever the file exists (a
+missing file is a SKIP, never a failure).
 <!-- factory-rule: checkpoint-resume begin -->
 **Checkpoint/resume (canonical wording):** after every phase the main agent writes `.code-factory/state/pipeline.yaml` (phase, status, files touched, pending decision, resume hint, run_id, time) — the run state lives on disk, not in the context. On restart the factory reconciles the plan checkpoint and, if the task has not changed, continues from the RECORDED phase, not from the beginning. `resume` restores the retry counters, so exhausted budgets are not reset by a restart.
 <!-- factory-rule: checkpoint-resume end -->
@@ -226,10 +237,10 @@ The `task_type` selects the planning mode:
 <!-- factory-rule: plan-committee end -->
 
 ### Phase 4 — Pre-flight + backup (rollback safety)
-**Pre-flight git check**: if the project has no git repository, run `git init`. The working tree
+**Pre-flight git check**: if the project has no git repository, run `git -C <resolved repo_path> init`. The working tree
 must be clean: auto-untrack build artifacts (`target/`, `node_modules/`, `__pycache__/` etc.)
-and commit factory artifacts (`AGENTS.md`). Record `git HEAD` and `git status` in
-`.code-factory/state/`.
+and commit factory artifacts (`AGENTS.md`). Record `git -C <resolved repo_path> rev-parse HEAD` and
+`git -C <resolved repo_path> status --porcelain` in `<resolved repo_path>/.code-factory/state/`.
 **Commit policy**: read `commit_exclude` from the task (if present). These glob patterns are
 files the factory may modify (backups/tests/rollback) but must NEVER add to a git commit.
 **Models**: read any `models:` override from the task; record the chosen models in
@@ -373,14 +384,18 @@ documentation debt in `report.md` and continue — the factory never fails becau
 
 **Version bump (implement/refactor only, after the change)** — three steps:
 1. **Deterministic matrix**: run `python .agents/skills/code-factory/scripts/version_manager.py
-   suggest <flags>` over the run's changes (new subagent → minor, new task type → minor, new task
-   field → minor, breaking change → major, fix → patch, review/security_audit → none) to propose
-   the version type with an explanation.
+   --repo <deployment root> suggest <flags>` over the run's changes (new subagent → minor, new task
+   type → minor, new task field → minor, breaking change → major, fix → patch,
+   review/security_audit → none) to propose the version type with an explanation.
 2. **Reviewer validation**: pass the proposed type + change list to the code reviewer; it
    validates and may override (raise/lower) with an explanation — it never determines the type
    from scratch. Record any override in `report.md`.
-3. **Apply**: `python .../version_manager.py bump <type>` (or `set`) then `sync`; run `validate`
-   and require exit 0. For `review`/`security_audit` skip versioning entirely.
+3. **Apply**: `python .../version_manager.py --repo <deployment root> bump <type>` (or `set`) then
+   `sync`; run `validate` and require exit 0. For `review`/`security_audit` skip versioning
+   entirely. `--repo` is a GLOBAL option of `version_manager.py`, so it comes BEFORE the
+   subcommand, and it is ALWAYS the DEPLOYMENT ROOT: `VERSION` lives at the deployment root — the
+   documented exception to the resolved-`repo_path` scoping of the run, never blindly the resolved
+   `repo_path` when that is a subdirectory of the deployment root.
 <!-- factory-rule: versioning begin -->
 **Versioning (canonical wording):** `VERSION` (one line `X.Y.Z`) is the single source of truth, all other files are synced FROM it via `scripts/version_manager.py`. The version type is suggested by a deterministic matrix (`suggest`), validated by the code reviewer (may override with an explanation, but does not choose from scratch), applied by `bump`/`set` + `sync` + `validate` exit 0. The version commit goes in ONE commit with the changes and carries the prefix `v<version>: `. `review`/`security_audit` tasks do NOT change the version.
 <!-- factory-rule: versioning end -->
@@ -511,11 +526,14 @@ write `.code-factory/report_code_changes.md` (next to it) via
 5. **Language-agnostic** — detect the stack; never assume. The factory serves any project type.
 6. **Minimal intrusion** — smallest change that fully satisfies the task; follow existing code
    style.
-7. **Git-native** — if no git repo, `git init`; changes flow through git (feature branch per
+7. **Git-native** — if no git repo, `git -C <resolved repo_path> init`; changes flow through git (feature branch per
    task), rollback to base commit on failure.
 <!-- factory-rule: git-native begin -->
-**Git-native (canonical wording):** if the project has no git repository, the factory runs `git init` — there is no separate init step in the CLI. All changes go through git: a feature branch is created per task, the base commit and its HEAD are recorded in `.code-factory/state/`, and on failure the run rolls back to the base commit. The working tree is kept clean: build artifacts are auto-untracked, factory artifacts are committed.
+**Git-native (canonical wording):** if the target repository has no git repository, the factory runs `git -C <resolved repo_path> init` — there is no separate init step in the CLI. EVERY git operation of the run targets the resolved repo_path — executed as `git -C <resolved repo_path>` (or with the cwd set to it): the init check, the feature branch created per task, the recording of the base commit and its HEAD in `<repo>/.code-factory/state/`, the commits, and the rollback to the base commit on failure. The working tree of the TARGET repository is kept clean: build artifacts are auto-untracked, factory artifacts are committed; a run never touches the factory's own deployment `.git`.
 <!-- factory-rule: git-native end -->
+<!-- factory-rule: repo-scoping begin -->
+**Repo-path scoping (canonical wording):** at the start of a run the factory resolves the task's `repo_path` ONCE to an absolute path (relative to the launch directory) and then performs EVERYTHING relative to that resolved target repository: the `.code-factory/` artifact tree (`state/`, `logs/`, `backups/`, `manifest.json`, reports), backups, git operations (`git -C <repo>` or an explicit cwd), source edits and rollback. The documented exceptions that stay DEPLOYMENT-ROOT-scoped are `memory/` (the long-term memory lives at the deployment root) and `scripts/version_manager.py` (`VERSION` lives at the deployment root) — they receive their root explicitly, never a silent default to the launch directory.
+<!-- factory-rule: repo-scoping end -->
 
 8. **Models** — the main agent PASSES the model explicitly to the Agent tool (`model:` is
    supported by the CLI) for every role the task's `models` matrix names, respecting the
@@ -580,11 +598,16 @@ write `.code-factory/report_code_changes.md` (next to it) via
     `item`/`reason`/`severity`/`follow_up` items) and a `factory_version`; entries without
     `project:` are legacy and only warned about, while entries of different projects in one journal
     are an error; compaction preserves critical or follow_up items. `memory/` is committable and
-    must never be gitignored. Verify with `scripts/check_factory_model.py`.
+    must never be gitignored. Verify with
+    `scripts/check_factory_model.py --repo <resolved repo_path>`.
 13. **Documentation + versioning** — after every successful `implement`/`refactor` run: (a) invoke
     `factory-documenter` (secondary) on the run manifest, docs only, `validate_documentation.py`
     with retry budget 1, debt recorded on exhaustion; (b) choose the version type by the
-    deterministic `version_manager.py suggest` matrix, have the reviewer validate/override it,
-    apply with `bump`/`sync` and require `validate` exit 0, and commit the version change in the
-    same commit (message `v<version>: <type>: <description>`). `review`/`security_audit` skip both
-    steps and never change the version.
+    deterministic `version_manager.py --repo <deployment root> suggest` matrix, have the reviewer
+    validate/override it, apply with `version_manager.py --repo <deployment root> bump`/`set` +
+    `sync` and require `validate` exit 0, and commit the version change in the same commit (message
+    `v<version>: <type>: <description>`). Every `version_manager.py` call passes `--repo` explicitly
+    and it is ALWAYS the DEPLOYMENT ROOT — `VERSION` lives at the deployment root, the documented
+    exception to the resolved-`repo_path` scoping of the run (never blindly the resolved `repo_path`
+    when that is a subdirectory of the deployment root); `--repo` is a global option, so it comes
+    BEFORE the subcommand. `review`/`security_audit` skip both steps and never change the version.

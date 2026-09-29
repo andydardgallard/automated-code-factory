@@ -20,7 +20,12 @@ Probed capabilities (JSON, see `--out`):
                         (the launcher sets it; without it the primary/secondary model split is off)
 
 Usage:
-  python factory_preflight.py [--out .code-factory/state/preflight.json]
+  python factory_preflight.py [--out .code-factory/state/preflight.json] [--repo <root>]
+
+`--repo <root>` (a synonym: `--root`) is the resolved repo_path of the run and is OPTIONAL. When
+it is given, a RELATIVE `--out` is resolved against it — an absolute path is always taken as it is
+— so the capability file lands in the target repository, not in the launch directory. Without the
+flag nothing changes: `--out` stays relative to the caller's working directory.
 
 Exit code 0 when at least one Python runs AND git is usable, 1 otherwise (a capability file with
 nulls is still written, so the caller can see exactly what is missing).
@@ -43,6 +48,22 @@ DEFAULT_OUT = ".code-factory/state/preflight.json"
 PROBE_TIMEOUT = 30
 
 FALSY = {"", "0", "false", "no", "off", "none"}
+
+REPO_HELP = ("Resolved repo_path of the run: a RELATIVE --out is resolved against it "
+             "(default: the caller's working directory — unchanged without the flag)")
+
+
+def anchored(path: str | pathlib.Path, repo: str | None) -> pathlib.Path:
+    """`path` resolved against the explicit `--repo` root; an absolute path is taken as it is.
+
+    Without `--repo` the path is returned unchanged, so the caller's working directory stays the
+    base and the probe writes exactly where it did before the flag existed (fail-safe default: a
+    missing anchor must never silently re-point an output at the wrong repository).
+    """
+    resolved = pathlib.Path(path)
+    if repo and not resolved.is_absolute():
+        return pathlib.Path(repo) / resolved
+    return resolved
 
 
 def _try_run(argv: list[str]) -> str | None:
@@ -158,10 +179,11 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=DEFAULT_OUT,
                     help=f"capabilities JSON path (default: {DEFAULT_OUT})")
+    ap.add_argument("--repo", "--root", dest="repo", metavar="ROOT", default=None, help=REPO_HELP)
     args = ap.parse_args()
 
     caps = collect_capabilities()
-    out = pathlib.Path(args.out)
+    out = anchored(args.out, args.repo)
     write_json(out, caps)
     print(format_summary(caps, out))
 

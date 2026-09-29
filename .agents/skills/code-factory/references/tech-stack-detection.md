@@ -138,6 +138,12 @@ Generate `AGENTS.md` in the repo root with EXACTLY these 8 `##` sections, in thi
 `Known Constraints & Limitations`.
 
 Rules:
+- The generated `AGENTS.md` declares that the factory's artifact tree lives at the resolved
+  `repo_path` root — `.code-factory/` is `<resolved repo_path>/.code-factory/` — and that every
+  relative path in its conventions (build/test/run commands, config files, entry points) is
+  relative to THAT root, never to the launch/deployment folder. State it in `Project Overview`
+  (the first section), so no later role has to infer the root from where the run was launched.
+  `memory/` is the documented exception: it stays at the deployment root.
 - Copy build/test/run commands VERBATIM from config files; record observed bugs/debt in the
   8th section; keep sections self-contained.
 - **Existing AGENTS.md is OVERWRITTEN entirely** — the factory owns the file and it always

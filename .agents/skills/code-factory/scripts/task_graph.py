@@ -22,6 +22,13 @@ Commands:
   verify-sha <file> <expected>      # exit 0 when the file's sha256 matches <expected>
 
 Default tasks dir: `.code-factory/state/tasks`. Exit code 0 = success, 1 = refused/failed.
+
+Every subcommand accepts an OPTIONAL `--repo <root>` (a synonym: `--root`; accepted before or
+after the subcommand) — the resolved repo_path of the run. When it is given, the RELATIVE paths of
+the invocation are resolved against it: `--dir` (the graph location) and the `file` of `sha` /
+`verify-sha` — an absolute path is always taken as it is. So a run whose repo_path is not its
+launch directory reads and writes the graph of that repository and of no other. Without the flag
+nothing changes: relative paths stay relative to the caller's working directory.
 """
 from __future__ import annotations
 
@@ -39,10 +46,42 @@ STATUSES = (PENDING, IN_PROGRESS, DONE)
 DEFAULT_TASKS_DIR = ".code-factory/state/tasks"
 TASK_FIELDS = ("id", "title", "status", "owner", "blockedBy")
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+REPO_HELP = ("Resolved repo_path of the run: a RELATIVE --dir (and the `file` of sha/verify-sha) "
+             "is resolved against it (default: the caller's working directory — unchanged without "
+             "the flag)")
 
 
 class GraphError(Exception):
     """A refused command (bad id, unknown task, cycle, wrong status) — exits 1."""
+
+
+def anchored(path: str | pathlib.Path, repo: str | None) -> pathlib.Path:
+    """`path` resolved against the explicit `--repo` root; an absolute path is taken as it is.
+
+    Without `--repo` the path is returned unchanged, so the caller's working directory stays the
+    base and the graph is read where it was before the flag existed (fail-safe default: a missing
+    anchor must never silently re-point the graph at the wrong repository).
+    """
+    resolved = pathlib.Path(path)
+    if repo and not resolved.is_absolute():
+        return pathlib.Path(repo) / resolved
+    return resolved
+
+
+def tasks_dir_of(args: argparse.Namespace) -> pathlib.Path:
+    """Tasks directory of the invocation, anchored at `--repo` when it was given."""
+    return anchored(args.dir, args.repo)
+
+
+def add_repo(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Add the optional repo anchor to a subcommand parser.
+
+    `default=SUPPRESS`, so a value given BEFORE the subcommand (`task_graph.py --repo <root> ready`)
+    survives: the subparser only overwrites the attribute when the flag is repeated after it.
+    """
+    parser.add_argument("--repo", "--root", dest="repo", metavar="ROOT",
+                        default=argparse.SUPPRESS, help=REPO_HELP)
+    return parser
 
 
 def task_path(tasks_dir: pathlib.Path, task_id: str) -> pathlib.Path:
@@ -139,7 +178,7 @@ def parse_blocked_by(raw: str | None) -> list[str]:
 
 
 def cmd_create(args: argparse.Namespace) -> int:
-    tasks_dir = pathlib.Path(args.dir)
+    tasks_dir = tasks_dir_of(args)
     task_id = validate_id(args.id)
     title = args.title.strip()
     if not title:
@@ -168,7 +207,7 @@ def cmd_create(args: argparse.Namespace) -> int:
 
 
 def cmd_claim(args: argparse.Namespace) -> int:
-    tasks_dir = pathlib.Path(args.dir)
+    tasks_dir = tasks_dir_of(args)
     task_id = validate_id(args.id)
     owner = (args.owner or "").strip()
     if not owner:
@@ -190,7 +229,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
 
 
 def cmd_complete(args: argparse.Namespace) -> int:
-    tasks_dir = pathlib.Path(args.dir)
+    tasks_dir = tasks_dir_of(args)
     task_id = validate_id(args.id)
     tasks = load_tasks(tasks_dir)
     task = tasks.get(task_id)
@@ -208,7 +247,7 @@ def cmd_complete(args: argparse.Namespace) -> int:
 
 
 def cmd_ready(args: argparse.Namespace) -> int:
-    tasks_dir = pathlib.Path(args.dir)
+    tasks_dir = tasks_dir_of(args)
     tasks = load_tasks(tasks_dir)
     ready = [tid for tid, task in sorted(tasks.items()) if is_ready(task, tasks)]
     for task_id in ready:
@@ -218,7 +257,7 @@ def cmd_ready(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    tasks_dir = pathlib.Path(args.dir)
+    tasks_dir = tasks_dir_of(args)
     tasks = load_tasks(tasks_dir)
     for task_id, task in sorted(tasks.items()):
         blocked = ",".join(task["blockedBy"]) or "-"
@@ -234,12 +273,12 @@ def sha256_of(path: pathlib.Path) -> str:
 
 
 def cmd_sha(args: argparse.Namespace) -> int:
-    print(sha256_of(pathlib.Path(args.file)))
+    print(sha256_of(anchored(args.file, args.repo)))
     return 0
 
 
 def cmd_verify_sha(args: argparse.Namespace) -> int:
-    path = pathlib.Path(args.file)
+    path = anchored(args.file, args.repo)
     actual = sha256_of(path)
     expected = args.expected.strip().lower()
     if expected.startswith("sha256:"):
@@ -254,11 +293,15 @@ def cmd_verify_sha(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    # The anchor is optional and defaults to the caller's cwd (fail-safe): nothing changes without
+    # the flag.
+    ap.add_argument("--repo", "--root", dest="repo", metavar="ROOT", default=None, help=REPO_HELP)
     sub = ap.add_subparsers(dest="command", required=True)
 
     def with_dir(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         parser.add_argument("--dir", default=DEFAULT_TASKS_DIR,
                             help=f"tasks directory (default: {DEFAULT_TASKS_DIR})")
+        add_repo(parser)
         return parser
 
     p_create = with_dir(sub.add_parser("create", help="create a pending task"))
@@ -281,11 +324,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_sha = sub.add_parser("sha", help="sha256 of a file")
     p_sha.add_argument("file")
+    add_repo(p_sha)
     p_sha.set_defaults(func=cmd_sha)
 
     p_verify = sub.add_parser("verify-sha", help="compare a file's sha256 with the expected value")
     p_verify.add_argument("file")
     p_verify.add_argument("expected")
+    add_repo(p_verify)
     p_verify.set_defaults(func=cmd_verify_sha)
     return ap
 

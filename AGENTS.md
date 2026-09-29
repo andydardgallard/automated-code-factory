@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.12.1 -->
+<!-- code-factory-version: 12.13.0 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.
@@ -70,7 +70,10 @@ mandatory code review before acceptance.
 
 ## Conventions
 
-- The factory's runtime state — `.code-factory/` inside the project (do not commit):
+- The factory's runtime state — `.code-factory/` (do not commit) — lives at the ROOT of the
+  RESOLVED `repo_path`: the task's `repo_path` is resolved ONCE to an absolute path (relative to the
+  launch directory) at the start of the run, and it is that resolved root (not the launch directory)
+  which holds `.code-factory/`; every relative artifact path in these conventions is relative to it:
   `state/` (task, plan, pipeline.yaml, acceptance.md, evidence ledger, task graph,
   FTS5 precedent index `precedents.db`),
   `logs/` (baseline, errors, results, code-review, shard findings),
@@ -193,7 +196,7 @@ mandatory code review before acceptance.
   (scenario/configs/expected business results), `commit_exclude`, `models`.
   There is no `priority` field — all tasks are high by default.
 <!-- factory-rule: task-format begin -->
-**Task format (canonical wording):** a task carries `title`, `repo_path`, `description`, optionally `user_story`, `mode` (`hitl`|`auto`), `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria` (a criterion may carry `verify: <command>` and `derived: true`), `business_tests` (scenario, configs, expected business results), `commit_exclude`, `models`, `reference_docs`, `reference_skills`. There is NO `priority` field — all tasks are high by default, the factory does not prioritize them. A missing required field is a task parsing error, not a reason to guess it mid-run.
+**Task format (canonical wording):** a task carries `title`, `repo_path`, `description`, optionally `user_story`, `mode` (`hitl`|`auto`), `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria` (a criterion may carry `verify: <command>` and `derived: true`), `business_tests` (scenario, configs, expected business results), `commit_exclude`, `models`, `reference_docs`, `reference_skills`. `repo_path` is REQUIRED for every task except a green-field one (a brand-new project created in place) and is always resolved ONCE to an absolute path at the start of the run. There is NO `priority` field — all tasks are high by default, the factory does not prioritize them. A missing required field is a task parsing error, not a reason to guess it mid-run.
 <!-- factory-rule: task-format end -->
 
 - **User story**: when `user_story` is present, the factory analyzes and uses it at the
@@ -212,8 +215,11 @@ mandatory code review before acceptance.
 - **Git-native**: if there is no git repository — `git init`; changes go through git
   (a feature branch per task), rollback to the base commit on failure.
 <!-- factory-rule: git-native begin -->
-**Git-native (canonical wording):** if the project has no git repository, the factory runs `git init` — there is no separate init step in the CLI. All changes go through git: a feature branch is created per task, the base commit and its HEAD are recorded in `.code-factory/state/`, and on failure the run rolls back to the base commit. The working tree is kept clean: build artifacts are auto-untracked, factory artifacts are committed.
+**Git-native (canonical wording):** if the target repository has no git repository, the factory runs `git -C <resolved repo_path> init` — there is no separate init step in the CLI. EVERY git operation of the run targets the resolved repo_path — executed as `git -C <resolved repo_path>` (or with the cwd set to it): the init check, the feature branch created per task, the recording of the base commit and its HEAD in `<repo>/.code-factory/state/`, the commits, and the rollback to the base commit on failure. The working tree of the TARGET repository is kept clean: build artifacts are auto-untracked, factory artifacts are committed; a run never touches the factory's own deployment `.git`.
 <!-- factory-rule: git-native end -->
+<!-- factory-rule: repo-scoping begin -->
+**Repo-path scoping (canonical wording):** at the start of a run the factory resolves the task's `repo_path` ONCE to an absolute path (relative to the launch directory) and then performs EVERYTHING relative to that resolved target repository: the `.code-factory/` artifact tree (`state/`, `logs/`, `backups/`, `manifest.json`, reports), backups, git operations (`git -C <repo>` or an explicit cwd), source edits and rollback. The documented exceptions that stay DEPLOYMENT-ROOT-scoped are `memory/` (the long-term memory lives at the deployment root) and `scripts/version_manager.py` (`VERSION` lives at the deployment root) — they receive their root explicitly, never a silent default to the launch directory.
+<!-- factory-rule: repo-scoping end -->
 
 - **Models**: models are set in `config.toml` (`default_model` + `[secondary_model]`);
   for subagents — `model_preference: primary|secondary`. Actual models are logged in

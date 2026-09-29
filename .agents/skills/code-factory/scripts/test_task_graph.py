@@ -12,7 +12,11 @@ Verifies that readiness and status transitions are decided by the script, never 
     an already done task, and unblocks the dependants,
   - `ready` lists exactly the claimable pending tasks, `list` shows every task with its state,
   - `sha` / `verify-sha` produce and check the sha256 checkpoint values, and the default tasks
-    directory is `.code-factory/state/tasks` relative to the working directory.
+    directory is `.code-factory/state/tasks` relative to the working directory,
+  - the OPTIONAL `--repo`/`--root` anchor (before or after the subcommand) resolves the RELATIVE
+    paths of the invocation — `--dir` and the `file` of `sha`/`verify-sha` — against the run's
+    resolved repo_path, while an absolute path stays as it is and the flag-less invocation keeps
+    resolving against the cwd.
 
 Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
 """
@@ -170,8 +174,53 @@ def main() -> int:
         expect(run("ready", cwd=str(workdir)).stdout.split() == ["default_01"],
                "ready must read the default tasks dir")
 
+        # 12. The optional `--repo`/`--root` anchor: run from a launch directory that is not the repo
+        #     root, the graph lands under --repo — the DEFAULT --dir and a relative --dir alike, before
+        #     or after the subcommand — and so does the relative `file` of sha/verify-sha. Without the
+        #     flag the cwd stays the base (case 11) and an absolute path is never re-anchored.
+        launch = tmp / "launch"
+        launch.mkdir()
+        repo = tmp / "target" / "repo"
+        expect(run("create", "--repo", str(repo), "--id", "anchored_01", "--title", "Anchored",
+                   cwd=str(launch)).returncode == 0, "create --repo must exit 0")
+        anchored_tasks = repo / ".code-factory" / "state" / "tasks"
+        expect((anchored_tasks / "anchored_01.json").is_file(),
+               "--repo must anchor the DEFAULT tasks dir at the resolved repo_path")
+        expect(not (launch / ".code-factory").exists(),
+               "no task file may land in the launch directory when --repo is given")
+        res = run("claim", "--repo", str(repo), "--id", "anchored_01", "--owner", "coder",
+                  cwd=str(launch))
+        expect(res.returncode == 0 and load(anchored_tasks, "anchored_01")["owner"] == "coder",
+               f"claim --repo must write into the anchored graph: {res.stderr!r}")
+        expect(run("--root", str(repo), "list", cwd=str(launch)).stdout.split() != [],
+               "--root must be accepted as a synonym of --repo, before the subcommand too")
+        expect(run("create", "--repo", str(repo), "--dir", ".code-factory/state/tasks",
+                   "--id", "anchored_02", "--title", "Two", cwd=str(launch)).returncode == 0,
+               "a relative --dir must be anchored at --repo")
+        expect((anchored_tasks / "anchored_02.json").is_file(),
+               "a relative --dir must write under the resolved repo_path")
+        expect(run("ready", "--repo", str(repo), cwd=str(launch)).stdout.split() == ["anchored_02"],
+               "ready --repo must read the anchored graph")
+        artifact = repo / "artifact.bin"
+        artifact.write_text("checkpoint\n", encoding="utf-8")
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        res = run("sha", "--repo", str(repo), "artifact.bin", cwd=str(launch))
+        expect(res.returncode == 0 and res.stdout.strip() == digest,
+               f"sha --repo must anchor a relative file: {res.stdout!r} {res.stderr!r}")
+        expect(run("verify-sha", "--repo", str(repo), "artifact.bin", digest,
+                   cwd=str(launch)).returncode == 0,
+               "verify-sha --repo must anchor a relative file")
+        expect(run("ready", cwd=str(launch)).stdout.split() == [],
+               "without --repo the cwd stays the base (no graph in the launch directory)")
+        expect(run("sha", "artifact.bin", cwd=str(launch)).returncode == 1,
+               "without --repo a relative file resolves against the cwd")
+        expect(run("ready", "--repo", str(launch), "--dir", str(anchored_tasks)).stdout.split()
+               == ["anchored_02"],
+               "an absolute --dir must never be re-anchored")
+
     print("PASS - task_graph.py creates/claims/completes tasks, refuses cycles, blocked claims and "
-          "unclaimed completions, reports readiness deterministically, and checks sha256.")
+          "unclaimed completions, reports readiness deterministically, checks sha256, and anchors "
+          "the relative graph/sha paths at --repo.")
     return 0
 
 

@@ -14,14 +14,20 @@ merge (a learned pattern is tried first, the built-in rows it never touches stay
 of a built-in id wins), the silent default-only mode when no learned file exists, the tolerated
 broken AUTO-DISCOVERED learned file (warning on stderr + fallback to the defaults, exit 0) versus
 the hard error (exit 2) when the very same file is named with `--project-patterns`, deterministic
-and idempotent `merge` output, `export-defaults` as a byte-exact starter, and the exit-code contract
-(2 for an unusable patterns JSON, 1 for an unreadable log), plus the stdlib-only import contract.
+and idempotent `merge` output, `export-defaults` as a byte-exact starter, the exit-code contract
+(2 for an unusable patterns JSON, 1 for an unreadable log), the OPTIONAL `--repo` anchor — a
+RELATIVE `--log` / patterns file / `--out` resolves against it, an absolute path never does —
+the EQUALITY OF PATH SPELLINGS (two spellings of one file — a non-ASCII/8.3 short-name base,
+simulated — compare as one path through `realpath`+`normcase`, never as raw strings) plus the
+stdlib-only import contract.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
 from __future__ import annotations
 
+import ctypes
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -92,9 +98,37 @@ def expect(cond: bool, msg: str) -> None:
         raise AssertionError(msg)
 
 
+def canonical_path(path: str | pathlib.Path) -> str:
+    """One canonical spelling of a path: 8.3 short names, case, separators and `.` all fold.
+
+    Every path assertion here compares a spelling the test built itself with a spelling the tool
+    reported. On a machine whose user name is not ASCII those two are different SPELLINGS of one
+    file (the 8.3 short name against the full Unicode form), so the comparison resolves both sides
+    through `realpath` (short names, symlinks, `.`/`..`) and folds case and separators with
+    `normcase` where the platform is case-insensitive. A verbatim string comparison of the two
+    spellings is the bug this suite regressed on.
+    """
+    real = os.path.realpath(os.fspath(path))
+    return os.path.normcase(real) if os.name == "nt" else real
+
+
+def expect_same_path(actual: str | pathlib.Path, expected: str | pathlib.Path, msg: str) -> None:
+    """Assert two spellings name ONE path — the equality every path assertion in this suite needs."""
+    expect(canonical_path(actual) == canonical_path(expected),
+           f"{msg}: {actual!r} and {expected!r} are not the same path "
+           f"(canonical: {canonical_path(actual)!r} != {canonical_path(expected)!r})")
+
+
 def run(*args: str, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run the tool and decode its streams as UTF-8.
+
+    `error_router.py` forces UTF-8 on its own output, so the LOCALE code page (a legacy one on a
+    machine with a non-ASCII code page) must never be used to decode it: that would mangle exactly
+    the non-ASCII paths these assertions compare.
+    """
     return subprocess.run([sys.executable, str(TOOL), *args],
-                          capture_output=True, text=True, errors="replace", cwd=cwd)
+                          capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          cwd=cwd)
 
 
 def field(stdout: str, key: str) -> str:
@@ -105,6 +139,11 @@ def field(stdout: str, key: str) -> str:
     raise AssertionError(f"missing field {key!r} in output:\n{stdout}")
 
 
+def sources_of(stdout: str) -> list[str]:
+    """The `patterns:` field split into its path parts: `<project file> + <default file>`."""
+    return field(stdout, "patterns").split(" + ")
+
+
 def write(path: pathlib.Path, text: str) -> pathlib.Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8", newline="\n")
@@ -113,6 +152,28 @@ def write(path: pathlib.Path, text: str) -> pathlib.Path:
 
 def write_json(path: pathlib.Path, payload: object) -> pathlib.Path:
     return write(path, json.dumps(payload, indent=2) + "\n")
+
+
+_SHORT_PATH_MAX = 4096
+
+
+def other_spelling(path: pathlib.Path) -> str:
+    """A second spelling of the SAME path, as a non-ASCII machine hands it out.
+
+    On a machine whose user name is not ASCII `tempfile` can return the base in its 8.3 short form
+    (`C:\\Users\\836D~1\\AppData\\Local\\Temp\\...`) while the tool keeps the full Unicode spelling:
+    two character-by-character different strings that name one and the same file. The short form is
+    asked from Windows itself (`GetShortPathNameW`); on a volume without 8.3 aliases - and outside
+    Windows - a case/separator (Windows) or `.`-segment (POSIX) variant of the same path stands in
+    for it, i.e. a different normalization of one path that the OS itself resolves identically.
+    """
+    if os.name == "nt":
+        buffer = ctypes.create_unicode_buffer(_SHORT_PATH_MAX)
+        length = ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, len(buffer))
+        if 0 < length < len(buffer) and buffer.value != str(path):
+            return buffer.value
+        return str(path).replace(os.sep, "/").upper()
+    return str(path).replace(os.sep, f"{os.sep}.{os.sep}")
 
 
 def classify(repo: pathlib.Path, log: pathlib.Path,
@@ -185,8 +246,8 @@ def main() -> int:
         # 3. CLI contract + fallback to the default snapshot when the project file is absent.
         res = classify(repo, mod_log)
         expect(res.returncode == 0, f"classify must exit 0: {res.stderr!r}")
-        expect(str(DEFAULT) in field(res.stdout, "patterns"),
-               f"the default snapshot must be the source: {res.stdout!r}")
+        expect_same_path(field(res.stdout, "patterns"), DEFAULT,
+                         "the default snapshot must be the source")
         expect(field(res.stdout, "category") == "MISSING_FILE"
                and field(res.stdout, "route") == "ba"
                and field(res.stdout, "pattern_id") == "6"
@@ -343,10 +404,11 @@ def main() -> int:
         learned = broken_repo / ".code-factory" / "state" / "error-patterns.json"
         (broken_repo / ".code-factory" / "state").mkdir(parents=True)   # the dir, no learned file
         res = classify(broken_repo, broken_log)                         # normal mode: defaults only
-        expect(res.returncode == 0 and res.stderr == ""
-               and str(DEFAULT) in field(res.stdout, "patterns"),
+        expect(res.returncode == 0 and res.stderr == "",
                f"no learned file must classify against the defaults silently: {res.stdout!r} "
                f"{res.stderr!r}")
+        expect_same_path(field(res.stdout, "patterns"), DEFAULT,
+                         "the default snapshot must be the source without a learned file")
         no_project = res.stdout
         for name, text, needle in bad:              # every unusable shape of the learned file
             write(learned, text)
@@ -380,8 +442,12 @@ def main() -> int:
         res = classify(broken_repo, broken_log)
         expect(res.returncode == 0 and res.stderr == "",
                f"a valid learned file must not warn: {res.stderr!r}")
-        expect(field(res.stdout, "patterns") == f"{learned} + {DEFAULT}",
+        expect(len(sources_of(res.stdout)) == 2,
                f"both sources must be named: {field(res.stdout, 'patterns')!r}")
+        expect_same_path(sources_of(res.stdout)[0], learned,
+                         "the named learned file must be the same file")
+        expect_same_path(sources_of(res.stdout)[1], DEFAULT,
+                         "the named default snapshot must be the same file")
         expect(field(res.stdout, "category") == "PROJECT_MISSING_MODULE"
                and field(res.stdout, "route") == "planner" and field(res.stdout, "pattern_id") == "6",
                f"the learned conflict winner must apply: {res.stdout!r}")
@@ -406,6 +472,93 @@ def main() -> int:
         expect(merged["retry_budgets"] == {**BUDGETS, "ba": 0},
                f"the learned budgets must override the defaults key-wise: {merged['retry_budgets']}")
 
+        # 9c. `--repo` anchors the RELATIVE paths of the invocation: the log, the patterns files
+        #     (`--project-patterns` / `--project`) and `--out` resolve against the run's resolved
+        #     repo_path, so a run launched elsewhere classifies the target repository's own log. An
+        #     absolute path is taken as it is (`--log` unchanged with a foreign `--repo`), and without
+        #     the flag the cwd stays the base (cases 6 and 7).
+        launch = tmp / "launch"
+        launch.mkdir()
+        anchored_repo = tmp / "target" / "repo"
+        anchored_log = write(anchored_repo / ".code-factory" / "logs" / "rel.log",
+                             "ModuleNotFoundError: No module named 'x'\n")
+        res = run("classify", "--log", ".code-factory/logs/rel.log", "--repo", str(anchored_repo),
+                  cwd=str(launch))
+        expect(res.returncode == 0 and field(res.stdout, "category") == "MISSING_FILE"
+               and field(res.stdout, "pattern_id") == "6",
+               f"a relative --log must resolve against --repo: {res.stdout!r} {res.stderr!r}")
+        expect_same_path(field(res.stdout, "log"), anchored_log,
+                         "the anchored path must be the one reported")
+        write_json(anchored_repo / ".code-factory" / "state" / "learned.json",
+                   {"patterns": [{"id": "6", "category": "ANCHORED_MISSING",
+                                  "patterns": ["ModuleNotFoundError"], "route": "human"}]})
+        res = run("classify", "--log", ".code-factory/logs/rel.log", "--repo", str(anchored_repo),
+                  "--project-patterns", ".code-factory/state/learned.json", cwd=str(launch))
+        expect(res.returncode == 0 and field(res.stdout, "category") == "ANCHORED_MISSING"
+               and field(res.stdout, "route") == "human",
+               f"a relative --project-patterns must resolve against --repo: {res.stdout!r}")
+        anchored_project = sources_of(res.stdout)[0]
+        expect(canonical_path(anchored_project).startswith(canonical_path(anchored_repo) + os.sep),
+               f"the anchored patterns file must be the one named: {res.stdout!r}")
+        res = run("merge", "--project", ".code-factory/state/learned.json",
+                  "--out", "merged.json", "--repo", str(anchored_repo), cwd=str(launch))
+        expect(res.returncode == 0 and (anchored_repo / "merged.json").is_file(),
+               f"merge --repo must anchor --project/--out: {res.stderr!r}")
+        expect(json.loads((anchored_repo / "merged.json").read_text(encoding="utf-8"))
+               ["patterns"][0]["category"] == "ANCHORED_MISSING",
+               "the merged document must come from the anchored project file")
+        expect(not (launch / "merged.json").exists(),
+               "nothing may be written into the launch directory when --repo is given")
+        res = run("export-defaults", "--out", "starter.json", "--repo", str(anchored_repo),
+                  cwd=str(launch))
+        expect(res.returncode == 0 and (anchored_repo / "starter.json").read_bytes() == raw,
+               f"export-defaults --repo must anchor a relative --out: {res.stderr!r}")
+        res = run("classify", "--log", ".code-factory/logs/rel.log", cwd=str(launch))
+        expect(res.returncode == 1 and "cannot read log" in res.stderr,
+               f"without --repo the cwd stays the base: {res.stderr!r}")
+        res = run("classify", "--log", str(anchored_log), "--repo", str(launch), cwd=str(launch))
+        expect(res.returncode == 0 and field(res.stdout, "category") == "MISSING_FILE",
+               f"an absolute --log must never be re-anchored: {res.stdout!r} {res.stderr!r}")
+
+        # 9d. The path assertions of this suite compare SPELLINGS of one file: the spelling the
+        #     test built and the spelling the tool reported. On a machine whose user name is not
+        #     ASCII the temp base arrives in its 8.3 short form (`C:\Users\836D~1\...`) while the
+        #     patterns path keeps the full Unicode spelling, so a verbatim `==` fails there although
+        #     both strings name one file. The condition is SIMULATED here (this machine's user name
+        #     is ASCII): the base carries non-ASCII characters and the second spelling is the short
+        #     name Windows itself reports for it (`GetShortPathNameW`) - or, on a volume without 8.3
+        #     aliases and outside Windows, a case/separator/`.`-segment variant of the same path.
+        base = tmp / "\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c" \
+                    / "8.3-alias"
+        repo_uni = base / "repo"
+        log_uni = write(base / "logs" / "rel.log", "ModuleNotFoundError: No module named 'x'\n")
+        learned_uni = write_json(repo_uni / ".code-factory" / "state" / "error-patterns.json",
+                                 {"patterns": [{"id": "6", "category": "SHORT_NAME_MISSING",
+                                                "patterns": ["ModuleNotFoundError"],
+                                                "route": "planner"}]})
+        alias_repo, alias_log = other_spelling(repo_uni), other_spelling(log_uni)
+        expect(alias_log != str(log_uni) and alias_repo != str(repo_uni),
+               f"the simulation must spell the same paths differently: {alias_log!r} / "
+               f"{alias_repo!r} vs {str(log_uni)!r}")
+        res = run("classify", "--log", alias_log, "--repo", alias_repo)
+        expect(res.returncode == 0 and res.stderr == "",
+               f"one file under two spellings must classify: {res.returncode} {res.stderr!r}")
+        expect(field(res.stdout, "category") == "SHORT_NAME_MISSING"
+               and field(res.stdout, "pattern_id") == "6",
+               f"the learned file must be found through the aliased repo: {res.stdout!r}")
+        # The comparison this suite needs: every spelling below names ONE file, so it must compare
+        # equal — the short-name spelling against the full Unicode spelling, and against the tool's.
+        expect_same_path(alias_log, log_uni, "the short-name and Unicode spellings are one file")
+        expect_same_path(alias_repo, repo_uni, "the short-name and Unicode spellings are one repo")
+        expect_same_path(field(res.stdout, "log"), log_uni,
+                         "the reported log must be the same file as the Unicode spelling")
+        expect_same_path(field(res.stdout, "log"), alias_log,
+                         "the reported log must be the same file as the short-name spelling")
+        reported = sources_of(res.stdout)
+        expect(len(reported) == 2, f"both patterns sources must be named: {reported!r}")
+        expect_same_path(reported[0], learned_uni, "the named learned file must be the same file")
+        expect_same_path(reported[1], DEFAULT, "the named default snapshot must be the same file")
+
         # 10. An unreadable log is an operational error (1); a wrong CLI call is exit 2.
         res = classify(repo, tmp / "missing.log")
         expect(res.returncode == 1 and "cannot read log" in res.stderr,
@@ -423,8 +576,9 @@ def main() -> int:
     print("PASS - error_router.py mirrors the error-routing tables (20 section-1 rows + 6 provider "
           "rows), classifies samples deterministically, merges the project-learned patterns over "
           "the defaults (project-first, both applied), falls back to the defaults with a warning "
-          "when the learned file is unusable, merges byte-identically and honours the exit-code "
-          "contract.")
+          "when the learned file is unusable, merges byte-identically, anchors relative paths at "
+          "--repo, compares every path spelling (8.3 short name / case / separators) as one path, "
+          "and honours the exit-code contract.")
     return 0
 
 

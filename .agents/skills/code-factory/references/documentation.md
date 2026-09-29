@@ -30,14 +30,20 @@ This methodology is adapted from the open-source `developer-documentation-skill`
 ## Validation (built-in, deterministic)
 
 The documenter runs `scripts/validate_documentation.py` in two steps — a **snapshot** before
-editing, then a **check** after:
+editing, then a **check** after. The task's `repo_path` is resolved ONCE to an absolute path and
+both commands target that resolved repository: `--repo <resolved repo_path>`, with the baseline
+snapshot INSIDE it — `<resolved repo_path>/.code-factory/docs_baseline`, written out explicitly,
+because `--baseline` is resolved against the cwd and only the absolute form keeps it inside the
+resolved repo. `--files` are repo-relative:
 
 ```bash
 python3 .agents/skills/code-factory/scripts/validate_documentation.py snapshot \
-  --repo . --baseline .code-factory/docs_baseline --files <rel-path> ...
+  --repo <resolved repo_path> --baseline <resolved repo_path>/.code-factory/docs_baseline \
+  --files <rel-path> ...
 # ... edit the docs only ...
 python3 .agents/skills/code-factory/scripts/validate_documentation.py check \
-  --repo . --baseline .code-factory/docs_baseline --files <rel-path> ...
+  --repo <resolved repo_path> --baseline <resolved repo_path>/.code-factory/docs_baseline \
+  --files <rel-path> ...
 ```
 
 The validator checks, deterministically (stdlib only):

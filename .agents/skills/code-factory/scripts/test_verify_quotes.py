@@ -4,7 +4,10 @@ Deterministic self-test for `verify_quotes.py` (zero LLM tokens).
 
 Verifies the Evidence-Preserving Reducer check through its CLI: an exact quote is verified (exit
 0), an invented quote is UNTRUSTED (exit 1) with the fail-safe `fallback to full log` note, a
-missing source is UNTRUSTED instead of a crash, and a CRLF source matches a quote written with LF.
+missing source is UNTRUSTED instead of a crash, a CRLF source matches a quote written with LF, and
+the OPTIONAL `--repo`/`--base` anchor resolves a RELATIVE source (and a relative
+`--claims`/`--report`) against the run's resolved repo_path instead of the launch directory —
+without the flag the cwd stays the base and an absolute path is never re-anchored.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -130,8 +133,54 @@ def main() -> int:
         expect(res.returncode == 0 and json.loads(res.stdout)["total"] == 0,
                f"an empty claims list must exit 0: {res.stderr!r}")
 
+        # 8. The OPTIONAL `--repo`/`--base` anchor: a run whose repo_path is not its launch directory
+        #    resolves a RELATIVE source — and a relative --claims/--report — against the resolved
+        #    repo_path, so quotes taken from the target repository's `.code-factory/` are checked
+        #    against THAT repository. Without the flag the cwd stays the base (cases 1-7), and an
+        #    absolute source / claims path is never re-anchored.
+        launch = tmp / "launch"
+        launch.mkdir()
+        repo = tmp / "target" / "repo"
+        target_log = repo / ".code-factory" / "logs" / "baseline.md"
+        target_log.parent.mkdir(parents=True)
+        target_log.write_text(SOURCE_TEXT, encoding="utf-8")
+        rel_claims = repo / ".code-factory" / "state" / "claims.json"
+        rel_claims.parent.mkdir(parents=True)
+        rel_claims.write_text(json.dumps([{"quote": QUOTE,
+                                           "source": ".code-factory/logs/baseline.md"}]),
+                              encoding="utf-8")
+        res = run("--claims", ".code-factory/state/claims.json", "--repo", str(repo),
+                  "--report", ".code-factory/logs/quotes.json", cwd=launch)
+        expect(res.returncode == 0,
+               f"--repo must anchor a relative --claims and source: {res.stderr!r}")
+        report = json.loads((repo / ".code-factory" / "logs" / "quotes.json")
+                            .read_text(encoding="utf-8"))
+        expect(report["all_verified"] is True and report["verified"][0]["line"] == 3,
+               f"the anchored source must verify the quote: {report!r}")
+        expect(report["verified"][0]["source"] == ".code-factory/logs/baseline.md",
+               "the report must keep the source exactly as the claim wrote it")
+        expect(report["claims_file"] == ".code-factory/state/claims.json",
+               "the report must keep the claims path exactly as passed")
+        expect(not (launch / ".code-factory").exists(),
+               "nothing may be written into the launch directory when --repo is given")
+        res = run("--claims", ".code-factory/state/claims.json", "--base", str(repo), cwd=launch)
+        expect(res.returncode == 0 and json.loads(res.stdout)["all_verified"] is True,
+               f"--base must be accepted as a synonym of --repo: {res.stdout!r} {res.stderr!r}")
+        res = run("--claims", ".code-factory/state/claims.json", cwd=launch)
+        expect(res.returncode == 1 and "error:" in res.stderr,
+               f"without --repo a relative --claims resolves against the cwd: {res.stderr!r}")
+        res = run("--claims", str(rel_claims), cwd=launch)
+        expect(res.returncode == 1 and "fallback to full log" in res.stdout,
+               f"without --repo a relative source resolves against the cwd: {res.stdout!r}")
+        abs_claims = write_claims(tmp, [{"quote": QUOTE, "source": str(target_log)}],
+                                  name="abs-source.json")
+        res = run("--claims", str(abs_claims), "--repo", str(launch), cwd=launch)
+        expect(res.returncode == 0 and json.loads(res.stdout)["all_verified"] is True,
+               f"an absolute source must never be re-anchored: {res.stdout!r} {res.stderr!r}")
+
     print("PASS - verify_quotes.py behaves as expected (exact quote verified, invented/missing/"
-          "empty sources UNTRUSTED with fail-safe, CRLF normalized to LF only).")
+          "empty sources UNTRUSTED with fail-safe, CRLF normalized to LF only, relative sources "
+          "anchored at --repo/--base).")
     return 0
 
 

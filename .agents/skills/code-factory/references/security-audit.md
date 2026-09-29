@@ -5,6 +5,9 @@ present, run only the relevant checks, and produce (a) a set of reports and (b) 
 fix-task file in the factory's own task format. The factory does **not** fix vulnerabilities by
 itself — the user reviews/edits the generated file and runs it as a separate `implement` task.
 
+Every `.code-factory/` path below lives at the root of the RESOLVED `repo_path` (the audit
+target), never at the launch folder — see the canonical `repo-scoping` rule.
+
 ## 1. Scope and limits
 
 - The factory analyzes **code and configuration inside the repository** only.

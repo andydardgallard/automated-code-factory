@@ -35,6 +35,15 @@ What instead of a paste:
 All eight sections are always present. A section with no content is marked "none" — a silent
 omission is forbidden: the subagent cannot tell "nothing to say" from "forgot to pass".
 
+Every briefing additionally carries this MANDATORY header line, before the sections:
+
+`Repository root: <absolute resolved repo_path>` — the task's `repo_path` resolved ONCE to an
+absolute path. It is the repository the subagent works in: every relative path in the briefing is
+relative to that root, and an absolute path in it is normally under that root. The
+deployment-root-scoped `memory/` is the one documented exception and is aliased explicitly whenever
+a briefing points at it. A briefing that does not name the repository root is incomplete — the
+subagent must never infer it from the launch/deployment folder.
+
 ### Task
 One sentence: what exactly to do. Phrase the action, not the implementation
 ("add the transition to Advisor in error-routing", not "call function X"). One briefing — one
@@ -108,6 +117,7 @@ decides. For `advisor` this is additionally pinned by `disallowedTools: Write, E
 ## 5. A mini-example of a filled-in briefing
 
 ```text
+Repository root: <absolute resolved repo_path> — every path below is relative to it.
 Task: add Advisor to the escalation ladder of references/error-routing.md (§2 and §5).
 Context: run task_08 hardens the factory; the rule is already approved in the plan, references to the new subagent are needed.
 Relevant files: .agents/skills/code-factory/references/error-routing.md — the escalation ladder; .agents/agents/sub-agents/advisor.md — the role description.
@@ -121,9 +131,12 @@ Constraints: only the two listed files; stdlib-only; python (no python3); in the
 ## 6. The main agent's checklist before launching a subagent
 
 1. All eight sections are present; the empty ones are marked "none".
-2. The briefing contains not a single pasted file/log fragment — only paths.
-3. The attempts and the reasons for failure are listed (if this is not the first attempt).
-4. The acceptance criteria are verifiable by a command, not by words.
-5. Own files, the model, the stdlib constraint and the environment interpreter are specified.
-6. The no-edits suffix is added for an analytical role.
-7. The answer format per §3 (summary + artifact paths) is requested.
+2. The briefing names the repository root (`Repository root: <absolute resolved repo_path>`) and
+   every path in it is relative to that root (or absolute under it); the deployment-root-scoped
+   `memory/` is aliased explicitly whenever the briefing points at it.
+3. The briefing contains not a single pasted file/log fragment — only paths.
+4. The attempts and the reasons for failure are listed (if this is not the first attempt).
+5. The acceptance criteria are verifiable by a command, not by words.
+6. Own files, the model, the stdlib constraint and the environment interpreter are specified.
+7. The no-edits suffix is added for an analytical role.
+8. The answer format per §3 (summary + artifact paths) is requested.

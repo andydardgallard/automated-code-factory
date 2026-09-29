@@ -9,8 +9,14 @@ traced back to the exact task it came from. Scripts that write artifacts embed i
 `run_id: <id>` in the header of the file they produce.
 
 Usage:
-  python run_id.py gen --task .code-factory/state/task.yaml
-  python run_id.py check --dir .code-factory
+  python run_id.py gen --task .code-factory/state/task.yaml [--repo <root>]
+  python run_id.py check --dir .code-factory [--repo <root>]
+
+`--repo <root>` (a synonym: `--root`; accepted before or after the subcommand) is the resolved
+repo_path of the run and is OPTIONAL. When it is given, a RELATIVE `--task` / `--dir` is resolved
+against it — an absolute path is always taken as it is — so a run whose repo_path is not its
+launch directory reads the artifacts of that repository and of no other. Without the flag nothing
+changes: relative paths stay relative to the caller's working directory.
 
 `gen` prints the run id and exits 0 (an unreadable task file is an error, exit 1). `check` scans
 the artifacts a run carries — `state/pipeline.yaml`, `state/acceptance.md`, `logs/*.md`,
@@ -31,6 +37,32 @@ from datetime import date
 # An artifact is marked when it carries `run_id: <id>` or `run_id=<id>` (any id, not the current one).
 RUN_ID_LINE = re.compile(r"run_id\s*[:=]\s*\S+")
 ARTIFACT_GLOBS = ("state/pipeline.yaml", "state/acceptance.md", "logs/*.md", "report.md")
+REPO_HELP = ("Resolved repo_path of the run: a RELATIVE --task/--dir is resolved against it "
+             "(default: the caller's working directory — unchanged without the flag)")
+
+
+def anchored(path: str | pathlib.Path, repo: str | None) -> pathlib.Path:
+    """`path` resolved against the explicit `--repo` root; an absolute path is taken as it is.
+
+    Without `--repo` the path is returned unchanged, so the caller's working directory stays the
+    base and every invocation behaves exactly as it did before the flag existed (fail-safe default:
+    a missing anchor must never silently re-point a path at the wrong repository).
+    """
+    resolved = pathlib.Path(path)
+    if repo and not resolved.is_absolute():
+        return pathlib.Path(repo) / resolved
+    return resolved
+
+
+def add_repo(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Add the optional repo anchor to a subcommand parser.
+
+    `default=SUPPRESS`, so a value given BEFORE the subcommand (`run_id.py --repo <root> check …`)
+    survives: the subparser only overwrites the attribute when the flag is repeated after it.
+    """
+    parser.add_argument("--repo", "--root", dest="repo", metavar="ROOT",
+                        default=argparse.SUPPRESS, help=REPO_HELP)
+    return parser
 
 
 def compute_run_id(task: pathlib.Path, today: date | None = None) -> str:
@@ -81,7 +113,7 @@ def unmarked_artifacts(root: pathlib.Path) -> list[str]:
 
 def cmd_gen(args: argparse.Namespace) -> int:
     try:
-        print(compute_run_id(pathlib.Path(args.task)))
+        print(compute_run_id(anchored(args.task, args.repo)))
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -89,7 +121,7 @@ def cmd_gen(args: argparse.Namespace) -> int:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    root = pathlib.Path(args.dir)
+    root = anchored(args.dir, args.repo)
     unmarked = unmarked_artifacts(root)
     if not unmarked:
         total = len([p for p in artifact_paths(root) if p.is_file()])
@@ -122,14 +154,19 @@ def main() -> int:
     use_utf8_output()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    # The anchor is optional and defaults to the caller's cwd (fail-safe): nothing changes without
+    # the flag.
+    ap.add_argument("--repo", "--root", dest="repo", metavar="ROOT", default=None, help=REPO_HELP)
     sub = ap.add_subparsers(dest="command", required=True)
 
     gen = sub.add_parser("gen", help="Print the run id derived from a task file")
     gen.add_argument("--task", required=True, help="Task file (task.yaml) the run id derives from")
+    add_repo(gen)
     gen.set_defaults(func=cmd_gen)
 
     check = sub.add_parser("check", help="List existing .code-factory artifacts without a run_id")
     check.add_argument("--dir", required=True, help=".code-factory directory of the run")
+    add_repo(check)
     check.set_defaults(func=cmd_check)
 
     args = ap.parse_args()

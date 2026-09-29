@@ -5,7 +5,7 @@ Deterministic self-test for `run_id.py` (zero LLM tokens).
 Checks through the CLI that (a) `gen` is deterministic and follows the documented contract —
 `<YYYYMMDD local date>-<first 8 hex of the SHA-256 of the task file bytes>`, recomputed
 independently here, (b) the digest of the committed, static fixture
-`assets/task-template.yaml` equals the pinned `cf031caa` — the algorithm proven against a real
+`assets/task-template.yaml` equals the pinned `6dfc45ff` — the algorithm proven against a real
 committed task file, not only against a temp fixture; the date part is TODAY by construction, so
 only its FORMAT `YYYYMMDD-` is pinned (a pinned date would rot overnight), and the ephemeral
 runtime task file `.code-factory/state/task.yaml` is never read (its bytes change with every task,
@@ -13,7 +13,10 @@ so pinning them would rot at the next run) — and
 (c) `check` scans exactly the artifacts a run carries (`state/pipeline.yaml`, `state/acceptance.md`,
 `logs/*.md`, `report.md`): an existing artifact without a `run_id: <id>` / `run_id=<id>` line is
 listed and exits 1, a fully marked (or empty / absent) directory exits 0, and any id — not only the
-current one — counts as marked.
+current one — counts as marked, and (d) the OPTIONAL `--repo`/`--root` anchor (before or after the
+subcommand) resolves a RELATIVE `--task` / `--dir` against the run's resolved repo_path while an
+absolute path stays as it is — without the flag the caller's cwd remains the base (fail-safe, the
+behavior every earlier run relied on).
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -34,13 +37,13 @@ TASK = REPO / ".agents" / "skills" / "code-factory" / "assets" / "task-template.
 # Committed, static fixture task file (same shape as a real task) — pinning it survives every run,
 # unlike the ephemeral `.code-factory/state/task.yaml`.
 # Its DATE is today's by construction, so only the digest half is compared literally.
-KNOWN_TASK_RUN_ID = "20260924-cf031caa"
+KNOWN_TASK_RUN_ID = "20260929-6dfc45ff"
 HEX = set("0123456789abcdef")
 
 
-def run(*args: str) -> subprocess.CompletedProcess[str]:
+def run(*args: str, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(TOOL), *args],
-                          capture_output=True, text=True, errors="replace")
+                          capture_output=True, text=True, errors="replace", cwd=cwd)
 
 
 def expect(cond: bool, msg: str) -> None:
@@ -162,9 +165,50 @@ def main() -> int:
         expect(run("check", "--dir", str(empty)).returncode == 0,
                "artifacts outside the provenance set must not fail the check")
 
+        # 7. The optional `--repo`/`--root` anchor: a run whose repo_path is NOT its launch directory
+        #    reads the artifacts of that repository and of no other. The flag is accepted before and
+        #    after the subcommand, an absolute path is never re-anchored, and without the flag the
+        #    caller's cwd stays the base (the old, fail-safe behavior).
+        repo = tmp / "target" / "repo"
+        scaffold(repo / ".code-factory", run_id)
+        anchored_task = repo / ".code-factory" / "state" / "task.yaml"
+        anchored_task.write_text("title: anchored\nrepo_path: .\n", encoding="utf-8")
+        launch = tmp / "launch"
+        launch.mkdir()
+        anchored_id = expected_run_id(anchored_task)
+        for label, argv in (
+            ("after the subcommand", ("gen", "--repo", str(repo), "--task",
+                                      ".code-factory/state/task.yaml")),
+            ("before the subcommand", ("--repo", str(repo), "gen", "--task",
+                                       ".code-factory/state/task.yaml")),
+            ("via the --root synonym", ("gen", "--root", str(repo), "--task",
+                                        ".code-factory/state/task.yaml")),
+        ):
+            res = run(*argv, cwd=str(launch))
+            expect(res.returncode == 0 and res.stdout.strip() == anchored_id,
+                   f"{label}: a relative --task must resolve against --repo: "
+                   f"{res.stdout!r} {res.stderr!r}")
+        res = run("check", "--repo", str(repo), "--dir", ".code-factory", cwd=str(launch))
+        expect(res.returncode == 0 and str(repo / ".code-factory") in res.stdout,
+               f"a relative --dir must resolve against --repo: {res.stdout!r} {res.stderr!r}")
+        (repo / ".code-factory" / "report.md").write_text("# Report\n", encoding="utf-8")
+        res = run("check", "--repo", str(repo), "--dir", ".code-factory", cwd=str(launch))
+        expect(res.returncode == 1 and "report.md" in res.stdout + res.stderr,
+               f"the anchored directory must be the one checked: {res.stdout + res.stderr!r}")
+        res = run("check", "--repo", str(launch), "--dir", str(repo / ".code-factory"))
+        expect(res.returncode == 1 and "report.md" in res.stdout + res.stderr,
+               f"an absolute --dir must never be re-anchored: {res.stdout + res.stderr!r}")
+        res = run("gen", "--task", ".code-factory/state/task.yaml", cwd=str(launch))
+        expect(res.returncode == 1 and "error:" in res.stderr and "Traceback" not in res.stderr,
+               f"without --repo the cwd stays the base: {res.stderr!r}")
+        res = run("check", "--dir", ".code-factory", cwd=str(repo))
+        expect(res.returncode == 1 and "report.md" in res.stdout + res.stderr,
+               f"without --repo a relative --dir resolves against the cwd: "
+               f"{res.stdout + res.stderr!r}")
+
     print("PASS - run_id.py behaves as expected (deterministic <date>-<sha256[:8]> id, the pinned "
           "digest for the committed task fixture, and a check that names existing .code-factory "
-          "artifacts without a run_id).")
+          "artifacts without a run_id, plus the optional --repo/--root anchor).")
     return 0
 
 

@@ -22,7 +22,8 @@ Verified here:
   3. the `start.cmd` contract and its exact first line (`@echo off`),
   4. anti-drift: the inline `start.cmd` template in the .ps1 == the committed `start.cmd`,
   5. anti-drift: the inline `start.sh` template in the .ps1 == the here-doc of `prepare_factory.sh`,
-  6. `prepare_factory.sh` was NOT touched (it must not mention `start.cmd` at all),
+  6. `prepare_factory.sh` generates no Windows launcher (the single mention of `start.cmd` allowed
+     there is its `.gitignore` pattern - see 10),
   7. `.gitattributes` pins `*.cmd`/`*.ps1` to CRLF at checkout, so the CRLF-only checks above
      hold on a clone with `core.autocrlf=false` too (never an LF-only checked-out launcher), and
      pins `*.sh` to LF — the bash deployer is an LF file and the deployer writes `start.sh` as LF,
@@ -35,7 +36,13 @@ Verified here:
      a failed memory init is reported in BOTH deployers as the short reason — the last non-empty
      line of the output — never as a dump of the whole output (a traceback) and never as its first
      line (`Traceback (most recent call last):`), and the `.ps1` git step falls back to plain
-     `git init` + `symbolic-ref` on git < 2.28 (no `-b`) instead of hard-exiting.
+     `git init` + `symbolic-ref` on git < 2.28 (no `-b`) instead of hard-exiting,
+  10. repo-path scoping hazards of a deployment: BOTH deployers ignore the factory's own
+     `task.yaml` / `start.cmd` / `start.sh` (the pattern list AND the written `.gitignore` block —
+     a leftover task file or launcher in a TARGET project must not be mistaken for a new task and
+     must not be committed; a list that is only checked but never written re-appends the block on
+     every run), and BOTH launcher templates export `KIMI_FACTORY_LAUNCH_DIR` — the absolute launch
+     directory, the machine-checkable anchor for resolving the task's `repo_path`.
 
 A project deployed by the factory contains only `.agents/` (plus the generated launchers), so
 there this test SKIPs cleanly instead of failing on a missing factory repo root.
@@ -115,7 +122,20 @@ CREATED_RELS = (
 )
 MEMORY_RELS = ("memory/change-log.md", "memory/summary.md")
 GITIGNORE_PATTERNS = (".agents/", ".code-factory/", "__pycache__/", "*.pyc",
-                      ".env", ".env.*", "*.env", "*.pem", "*.key")
+                      ".env", ".env.*", "*.env", "*.pem", "*.key",
+                      "task.yaml", "start.cmd", "start.sh")
+
+# The launchers export the absolute directory they live in: the machine-checkable anchor the
+# instruction layer resolves the task's `repo_path` against (the launch directory is never guessed).
+LAUNCH_DIR_VAR = "KIMI_FACTORY_LAUNCH_DIR"
+SH_LAUNCH_DIR_TOKENS = ("export " + LAUNCH_DIR_VAR + "=", "BASH_SOURCE", "pwd")
+# The value is `%CD%` right after `cd /d "%~dp0"` - the same anchor with cmd's own normalization
+# (absolute, no trailing backslash); the `cd` must come first, so it is checked in the function.
+CMD_LAUNCH_DIR_TOKENS = (LAUNCH_DIR_VAR, "%CD%")
+CMD_LAUNCH_DIR_SOURCE = 'cd /d "%~dp0"'
+# The factory's OWN files inside a deployed project: a leftover task file or launcher left in a
+# TARGET project must not look like a new task and must not be committed by either deployer.
+DEPLOYER_HAZARD_PATTERNS = ("task.yaml", "start.cmd", "start.sh")
 
 CMD_USAGE = "Usage: prepare_factory.cmd <path-to-project>"
 PS_INVOCATION = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0prepare_factory.ps1" %*'
@@ -209,22 +229,47 @@ def check_text_file(path: pathlib.Path, *, bom: bool, crlf_only: bool = True) ->
 
 _PS_ARRAY_HEAD = re.compile(r"^\s*\$\w+\s*=\s*@\(\s*$")
 _PS_ARRAY_TAIL = re.compile(r"^\s*\)\s*$")
+_PS_ARRAY_ONE_LINE = re.compile(r"^\s*\$\w+\s*=\s*@\((?P<body>.+)\)\s*$")
 _PS_SQ_ELEMENT = re.compile(r"^\s*'((?:[^']|'')*)'\s*,?\s*$")
+_PS_SQ_ITEM = re.compile(r"'((?:[^']|'')*)'")
 _PS_HERE_HEAD = re.compile(r"^\s*@(['\"])\s*$")
 _PS_HERE_TAIL = re.compile(r"^\s*['\"]@\s*$")
+
+
+def ps_one_line_array(text: str) -> list[str] | None:
+    """The elements of a single-line `$name = @('a', 'b')` literal, or `None` for anything else.
+
+    Only a plain list of single-quoted strings qualifies: as soon as a comma-separated part is not
+    such a string (an expression, code), this returns `None` and the caller skips the line.
+    """
+    match = _PS_ARRAY_ONE_LINE.match(text)
+    if match is None:
+        return None
+    body = match.group("body").strip()
+    items = _PS_SQ_ITEM.findall(body)
+    if not items:
+        return None
+    # Whatever is left between the quoted items must be separators only, never code.
+    if _PS_SQ_ITEM.sub("", body).replace(",", "").strip():
+        return None
+    return [item.replace("''", "'") for item in items]
 
 
 def ps_string_arrays(text: str) -> list[list[str]]:
     """Every `$name = @( 'a', 'b' )` literal in `text`, as a list of its string elements.
 
-    A block whose elements are not all plain single-quoted strings (nested expressions, code)
-    is skipped entirely, so unrelated arrays in the script never produce a bogus template.
+    Both shapes count: the multi-line block (one element per line) and the one-liner. A block whose
+    elements are not all plain single-quoted strings (nested expressions, code) is skipped
+    entirely, so unrelated arrays in the script never produce a bogus template.
     """
     lines = text.splitlines()
     out: list[list[str]] = []
     i = 0
     while i < len(lines):
         if not _PS_ARRAY_HEAD.match(lines[i]):
+            one_line = ps_one_line_array(lines[i])
+            if one_line:
+                out.append(one_line)
             i += 1
             continue
         j = i + 1
@@ -397,11 +442,123 @@ def antidrift_start_sh() -> None:
 
 def bash_deployer_untouched() -> None:
     text = check_text_file(SH, bom=False, crlf_only=False)
-    expect("start.cmd" not in text,
-           f"{SH_NAME} must not mention start.cmd: the Windows work must leave the bash "
-           "deployer untouched")
+    # The bash deployer generates NO Windows launcher. Its one legitimate mention of `start.cmd` is
+    # the `.gitignore` pattern of the deployed project (a leftover launcher in a TARGET project must
+    # not be committed) - anything else would be the Windows work leaking into the bash path.
+    allowed = re.compile(r'^for\s+pat\s+in\b.*$|^echo\s+"start\.cmd"$')
+    offenders = [line.strip() for line in text.splitlines()
+                 if "start.cmd" in line and not allowed.match(line.strip())]
+    expect(not offenders,
+           f"{SH_NAME} must not create or reference start.cmd (that is {PS1_NAME}'s job); only its "
+           f".gitignore pattern may be mentioned, got {offenders}")
     expect(extract_heredoc(text, "EOF")[0] == "#!/usr/bin/env bash",
            f"{SH_NAME}: the start.sh here-doc must still start with the bash shebang")
+
+
+def ps1_gitignore_patterns() -> list[str]:
+    """The `.gitignore` pattern list of `prepare_factory.ps1` (the one carrying `.agents/`)."""
+    arrays = [array for array in ps_string_arrays(read_text(PS1)) if ".agents/" in array]
+    expect(len(arrays) == 1,
+           f"{PS1_NAME} must have exactly ONE .gitignore pattern list (the string array containing "
+           f"'.agents/'), found {len(arrays)}: {arrays}")
+    return arrays[0]
+
+
+def ps1_ignores_deployer_hazards() -> None:
+    """A leftover `task.yaml` / launcher in a TARGET project must never be committed there."""
+    patterns = ps1_gitignore_patterns()
+    missing = [pattern for pattern in DEPLOYER_HAZARD_PATTERNS if pattern not in patterns]
+    expect(not missing,
+           f"{PS1_NAME}: the .gitignore pattern list is missing {missing} - a leftover task file "
+           f"or launcher of a previous run would be handed to the factory as a new task and would "
+           f"be committed; got {patterns}")
+
+
+def sh_gitignore_patterns() -> list[str]:
+    """The `.gitignore` pattern list of `prepare_factory.sh` (`for pat in "..." ...`)."""
+    text = check_text_file(SH, bom=False, crlf_only=False)
+    lists = [line for line in text.splitlines() if re.match(r"\s*for\s+pat\s+in\b", line)]
+    expect(len(lists) == 1,
+           f"{SH_NAME} must have exactly ONE `for pat in ...` .gitignore pattern list, "
+           f"found {len(lists)}")
+    return re.findall(r'"([^"]*)"', lists[0])
+
+
+def sh_ignores_deployer_hazards() -> None:
+    """The bash twin of `ps1_ignores_deployer_hazards`, plus the writing half of the contract.
+
+    The `for pat in ...` list only DECIDES whether the block is needed; the patterns the deployer
+    actually appends are the `echo` lines below it. A list that is checked but never written makes
+    the deployer re-append its block on every single run, so both halves are pinned here.
+    """
+    text = check_text_file(SH, bom=False, crlf_only=False)
+    lines = [line.strip() for line in text.splitlines()]
+    patterns = sh_gitignore_patterns()
+    missing = [pattern for pattern in DEPLOYER_HAZARD_PATTERNS if pattern not in patterns]
+    expect(not missing,
+           f"{SH_NAME}: the .gitignore pattern list is missing {missing} - a leftover task file "
+           f"or launcher of a previous run would be handed to the factory as a new task and would "
+           f"be committed; got {patterns}")
+    unwritten = [pattern for pattern in patterns if f'echo "{pattern}"' not in lines]
+    expect(not unwritten,
+           f"{SH_NAME}: the .gitignore patterns {unwritten} are checked but never written - the "
+           "deployer would append them again on every run; every pattern of the list needs its own "
+           "`echo \"<pattern>\"` line inside the appended block")
+
+
+def sh_template_exports_launch_dir() -> None:
+    """The `start.sh` template must export the absolute directory the launcher lives in.
+
+    `BASH_SOURCE` (not `$PWD`) is what makes the anchor the LAUNCHER's own directory: the task's
+    `repo_path` is resolved relative to it, so a launcher started from another cwd must still
+    report where it was installed. Both carriers of the template are pinned - the here-doc of
+    `prepare_factory.sh` and the inline `$shLines` array of `prepare_factory.ps1` (the anti-drift
+    check above ties them together, this one fails on whichever lost the export).
+    """
+    templates = {
+        "the here-doc of " + SH_NAME: extract_heredoc(check_text_file(SH, bom=False, crlf_only=False),
+                                                     "EOF"),
+        "the inline template of " + PS1_NAME: extract_ps_template(read_text(PS1), "#!/usr/bin/env bash"),
+    }
+    for name, template in templates.items():
+        line = next((entry for entry in template if f"export {LAUNCH_DIR_VAR}=" in entry), None)
+        expect(line is not None,
+               f"{name}: start.sh must export {LAUNCH_DIR_VAR} (the launch directory; the "
+               "instruction layer resolves the task's repo_path against it) - no "
+               f"`export {LAUNCH_DIR_VAR}=` line found; template:\n" + "\n".join(template))
+        missing = [token for token in SH_LAUNCH_DIR_TOKENS if token not in line]
+        expect(not missing,
+               f"{name}: the {LAUNCH_DIR_VAR} export must be the launcher's OWN absolute directory "
+               f"(missing {missing}) - `$PWD` would follow the caller's cwd; got {line.strip()!r}")
+
+
+def cmd_template_exports_launch_dir() -> None:
+    """The `start.cmd` template (and the committed `start.cmd`) must export the same anchor.
+
+    `%~dp0` is the directory of the launcher FILE, so `cd /d "%~dp0"` plus `%CD%` is that directory
+    in cmd's own normalized form - and a `rem` comment that merely mentions the variable is not the
+    export, which is why the comment lines are skipped before matching.
+    """
+    templates = {
+        START_CMD_NAME: read_text(START_CMD).splitlines(),
+        "the inline template of " + PS1_NAME: extract_ps_template(read_text(PS1), "@echo off"),
+    }
+    for name, template in templates.items():
+        code = [entry for entry in template if not entry.lstrip().lower().startswith("rem ")]
+        index = next((i for i, entry in enumerate(code) if LAUNCH_DIR_VAR in entry), None)
+        expect(index is not None,
+               f"{name}: start.cmd must export {LAUNCH_DIR_VAR} (the launch directory; the "
+               "instruction layer resolves the task's repo_path against it) - no mention of "
+               f"{LAUNCH_DIR_VAR} on a code line; lines:\n" + "\n".join(template))
+        line = code[index]
+        missing = [token for token in CMD_LAUNCH_DIR_TOKENS if token not in line]
+        expect(not missing,
+               f"{name}: the {LAUNCH_DIR_VAR} export must hold the launcher's OWN directory "
+               f"(missing {missing} in {line.strip()!r})")
+        expect(any(CMD_LAUNCH_DIR_SOURCE in entry for entry in code[:index]),
+               f"{name}: the {LAUNCH_DIR_VAR} export on code line {index + 1} must come AFTER "
+               f"`{CMD_LAUNCH_DIR_SOURCE}` - otherwise %CD% is the CALLER's working directory, "
+               "not the launch directory")
 
 
 def bash_memory_failure_is_short() -> None:
@@ -721,11 +878,11 @@ def deploy_case(checker: "Checker", cmd_exe: str, case: str, prefix: str) -> Non
         text = fact("gitignore_text")
         absent = [pattern for pattern in GITIGNORE_PATTERNS if pattern not in text]
         expect(not absent,
-               f".gitignore must contain all 9 factory patterns (missing {absent}); got:\n"
-               f"{tail(text)}")
+               f".gitignore must contain all {len(GITIGNORE_PATTERNS)} factory patterns "
+               f"(missing {absent}); got:\n{tail(text)}")
 
-    check("the deployed project has SKILL.md, memory/, .gitignore (9 patterns), .git/, "
-          "start.cmd, start.sh", artifacts)
+    check(f"the deployed project has SKILL.md, memory/, .gitignore ({len(GITIGNORE_PATTERNS)} "
+          "patterns), .git/, start.cmd, start.sh", artifacts)
 
     def generated_start_cmd() -> None:
         data = fact("start_cmd_bytes")
@@ -747,8 +904,13 @@ def deploy_case(checker: "Checker", cmd_exe: str, case: str, prefix: str) -> Non
                f"{data.count(bytes([13]))} CR byte(s)")
         expect(data.startswith(b"#!/usr/bin/env bash"),
                f"the generated start.sh must start with the bash shebang, got {data[:26]!r}")
+        expect(f"export {LAUNCH_DIR_VAR}=".encode() in data,
+               f"the generated start.sh must export {LAUNCH_DIR_VAR} (the launch directory the "
+               f"instruction layer resolves the task's repo_path against); got:\n"
+               + data.decode("utf-8", "replace"))
 
-    check("the generated start.sh is LF-only and starts with the bash shebang", generated_start_sh)
+    check("the generated start.sh is LF-only, starts with the bash shebang and exports the "
+          "launch directory", generated_start_sh)
 
     def idempotent() -> None:
         expect(fact("run2_rc") == 0,
@@ -851,6 +1013,7 @@ class Checker:
             return 1
         print("PASS - Windows launcher scripts behave as expected (encoding, .cmd/.ps1 contracts, "
               "CRLF pinned in .gitattributes, no drift in the inline start.cmd/start.sh templates, "
+              "task.yaml/launcher patterns ignored, launch directory exported, "
               "real deployment idempotent).")
         return 0
 
@@ -906,9 +1069,9 @@ def main() -> int:
     checker.check("anti-drift: the inline start.sh template in prepare_factory.ps1 == the here-doc "
                   "in prepare_factory.sh", antidrift_start_sh)
 
-    # 6. The bash deployer must be untouched.
-    checker.check("prepare_factory.sh: untouched (no mention of start.cmd, here-doc intact)",
-                  bash_deployer_untouched)
+    # 6. The bash deployer must not grow a Windows launcher.
+    checker.check("prepare_factory.sh: generates no start.cmd (only its .gitignore pattern may "
+                  "be mentioned), here-doc intact", bash_deployer_untouched)
 
     # 7. The checkout itself must hand these files over with the right line endings, on any machine.
     checker.check(".gitattributes: pins *.cmd/*.ps1 to CRLF at checkout (any core.autocrlf)",
@@ -927,7 +1090,19 @@ def main() -> int:
     checker.check("prepare_factory.sh: a failed memory init is reported as a short reason "
                   "(last non-empty line, no raw output)", bash_memory_failure_is_short)
 
-    # 9. Real deployment (Windows only).
+    # 9. Repo-path scoping hazards: both deployers ignore their own task.yaml/launchers (or a
+    # leftover one in a TARGET project is handed over as a new task / committed), and both launcher
+    # templates export the launch directory the instruction layer resolves repo_path against.
+    checker.check("prepare_factory.ps1: .gitignore patterns cover task.yaml/start.cmd/start.sh",
+                  ps1_ignores_deployer_hazards)
+    checker.check("prepare_factory.sh: .gitignore patterns cover task.yaml/start.cmd/start.sh "
+                  "(and are really written)", sh_ignores_deployer_hazards)
+    checker.check(f"start.sh template (both carriers): exports {LAUNCH_DIR_VAR} as the launcher's "
+                  "own absolute directory", sh_template_exports_launch_dir)
+    checker.check(f"start.cmd template + repo/start.cmd: exports {LAUNCH_DIR_VAR} "
+                  "(%~dp0 via %CD%, after the cd)", cmd_template_exports_launch_dir)
+
+    # 10. Real deployment (Windows only).
     end_to_end(checker)
 
     return checker.finish()

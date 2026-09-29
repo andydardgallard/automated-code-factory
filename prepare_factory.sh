@@ -194,6 +194,9 @@ cat > "$LAUNCHER" <<'EOF'
 #   ./start.sh          — interactive (in the chat: /skill:code-factory)
 #   ./start.sh --auto   — fully autonomous
 set -euo pipefail
+# The launch directory — the absolute path of the directory holding this launcher. It is the
+# machine-checkable anchor against which the instruction layer resolves the task's repo_path.
+export KIMI_FACTORY_LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Subagent model split (primary/secondary) is enabled here automatically.
 export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1
 exec kimi "$@"
@@ -213,8 +216,11 @@ GITIGNORE="$PROJECT_DIR/.gitignore"
 gitignore_has() {
     [[ -f "$GITIGNORE" ]] && tr -d '\r' < "$GITIGNORE" | grep -qxF "$1"
 }
+# The factory's own files inside a DEPLOYED project — the task file and the launchers — must never
+# be mistaken for a new task and never get committed: a leftover from a previous run in a TARGET
+# project stays invisible to git.
 NEED_GITIGNORE=false
-for pat in ".agents/" ".code-factory/" "__pycache__/" "*.pyc" ".env" ".env.*" "*.env" "*.pem" "*.key"; do
+for pat in ".agents/" ".code-factory/" "__pycache__/" "*.pyc" ".env" ".env.*" "*.env" "*.pem" "*.key" "task.yaml" "start.cmd" "start.sh"; do
     gitignore_has "$pat" || NEED_GITIGNORE=true
 done
 
@@ -232,6 +238,9 @@ if [[ "$NEED_GITIGNORE" == true ]]; then
         echo "*.env"
         echo "*.pem"
         echo "*.key"
+        echo "task.yaml"
+        echo "start.cmd"
+        echo "start.sh"
     } >> "$GITIGNORE"
 fi
 

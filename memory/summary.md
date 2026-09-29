@@ -8,14 +8,18 @@ repo_path: .
 (порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
 
 ## Current state
-Factory v12.12.1 — ENGLISH-ONLY: the whole factory (code messages, comments, docs, skill,
-agents, rulebook) is translated to English under the freeze-functionality invariant; 24th rule
-`english-only` makes English the norm for every future artifact (exceptions: live user
-communication, history). Translation-quality gates added: `check_english_only.py` (0 Cyrillic
-outside exceptions), `check_translation_structure.py` (skeleton preserved,
-`--allow-added-rule`/`--exclude`; deleted-at-worktree files of ANY type fail the check since
-v12.12.1 — the absence probe runs before the no-skeleton family skip), sharded semantic audit
-(merged verdict approve). History:
+Factory v12.13.0 — REPO-SCOPED: a run resolves the task's `repo_path` ONCE and does everything
+relative to the resolved repository (`.code-factory/`, backups, `git -C <repo>`, rollback);
+deployment-root exceptions: `memory/`, `version_manager.py`. 25th rule `repo-scoping` +
+amended `git-native`/`task-format`; mandatory Repository-root in briefings; optional
+`--repo`/`--root`/`--base` flags in run_id/factory_preflight/task_graph/error_router/
+verify_quotes (cwd default unchanged); contract test `test_repo_scoping.py`; deployer
+`.gitignore` hazards (task.yaml/start.cmd/start.sh) + `KIMI_FACTORY_LAUNCH_DIR` anchor;
+verification-strategy §4.3 rollback order fixed (reset --hard <base> BEFORE switch);
+test_error_router non-ASCII/8.3 path comparison fixed with vaccination. Previous: v12.12.1
+(ENGLISH-ONLY translation + translation-quality gates `check_english_only.py` /
+`check_translation_structure.py`, deleted-file gate hole closed, auditor severity mapping, ps1
+parity, skill_base guard). History:
 v12.8.0 (shard protocol, two-level fingerprint, Think in Code, review gate, verified acceptance,
 verify_quotes, evidence ledger, advisor, preflight) + v12.9.0 (rulebook, run_id, memory v2
 provenance, golden set, vaccination, WIP, error-patterns JSON) + v12.10.0 (severity boundary §3,
@@ -23,20 +27,18 @@ committee + plan_arbiter, root auto-detect → SKIP, precedent_index FTS5) + v12
 (utf8-guard in all argparse scripts, 22nd rule no-shared-tree-git-mutations) + v12.11.0 (explicit
 git stash classification in action_gate; content fingerprint over the working tree; memory
 actuality mechanism: backlog [--check] + closed:+evidence: + 23rd rule memory-actuality;
-project-learned overlay error_router §1.2; providers.md §5.2) + v12.12.1 (v8-review rework:
-deleted-file gate hole closed with vaccination, security-auditor severity mapping aligned to
-security-audit.md §5.1, ps1 deployer parity — old-git fallback + last-line failure reason,
-skill_base utf8-guard + usage fix, README tree fix). Rulebook: 24 rules, 94 carriers.
-Memory owner: repo. 28/28 self-tests PASS (+ test_env_propagation.sh).
-v8 whole-project review (run_id 20260924-96879f22, task_type=review, no version change):
-reviewer re-calibrated after the v12.12.0 prompt translation (7/7 golden cases, precision/recall
-1.000); 2 shards reviewed, merged verdict request_changes — 8 findings (0 critical/1 major/6
-minor/1 nit), all 9 quotes verified verbatim, the major finding reproduced independently;
-acceptance SUCCESS (4 MET + 1 derived, regression pass, ledger FRESH). The rework list became
-follow-up `task-v9.yaml`, implemented by run v9 (run_id 20260924-8b9caeeb, v12.12.1, commit
-2f53d2f): all 8 findings fixed with vaccination evidence, review approve, acceptance SUCCESS.
-Open backlog: 0 (the 2 v8 actionable findings closed with evidence by the v9 run; 32 historical
-items stay closed with evidence).
+project-learned overlay error_router §1.2; providers.md §5.2) + v12.12.0/12.12.1 (English-only
+package + 24th rule; v8 review rework) + v12.13.0 (v10: repo-scoping contract, 25th rule).
+Rulebook: 25 rules, 98 carriers. Memory owner: repo. 30/30 self-tests PASS (29 test_*.py +
+test_env_propagation.sh).
+Latest runs: v8 whole-project review (run_id 20260924-96879f22, task_type=review, no version
+change): 8 findings, rework became `task-v9.yaml`, implemented by run v9 (run_id
+20260924-8b9caeeb, v12.12.1, commit 2f53d2f). Run v10 (run_id 20260929-a4f03186, v12.13.0,
+commit bbd4d4c, task_type=implement): the F1-F18 fix task of review run 20260929-62232c10 —
+repo-scoping contract implemented, review approve (0 critical/0 major), acceptance SUCCESS
+(7/7 MET, ledger FRESH), business mini-runs BT-1/BT-2 PASS.
+Open backlog: 0 (34 items closed with evidence; 2 v10 reviewer nits recorded as info,
+follow_up=false).
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле

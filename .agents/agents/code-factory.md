@@ -6,6 +6,7 @@ subagents:
   - factory-analyzer
   - factory-planner
   - factory-coder
+  - factory-gui-expert
   - factory-tester
   - factory-diagnostician
   - factory-advisor
@@ -36,6 +37,7 @@ at the user unless asked.
   - `references/error-routing.md` — deterministic error classification, retry budgets, Diagnostician (any failure)
   - `references/code-review.md` — static quality gate: checklist, severity, verdict, rework task (before acceptance)
   - `references/providers.md` — model routing for Kimi (K3) and Qwen providers (Phase 4)
+  - `references/chrome-devtools-mcp.md` — conditional Chrome DevTools MCP browser path: activation, managed server/config facts, specialist vs tester evidence split, safety defaults, degradation (Phases 0/1/4/5/8)
   - `references/refactoring.md` — refactor task type: freeze functionality, 100% tests unchanged
   - `references/security-audit.md` — security_audit task type: adaptive full audit + fix-task file
   - `references/documentation.md` — factory-documenter: documentation methodology + validator (Finish phase)
@@ -55,9 +57,14 @@ at the user unless asked.
   task graph, `state/evidence.json` for the evidence ledger)
 
 Read the relevant reference file when you reach its phase. Keep your own context lean — delegate
-heavy work to subagents (`factory-analyzer`, `factory-planner`, `factory-coder`, `factory-tester`,
-`factory-diagnostician`, `factory-advisor`, `factory-code-reviewer`) and accept only concise
-structured results. Every delegation uses the MANDATORY briefing template
+heavy work to subagents (`factory-analyzer`, `factory-planner`, `factory-coder`,
+`factory-gui-expert`, `factory-tester`, `factory-diagnostician`, `factory-advisor`,
+`factory-code-reviewer`) and accept only concise structured results. `factory-gui-expert` is the
+coder-class Web GUI specialist: it implements and debugs assigned UI files in a real browser when the
+task's Web GUI path applies (Phase 0/1 decision) and is never invoked on a non-Web-GUI run; the
+required `mcp__chrome-devtools__*` browser tools belong to `factory-gui-expert` and `factory-tester`
+ONLY — every other role receives no browser MCP tools.
+Every delegation uses the MANDATORY briefing template
 `references/handoff-briefing.md` (Task / Context / relevant files BY PATH, never pasted content /
 current state / what was tried and why it failed / decisions / acceptance criteria / constraints),
 and read-only roles (analyzer, planner, advisor, reviewer, auditor, diagnostician) get the no-edits
@@ -120,6 +127,10 @@ pipeline.yaml, acceptance.md, logs, backups, manifest.json, reports), backups, g
 rollback all live there, and the launch directory is never silently used as the root. The documented
 exceptions that stay DEPLOYMENT-ROOT-scoped are `memory/` (the long-term memory) and
 `scripts/version_manager.py` (`VERSION`) — they receive their root explicitly.
+**Web GUI path (NO new task field)**: whether this task activates the browser capability (Chrome
+DevTools MCP + `factory-gui-expert`) is never a task field and never a mandatory requirement — it is
+decided from the task scope during analysis (Phase 1, `scripts/chrome_devtools_mcp.py decide`) and the
+decision with its reason is recorded in the plan/state, so the existing task format is untouched.
 **Stale task file**: when the launch directory holds a leftover `task.yaml` from a previous run and
 no new task was handed over, WARN the user and ask whether to re-run that stale task — the factory
 never silently re-runs a stale task.
@@ -188,6 +199,18 @@ Run the existing test suite as the regression baseline and save it to
    analyzer reads them before exploring; the planner reads them at start; the coder gets the
    relevant sections.
 
+**Web GUI applicability (conditional browser path)**: decide whether THIS task needs the Web GUI path
+and record the decision WITH its reason in the plan/state —
+`python .agents/skills/code-factory/scripts/chrome_devtools_mcp.py decide --task-file
+.code-factory/state/task.yaml --repo <resolved repo_path>`. Applicability never follows from the
+repository alone: a backend-only task in a repository that happens to contain a frontend stays
+`not_applicable`, while a green-field Web GUI task is recognized although no frontend exists yet. The
+analyzer (read-only) also determines the actual Web UI entry point and run command, the project's
+EXISTING browser/E2E stack and its config
+(`chrome_devtools_mcp.py discover-e2e --repo <resolved repo_path>`), and which implementation files a
+specialist would own; `not_applicable` keeps the specialist, the browser tools and any Chrome/Node
+requirement off for the whole run. Reference: `references/chrome-devtools-mcp.md`.
+
 **Repo-mismatch gate**: after analysis, verify that files, symbols, configs and data referenced
 by the task actually exist in the repo. If they are missing: in hitl mode STOP and ask the user
 for the missing pieces via `AskUserQuestion` (business language); in auto mode record the
@@ -198,6 +221,11 @@ Follow `references/planning-guide.md`. Produce a DAG plan: tasks with dependenci
 verification commands, business tests as first-class tasks, architecture approach. If the task
 has a `user_story`, restate it in the plan and use it to drive every decision. If the task
 needs new in-project skills/scripts/plugins, include them. Save to `.code-factory/state/plan.md`.
+When the Web GUI path is `applicable`, the plan (built by the read-only planner) additionally names
+the UI files owned by `factory-gui-expert`, the browser business scenario the tester must execute
+after the last code change, and the browser matrix DERIVED from the acceptance criteria
+(`chrome_devtools_mcp.py browser-matrix`, never assumed) — a required cross-browser matrix runs
+through the project's EXISTING E2E framework command.
 The `task_type` selects the planning mode:
 - `implement` (default) — normal DAG plan.
 - `review` — the plan is produced differently: first run the code reviewer over the whole
@@ -251,6 +279,15 @@ check during pre-flight that `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is expor
 `echo "${KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL:-unset}"`). If it is missing, write
 `models_warning: "KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL is not set — coder/tester subagents
 will use the primary model"` into pipeline.yaml and carry the warning into report.md.
+**Web GUI pre-flight (conditional)**: only when Phase 1 decided `applicable`, probe the browser
+capabilities into the same capability file
+(`python .agents/skills/code-factory/scripts/factory_preflight.py --web-gui --repo <resolved repo_path>
+--out .code-factory/state/preflight.json`): Node.js/npm/npx, Google Chrome or Chrome for Testing, and
+the MCP server start feasibility (`scripts/chrome_devtools_mcp.py probe`). A missing or incompatible
+capability is DATA with a reason, never a crash: it goes through the EXISTING infrastructure route
+(`references/error-routing.md` §1 rows I1–I4), the browser criteria of the task stay explicitly
+UNVERIFIED — never reported MET — and a `not_applicable` run never probes, never launches Chrome and
+never requires Node.js.
 **Run id**: every artifact written from here on carries the run's `run_id`
 (`python .agents/skills/code-factory/scripts/run_id.py gen --task .code-factory/state/task.yaml` if
 it has not been generated yet) — write it as the required `run_id` key of the checkpoint
@@ -274,6 +311,19 @@ subagent returns, append `models_used.<role> = <model>` to
 `.code-factory/state/pipeline.yaml`. Each follows the plan and the project coding style. Update
 `manifest.json` after every change. Create any new skills/scripts/plugins defined in the plan.
 
+**Web GUI implementation (conditional)**: when the task's Web GUI path is `applicable`, the UI files
+go to `factory-gui-expert` (coder-class) instead of `factory-coder`: it implements, reproduces and
+debugs the interface in the real browser through Chrome DevTools MCP and leaves its DIAGNOSTIC
+artifacts under the resolved repository's `.code-factory/logs/browser/`. Non-GUI work stays with
+`factory-coder` (no routine browser access). Honor `models.gui_expert` from the task and log
+`models_used.gui_expert` into `pipeline.yaml` and `report.md` — the role is generator-side like
+`models.coder` (same family rule, `references/providers.md` §5.1) and its fallback is
+`model_preference: secondary`; a secondary-class model is enough when its MCP/media capabilities
+suffice, and complex visual analysis may be handed to a read-only primary role WITHOUT making that
+role the implementer (generator ≠ judge is preserved). Implementation failures and review rework use
+the EXISTING coder route and `retry_counters.coder`. The specialist never self-accepts: the final
+browser scenario belongs to `factory-tester` (Phase 8).
+
 **Reference skills (dynamic context)**: if the task has `reference_docs`/`reference_skills`,
 resolve them into skills via the `factory-skill-manager` subagent + `scripts/skill_base.py`
 (see `references/reference-docs.md`), then append the resolved skill instructions to each
@@ -292,6 +342,24 @@ Run the full existing suite. Compare with baseline.
 Run the real program with the user-specified configs and input data; compare actual business
 results with expected. On mismatch (HITL): show actual vs expected, ask the user whether to fix
 the code or revise the expectations.
+
+**Browser business tests (conditional, Web GUI tasks)**: after the LAST code change,
+`factory-tester` INDEPENDENTLY executes the final browser scenario through the Chrome DevTools MCP
+tools — fresh accessibility snapshot before interacting, the real interaction, console/network
+inspection and visual evidence at the required viewport — and OWNS the acceptance evidence under the
+resolved repository's `.code-factory/logs/browser/` with the run_id. The specialist's diagnostic
+artifacts stay distinct and are never reused as acceptance proof, and the implementer never issues
+the PASS. A screenshot alone is not proof of behavior; any later change makes the evidence STALE, so
+the scenario is re-run and re-stamped (`references/verification-strategy.md` §3.1), and the
+artifacts are referenced from `business-tests.md`, `test-results.md` and `report.md`.
+**Cross-browser regression**: when the acceptance criteria explicitly require Firefox, WebKit or
+another browser, run that matrix through the project's EXISTING E2E framework and its normal test
+command — an existing framework is never replaced, and no second browser stack is added by default.
+Only a green-field project with an explicit cross-browser requirement may plan Playwright Test CLI
+with a recorded justification — never Playwright MCP. The existing unit, integration and E2E suites
+stay mandatory; MCP does not replace them. On a missing Node/Chrome/MCP capability the affected
+browser criteria stay UNVERIFIED with an infrastructure diagnosis (`references/error-routing.md`
+§1 rows I1–I4) — never MET, and never silently skipped.
 
 ### Phase 8b — Code review (mandatory gate)
 Launch `factory-code-reviewer` following `references/code-review.md`. Scope: for a normal task
@@ -462,7 +530,12 @@ On ANY failure, do NOT roll back immediately. Follow `references/error-routing.m
 
 1. **Classify deterministically** (regex): compile/link → coder; missing file → ba; bad command
    → planner; wrong business results / unknown → diagnostician; infrastructure → auto-fix;
-   permission → human. Record the error in `.code-factory/logs/errors.md` and update retry
+   permission → human. Browser/MCP capability failures (node/npm/npx not found, Chrome / Chrome for
+   Testing missing, MCP connection/startup failure, chrome-devtools-mcp launch errors) classify as
+   infrastructure (`references/error-routing.md` §1 rows I1–I4): they repair the environment instead
+   of rolling back code. There is NO GUI-specific role or budget — a GUI implementation or
+   browser-test failure keeps the EXISTING `coder` route and `retry_counters.coder`.
+   Record the error in `.code-factory/logs/errors.md` and update retry
    counters in `.code-factory/state/pipeline.yaml`. Feed the Diagnostician an error EXCERPT, never
    a whole log: read long logs with `scripts/log_tail.py` (counters + tail only).
 2. **Retry budget check**: coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3,

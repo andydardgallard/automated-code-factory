@@ -3,7 +3,7 @@ name: code-factory
 description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 type: flow
 ---
-<!-- code-factory-version: 12.13.0 -->
+<!-- code-factory-version: 12.14.0 -->
 
 # Code Factory
 
@@ -17,11 +17,13 @@ Turns business tasks (described by non-technical users) into working, tested cod
 - `references/error-routing.md` — deterministic error classification, retry budgets, Diagnostician fallback (on any failure)
 - `references/code-review.md` — static quality gate: checklist, severity, verdict, rework task (before acceptance)
 - `references/providers.md` — model routing for Kimi (K3) and Qwen providers (Phase 4)
+- `references/chrome-devtools-mcp.md` — conditional Chrome DevTools MCP browser path: activation, managed server/config facts, specialist vs tester evidence split, safety defaults, degradation (Phases 0/4/5/8)
 - `references/refactoring.md` — refactor task type: freeze functionality, 100% tests unchanged
 - `references/security-audit.md` — security_audit task type: adaptive full audit + fix-task file
 - `references/documentation.md` — factory-documenter: documentation methodology + validator (Finish phase)
 - `references/reference-docs.md` — reference_docs/reference_skills: persistent skill base + relevance matrix (Phase 0/5)
 - `references/factory-rules.md` — the ONE home of the mandatory rules + the documents that must quote each one verbatim (`scripts/check_factory_rules.py` verifies the byte-identical blocks; any phase)
+- `.agents/agents/sub-agents/gui-expert.md` — factory-gui-expert: coder-class Web GUI implementation/debugging in a real browser (conditional, only when the Web GUI path applies; Phases 4/5/8)
 - `assets/task-template.yaml` — business task template (Phase 0)
 
 ## Runtime state (at the root of the RESOLVED repo_path)
@@ -113,9 +115,9 @@ flowchart TD
     PC3 --> F
     J -->|Approve| K
     G -->|auto| L[Make reasonable business assumptions from the task description. Record every assumption explicitly in the plan.]
-    L --> PF[Pre-flight: probe the real environment first with scripts/factory_preflight.py --out .code-factory/state/preflight.json — it reports the python command that actually works (python / python3 / py), git, bash/sh, the OS and KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL, and every command below is emitted for the capabilities found. Then the git check: if the project has no git repository, run git init. Working tree must be clean: auto-untrack build artifacts (target/, node_modules/, __pycache__/ etc.) and commit factory artifacts (AGENTS.md). Record git HEAD and git status in .code-factory/state/. Also verify model setup: for the new CLI check that KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 is exported (otherwise secondary-model split is INACTIVE); record a models_warning in pipeline.yaml if missing.]
+    L --> PF[Pre-flight: probe the real environment first with scripts/factory_preflight.py --out .code-factory/state/preflight.json — it reports the python command that actually works (python / python3 / py), git, bash/sh, the OS and KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL, and every command below is emitted for the capabilities found. Then the git check: if the project has no git repository, run git init. Working tree must be clean: auto-untrack build artifacts (target/, node_modules/, __pycache__/ etc.) and commit factory artifacts (AGENTS.md). Record git HEAD and git status in .code-factory/state/. Also verify model setup: for the new CLI check that KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 is exported (otherwise secondary-model split is INACTIVE); record a models_warning in pipeline.yaml if missing. Conditional browser probes: only for an applicable Web GUI run add --web-gui, which appends the node/npm/npx, Chrome / Chrome for Testing and MCP-start capability block to the same file — a not-applicable run never probes the browser, never launches Chrome and never needs Node.js.]
     PF --> K[Backup the current state: copy every file that will be modified to .code-factory/backups/ preserving relative paths. Track created files in .code-factory/manifest.json. Write the checkpoint .code-factory/state/pipeline.yaml after every phase for resume.]
-    K --> M[Implement: launch factory-coder subagents for the plan tasks, respecting dependencies; independent tasks can run in parallel. Every delegation uses the mandatory briefing template references/handoff-briefing.md. Models are passed by the main agent: pass model: explicitly to the Agent tool (supported by the CLI) following the task's models matrix — model_preference in the sub-agent .md files is only the FALLBACK for roles the task does not name. After each subagent returns, log the used model for each role to pipeline.yaml models_used. Each coder follows the plan and the project coding style in an isolated context. After every change, update manifest.json. Also create any new skills/scripts/plugins defined in the plan.]
+    K --> M[Implement: launch factory-coder subagents for the plan tasks, respecting dependencies; independent tasks can run in parallel. Every delegation uses the mandatory briefing template references/handoff-briefing.md. Models are passed by the main agent: pass model: explicitly to the Agent tool (supported by the CLI) following the task's models matrix — model_preference in the sub-agent .md files is only the FALLBACK for roles the task does not name. After each subagent returns, log the used model for each role to pipeline.yaml models_used. Each coder follows the plan and the project coding style in an isolated context. After every change, update manifest.json. Also create any new skills/scripts/plugins defined in the plan. Conditional Web GUI routing: when the Phase 1 applicability decision is applicable, factory-gui-expert implements and debugs the assigned UI files in the real browser through Chrome DevTools MCP with models.gui_expert honored and models_used.gui_expert logged, the tester — never the specialist — owns the browser acceptance, and non-GUI work stays with factory-coder.]
     M --> N[Integration tests: write and run per-task tests for the changed modules following references/verification-strategy.md.]
     N --> O{Tests passed?}
     O -->|No| RR[Route the failure per references/error-routing.md: classify deterministically by regex, record the error context in .code-factory/logs/errors.md, and update retry counters in pipeline.yaml.]
@@ -147,7 +149,7 @@ flowchart TD
     V2 -->|stop| Y
     Q --> R{Tests passed?}
     R -->|No| RR
-    R -->|Yes| S[Business tests: run the program with the user-provided configs and input data. Collect actual business results and compare them with the expected business results.]
+    R -->|Yes| S[Business tests: run the program with the user-provided configs and input data. Collect actual business results and compare them with the expected business results. Browser acceptance for an applicable Web GUI task is tester-owned: after the last code change factory-tester INDEPENDENTLY executes the final scenario through the Chrome DevTools MCP tools — fresh accessibility snapshot, real interaction, console/network inspection, visual evidence at the required viewport, artifacts under .code-factory/logs/browser/ carrying the run_id — while the specialist's diagnostic artifacts stay distinct and a screenshot alone is never proof; missing Node/Chrome/MCP leaves the browser criteria unverified, never MET.]
     S --> T{Business results match?}
     T -->|No| U[Show the user actual vs expected results. Ask via AskUserQuestion: fix the code, or revise the expectations?]
     U --> V{User decision}
@@ -325,7 +327,11 @@ Rules that always apply:
 - **Models**: the main agent PASSES the model explicitly to the Agent tool (`model:` is supported
   by the CLI) following the task's `models` matrix and the generator≠judge rule of
   `references/providers.md` (coder/tester and reviewer/diagnostician/advisor come from different
-  model families). The ONE exception where the matrix does NOT apply is the second planner of the
+  model families). `models.gui_expert` is the optional task key for the Web GUI specialist
+  `factory-gui-expert`: generator-class like `models.coder` (its family therefore differs from the
+  reviewer/diagnostician/advisor family), used only when the Web GUI path applies, defaulting to the
+  role's secondary fallback when its MCP/media capabilities suffice, and the model actually used is
+  logged as `models_used.gui_expert`. The ONE exception where the matrix does NOT apply is the second planner of the
   plan committee (double rejection): it always comes from the family contrasting the first planner
   — the committee rule outranks the matrix (`references/providers.md` §5.2). The per-role
   `model_preference: primary|secondary` in each sub-agent `.md` is the FALLBACK, resolved against

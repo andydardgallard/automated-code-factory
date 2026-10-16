@@ -74,9 +74,18 @@ acceptance_criteria:
 # persistent skill-base/. `reference_docs` = {path, skill} to generate/update/reuse;
 # `reference_skills` = names of existing skills to reuse without a path (a missing
 # name is an error asking for the path in reference_docs).
+# `path` may also be a public URL (a document URL or a Git repository URL ending in
+# .git): the factory fetches it DIRECTLY into the run's uncommitted
+# .code-factory/cache/reference-docs/ and hashes it by content, exactly like a local
+# source. Only public, unauthenticated http(s) sources are supported, and a cached
+# offline reuse is reported as stale — never as fresh remote content.
 # reference_docs:
 #   - path: "docs/market-making-book.pdf"
 #     skill: "market-making"
+#   - path: "https://playwright.dev/docs/getting-started-mcp"            # document URL
+#     skill: "playwright-mcp"
+#   - path: "https://github.com/ChromeDevTools/chrome-devtools-mcp.git"  # Git repo URL
+#     skill: "chrome-devtools-mcp"
 # reference_skills:
 #   - "market-making"
 
@@ -88,6 +97,7 @@ acceptance_criteria:
 #   analyzer: deepseek-v4-flash
 #   planner: deepseek-v4-pro
 #   coder: kimi-k3
+#   gui_expert: deepseek-v4-flash   # Web GUI specialist (generator-side, secondary-class model)
 #   tester: qwen-max
 #   diagnostician: deepseek-v4-pro
 #   reviewer: deepseek-v4-pro

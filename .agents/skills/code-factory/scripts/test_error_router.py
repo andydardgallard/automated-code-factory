@@ -7,7 +7,8 @@ Deterministic self-test for `error_router.py` (zero LLM tokens, stdlib only).
 against them in array order ("first match wins") and lets a project override patterns through
 `.code-factory/state/error-patterns.json` (project-first merge, deduplicated by id).
 
-Covered here: the snapshot's shape and order (ids 1-20 + A-F, categories, routes, retry budgets),
+Covered here: the snapshot's shape and order (ids 1-20 + the browser/MCP infrastructure rows
+I1-I4 + A-F, categories, routes, retry budgets),
 sample logs from the tables (WRONG_RESULTS must win over the generic assertion/compile rows, a
 provider `401` line is PROVIDER_AUTH), the unmatched fallback (diagnostician), the default+project
 merge (a learned pattern is tried first, the built-in rows it never touches stay live, the override
@@ -40,12 +41,19 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent
 TOOL = SCRIPTS / "error_router.py"
 DEFAULT = SCRIPTS.parent / "references" / "error-patterns.default.json"
 
-# §1 rows 1-20, in table order: id, category, route to.
+# §1 rows 1-20 plus the browser/MCP infrastructure rows I1-I4, in table (match) order:
+# id, category, route to. I1-I4 sit between rows 4 and 5 ON PURPOSE — that position is what keeps a
+# browser capability line from being stolen by the generic `command not found` / `file not found`
+# rows (see the Notes of §1 in references/error-routing.md).
 EXPECTED = [
     ("1", "MISSING_INPUT", "human"),
     ("2", "WRONG_RESULTS", "diagnostician"),
     ("3", "INFRASTRUCTURE", "infrastructure"),
     ("4", "INFRASTRUCTURE", "infrastructure"),
+    ("I1", "BROWSER_TOOLCHAIN", "infrastructure"),
+    ("I2", "BROWSER_MISSING", "infrastructure"),
+    ("I3", "MCP_STARTUP", "infrastructure"),
+    ("I4", "CHROME_DEVTOOLS_MCP", "infrastructure"),
     ("5", "MISSING_FILE", "ba"),
     ("6", "MISSING_FILE", "ba"),
     ("7", "BAD_COMMAND", "planner"),
@@ -89,6 +97,20 @@ SAMPLES = [
     ("test_x FAILED: 1 != 2", "19", "ASSERTION", "coder"),
     ("cargo: could not compile `bar`: dependency failed", "14", "DEPENDENCY", "infrastructure"),
     ("HTTP 429: rate limit exceeded", "C", "PROVIDER_RATE", "infrastructure"),
+    # Browser/MCP INFRASTRUCTURE rows (§1 rows I1-I4): a missing capability is an environment
+    # problem, not a code problem. It must never be swallowed by the generic BAD_COMMAND/MISSING_FILE
+    # rows, and it never reaches the coder — the coder route stays the ONLY implementation route.
+    ("bash: npx: command not found", "I1", "BROWSER_TOOLCHAIN", "infrastructure"),
+    ("'npm' is not recognized as an internal or external command", "I1", "BROWSER_TOOLCHAIN",
+     "infrastructure"),
+    ("Google Chrome was not found; install Chrome for Testing", "I2", "BROWSER_MISSING",
+     "infrastructure"),
+    ("MCP server 'chrome-devtools' failed to start", "I3", "MCP_STARTUP", "infrastructure"),
+    ("npx chrome-devtools-mcp@1.11.0 exited with code 1", "I4", "CHROME_DEVTOOLS_MCP",
+     "infrastructure"),
+    # A GUI implementation/test FAILURE is not infrastructure: it keeps the existing ASSERTION/coder
+    # route, because no GUI-specific pattern was added.
+    ("AssertionError: the submit button did not call the handler", "19", "ASSERTION", "coder"),
 ]
 UNMATCHED_LOG = "everything is fine here\n0 failed\n"
 
@@ -190,9 +212,13 @@ def main() -> int:
     got_providers = [(e["id"], e["category"], e["route"]) for e in doc["provider_patterns"]]
     expect(got_providers == EXPECTED_PROVIDERS, f"§1.1 provider rows A-F changed: {got_providers}")
     expect(doc["retry_budgets"] == BUDGETS, f"retry budgets: {doc['retry_budgets']}")
-    expect(len(er.match_order(doc)) == 26, "20 §1 rows + 6 provider rows must be classified")
-    expect(doc["patterns"][19]["patterns"] == [], "the terminal UNKNOWN row carries no regex")
-    expect(all(e["patterns"] for e in doc["patterns"][:19]), "rows 1-19 must all carry regexes")
+    expect(len(er.match_order(doc)) == 30,
+           "24 §1 rows (1-20 plus the browser/MCP infrastructure rows I1-I4) + 6 provider rows "
+           "must be classified")
+    by_id = {entry["id"]: entry for entry in doc["patterns"]}
+    expect(doc["patterns"][-1]["patterns"] == [], "the terminal UNKNOWN row carries no regex")
+    expect(all(e["patterns"] for e in doc["patterns"][:-1]),
+           "every non-terminal row must carry regexes")
     ids = [e["id"] for e in doc["patterns"]]
     # Note in §1: business-result markers may sit inside an assertion message.
     expect(ids.index("2") < ids.index("8") < ids.index("19"),
@@ -200,18 +226,18 @@ def main() -> int:
     # Rows 16/17 share the same regexes — the "(with 'test' in output)" condition is prose, not a
     # regex, so row 16 shadows row 17 under "first match wins". Pinned here so the shadowing is
     # visible rather than silent (the text update of error-routing.md has to resolve it).
-    expect(doc["patterns"][15]["patterns"] == doc["patterns"][16]["patterns"],
+    expect(by_id["16"]["patterns"] == by_id["17"]["patterns"],
            "rows 16 and 17 must still mirror the table's shared pattern cell")
     # Row 8's cell is `error[E\d+]` — a CHARACTER CLASS, so it matches `error4`, not Cargo's
     # `error[E0432]`. Copied verbatim here (the snapshot must not rewrite the table); a project can
     # override id 8 with a learned pattern, and the text update of error-routing.md has to decide.
-    expect("error[E\\d+]" in doc["patterns"][7]["patterns"],
-           f"row 8 must snapshot the table's regex verbatim: {doc['patterns'][7]['patterns']}")
+    expect("error[E\\d+]" in by_id["8"]["patterns"],
+           f"row 8 must snapshot the table's regex verbatim: {by_id['8']['patterns']}")
     # Row 18's `Traceback (most recent call last)` keeps its parentheses UNESCAPED (a regex group),
     # so the live alternatives are `Segmentation fault`, `Fatal error`, `panic:` … — same verbatim
     # snapshot policy: the snapshot never rewrites the table, the findings go to the text update.
-    expect("Traceback (most recent call last)" in doc["patterns"][17]["patterns"],
-           f"row 18 must snapshot the table's regex verbatim: {doc['patterns'][17]['patterns']}")
+    expect("Traceback (most recent call last)" in by_id["18"]["patterns"],
+           f"row 18 must snapshot the table's regex verbatim: {by_id['18']['patterns']}")
     raw = DEFAULT.read_bytes()
     expect(b"\r" not in raw and raw.endswith(b"}\n"), "the snapshot must be LF-terminated UTF-8")
 
@@ -330,8 +356,8 @@ def main() -> int:
         expect(merged_ids[:2] == ["6", "L1"],
                f"project patterns must come first: {merged_ids}")
         expect(merged_ids.count("6") == 1, f"id 6 must be deduplicated: {merged_ids}")
-        expect(len(merged_ids) == 21,
-               f"2 learned + the 19 untouched defaults were expected: {merged_ids}")
+        expect(len(merged_ids) == 25,
+               f"2 learned + the 23 untouched defaults were expected: {merged_ids}")
         expect([e["id"] for e in merged["provider_patterns"]] == ["A", "B", "C", "D", "E", "F"],
                "the provider rows must all survive the merge")
         expect(merged["retry_budgets"] == {**BUDGETS, "coder": 5},
@@ -464,7 +490,7 @@ def main() -> int:
         merged = er.combine(er.load_document(learned, require_full=False), doc)
         merged_ids = [e["id"] for e in merged["patterns"]]
         expect(merged_ids[:2] == ["6", "P1"], f"learned entries must come first: {merged_ids}")
-        expect(len(merged_ids) == 21 and merged_ids.count("6") == 1,
+        expect(len(merged_ids) == 25 and merged_ids.count("6") == 1,
                f"a learned id must replace, not duplicate, its built-in row: {merged_ids}")
         expect([e["id"] for e in merged["provider_patterns"]]
                == [e["id"] for e in doc["provider_patterns"]],
@@ -573,7 +599,7 @@ def main() -> int:
     allowed = {"__future__", "argparse", "json", "pathlib", "re", "sys"}
     expect(imported <= allowed, f"error_router must be stdlib-only, imports={imported}")
 
-    print("PASS - error_router.py mirrors the error-routing tables (20 section-1 rows + 6 provider "
+    print("PASS - error_router.py mirrors the error-routing tables (24 section-1 rows + 6 provider "
           "rows), classifies samples deterministically, merges the project-learned patterns over "
           "the defaults (project-first, both applied), falls back to the defaults with a warning "
           "when the learned file is unusable, merges byte-identically, anchors relative paths at "

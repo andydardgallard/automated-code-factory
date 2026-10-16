@@ -1,10 +1,16 @@
 # Subagent Briefing (handoff template)
 
 The single briefing template the main agent uses when launching ANY subagent:
-`factory-analyzer`, `factory-coder`, `factory-tester`, `factory-diagnostician`,
-`factory-code-reviewer`, `factory-advisor`. The briefing is the subagent's only input: it does not
-see the main agent's dialog history and must not request it. Whatever did not make it into the
-briefing does not exist for the subagent.
+`factory-analyzer`, `factory-coder`, `factory-gui-expert`, `factory-tester`,
+`factory-diagnostician`, `factory-code-reviewer`, `factory-advisor`. The briefing is the subagent's
+only input: it does not see the main agent's dialog history and must not request it. Whatever did
+not make it into the briefing does not exist for the subagent.
+
+`factory-gui-expert` (`.agents/agents/sub-agents/gui-expert.md`) is a **coder-class execution
+role**: it implements and debugs the Web GUI files the briefing assigns, writes only those files,
+gets the same constraints as `factory-coder` (§2 Constraints), and NEVER the no-edits suffix of §4.
+Its browser artifacts are diagnostic evidence — the acceptance evidence is produced by the tester
+(`references/verification-strategy.md` §3.1).
 
 Sources: `paseo` (handoff: a fixed template + files by path instead of pastes) and Kaggle 5-Day
 AI Agents Intensive, Day 2 (the concise-output contract: the subagent returns a digest and a link
@@ -85,8 +91,8 @@ stdlib-only (new dependencies are forbidden), the actual model (`model_preferenc
 environment interpreter (on Windows — `python`, `python3` may be absent), the ban on running the
 full test suite where the tester does that, and the no-edits suffix for analytical roles.
 
-The `factory-coder` briefing always carries the ban on git mutations of the shared working tree in
-Constraints: `git stash` / `git reset` / `git checkout` / `git clean` are not performed on the
+The `factory-coder` and `factory-gui-expert` briefings always carry the ban on git mutations of the
+shared working tree in Constraints: `git stash` / `git reset` / `git checkout` / `git clean` are not performed on the
 shared tree; the base version of a file is viewed via `git show HEAD:<file>` or a separate temp
 clone — the tree is shared by the main agent and parallel subagents.
 

@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.13.0 -->
+<!-- code-factory-version: 12.14.0 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.
@@ -35,13 +35,16 @@ mandatory code review before acceptance.
   `calibrate_reviewer.py` (reviewer golden-set calibration: precision/recall/accuracy),
   `plan_arbiter.py` (deterministic merge of two competing plans + list of discrepancies —
   committee on double plan rejection), `precedent_index.py` (FTS5 precedent index: memory +
-  codebase, `build`/`query` — searching "how was this solved before" instead of re-reading history).
+  codebase, `build`/`query` — searching "how was this solved before" instead of re-reading history),
+  `chrome_devtools_mcp.py` (conditional Web GUI browser path: applicability `decide`, existing
+  E2E-stack discovery, browser matrix, vendored pinned install (`vendor-install`) + idempotent merge
+  of the node-direct `chrome-devtools` server into `.kimi-code/mcp.json`, fail-soft capability probe).
   Every argparse script reconfigures stdout/stderr to UTF-8 itself (`stream.reconfigure(encoding="utf-8",
   errors="replace")` under try/except), so `--help` and error messages with non-ASCII characters
   do not crash with `UnicodeEncodeError` on a console with a legacy code page (cp1251/cp866); the argparse
   contract is unchanged: `--help` → exit 0, usage error → exit 2, no traceback.
 - `.agents/agents/` — the factory's main agent (Markdown `code-factory.md`) and subagents
-  (`sub-agents/analyzer|planner|coder|tester|diagnostician|advisor|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
+  (`sub-agents/analyzer|planner|coder|gui-expert|tester|diagnostician|advisor|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
 - `VERSION` — single source of truth for the factory version (one line X.Y.Z)
 - `skill-base/` — persistent skill base from `reference_docs`/`reference_skills` (optional)
 - `.agents/README.md` — the full factory usage manual

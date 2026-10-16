@@ -104,6 +104,7 @@ parameter on the Agent tool:
 # task.yaml
 models:
   coder: kimi-k3
+  gui_expert: kimi-k3       # generator-class: Web GUI implementation, same family as the coder
   reviewer: deepseek-flash
   diagnostician: deepseek-flash
 ```
@@ -126,6 +127,12 @@ Agent(subagent_type: "factory-code-reviewer", model: "deepseek-flash", ...)
   `[secondary_model].models` pool).
 - The factory records the actual model per role in `.code-factory/state/pipeline.yaml`
   (`models_used`) for auditability.
+- `models.gui_expert` (optional) names the model of the Web GUI specialist `factory-gui-expert`.
+  Like `models.coder` it is GENERATOR-side (§5.1), so its family must differ from the
+  reviewer/diagnostician/advisor family; the model actually used is logged as
+  `models_used.gui_expert`. A secondary-class model is enough for routine MCP-driven implementation
+  when its MCP/media capabilities suffice, and the role's `model_preference: secondary` is the
+  fallback for a task whose matrix does not name it.
 
 ### 5.1 Model diversity — generator ≠ judge (P1.13)
 
@@ -139,6 +146,11 @@ still the same judge.
   (`references/error-routing.md` §4/§4.1) is used, its family must likewise differ from the family
   that produced the code it diagnoses. A pairing verified on a real run: coder `kimi-k3` (Kimi),
   reviewer/advisor `deepseek-flash` (DeepSeek).
+- `models.gui_expert` is GENERATOR-side, exactly like `models.coder`: the Web GUI specialist
+  implements and the tester/reviewer judge its work, so the gui_expert family must differ from the
+  reviewer/diagnostician/advisor family too. It does NOT need to differ from the coder family — both
+  are generators. The pre-flight family check below therefore treats `coder` and `gui_expert` as one
+  generator side.
 - **Pre-flight check (deterministic, zero LLM)**: before Phase 1 the main agent resolves the matrix
   (or the `model_preference` fallback when the task has no matrix) and compares the resolved
   families of coder vs reviewer/diagnostician. On a collision it records

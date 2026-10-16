@@ -130,6 +130,7 @@ acceptance_criteria:
 #   analyzer: deepseek-v4-flash
 #   planner: deepseek-v4-pro
 #   coder: kimi-k3
+#   gui_expert: deepseek-v4-flash   # Web GUI specialist (generator-side, secondary-class model)
 #   tester: qwen-max
 #   diagnostician: deepseek-v4-pro
 #   reviewer: deepseek-v4-pro

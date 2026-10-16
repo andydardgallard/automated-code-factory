@@ -1,6 +1,12 @@
 # Code Factory runtime state (never commit)
 .code-factory/
 
+# Machine-local Kimi Code MCP configuration: the managed chrome-devtools entry carries the
+# ABSOLUTE path of the vendored package of THIS machine, so it is not shareable and the
+# vendored package itself (installed by the deployer) is never committed.
+.kimi-code/mcp.json
+.kimi-code/vendor/
+
 # Personal business task files (commit the .example.task.yaml template instead)
 task.yaml
 

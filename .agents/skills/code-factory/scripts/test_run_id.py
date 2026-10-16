@@ -5,7 +5,7 @@ Deterministic self-test for `run_id.py` (zero LLM tokens).
 Checks through the CLI that (a) `gen` is deterministic and follows the documented contract —
 `<YYYYMMDD local date>-<first 8 hex of the SHA-256 of the task file bytes>`, recomputed
 independently here, (b) the digest of the committed, static fixture
-`assets/task-template.yaml` equals the pinned `6dfc45ff` — the algorithm proven against a real
+`assets/task-template.yaml` equals the pinned `b784b39f` — the algorithm proven against a real
 committed task file, not only against a temp fixture; the date part is TODAY by construction, so
 only its FORMAT `YYYYMMDD-` is pinned (a pinned date would rot overnight), and the ephemeral
 runtime task file `.code-factory/state/task.yaml` is never read (its bytes change with every task,
@@ -36,8 +36,11 @@ REPO = TOOL.resolve().parents[4]
 TASK = REPO / ".agents" / "skills" / "code-factory" / "assets" / "task-template.yaml"
 # Committed, static fixture task file (same shape as a real task) — pinning it survives every run,
 # unlike the ephemeral `.code-factory/state/task.yaml`.
+# The digest is re-pinned whenever the fixture's CONTENT changes (the last change appended the
+# `gui_expert` line to the models example): the fixture stays a real committed task file and the
+# digest half of the id proves the algorithm against it.
 # Its DATE is today's by construction, so only the digest half is compared literally.
-KNOWN_TASK_RUN_ID = "20260929-6dfc45ff"
+KNOWN_TASK_RUN_ID = "20260929-b784b39f"
 HEX = set("0123456789abcdef")
 
 

@@ -32,18 +32,21 @@ actuality mechanism: backlog [--check] + closed:+evidence: + 23rd rule memory-ac
 project-learned overlay error_router §1.2; providers.md §5.2) + v12.12.0/12.12.1 (English-only
 package + 24th rule; v8 review rework) + v12.13.0 (v10: repo-scoping contract, 25th rule) +
 v12.14.0 (v11: gui-expert + Chrome DevTools MCP, remote reference_docs URLs).
-Rulebook: 25 rules, 100 carriers. Memory owner: repo. 32/32 self-tests PASS (31 test_*.py +
-test_env_propagation.sh).
-Latest runs: v11 (run_id 20261016-2ddb58eb, v12.14.0, commit 8d4ff82, task_type=implement):
-gui-expert + conditional Chrome DevTools MCP path + remote URL reference_docs; review approve
-(0 critical/0 major, 3 minor reworked); acceptance SUCCESS (11 MET, 1 derived executed live);
-business tests 7/7 incl. the live specialist+tester Chrome MCP cycle. v8 whole-project review
-(run_id 20260924-96879f22, task_type=review, no version change): 8 findings, rework became
-`task-v9.yaml`, implemented by run v9 (run_id 20260924-8b9caeeb, v12.12.1, commit 2f53d2f). Run v10
-(run_id 20260929-a4f03186, v12.13.0, commit bbd4d4c, task_type=implement): repo-scoping contract,
-review approve, acceptance SUCCESS (7/7 MET, ledger FRESH).
-Open backlog: 0 (34 items closed with evidence; 2 v10 reviewer nits recorded as info,
-follow_up=false).
+Rulebook: 25 rules, 100 carriers. Memory owner: repo. Current regression: 32/32 self-tests PASS
+(31 test_*.py + test_env_propagation.sh), deterministic rules/english/model/mermaid/version gates PASS.
+Latest run: v12 whole-project review (run_id 20261017-8afa3aae, branch
+factory/whole-review-20261017, task_type=review, no product or version change): 2 critical + 12 major
+findings across action_gate, repo_inventory, Web GUI pre-flight/MCP validation, remote reference_docs,
+deployers/tests and validate_documentation. All 14 finding quotes verified; actual coverage 123/123
+tracked files; rework list in `.code-factory/state/plan.md`; acceptance DEGRADED because the canonical
+review gate cannot be SUCCESS with open critical findings (5 MET, 0 FAILED, 1 derived, regression FRESH).
+Previous run: v11 (run_id 20261016-2ddb58eb, v12.14.0, commit 8d4ff82, task_type=implement):
+gui-expert + conditional Chrome DevTools MCP path + remote URL reference_docs; review approve;
+acceptance SUCCESS; business tests 7/7 incl. the live specialist+tester Chrome MCP cycle. Earlier:
+v8 review rework became v9 (v12.12.1); v10 repo-scoping contract = v12.13.0.
+Open backlog: 1 critical rework item covering all 14 v12 findings (follow_up=true). Prior history has
+34 items closed with evidence; both v10 reviewer nits were explicitly re-examined in v12 and confirmed
+as non-issues with reasons (they remain follow_up=false).
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле

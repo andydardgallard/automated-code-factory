@@ -662,3 +662,25 @@ unfinished:
     reason: all acceptance criteria MET or executed live; review approved; backlog open: 0
     severity: info
     follow_up: false
+
+## 2026-10-17T03:40:32+03:00 — Factory v12 (v12.14.0): whole-project code review after the GUI-specialist + remote-reference_docs change
+title: Factory v12: whole-project review after v12.14.0 — sharded findings, verbatim evidence and rework plan; no fixes and no version change
+project: repo
+timestamp: 2026-10-17T03:40:32+03:00
+run_id: 20261017-8afa3aae
+branch: factory/whole-review-20261017
+commit: none (review task; memory-only commit)
+task_type: review
+goal: review every tracked factory file after v12.14.0 in shards, verify all finding quotes, explicitly dispose of the two v10 nits, and produce a complete rework plan without modifying the product
+changed_files: none to product/source files (review task) — memory/change-log.md and memory/summary.md only
+created_files: .code-factory/{state/*,logs/*,report.md,report_code_changes.md} including tracked-review-shards.json, code-review-shards/{shard-1,shard-2}.json, code-review-merged.json, reviewer-calibration.md, golden-results/, quotes-report.json, reproductions.md and acceptance.md
+results: integration=PASS (all shard, quote, coverage, merge, disposition and targeted-reproduction checks completed) [verified: .code-factory/logs/test-results.md and reproductions.md]; baseline=PASS (31 test_*.py + test_env_propagation.sh) [verified: .code-factory/logs/baseline.md and baseline.log]; calibration=PASS (7/7 verdict accuracy, macro precision/recall 1.000) [verified: .code-factory/logs/reviewer-calibration.md]; shard-review=DONE (2 shards, exactly 123 tracked files with no duplicates; deterministic reverse-order merge byte-identical) [verified: .code-factory/state/tracked-review-shards.json, .code-factory/state/code-review-merged-reversed.json]; merged-verdict=request_changes (2 critical + 12 major; rework plan covers all 14) [verified: .code-factory/logs/code-review-merged.json, .code-factory/state/plan.md]; quotes=VERIFIED (14/14 findings + 8/8 dispositions, 0 untrusted) [verified: .code-factory/logs/quotes-report.json and disposition-quotes-report.json]; targeted-reproductions=CONFIRMED (shell-wrapper ALLOW vs direct HARD_DENY, clean-clone MCP false-usable, missing-Node misroute, malformed-env crash, secret-name acceptance, hash cwd anchoring, duplicate-line doc-validation hole, clean-clone Windows 80 PASS/1 FAIL) [verified: .code-factory/logs/reproductions.md and clean-clone-windows.log]; regression=PASS (31 test_*.py + shell contract + rules/english/model/mermaid/version gates; Windows 81 PASS/0 FAIL) [verified: .code-factory/logs/final-regression.log]; business=PASS 2/2 review-execution scenarios [verified: .code-factory/logs/business-tests.md]; acceptance=DEGRADED (5 MET, 0 FAILED, 1 derived; regression+baseline FRESH but review_gate=fail because 2 critical findings remain open — full SUCCESS forbidden) [verified: .code-factory/state/acceptance.md, verify_acceptance.py exit 1]; backlog=1 critical rework item covering all 14 findings [verified: memory_project.py backlog --repo . --check expected exit 1 for the unresolved review rework]
+decisions: the actual reviewer assignment was generated with the same inventory/shards CLI in a clean temporary clone because the generic root inventory included 14 untracked/ignored paths; this preserved the task's explicit tracked-only scope and independently confirmed the repo_inventory critical finding [verified: .code-factory/logs/analysis.md and reproductions.md]; no source fix, version change or documenter step was performed because task_type=review [verified: git diff -- VERSION and version_manager.py validate exit 0]; both v10 nits were disposed as non-issues with evidence, while the separate missing deployed .kimi-code/mcp.json ignore pattern remains a major finding [verified: .code-factory/logs/code-review.md v10 nit dispositions]; review_gate was signed fail rather than hiding open critical findings behind the otherwise green review-process criteria [verified: .code-factory/state/evidence.json and acceptance.md]
+assumptions: the review deliverable is complete even though product acceptance remains request_changes; the open rework is intentional review debt, not a partially executed review [verified: task.yaml out-of-scope and .code-factory/state/acceptance.md]
+models_used: main=kimi-code/k3; analyzer=kimi-code/k3; code-reviewer=kimi-code/k3 x9 (7 calibration cases + 2 shard reviews); coder/tester/documenter/diagnostician/advisor=unused
+factory_version: 12.14.0
+unfinished:
+  - item: v12 whole-project review rework — 2 critical + 12 major findings (action_gate shell-wrapper bypass, tracked-only inventory/privacy, Web GUI pre-flight and MCP validation/routing, remote-source hashing/clone/record consistency, deployer ignore/test gaps, documentation-validator hole)
+    reason: implement the 14-item rework list in .code-factory/state/plan.md as a separate follow-up task; this review task explicitly forbids fixes, so every finding remains open
+    severity: critical
+    follow_up: true

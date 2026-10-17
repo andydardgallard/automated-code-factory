@@ -5,6 +5,81 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.14.1] — 2026-10-17
+
+### Fixed
+- **`action_gate.py` — shell wrappers are transparent** (v12 review, critical). The payload of
+  `sh`/`bash`/`dash`/`zsh`/`ksh` with `-c` (combined flags such as `-ec`/`-lc` included), of `cmd`
+  with `/c` or `/k` and of `powershell`/`pwsh` with `-Command` (the short `-c` included) is now
+  classified RECURSIVELY with the same rules, so a root deletion or a default-branch push can no
+  longer hide behind the wrapper's name. Quoting is resolved before the line is cut, escapes are read
+  per quote type (a single-quoted string has NONE, a double-quoted one takes `\\` and `\"`), and
+  adjacent quoted/unquoted runs CONCATENATE into one argument as in a real shell — `sh -c "echo "hi"
+  && rm -rf X"` is read as `echo hi && rm -rf X`. A payload that cannot be read as command TEXT
+  (script file, encoded block, unknown or ambiguous flag, no payload, an open quote), an unreadable
+  wrapper and nesting deeper than `MAX_WRAPPER_DEPTH` are CONFIRM — never ALLOW.
+- **`repo_inventory.py` — `--tracked`** (critical). `inventory` and `shards` accept `--tracked`,
+  which takes the file set from a NUL-safe `git ls-files -z` at `--repo`: untracked and git-ignored
+  paths (machine-local configs, build output, leftovers) can no longer enter a tracked-only review,
+  while a tracked file under `build/` or `node_modules/` is inventoried like any other. Without git
+  or a repository the flag fails with the reason instead of silently falling back to the walk; the
+  flag-less filesystem walk is unchanged and stays the documented escape hatch.
+- **HITL plan approval routed through the pre-flight** (major) — `SKILL.md` and the reference flow
+  no longer jump from plan approval straight to the execution node: the approval edge passes the
+  pre-flight (PF) and preserves PF to the next node, as the auto path already did.
+- **`factory_preflight.py --web-gui` — `mcp_usable` requires a real deployment** (major). The block
+  now passes the resolved repository's `.kimi-code/mcp.json` into the delegated probe and is usable
+  only when that config is valid AND the pinned vendored entry it launches is on disk at the pinned
+  version; otherwise the MCP server is reported missing with the exact reason, so the shipped
+  template alone can never make a clean clone look like a deployed browser path.
+- **`chrome_devtools_mcp.py` — malformed `env` and credential-like variable NAMES** (major). A
+  non-object `env` (string, list, number, boolean) is a validation problem instead of an
+  `AttributeError` (only `null`/absent means "no environment"), and secret scanning now also rejects
+  a credential-like NAME with a non-empty value, reporting the variable name and the reason — never
+  the value.
+- **`chrome_devtools_mcp.py` — probe wording matched by I1** (major). The actual probe message
+  (`<node|npm|npx> was not found on PATH; a Web GUI run cannot start …`) is part of the I1 pattern
+  in `references/error-patterns.default.json` and `references/error-routing.md`, and the router test
+  classifies that real line instead of a paraphrase.
+- **`skill_base.py` — `hash --repo` anchor, supervised clone, `record --resolved-hash`** (major). A
+  relative local path passed to `hash` is resolved against the declared `--repo`, exactly like
+  `resolve` and `record`, so the caller's working directory no longer decides which bytes are
+  hashed; a clone is supervised WHILE its temporary tree grows and is aborted (with the partial
+  content removed and an explicit reason) as soon as it crosses `--max-bytes` or the deadline,
+  instead of being measured after the transfer; and `record --resolved-hash <hex>` records the
+  materialization `resolve` already produced without a second fetch, refusing a divergent digest
+  (exit 1) so the manifest can never describe different bytes from the generated skill.
+- **`validate_documentation.py` — position-based line classification** (major). Changed lines are
+  mapped through the diff opcodes (old↔new positions) instead of the first content match, so a
+  deleted executable line can no longer be classified as a docstring line when the same text also
+  appears inside one.
+- **`prepare_factory.sh` / `prepare_factory.ps1` — `.kimi-code/mcp.json` is git-ignored** (major).
+  Both deployer pattern lists add the machine-local managed config next to `.kimi-code/vendor/`
+  (its entry holds an absolute launch path of that installation), so a prepared project never
+  commits it and a fresh clone is never handed a path that does not exist there.
+- **`test_windows_scripts.py` — clean-clone suite and independent safety expectations** (major). The
+  Windows suite no longer requires the git-ignored machine-local MCP state (it validates the
+  committed asset or generates a config in a temporary fixture), so it passes in a clean clone; its
+  MCP safety assertions now compare against independent constants and carry a mutation check, instead
+  of deriving the expectations from the asset under test.
+
+### Changed
+- **Documentation** — `references/reference-docs.md` documents the transfer-time `--max-bytes`
+  enforcement, the `hash --repo` anchor and the no-second-fetch `record`; `references/chrome-devtools-mcp.md`
+  documents the `mcp_usable` deployment gate, the `validate-config` rules (non-object `env`,
+  credential-like names) and the I1 wording; `README.md` and `.agents/README.md` carry the tracked
+  review command (`repo_inventory.py shards --repo <root> --max-lines 20000 --tracked`), the extended
+  deployer ignore list, the clean-clone consequence and the pre-flight usable gate; the
+  `action_gate.py` docstring states the wrapper rules and their KNOWN limitation.
+
+Conditional pass (open major, backlog). `powershell`/`pwsh` with a SINGLE-quoted `-Command` payload
+is still fail-open — `pwsh -Command 'rm -rf /'` classifies ALLOW while the double-quoted form is
+HARD_DENY — and launcher prefixes (`env`/`sudo`) and `$(...)` substitutions are not expanded; the
+limitation is now documented in the `action_gate.py` docstring instead of being an undocumented
+assumption. A minor (dead `simple_commands` helper) is carried in the backlog as well. Nothing above
+claims more than the suite and the deterministic gates prove: the 14 findings of the v12.14.0
+whole-project review are closed, these two items are not.
+
 ## [12.14.0] — 2026-10-16
 
 ### Added

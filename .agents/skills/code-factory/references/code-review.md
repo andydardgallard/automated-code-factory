@@ -42,17 +42,20 @@ whole-repo review runs sharded, and **no subagent ever receives the whole-repo c
 repos and the ordinary diff-scope `implement` task keep the single-reviewer flow: the protocol
 bounds context, it is not extra ceremony.
 <!-- factory-rule: shard-protocol begin -->
-**Shard protocol (canonical wording):** whole-repo review and security_audit never fit into one context: `scripts/repo_inventory.py shards --max-lines 20000` cuts the repository into shards of ≤20000 lines, each shard is processed by its own parallel subagent (reviewer or auditor) and writes one findings file. The result is produced by the deterministic `scripts/merge_findings.py` (deduplication, sorting by severity, merged verdict), and the canonical review gate is applied to the MERGED findings, not to individual shards. A regular `implement` task is reviewed by diff and needs no sharding.
+**Shard protocol (canonical wording):** whole-repo review and security_audit never fit into one context: `scripts/repo_inventory.py shards --tracked --max-lines 20000` cuts the TRACKED tree (`git ls-files -z` at `--repo`, so an untracked or ignored machine-local file stays out of the review) into shards of ≤20000 lines, each shard is processed by its own parallel subagent (reviewer or auditor) and writes one findings file. The result is produced by the deterministic `scripts/merge_findings.py` (deduplication, sorting by severity, merged verdict), and the canonical review gate is applied to the MERGED findings, not to individual shards. A regular `implement` task is reviewed by diff and needs no sharding.
 <!-- factory-rule: shard-protocol end -->
 
-1. **Inventory (deterministic, zero LLM).** `repo_inventory.py` walks the tree (VCS/build/vendor
-   dirs excluded, symlinks never followed, binaries skipped) and greedily packs the sorted file
-   list into shards of at most N lines; a file longer than N lines becomes its own shard flagged
-   `oversized`:
+1. **Inventory (deterministic, zero LLM).** `repo_inventory.py --tracked` takes the file set from
+   the TRACKED tree — `git ls-files -z` at `--repo`, so an untracked or ignored machine-local file
+   never enters the review (symlinks never followed, binaries skipped) — and greedily packs the
+   sorted file list into shards of at most N lines; a file longer than N lines becomes its own shard
+   flagged `oversized`. The tracked set is not filtered by directory name: a tracked file under
+   `build/` or `node_modules/` is part of the review; without the flag the filesystem walk remains
+   the default (its exclusions are the escape hatch for callers that must also see untracked files):
 
    ```bash
-   python .agents/skills/code-factory/scripts/repo_inventory.py inventory --repo <project-root>
-   python .agents/skills/code-factory/scripts/repo_inventory.py shards --repo <project-root> --max-lines 20000
+   python .agents/skills/code-factory/scripts/repo_inventory.py inventory --repo <project-root> --tracked
+   python .agents/skills/code-factory/scripts/repo_inventory.py shards --repo <project-root> --tracked --max-lines 20000
    ```
 
    Both print JSON (`{"files": [{"path","lines","bytes"}]}` /

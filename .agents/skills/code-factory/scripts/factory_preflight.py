@@ -33,10 +33,20 @@ exit-code contract are exactly what they were before the flag existed.
 capability to report missing (`node`, `npm`, `npx`, `chrome`, `chrome-for-testing`, `mcp-server`),
 so the degraded behavior is testable without touching the host.
 
+The browser path is only usable for a repository that REALLY has one deployed: with `--repo` the
+resolved repository's managed `.kimi-code/mcp.json` is threaded into the delegated probe, and
+`mcp_usable` may only be true when that file exists, passes the managed-config safety invariants of
+`chrome_devtools_mcp.py` AND the pinned vendored entry it launches is on disk. The shipped template
+proves a launch SHAPE, never a deployment, so a clean clone (or a half-deployed or drifted one) is
+reported as the exact missing capability and the verdict stays "browser path unavailable" — without
+`--repo` there is no installation to inspect and the same conservative verdict applies, with the
+reason naming the missing flag.
+
 `--repo <root>` (a synonym: `--root`) is the resolved repo_path of the run and is OPTIONAL. When
 it is given, a RELATIVE `--out` is resolved against it — an absolute path is always taken as it is
-— so the capability file lands in the target repository, not in the launch directory. Without the
-flag nothing changes: `--out` stays relative to the caller's working directory.
+— so the capability file lands in the target repository, not in the launch directory — and the
+managed MCP config inspected by `--web-gui` is that repository's own. Without the flag nothing
+changes: `--out` stays relative to the caller's working directory.
 
 Exit code 0 when at least one Python runs AND git is usable, 1 otherwise (a capability file with
 nulls is still written, so the caller can see exactly what is missing).
@@ -65,6 +75,9 @@ WEB_GUI_KEY = "web_gui"
 WEB_GUI_CAPABILITIES = ("node", "npm", "npx", "chrome", "chrome_for_testing", "mcp_server")
 WEB_GUI_PROBE_TIMEOUT = 10
 CHROME_HELPER = "chrome_devtools_mcp.py"
+# The managed MCP config of ONE project (machine-local, gitignored): the browser path of a run is
+# decided by the resolved repository's own deployment, never by the shipped template.
+MCP_CONFIG_RELPARTS = (".kimi-code", "mcp.json")
 
 FALSY = {"", "0", "false", "no", "off", "none"}
 
@@ -173,43 +186,122 @@ def web_gui_version(reason: str) -> str | None:
     return match.group(1).strip() or None
 
 
-def collect_web_gui_capabilities(simulate_missing: list[str] | tuple[str, ...] = ()) -> dict:
+def repo_mcp_config(repo: str | None) -> pathlib.Path | None:
+    """The managed `mcp.json` of the RESOLVED repository, or `None` when no repo was resolved.
+
+    The managed config is a machine-local artifact of ONE project, so it can only be inspected when
+    the run's repo_path is known: without the anchor there is no installation to look at, and the
+    probe must not guess one (a missing anchor never silently points a check at another repository).
+    """
+    if not repo:
+        return None
+    return pathlib.Path(repo).joinpath(*MCP_CONFIG_RELPARTS)
+
+
+def managed_mcp_state(helper, config: pathlib.Path | None) -> tuple[bool, str]:
+    """`(usable, reason)` for the managed MCP server of a CONCRETE repository.
+
+    `mcp_usable` may only be true on the strength of that repository's OWN deployment: the managed
+    `.kimi-code/mcp.json` must exist, pass the safety invariants of `chrome_devtools_mcp.py` and the
+    PINNED vendored entry it launches must be on disk. The shipped template proves a launch shape,
+    never that a project has a working browser server, so every other state is reported as the exact
+    missing capability (with the command that fixes it) instead of a usable browser path.
+
+    The config's single home of truth stays `chrome_devtools_mcp.py` — this reuses its
+    `validate_config`, `vendored_entry_path`, `vendored_version` and `vendor_dir_for` rather than
+    re-implementing the managed-layout knowledge.
+    """
+    if config is None:
+        return False, ("no repository was resolved (--repo/--root), so the managed "
+                       f"'{helper.SERVER_NAME}' MCP config of this run could not be inspected: the "
+                       "shipped template proves the launch shape, never that a project has a working "
+                       "browser server — pass --repo <resolved repo_path> together with --web-gui")
+    if not config.is_file():
+        return False, (f"the managed config {config} does not exist: the '{helper.SERVER_NAME}' MCP "
+                       "server is not deployed for this repository — run `chrome_devtools_mcp.py "
+                       f"vendor-install --target {helper.vendor_dir_for(config)}`, then `merge-config "
+                       f"--target {config}` (npm and node required); browser criteria must stay "
+                       "explicitly UNVERIFIED until then")
+    ok, problems = helper.validate_config(config)
+    if not ok:
+        return False, (f"the managed config {config} fails its safety invariants: "
+                       f"{problems[0] if problems else 'unknown problem'}")
+    entry = helper.vendored_entry_path(config)
+    if not entry.is_file():
+        return False, (f"the pinned vendored entry {entry} is missing: run `chrome_devtools_mcp.py "
+                       f"vendor-install --target {helper.vendor_dir_for(config)}` — a managed server "
+                       "launched from a missing file breaks every session in this project, so "
+                       "browser criteria must stay explicitly UNVERIFIED")
+    installed = helper.vendored_version(entry)
+    if installed is not None and installed != helper.PINNED_VERSION:
+        return False, (f"the vendored package at {entry} is version {installed}, not the pinned "
+                       f"{helper.PACKAGE}@{helper.PINNED_VERSION}: reinstall it with "
+                       f"`chrome_devtools_mcp.py vendor-install --target "
+                       f"{helper.vendor_dir_for(config)}` (never run an unreviewed version)")
+    return True, (f"the repository's managed config {config} is valid and the pinned vendored entry "
+                  f"{entry} is in place ({helper.PACKAGE}@{installed or 'version not reported'})")
+
+
+def collect_web_gui_capabilities(simulate_missing: list[str] | tuple[str, ...] = (),
+                                 repo: str | None = None) -> dict:
     """Nested `web_gui` block for an APPLICABLE Web GUI run — delegated, fail-soft, time-bounded.
 
     Delegates to `chrome_devtools_mcp.py`'s probe (import, no subprocess, no Chrome launch, no MCP
     server start) so a missing Node.js/npm/npx, Chrome/Chrome for Testing or MCP server is DATA with
     a reason: the block never raises and never changes the exit code, which stays python+git only.
     `simulate_missing` forces a capability to report missing without touching the host.
+
+    `repo` is the run's resolved repo_path (optional, exactly as `--repo` is): with it the probe
+    inspects THAT repository's managed `.kimi-code/mcp.json` and the pinned vendored entry it
+    launches, and the MCP server is reported missing whenever the deployment is not really there —
+    the shipped template can never make `mcp_usable` true on its own.
     """
-    block: dict = {"source": CHROME_HELPER, "simulate_missing": sorted(simulate_missing)}
+    config = repo_mcp_config(repo)
+    block: dict = {"source": CHROME_HELPER, "managed_config": str(config) if config else None,
+                   "simulate_missing": sorted(simulate_missing)}
     result: dict = {}
+    managed_ok = False
+    managed_reason = "the delegated probe did not run, so no managed MCP config was checked"
     try:
         helper = _load_chrome_helper()
         helper.PROBE_TIMEOUT = min(helper.PROBE_TIMEOUT, WEB_GUI_PROBE_TIMEOUT)
         result = helper.probe_capabilities(simulate_missing=list(simulate_missing),
-                                           check_mcp_start=False)
+                                           check_mcp_start=False, target=config)
         raw = result.get("capabilities")
         caps = raw if isinstance(raw, dict) else {}
+        managed_ok, managed_reason = managed_mcp_state(helper, config)
     except Exception as exc:       # a broken probe is DATA: never a failed pre-flight
         block["probe_error"] = f"{type(exc).__name__}: {exc}"
         caps = {}
+        managed_reason = f"the delegated probe failed: {block['probe_error']}"
     reported: dict[str, dict] = {}
     for name in WEB_GUI_CAPABILITIES:
         entry = caps.get(name)
         cap = entry if isinstance(entry, dict) else {}
         reason = str(cap.get("reason") or "not reported by the probe")
+        present = cap.get("present") is True
+        if name == "mcp_server" and present:
+            # The delegated probe knows the host toolchain and the shipped template; only THIS
+            # repository's own deployment turns that into a usable browser path.
+            if managed_ok:
+                reason = f"{reason}; {managed_reason}"
+            else:
+                present, reason = False, managed_reason
         reported[name] = {
-            "present": cap.get("present") is True,
+            "present": present,
             # The MCP entry reports its managed config, not a version.
             "version": None if name == "mcp_server" else web_gui_version(reason),
             "reason": reason,
         }
+    # A usable path needs the host capabilities AND a real deployment: the delegated verdict alone
+    # would be the shipped template's — i.e. a clean clone would look like a deployed browser path.
+    usable = bool(result.get("mcp_usable")) and managed_ok
     block.update({
         "capabilities": reported,
         "missing": [name for name in WEB_GUI_CAPABILITIES if not reported[name]["present"]],
         "browser_usable": bool(result.get("browser_usable")),
-        "mcp_usable": bool(result.get("mcp_usable")),
-        "verdict": ("browser path usable" if result.get("mcp_usable") else
+        "mcp_usable": usable,
+        "verdict": ("browser path usable" if usable else
                     "browser path unavailable — affected browser criteria must stay UNVERIFIED"),
     })
     return block
@@ -248,6 +340,7 @@ def format_summary(caps: dict, out: pathlib.Path) -> str:
         # Only with `--web-gui`: the conditional browser capability class, one line per capability
         # plus the reason of every missing one — DATA that never changes the exit code.
         lines.append("  web gui (conditional browser path):")
+        lines.append(f"    managed config: {block.get('managed_config') or 'not checked (no --repo)'}")
         for name in WEB_GUI_CAPABILITIES:
             entry = (block.get("capabilities") or {}).get(name) or {}
             state = "present" if entry.get("present") else "missing"
@@ -294,7 +387,9 @@ def main() -> int:
     ap.add_argument("--web-gui", action="store_true", dest="web_gui",
                     help=("OPT-IN: append the nested `web_gui` capability block (node/npm/npx, "
                           "Chrome / Chrome for Testing, MCP server start feasibility) — only for a "
-                          "run whose task is an applicable Web GUI task"))
+                          "run whose task is an applicable Web GUI task; with --repo the block also "
+                          "checks THAT repository's managed .kimi-code/mcp.json and its pinned "
+                          "vendored entry, so the browser path is only usable for a real deployment"))
     ap.add_argument("--simulate-missing", action="append", default=[], metavar="NAME",
                     dest="simulate_missing",
                     help=("with --web-gui: force one browser capability to report missing "
@@ -306,7 +401,7 @@ def main() -> int:
 
     caps = collect_capabilities()
     if args.web_gui:
-        caps[WEB_GUI_KEY] = collect_web_gui_capabilities(args.simulate_missing)
+        caps[WEB_GUI_KEY] = collect_web_gui_capabilities(args.simulate_missing, repo=args.repo)
     out = anchored(args.out, args.repo)
     write_json(out, caps)
     print(format_summary(caps, out))

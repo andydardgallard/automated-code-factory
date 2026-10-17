@@ -1,5 +1,5 @@
-# Autonomous Code Factory v12.14.0
-<!-- code-factory-version: 12.14.0 -->
+# Autonomous Code Factory v12.14.1
+<!-- code-factory-version: 12.14.1 -->
 
 An autonomous code-writing factory for the **Kimi Code CLI** (0.34+, Node).
 
@@ -170,14 +170,19 @@ Node.js/Chrome for success.
 `prepare_factory` merges the managed `chrome-devtools` stdio server (pinned
 `chrome-devtools-mcp@1.11.0`, never `@latest`) into the project's `.kimi-code/mcp.json`: every other
 server and user setting is preserved byte-for-byte, and an existing DIFFERENT `chrome-devtools` entry
-is reported instead of overwritten. The configuration takes effect in a NEW Kimi session — `/mcp` in
+is reported instead of overwritten. The vendored package and that `mcp.json` are machine-local — its
+entry holds an absolute launch path of this installation — so both deployers add them to the prepared
+project's `.gitignore` and a fresh clone is never handed a stale path. The configuration takes effect
+in a NEW Kimi session — `/mcp` in
 that session shows the connection status; without a working Python the deployer leaves `mcp.json`
 untouched. The managed defaults use an isolated temporary Chrome profile and test data, disable usage
 statistics, CrUX lookups and update checks, redact sensitive network headers and never attach to a
 running browser. Missing capabilities (Node.js, npm/npx, Google Chrome / Chrome for Testing, MCP
 startup) are reported through the existing INFRASTRUCTURE route — rows I1–I4 of
 `references/error-routing.md` — and the affected browser criteria stay explicitly UNVERIFIED, never
-MET.
+MET: the pre-flight (`factory_preflight.py --web-gui`) reports the browser path usable only for a
+REAL deployment — a valid `.kimi-code/mcp.json` plus the pinned vendored entry it launches on disk —
+so an undeployed repository sees the exact missing capability instead of a template-derived pass.
 
 ## Remote reference_docs (public URLs)
 
@@ -190,8 +195,10 @@ reuse (equal content hash) and incremental update (different hash) stay determin
 platforms and fresh clones. Only PUBLIC, unauthenticated `http(s)` sources are accepted — other
 schemes, embedded credentials and SSH/scp Git URLs are rejected before any fetch, and every redirect
 target is re-validated. Both download and shallow single-branch clone are bounded (`--timeout <s>`,
-`--max-bytes <n>`), no new dependency is added (stdlib HTTP + the `git` executable), and nothing
-fetched is ever executed or followed as instructions. By default the source is fetched and a failure
+`--max-bytes <n>`) and the cap is enforced DURING the transfer — an oversized source is aborted and
+its partial content removed instead of being measured after it has already landed — no new dependency
+is added (stdlib HTTP + the `git` executable), and nothing fetched is ever executed or followed as
+instructions. By default the source is fetched and a failure
 is an error — a cached copy is never silently substituted; `--offline` touches no network at all and
 `--allow-stale` falls back to the cache after a failed fetch, both marking the copy `stale: true`
 (a cached copy is never fresh remote content). See
@@ -207,4 +214,4 @@ change to the beginning or middle of a prompt invalidates the cache.
 ## Version
 
 Versioning follows [Semantic Versioning](https://semver.org/). Change history is in
-[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.14.0**.
+[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.14.1**.

@@ -40,7 +40,8 @@
       "patterns": [
         "(node|npm|npx)'?\\s*:\\s*(command not found|not found|no such file or directory)",
         "'?(node|npm|npx)'?\\s+is\\s+not\\s+recognized",
-        "spawn\\s+(node|npm|npx)\\b[^\\n]{0,20}(ENOENT|EACCES|failed)"
+        "spawn\\s+(node|npm|npx)\\b[^\\n]{0,20}(ENOENT|EACCES|failed)",
+        "(node|npm|npx)\\b[^\\n]{0,20}was not found on PATH; a Web GUI run cannot start"
       ],
       "route": "infrastructure"
     },

@@ -117,7 +117,10 @@ exactly as before and never grows remote-only keys.
   unsupported scheme or to a credentials-bearing URL halfway through a fetch.
 - **Finite limits**: `--timeout <seconds>` (overall fetch limit), `--max-bytes <n>` (download and
   clone size cap), plus a git low-speed abort — a stalled or oversized source fails instead of
-  hanging the run.
+  hanging the run. The cap is enforced DURING the transfer, not after it: a download is counted
+  chunk by chunk and a clone is supervised while its temporary tree grows, so crossing the cap (or
+  the deadline) kills the transfer, removes the partial content and reports the reason — an
+  oversized source never has to land on disk complete first.
 - **No new dependency**: the HTTP part is Python stdlib only; Git repositories use the `git`
   executable. No `requests`, no GitPython.
 - **Nothing downloaded is ever executed**: no repository code, no git hooks (the hook path points
@@ -182,15 +185,22 @@ the run report.
 - `init` — create the skill base and an empty manifest.
 - `resolve <path-or-url>` — classify and materialize the source and print its metadata as JSON:
   `source`, `source_type`, `local_path`, `sha256`, `resolved_revision`, `offline`, `stale`.
-- `hash <path-or-url>` — the SHA-256 of the content alone (a URL is resolved into the cache first).
+- `hash <path-or-url>` — the SHA-256 of the content alone (a URL is resolved into the cache first);
+  a RELATIVE local path goes through the same `--repo` anchor as `resolve` and `record`, so a
+  declared repository hashes the same bytes whatever the caller's working directory is.
 - `lookup <name> [--hash <hex>]` — print `reuse`/`update`, or `found <sha256>`; a missing name prints
   the missing-skill error and exits 1.
-- `record <name> <source> <hash> [--task-id <id>]` — update the manifest. For a URL the canonical
-  URL is stored as `source`, the fetched content hash as `sha256` (a wrong caller hash is reported
-  and the content hash is recorded instead) and the remote metadata is added automatically.
-  `--task-id` is optional and only appends to the recorded `task_ids`.
+- `record <name> <source> <hash> [--repo <root>] [--resolved-hash <hex>] [--task-id <id>]` — update
+  the manifest. For a URL the canonical URL is stored as `source`, the fetched content hash as
+  `sha256` (a wrong caller hash is reported and the content hash is recorded instead) and the remote
+  metadata is added automatically. `--resolved-hash <hex>` (the digest `resolve` printed) records the
+  already materialized content without a second fetch — so the manifest describes exactly the bytes
+  the skill was generated from — and refuses a materialization that no longer matches that digest
+  (exit 1: re-run `resolve` and regenerate the skill); `--task-id` is optional and only appends to
+  the recorded `task_ids`.
 - `list` — dump the manifest.
 
-`--repo <root>` (synonym `--root`) anchors the cache and any relative local path, and is written
-before the subcommand. Remote flags: `--offline`, `--allow-stale`, `--timeout <seconds>`,
-`--max-bytes <n>`. Reuse vs regeneration is decided by the content hash, never by the LLM.
+`--repo <root>` (synonym `--root`) anchors the cache and any relative local path, and is accepted
+before OR after the subcommand (the `record` form above uses the trailing position). Remote flags:
+`--offline`, `--allow-stale`, `--timeout <seconds>`, `--max-bytes <n>`. Reuse vs regeneration is
+decided by the content hash, never by the LLM.

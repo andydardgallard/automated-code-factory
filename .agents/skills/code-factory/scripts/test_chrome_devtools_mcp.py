@@ -585,6 +585,39 @@ def test_validate_config(tmp: pathlib.Path) -> None:
     ok, problems = cd.validate_config(tmp / "secret.json", secret)
     check(not ok and any("secret" in p for p in problems),
           f"a credential-like value must be rejected: {problems}")
+    check(all("abc123" not in p for p in problems),
+          f"the report must never echo the environment value it rejects: {problems}")
+
+    # A credential-like NAME with an OPAQUE value carries no keyword, so scanning values alone would
+    # validate a shipped API key as safe: the name must be inspected on its own.
+    opaque = json.loads(json.dumps(base))
+    opaque["mcpServers"][cd.SERVER_NAME]["env"]["API_KEY"] = "opaque-value"
+    ok, problems = cd.validate_config(tmp / "opaque-name.json", opaque)
+    check(not ok, f"a credential-like env NAME must be rejected even with an opaque value: {problems}")
+    check(any("API_KEY" in p for p in problems), f"the report must name the variable: {problems}")
+    check(any("secret" in p for p in problems), f"the report must state the reason: {problems}")
+    check(all("opaque-value" not in p for p in problems),
+          f"the report must never echo the value it rejects: {problems}")
+
+    # A malformed `env` is DATA: the fail-soft contract returns (ok, problems) instead of crashing on
+    # `.values()`, and `null` means exactly the same as an absent env.
+    for label, value in (("string", "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1"), ("list", ["A=1"]),
+                         ("number", 7), ("boolean", True)):
+        ok, problems = variant(lambda e, v=value: e.update({"env": v}), f"env as a {label}")
+        check(not ok, f"the env-as-{label} variant must be rejected, not crash")
+        check(any("env must be a JSON object" in p for p in problems),
+              f"the env-as-{label} variant must explain the malformed env: {problems}")
+    _, problems_null = variant(lambda e: e.update({"env": None}), "env null")
+    _, problems_absent = variant(lambda e: e.pop("env"), "env absent")
+    check(problems_null == problems_absent,
+          f"a null env must mean the same as an absent env: {problems_null} vs {problems_absent}")
+
+    malformed_env = json.loads(json.dumps(base))
+    malformed_env["mcpServers"][cd.SERVER_NAME]["env"] = "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1"
+    env_path = written(tmp / "env-string.json", json.dumps(malformed_env, indent=2) + "\n")
+    res = run("validate-config", "--path", str(env_path))
+    expect_clean_cli(res, 1, "validate-config with a string env")
+    check("FAIL" in res.stdout, f"a malformed env must fail loudly, not crash: {res.stdout!r}")
 
     ok, problems = cd.validate_config(tmp / "missing.json", {"mcpServers": {"other": {}}})
     check(not ok and any(cd.SERVER_NAME in p for p in problems),

@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.14.0 -->
+<!-- code-factory-version: 12.14.1 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -68,7 +68,7 @@ projects or creates projects from scratch.
 │       │   ├── test_version_manager.py     # version script self-test (≥12 cases)
 │       │   ├── validate_mermaid.py         # structural Mermaid diagram validator
 │       │   ├── test_validate_mermaid.py    # Mermaid validator self-test
-│       │   ├── repo_inventory.py           # repository inventory + shards (shard protocol)
+│       │   ├── repo_inventory.py           # repository inventory + shards (shard protocol; --tracked = the `git ls-files -z` set)
 │       │   ├── test_repo_inventory.py      # inventory self-test
 │       │   ├── merge_findings.py           # deterministic merge of shard findings + verdict
 │       │   ├── test_merge_findings.py      # findings merge self-test
@@ -78,9 +78,9 @@ projects or creates projects from scratch.
 │       │   ├── test_repo_stats.py          # analyses self-test
 │       │   ├── log_tail.py                 # counters + tail of a long log (without pulling it into context)
 │       │   ├── test_log_tail.py            # log tail self-test
-│       │   ├── factory_preflight.py        # environment pre-flight (python/python3/py etc.)
+│       │   ├── factory_preflight.py        # environment pre-flight (python/python3/py etc.; --web-gui adds the browser capability block)
 │       │   ├── test_factory_preflight.py   # pre-flight self-test
-│       │   ├── action_gate.py              # destructive actions: ALLOW/CONFIRM/HARD_DENY (mutating git stash → CONFIRM, `stash list/show` → ALLOW)
+│       │   ├── action_gate.py              # destructive actions: ALLOW/CONFIRM/HARD_DENY (shell wrappers classified by payload; mutating git stash → CONFIRM, `stash list/show` → ALLOW)
 │       │   ├── test_action_gate.py         # action gate self-test (+ --help/usage under cp1251)
 │       │   ├── task_graph.py               # on-disk task graph: create/claim/complete/ready/list
 │       │   ├── test_task_graph.py          # task graph self-test
@@ -179,9 +179,12 @@ Preparation and launch are a single action. First prepare the project:
 ```
 
 The script copies the factory, configures `.gitignore`/git (in the prepared project it ignores
-`.agents/`, `.code-factory/`, `.kimi-code/vendor/` — the machine-local vendored package — the secret
-patterns, and the factory's own `task.yaml`/`start.cmd`/`start.sh`, so a leftover task file or
-launcher is never mistaken for a new task and never committed), and creates a `start.sh` launcher in
+`.agents/`, `.code-factory/`, `.kimi-code/vendor/` — the machine-local vendored package — and
+`.kimi-code/mcp.json`, the machine-local managed MCP config whose entry holds an absolute path of
+THIS installation, so neither a vendor tree nor a launch path of one machine is ever committed or
+handed to a fresh clone; it also ignores the secret patterns and the factory's own
+`task.yaml`/`start.cmd`/`start.sh`, so a leftover task file or launcher is never mistaken for a new
+task and never committed), and creates a `start.sh` launcher in
 the project (with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` and `KIMI_FACTORY_LAUNCH_DIR` — the
 absolute launch directory, the anchor against which the task's `repo_path` is resolved — already set
 in it). It also installs the pinned `chrome-devtools-mcp` release into the project's
@@ -202,7 +205,9 @@ No additional `export` commands need to be memorized.
 
 The same one-action preparation via `prepare_factory.cmd`: it invokes `prepare_factory.ps1`
 (the Windows version of the deployer; PowerShell ships with Windows) and forwards its exit code. The script
-copies the factory, configures git/`.gitignore`, creates the `start.cmd` (Windows) and
+copies the factory, configures git/`.gitignore` with the SAME pattern list as the shell deployer
+(`.agents/`, `.code-factory/`, `.kimi-code/vendor/`, `.kimi-code/mcp.json`, the secret patterns and
+the factory's own task/launcher files), creates the `start.cmd` (Windows) and
 `start.sh` (Git Bash/Linux) launchers in the project, installs the pinned `chrome-devtools-mcp`
 release into `.kimi-code/vendor/`, merges the managed `chrome-devtools` MCP entry into
 `.kimi-code/mcp.json` (the same preservation/conflict rules as in the shell deployer) and prints
@@ -380,10 +385,18 @@ discrepancies; the user is presented with the merged plan, and further edits are
 Before acceptance, every task passes through the `factory-code-reviewer` subagent:
 
 - **regular task** — the reviewer examines the **diff** of the changes (not the whole project);
-- **`task_type: review` / `security_audit`** — a review/audit of **all the code** in SHARDS at the start:
-  `scripts/repo_inventory.py shards --max-lines 20000` → one subagent per shard →
-  a deterministic merged verdict by `scripts/merge_findings.py` (each subagent
-  sees only the files of its own shard); the findings of a review task become the plan.
+- **`task_type: review` / `security_audit`** — a review/audit of **all the TRACKED code** in SHARDS at
+  the start: `scripts/repo_inventory.py shards --repo <resolved repo_path> --max-lines 20000
+  --tracked` → one subagent per shard → a deterministic merged verdict by
+  `scripts/merge_findings.py` (each subagent sees only the files of its own shard); the findings of
+  a review task become the plan. `--tracked` takes the file set from a NUL-safe `git ls-files -z` at
+  `--repo`, so untracked and git-ignored paths (a machine-local config, a build output, a leftover
+  artifact) can never enter the review or land in a shard, while a TRACKED file under `build/` or
+  `node_modules/` is reviewed like any other. When `--tracked` is requested and git or the repository
+  is unavailable the command fails with the reason instead of silently walking the worktree — a
+  fallback would put back exactly the paths the mode exists to exclude. Without the flag the
+  filesystem walk stays the default (the escape hatch for callers that must also see untracked
+  files).
 
 A verdict of `approve` → the task proceeds to acceptance; `request_changes` → a rework list
 is produced for the coder, and after the fixes the tests and the review are run again. When the budget is exhausted, the
@@ -533,7 +546,12 @@ fix or visually validate a browser-based Web GUI, and is invisible for every oth
   `--target <project>/.kimi-code/mcp.json` the vendored package entry that project's server launches)
   is fail-soft — a missing capability is DATA with a reason, never a crash; `factory_preflight.py
   --web-gui` appends the same nested `web_gui` capability block for an applicable run (opt-in,
-  `--simulate-missing <name>` forces one capability to report missing). A missing or incompatible
+  `--simulate-missing <name>` forces one capability to report missing). Its `mcp_usable` is true only
+  for a REAL deployment of the resolved repository: the managed `.kimi-code/mcp.json` must be valid
+  under the `chrome_devtools_mcp.py validate-config` invariants AND the pinned vendored entry it
+  launches must be on disk at the pinned version — otherwise the server is reported missing with the
+  exact reason and the browser criteria stay UNVERIFIED (the shipped template alone can never make a
+  clean clone look like a deployed browser path). A missing or incompatible
   capability is routed through the INFRASTRUCTURE rows I1–I4 of `references/error-routing.md`
   (node/npm/npx not found, Chrome/Chrome for Testing missing, MCP connection/startup failure,
   chrome-devtools-mcp launch errors) — no new role, no new budget — and the affected browser criteria

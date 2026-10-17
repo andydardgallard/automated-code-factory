@@ -478,8 +478,11 @@ Info "      The MCP configuration takes effect in a NEW Kimi session — /mcp in
 $Gitignore        = Join-Path $ProjectDir '.gitignore'
 # task.yaml / start.cmd / start.sh are the factory's own files in a DEPLOYED project: a leftover
 # task file or launcher sitting in a TARGET project must never be mistaken for a new task and
-# never get committed.
-$CfPatterns       = @('.agents/', '.code-factory/', '.kimi-code/vendor/', '__pycache__/', '*.pyc', '.env', '.env.*', '*.env', '*.pem', '*.key', 'task.yaml', 'start.cmd', 'start.sh')
+# never get committed. The managed MCP config is ignored too: its chrome-devtools entry carries the
+# ABSOLUTE path of the vendored package of THIS installation, so a committed config would hand a
+# fresh clone a launch path that does not exist there (ignoring the vendor directory alone protects
+# the package, not the config pointing at it).
+$CfPatterns       = @('.agents/', '.code-factory/', '.kimi-code/mcp.json', '.kimi-code/vendor/', '__pycache__/', '*.pyc', '.env', '.env.*', '*.env', '*.pem', '*.key', 'task.yaml', 'start.cmd', 'start.sh')
 $GitignoreExists  = Test-Path -LiteralPath $Gitignore -PathType Leaf
 $GitignoreText    = ''
 if ($GitignoreExists) { $GitignoreText = [System.IO.File]::ReadAllText($Gitignore) }

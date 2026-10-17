@@ -3,7 +3,7 @@ name: code-factory
 description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 type: flow
 ---
-<!-- code-factory-version: 12.14.0 -->
+<!-- code-factory-version: 12.14.1 -->
 
 # Code Factory
 
@@ -96,14 +96,14 @@ flowchart TD
     R1 --> E
     C2 -->|Yes| F[Create the development plan following references/planning-guide.md: DAG of tasks with dependencies and per-task verification commands; business tests are first-class tasks in the plan. If the task needs new in-project skills, scripts or plugins, include them in the plan. Save the plan to .code-factory/state/plan.md. For task_type=review, the plan is the review rework list produced by the code reviewer.]
     F --> TT{task_type?}
-    TT -->|review| CR0[Run factory-code-reviewer over the WHOLE codebase — in shards, never as one whole-repo context: repo_inventory.py shards with --max-lines 20000 → one reviewer subagent per shard in parallel → merge_findings.py prints the deterministic merged verdict (request_changes if any shard returned it or any critical finding exists). Write the verdict to .code-factory/logs/code-review.md and log models_used.reviewer. On request_changes the rework list becomes the plan.]
+    TT -->|review| CR0[Run factory-code-reviewer over the WHOLE codebase — in shards, never as one whole-repo context: repo_inventory.py shards --tracked --max-lines 20000 (the TRACKED tree via git ls-files at --repo) → one reviewer subagent per shard in parallel → merge_findings.py prints the deterministic merged verdict (request_changes if any shard returned it or any critical finding exists). Write the verdict to .code-factory/logs/code-review.md and log models_used.reviewer. On request_changes the rework list becomes the plan.]
     CR0 --> CRV0{Review verdict?}
     CRV0 -->|approve| W
     CRV0 -->|request_changes| G
     TT -->|implement| G
     TT -->|refactor| RF[Refactor flow: baseline the existing test suite, plan structural-only tasks, implement with factory-refactorer, verify 100% of existing tests pass unchanged — any behavior change is a critical error and rolls back automatically. See references/refactoring.md.]
     RF --> L
-    TT -->|security_audit| SA[Security audit flow: detect artifact types, run only the relevant checks with factory-security-auditor (read-only) over the same shards — repo_inventory.py shards ≤20000 lines → parallel auditors → merge_findings.py — write reports + a generated fix-task file. No code change and no auto-fixing. See references/security-audit.md.]
+    TT -->|security_audit| SA[Security audit flow: detect artifact types, run only the relevant checks with factory-security-auditor (read-only) over the same shards — repo_inventory.py shards --tracked --max-lines 20000 over the TRACKED tree → parallel auditors → merge_findings.py — write reports + a generated fix-task file. No code change and no auto-fixing. See references/security-audit.md.]
     SA --> W
     G -->|hitl| H[Business test definition: ask the user via AskUserQuestion for 1 a concrete business scenario (user story), 2 which configs and input data to run, 3 expected business results. Only business-logic questions. Store answers in the plan.]
     H --> I[Present the full plan for approval: write it to the plan file and call EnterPlanMode then ExitPlanMode. Wait for approval or revision comments. Count every rejection in retry_counters.plan_rejections of .code-factory/state/pipeline.yaml.]
@@ -113,7 +113,7 @@ flowchart TD
     PC --> PC2[Run the deterministic arbiter: python .agents/skills/code-factory/scripts/plan_arbiter.py --plan-a .code-factory/state/plan.md --plan-b .code-factory/state/plan-2.md --out .code-factory/state/plan_merged.md. It merges the machine-readable sections (DAG tasks by id, risks, business tests) and lists every divergence.]
     PC2 --> PC3[Present the merged plan and the divergence list to the user in business language; the merged plan becomes the plan of record and every further revision applies to it (the committee runs at most once per task).]
     PC3 --> F
-    J -->|Approve| K
+    J -->|Approve| PF
     G -->|auto| L[Make reasonable business assumptions from the task description. Record every assumption explicitly in the plan.]
     L --> PF[Pre-flight: probe the real environment first with scripts/factory_preflight.py --out .code-factory/state/preflight.json — it reports the python command that actually works (python / python3 / py), git, bash/sh, the OS and KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL, and every command below is emitted for the capabilities found. Then the git check: if the project has no git repository, run git init. Working tree must be clean: auto-untrack build artifacts (target/, node_modules/, __pycache__/ etc.) and commit factory artifacts (AGENTS.md). Record git HEAD and git status in .code-factory/state/. Also verify model setup: for the new CLI check that KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 is exported (otherwise secondary-model split is INACTIVE); record a models_warning in pipeline.yaml if missing. Conditional browser probes: only for an applicable Web GUI run add --web-gui, which appends the node/npm/npx, Chrome / Chrome for Testing and MCP-start capability block to the same file — a not-applicable run never probes the browser, never launches Chrome and never needs Node.js.]
     PF --> K[Backup the current state: copy every file that will be modified to .code-factory/backups/ preserving relative paths. Track created files in .code-factory/manifest.json. Write the checkpoint .code-factory/state/pipeline.yaml after every phase for resume.]
@@ -370,11 +370,12 @@ Rules that always apply:
   analyzers: `scripts/repo_stats.py` — sizes, entry points, imports). Long test/build output goes
   to `.code-factory/logs/`; the context gets counters + tail only, via `scripts/log_tail.py`.
 - **Sharded whole-repo operations (review / security_audit)**: `scripts/repo_inventory.py shards
-  --max-lines 20000` → one reviewer/auditor subagent per shard in parallel → `scripts/
+  --tracked --max-lines 20000` (the TRACKED tree via `git ls-files`, the same file set `inventory
+  --tracked` prints) → one reviewer/auditor subagent per shard in parallel → `scripts/
   merge_findings.py` returns the deterministic merged verdict; an entire repository never enters
   one context.
 <!-- factory-rule: shard-protocol begin -->
-**Shard protocol (canonical wording):** whole-repo review and security_audit never fit into one context: `scripts/repo_inventory.py shards --max-lines 20000` cuts the repository into shards of ≤20000 lines, each shard is processed by its own parallel subagent (reviewer or auditor) and writes one findings file. The result is produced by the deterministic `scripts/merge_findings.py` (deduplication, sorting by severity, merged verdict), and the canonical review gate is applied to the MERGED findings, not to individual shards. A regular `implement` task is reviewed by diff and needs no sharding.
+**Shard protocol (canonical wording):** whole-repo review and security_audit never fit into one context: `scripts/repo_inventory.py shards --tracked --max-lines 20000` cuts the TRACKED tree (`git ls-files -z` at `--repo`, so an untracked or ignored machine-local file stays out of the review) into shards of ≤20000 lines, each shard is processed by its own parallel subagent (reviewer or auditor) and writes one findings file. The result is produced by the deterministic `scripts/merge_findings.py` (deduplication, sorting by severity, merged verdict), and the canonical review gate is applied to the MERGED findings, not to individual shards. A regular `implement` task is reviewed by diff and needs no sharding.
 <!-- factory-rule: shard-protocol end -->
 
 - **Verified acceptance**: acceptance is machine-checked with `scripts/verify_acceptance.py` —

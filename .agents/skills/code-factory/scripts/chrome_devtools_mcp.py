@@ -694,6 +694,10 @@ def _env_true(entry: dict, name: str) -> bool:
 
 
 _SECRET_PATTERN = re.compile(r"(?i)\b(api[_-]?key|token|secret|password|passwd|credential|bearer)\b\s*[:=]?\s*\S")
+# A credential-like NAME is disqualifying on its own: `"API_KEY": "opaque-value"` carries no keyword
+# in the VALUE, so a value-only scan would declare a shipped API key safe.
+_SECRET_NAME_PATTERN = re.compile(
+    r"(?i)\b(api[_-]?key|access[_-]?key|token|secret|password|passwd|credential|bearer)\b")
 _PERMISSION_KEYS = ("permissions", "autoApprove", "auto_approve", "alwaysAllow", "always_allow",
                     "allowedTools", "allowed_tools", "defaultPermissionMode", "default_permission_mode")
 _ATTACH_FLAGS = ("--browser-url", "--browserurl", "--ws-endpoint", "--wsendpoint", "--auto-connect",
@@ -730,7 +734,12 @@ def validate_entry_path(args: list[str]) -> list[str]:
 
 def validate_config(path: str | pathlib.Path | None = DEFAULT_ASSET, data: dict | None = None
                     ) -> tuple[bool, list[str]]:
-    """Safety invariants of a managed mcp.json: `(ok, problems)` — problems are data, not crashes."""
+    """Safety invariants of a managed mcp.json: `(ok, problems)` — problems are data, not crashes.
+
+    Every malformed input is reported as a problem: an absent `env` means "no environment", while a
+    non-object `env` (string, list, number, boolean) is a violation instead of an AttributeError on
+    `.values()`.
+    """
     problems: list[str] = []
     if data is None:
         config = pathlib.Path(path) if path else DEFAULT_ASSET
@@ -765,6 +774,11 @@ def validate_config(path: str | pathlib.Path | None = DEFAULT_ASSET, data: dict 
         problems.append("args must be a list of strings")
         args = []
     problems.extend(validate_entry_path(args))
+    env = entry.get("env")
+    if env is not None and not isinstance(env, dict):
+        problems.append("env must be a JSON object mapping variable names to values: a non-object env "
+                        f"reaches the server as a malformed environment (found {type(env).__name__})")
+        env = None
     if not _flag_true(args, "--isolated"):
         problems.append("an isolated temporary profile is required (--isolated): the user's personal "
                         "browser profile, cookies and credentials must never be used")
@@ -791,10 +805,21 @@ def validate_config(path: str | pathlib.Path | None = DEFAULT_ASSET, data: dict 
     blob = json.dumps(data, ensure_ascii=False)
     if re.search(r'"[^"]*"\s*:\s*\[\s*"\*"\s*\]', blob) or re.search(r'"[^"]*"\s*:\s*"\*"', blob):
         problems.append("no blanket 'all tools/all servers' allow rule may appear in the configuration")
-    for candidate in [*args, *[v for v in (entry.get("env") or {}).values() if isinstance(v, str)]]:
+    for candidate in args:
         if _SECRET_PATTERN.search(candidate):
             problems.append("no secret may appear in the shipped configuration (found a "
                             f"credential-like value in {candidate!r})")
+    for name, value in (env or {}).items():
+        # The report names the variable and the reason — never the value, which may BE the secret.
+        if value is None or value == "":
+            continue
+        if _SECRET_NAME_PATTERN.search(str(name)):
+            problems.append("no secret may appear in the shipped configuration (the environment "
+                            f"variable {name!r} is credential-like: the server must read it from the "
+                            "user's own environment instead of the shipped config)")
+        elif isinstance(value, str) and _SECRET_PATTERN.search(value):
+            problems.append("no secret may appear in the shipped configuration (the value of the "
+                            f"environment variable {name!r} looks like a credential)")
     return (not problems), problems
 
 

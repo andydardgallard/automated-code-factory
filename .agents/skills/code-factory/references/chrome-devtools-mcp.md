@@ -42,9 +42,19 @@ The decision is deterministic and carries a REASON (never a model call):
   better than a config whose launch file does not exist, and `merge-config` refuses to point at a
   missing entry at all. Without a working interpreter an existing `.kimi-code/mcp.json` is left
   untouched and no new one is created.
-- `.kimi-code/vendor/` is machine-local and git-ignored (the deployers add the pattern to the target
-  project too); the repo's own `.kimi-code/mcp.json` is machine-local as well, since the managed
-  entry holds an absolute path.
+- Both deployers add `.kimi-code/vendor/` AND `.kimi-code/mcp.json` to the prepared project's
+  `.gitignore`. Both are machine-local: the vendored package belongs to that installation, and the
+  managed entry carries the ABSOLUTE path of this installation's vendored entry, so a committed
+  config would hand a fresh clone a launch path that does not exist there. A clean clone therefore
+  has no browser path until it is deployed itself — ignoring the config never removes it from disk,
+  so the readiness report still prints its created/updated/unchanged/conflict state.
+- `validate-config --path <config>` checks a managed config against the reviewed safety invariants
+  and reports EVERY problem, not just the first: a non-object `env` (string, list, number, boolean)
+  is a validation problem — only JSON `null` or an absent key means "no environment" — so a
+  malformed `env` is reported as data and never raises. Secret scanning rejects a credential-like
+  VALUE and equally a credential-like variable NAME (`API_KEY`, `token`, `password`, …) carrying a
+  non-empty value; the report names the variable and the reason and never the value, because an
+  opaque value contains no keyword to match.
 - MCP configuration takes effect in a NEW Kimi session; `/mcp` shows the connection status. A session
   started before the deployment has no browser tools, whatever the config says.
 - Workspace trust gates project MCP servers: an interactive session shows the trust prompt listing each
@@ -95,12 +105,20 @@ The decision is deterministic and carries a REASON (never a model call):
 `chrome_devtools_mcp.py probe` (Node.js, npm/npx, Google Chrome or Chrome for Testing, the vendored
 package entry of a given project config — `probe --target <project>/.kimi-code/mcp.json` — and MCP
 server start feasibility) is fail-soft: a missing capability is DATA with a reason, never a crash;
-`factory_preflight.py --web-gui` appends the same block for an applicable run. On a missing or
-incompatible capability:
+`factory_preflight.py --web-gui` appends the same block for an applicable run. Its `mcp_usable` is
+true only for a REAL deployment: the run's resolved repository must have a valid
+`.kimi-code/mcp.json` (the `validate-config` invariants) AND the pinned vendored entry that config
+launches must be on disk at the pinned version. Anything less reports the MCP server as missing with
+the exact reason, because a usable verdict from the shipped template alone would make a clean clone
+look deployed; `--simulate-missing <name>` forces one capability to report missing without touching
+the host, and the block never changes the pre-flight exit code. On a missing or incompatible
+capability:
 
 - it is reported through the INFRASTRUCTURE route (`references/error-routing.md` §1 rows I1–I4:
   node/npm/npx not found, Chrome/Chrome for Testing missing, MCP connection/startup failure,
-  chrome-devtools-mcp launch errors) — no new role, no new budget;
+  chrome-devtools-mcp launch errors) — no new role, no new budget. Row I1 matches the probe's OWN
+  wording (`<node|npm|npx> was not found on PATH; a Web GUI run cannot start …`), so a real probe
+  line is classified without being retranslated;
 - the affected browser criteria stay explicitly UNVERIFIED — never MET, and no screenshot, console
   result or acceptance artifact is fabricated;
 - a non-Web-GUI run never invokes the specialist, launches Chrome or calls a browser tool, and does

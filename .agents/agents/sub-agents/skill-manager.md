@@ -60,7 +60,9 @@ Read `.agents/skills/code-factory/references/reference-docs.md` first and follow
    fabricate anything — report an error: "missing: skill '<name>' not found in the base;
    specify the path to the document in reference_docs".
 5. Update `skill-base/manifest.json` through the script
-   (`python3 .agents/skills/code-factory/scripts/skill_base.py record <name> <source> <hash>`) —
+   (`python3 .agents/skills/code-factory/scripts/skill_base.py record <name> <source> <hash>
+   --repo <root>`; add `--resolved-hash <hex>` to record the digest `resolve` already printed —
+   the materialization is reused instead of fetched twice, and a divergent digest is refused) —
    never hand-edit the manifest. Pass the source EXACTLY as the task gave it: for a URL that is the
    canonical original URL, which stays the manifest `source`; the script recomputes the content
    hash from the fetched content and adds the remote metadata (`source_type`,

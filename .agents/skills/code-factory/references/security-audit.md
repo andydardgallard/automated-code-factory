@@ -62,8 +62,8 @@ and launches the fixes themselves.
 
 1. **Detect artifact types** (section 2).
 2. **Plan the audit** — map each present type to its checks and tools (section 3); measure the
-   repository (`repo_inventory.py inventory`) and shard it when it exceeds the size budget
-   (section 5.1).
+   repository (`repo_inventory.py inventory --tracked`) and shard it when it exceeds the size
+   budget (section 5.1).
 3. **Run the audit** — the `factory-security-auditor` subagent (read-only) inspects the code and
    configs, never modifying anything. On a sharded run there is one auditor per shard, in parallel.
 4. **Merge the shard findings** with `merge_findings.py` (section 5.1) — the merged report is the
@@ -79,18 +79,19 @@ the size budget (**N = 20 000 lines by default**) the audit is sharded with the 
 protocol the whole-repo review uses (`references/code-review.md` §1.1) — inventory, parallel
 subagents, zero-LLM merge:
 
-1. **Inventory / shards (deterministic, zero LLM)** — `repo_inventory.py` walks the tree (VCS and
-   build dirs excluded, symlinks not followed, binaries skipped) and packs the sorted file list
-   into shards of at most N lines; a file longer than N lines becomes its own shard flagged
-   `oversized`:
+1. **Inventory / shards (deterministic, zero LLM)** — `repo_inventory.py --tracked` takes the file
+   set from the TRACKED tree (`git ls-files -z` at `--repo`, symlinks not followed, binaries
+   skipped) and packs the sorted file list into shards of at most N lines; a file longer than N
+   lines becomes its own shard flagged `oversized`:
 
    ```bash
-   python .agents/skills/code-factory/scripts/repo_inventory.py inventory --repo <project-root>
-   python .agents/skills/code-factory/scripts/repo_inventory.py shards --repo <project-root> --max-lines 20000
+   python .agents/skills/code-factory/scripts/repo_inventory.py inventory --repo <project-root> --tracked
+   python .agents/skills/code-factory/scripts/repo_inventory.py shards --repo <project-root> --tracked --max-lines 20000
    ```
 
    The shard list defines the audit's work packages; shards never overlap and their union is the
-   whole repository.
+   whole tracked repository. A tracked file under an excluded directory name (`build/`,
+   `node_modules/`) is audited too — the tracked set is the contract, not the directory name.
 2. **Parallel auditor subagents** — one `factory-security-auditor` per shard; each receives only
    its shard's file list, the detected artifact types (section 2) and the checks/tools mapped to
    them (section 3), plus the shard ID it must report under. No auditor gets whole-repo context and

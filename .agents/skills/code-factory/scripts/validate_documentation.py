@@ -6,7 +6,8 @@ Checks that the documenter touched ONLY documentation:
   1. No protected file (tests, configs, build manifests, lockfiles) may be modified.
   2. Markdown/plain-text files are documentation by definition and are allowed.
   3. Source files may change only doc-comment/docstring lines — any changed code line is a
-     violation.
+     violation. Lines are classified by their POSITION in the two versions (the diff hunk maps
+     old↔new), so duplicated text (a code line repeated inside a docstring) cannot mask a change.
 
 Usage:
   python3 validate_documentation.py check --repo <root> --baseline <dir> --files f1 f2 ...
@@ -104,14 +105,21 @@ def _doc_mask(lines: list[str]) -> list[bool]:
     return mask
 
 
-def _changed_lines(old: list[str], new: list[str]) -> list[str]:
-    """Return the non-`?` lines of a unified diff (added `+` and removed `-`)."""
-    out: list[str] = []
-    for ln in difflib.unified_diff(old, new, lineterm="", n=0):
-        if ln.startswith(("+++", "---", "@@")):
+def _changed_lines(old: list[str], new: list[str]) -> list[tuple[str, int, int]]:
+    """Return the changed lines as `(text, old_index, new_index)` triples.
+
+    The indices are taken from the diff opcodes themselves: a removed line carries its index in
+    `old`, an added line its index in `new`, the other index is -1. A changed line is therefore
+    located by POSITION, never by a content search: the same text may occur several times in a file
+    (for example once as real code and once inside a docstring) and only the diff knows which
+    occurrence changed.
+    """
+    out: list[tuple[str, int, int]] = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=old, b=new, autojunk=False).get_opcodes():
+        if tag == "equal":
             continue
-        if ln.startswith("+") or ln.startswith("-"):
-            out.append(ln[1:])
+        out.extend((old[i], i, -1) for i in range(i1, i2))
+        out.extend((new[j], -1, j) for j in range(j1, j2))
     return out
 
 
@@ -156,13 +164,12 @@ def check(root: pathlib.Path, baseline: pathlib.Path, files: list[str]) -> list[
         # A changed line is a code change if it is non-blank and not a doc line in BOTH versions.
         old_mask = _doc_mask(old)
         new_mask = _doc_mask(new)
-        for ln in changed:
+        for ln, oi, ni in changed:
             if not ln.strip():
                 continue
-            # conservatively treat a line as code if it is code in either version;
-            # first occurrence wins and a missing line is simply "not code" (no IndexError).
-            oi = next((i for i, x in enumerate(old) if x == ln), -1)
-            ni = next((i for i, x in enumerate(new) if x == ln), -1)
+            # conservatively treat a line as code if it is code in either version; the indices
+            # come from the diff hunk, so a duplicate of the same text elsewhere (e.g. inside a
+            # docstring, or a doc copy inside code) can neither hide nor invent a code change.
             in_old = oi >= 0 and not old_mask[oi]
             in_new = ni >= 0 and not new_mask[ni]
             if in_old or in_new:

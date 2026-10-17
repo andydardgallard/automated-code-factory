@@ -41,7 +41,10 @@ Verified here:
      `task.yaml` / `start.cmd` / `start.sh` (the pattern list AND the written `.gitignore` block —
      a leftover task file or launcher in a TARGET project must not be mistaken for a new task and
      must not be committed; a list that is only checked but never written re-appends the block on
-     every run), and BOTH launcher templates export `KIMI_FACTORY_LAUNCH_DIR` — the absolute launch
+     every run) AND the machine-local `.kimi-code/mcp.json`, whose managed entry carries the
+     absolute path of the vendored package of THIS installation (ignoring the vendor directory alone
+     protects the package, not the config pointing at it), and BOTH launcher templates export
+     `KIMI_FACTORY_LAUNCH_DIR` — the absolute launch
      directory, the machine-checkable anchor for resolving the task's `repo_path`,
   11. the MCP deployment step of BOTH deployers: the PINNED package is installed into
      `<project>/.kimi-code/vendor/chrome-devtools-mcp/` through the interpreter they already probed
@@ -63,7 +66,15 @@ Verified here:
      ONLY in the shipped asset and the entry path only in the merge helper — both deployers must
      reference those instead of repeating the version or the path layout. The fixtures run the step
      through the documented offline seam (`CHROME_DEVTOOLS_MCP_VENDOR_OFFLINE=1`), so no test ever
-     reaches npm or the network.
+     reaches npm or the network,
+  14. the managed configuration of a deployment: a merge of the COMMITTED asset produces the managed
+     shape (node + the project's absolute vendored entry + the required safety flags and
+     environment switches, no permission/attach key). The expected flags, switches and forbidden
+     keys are constants of THIS test, never values read back out of the asset under test, and a
+     mutation case proves that (dropping one such switch from a copy of the asset fails the
+     assertion). Nothing here reads the machine-local `.kimi-code/mcp.json`: it is per installation
+     and gitignored, so the check is exercised against a clean-clone fixture in which that file does
+     not exist.
 
 A project deployed by the factory contains only `.agents/` (plus the generated launchers), so
 there this test SKIPs cleanly instead of failing on a missing factory repo root.
@@ -145,7 +156,8 @@ CREATED_RELS = (
     ".kimi-code/mcp.json",
 )
 MEMORY_RELS = ("memory/change-log.md", "memory/summary.md")
-GITIGNORE_PATTERNS = (".agents/", ".code-factory/", ".kimi-code/vendor/", "__pycache__/", "*.pyc",
+GITIGNORE_PATTERNS = (".agents/", ".code-factory/", ".kimi-code/mcp.json", ".kimi-code/vendor/",
+                      "__pycache__/", "*.pyc",
                       ".env", ".env.*", "*.env", "*.pem", "*.key",
                       "task.yaml", "start.cmd", "start.sh")
 
@@ -177,6 +189,11 @@ START_CMD_TOKENS = ("chcp 65001", 'cd /d "%~dp0"',
 # and the entry-path layout only in the merge helper — the deployers reference both, they never
 # repeat the version or the path (anti-drift by construction).
 MCP_REL = ".kimi-code/mcp.json"
+# The same path as a `.gitignore` pattern of a deployed project: the managed entry carries the
+# ABSOLUTE path of the vendored package of THIS installation, so a committed config would hand a
+# fresh clone a launch path that does not exist there. Ignoring `.kimi-code/vendor/` alone protects
+# the package, not the config pointing at it — both deployers ignore the pattern (F12).
+MCP_CONFIG_PATTERN = MCP_REL
 MCP_ASSET_REL = ".agents/skills/code-factory/assets/chrome-devtools.mcp.json"
 MCP_SERVER = "chrome-devtools"
 MCP_PACKAGE = "chrome-devtools-mcp"
@@ -185,16 +202,25 @@ MCP_PIN = f"{MCP_PACKAGE}@{MCP_VERSION}"
 # The per-installation vendored package: `<project>/.kimi-code/vendor/<package>/`.
 MCP_VENDOR_REL = ".kimi-code/vendor/" + MCP_PACKAGE
 MCP_ENTRY_REL = MCP_VENDOR_REL + "/node_modules/" + MCP_PACKAGE + "/build/src/bin/" + MCP_PACKAGE + ".js"
+# The tail every absolute entry path ends with (the merge derives the rest from `--target`).
+MCP_ENTRY_SUFFIX = "/node_modules/" + MCP_PACKAGE + "/build/src/bin/" + MCP_PACKAGE + ".js"
 # The entry path is DEPLOYMENT-derived, so the shipped template carries this placeholder.
 MCP_ENTRY_PLACEHOLDER = "{CHROME_DEVTOOLS_MCP_ENTRY}"
 # The documented test seam of `vendor-install`: write a placeholder entry instead of calling npm.
 MCP_VENDOR_OFFLINE_ENV = "CHROME_DEVTOOLS_MCP_VENDOR_OFFLINE"
-# The safety defaults of the shipped template: an isolated temporary browser profile, no usage
-# statistics, no CrUX lookups, redacted network headers and no update checks.
-MCP_ENTRY_ARGS = ("--isolated=true", "--headless=true", "--channel=stable",
-                  "--no-usage-statistics", "--no-performance-crux", "--redact-network-headers=true")
+# The safety defaults a deployed configuration must carry: an isolated temporary browser profile, no
+# usage statistics, no CrUX lookups, redacted network headers and no update checks. These are the
+# REQUIRED flags/switches, pinned here INDEPENDENTLY of the asset: an expectation read back out of
+# the file under test travels through every mutation of that file (F14 — see
+# `mcp_safety_switches_are_load_bearing`).
+MCP_REQUIRED_FLAGS = ("--isolated=true", "--headless=true", "--channel=stable",
+                      "--no-usage-statistics", "--no-performance-crux", "--redact-network-headers=true")
 MCP_UPDATE_CHECK_ENV = "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS"
 MCP_USAGE_ENV = "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS"
+MCP_SAFETY_ENV = {MCP_UPDATE_CHECK_ENV: "1", MCP_USAGE_ENV: "1"}
+# A blanket MCP permission (a wildcard allow rule) and attaching to an already running browser
+# session are explicit opt-ins, never defaults: none of these keys may appear in a managed entry.
+MCP_FORBIDDEN_KEYS = ("autoApprove", "permissions", "allowedTools", "browserUrl", "wsEndpoint")
 # The numbered section both deployers carry the step in, and the exact paths of the two files
 # the step works with (the merge helper and the pinned template), per deployer syntax.
 MCP_SECTION = "Chrome DevTools MCP configuration"
@@ -259,6 +285,19 @@ GITATTRIBUTES = REPO / GITATTRIBUTES_NAME
 def expect(cond: bool, msg: str) -> None:
     if not cond:
         raise AssertionError(msg)
+
+
+def assertion_error(run: Callable[[], object]) -> str | None:
+    """The message of the AssertionError `run` raises, or `None` when it passes.
+
+    A mutation check needs BOTH outcomes: the unmutated control must pass, and the mutation must
+    FAIL the very assertion that is supposed to detect it.
+    """
+    try:
+        run()
+    except AssertionError as exc:
+        return str(exc) or "assertion failed"
+    return None
 
 
 def read_text(path: pathlib.Path) -> str:
@@ -588,6 +627,40 @@ def sh_ignores_deployer_hazards() -> None:
            f"{SH_NAME}: the .gitignore patterns {unwritten} are checked but never written - the "
            "deployer would append them again on every run; every pattern of the list needs its own "
            "`echo \"<pattern>\"` line inside the appended block")
+
+
+def mcp_config_is_gitignored() -> None:
+    """BOTH deployers ignore the managed MCP config — the pattern list AND the block they write.
+
+    The managed entry launches the vendored package by its ABSOLUTE per-installation path, so a
+    committed `.kimi-code/mcp.json` would hand a fresh clone of the TARGET project a launch path
+    that does not exist there (`chrome_devtools_mcp.py merge-config` derives it per deployment).
+    Ignoring only `.kimi-code/vendor/` protects the package but not the config pointing at it. The
+    written half is pinned too: the `.ps1` appends the whole `$CfPatterns` list in a loop, while the
+    `.sh` needs its own `echo` line per pattern (a checked-but-unwritten pattern re-appends the
+    block on every run).
+    """
+    ps_patterns = ps1_gitignore_patterns()
+    expect(MCP_CONFIG_PATTERN in ps_patterns,
+           f"{PS1_NAME}: the .gitignore pattern list is missing {MCP_CONFIG_PATTERN!r} - the managed "
+           f"config carries the absolute entry path of THIS installation and must never be "
+           f"committed; got {ps_patterns}")
+    ps_text = read_text(PS1)
+    expect("foreach ($pat in $CfPatterns)" in ps_text and "$add += $pat + $nl" in ps_text,
+           f"{PS1_NAME}: the appended .gitignore block must be built from $CfPatterns (every "
+           "pattern of the list is written back out)")
+    sh_patterns = sh_gitignore_patterns()
+    expect(MCP_CONFIG_PATTERN in sh_patterns,
+           f"{SH_NAME}: the .gitignore pattern list is missing {MCP_CONFIG_PATTERN!r} - see the "
+           f"{PS1_NAME} check above; got {sh_patterns}")
+    sh_lines = [line.strip() for line in check_text_file(SH, bom=False, crlf_only=False).splitlines()]
+    expect(f'echo "{MCP_CONFIG_PATTERN}"' in sh_lines,
+           f"{SH_NAME}: {MCP_CONFIG_PATTERN!r} is checked but never written - the pattern would be "
+           f"re-appended on every run; the appended block needs its own "
+           f'`echo "{MCP_CONFIG_PATTERN}"` line')
+    expect(MCP_CONFIG_PATTERN in GITIGNORE_PATTERNS,
+           "this test's own expected pattern list (asserted against the .gitignore a real deployment "
+           f"produces) must carry {MCP_CONFIG_PATTERN!r}")
 
 
 def sh_template_exports_launch_dir() -> None:
@@ -992,49 +1065,153 @@ def mcp_pin_lives_in_the_asset_only() -> None:
            "CLI spawns stdio servers without a shell: ENOENT/EINVAL on Windows)")
 
 
-def repo_own_mcp_config() -> None:
-    """This repository's own `.kimi-code/mcp.json`: the managed SHAPE, nothing weaker.
+def read_asset_entry(asset_path: pathlib.Path) -> dict:
+    """The `chrome-devtools` entry of an asset file: the committed template or a mutated copy."""
+    data = load_json_or_none(asset_path)
+    expect(isinstance(data, dict) and isinstance(data.get("mcpServers"), dict),
+           f"{asset_path} must be a JSON object with an mcpServers map")
+    entry = data["mcpServers"].get(MCP_SERVER)
+    expect(isinstance(entry, dict), f"{asset_path} must define the {MCP_SERVER!r} server")
+    return entry
 
-    The factory repo is a deployment target too — its own config is what a run of the factory in
-    this repository would use. It is machine-local (the managed entry carries the absolute path of
-    the vendored package), so the check is derived from the design instead of byte-compared with
-    the template: `node` + an ABSOLUTE entry path ending with the installed package entry, the
-    template's safety flags, no blanket permission, update checks off, and the safety flags of the
-    template intact. `chrome_devtools_mcp.py validate-config` is the canonical checker.
+
+def merged_entry_of_asset(asset_path: pathlib.Path, target: pathlib.Path) -> dict:
+    """The entry `chrome_devtools_mcp.py merge-config --asset <asset_path>` writes for `target`.
+
+    Computed here, without importing the helper: the asset entry with its entry-path placeholder
+    replaced by the ABSOLUTE vendored entry of THAT project — the only value the merge substitutes.
     """
-    own = load_json_or_none(REPO / MCP_REL)
-    expect(isinstance(own, dict),
-           f"{MCP_REL} must exist in the factory repository and be valid JSON "
-           f"(create it with `python {SCRIPTS.name}/chrome_devtools_mcp.py vendor-install "
-           f"--target {MCP_VENDOR_REL}` then `... merge-config --target {MCP_REL}`)")
-    entry = own.get("mcpServers", {}).get(MCP_SERVER)
+    entry = read_asset_entry(asset_path)
+    args = list(entry.get("args") or [])
+    expect(MCP_ENTRY_PLACEHOLDER in args,
+           f"{asset_path} must carry the entry-path placeholder {MCP_ENTRY_PLACEHOLDER!r} in args "
+           f"(the entry path is deployment-derived); got {args!r}")
+    merged = {key: value for key, value in entry.items() if key != "args"}
+    merged["args"] = [str(target / pathlib.Path(*MCP_ENTRY_REL.split("/"))),
+                      *[arg for arg in args if arg != MCP_ENTRY_PLACEHOLDER]]
+    return merged
+
+
+def assert_managed_shape(entry: dict, label: str) -> None:
+    """The managed entry a deployment must produce — checked against INDEPENDENT expectations.
+
+    `label` names where the entry came from (the committed asset, a mutated copy of it, a real
+    deployment). Nothing is read back out of the file under test: the required flags, the required
+    environment switches and the forbidden permission/attach keys are constants of THIS test, so an
+    asset that lost a safety switch FAILS instead of defining its own expectation (F14). The same
+    assertion is what a real deployment is checked with, so the mutation proof below covers both.
+    """
     expect(isinstance(entry, dict),
-           f"{MCP_REL} must define the managed {MCP_SERVER!r} server; got {entry!r}")
+           f"{label}: the managed entry must be a JSON object; got {entry!r}")
     expect(entry.get("command") == "node",
-           f"{MCP_REL}: the managed server must be launched as `node <vendored entry>` (a stdio "
-           f"spawn without a shell cannot run npx/npx.cmd on Windows); got {entry.get('command')!r}")
+           f"{label}: the managed server must be launched as `node <vendored entry>` (a stdio spawn "
+           f"without a shell cannot run npx/npx.cmd on Windows); got {entry.get('command')!r}")
     expect("type" not in entry,
-           f"{MCP_REL}: 'type' is not part of the documented Kimi mcp.json schema; {sorted(entry)}")
-    args = entry.get("args", [])
+           f"{label}: 'type' is not part of the documented Kimi mcp.json schema; {sorted(entry)}")
+    args = entry.get("args")
     expect(isinstance(args, list) and args,
-           f"{MCP_REL}: the managed entry needs its entry-path argument; got {args!r}")
-    package_entry = args[0].replace("\\", "/")
-    expect(os.path.isabs(args[0]),
-           f"{MCP_REL}: args[0] must be an ABSOLUTE path (a relative one would resolve against the "
+           f"{label}: the managed entry needs its entry-path argument; got {args!r}")
+    expect(os.path.isabs(str(args[0])),
+           f"{label}: args[0] must be an ABSOLUTE path (a relative one would resolve against the "
            f"server's working directory); got {args[0]!r}")
-    expect(package_entry.endswith("/node_modules/" + MCP_PACKAGE + "/build/src/bin/"
-                                  + MCP_PACKAGE + ".js"),
-           f"{MCP_REL}: args[0] must be the installed package entry "
-           f"(.../node_modules/{MCP_PACKAGE}/build/src/bin/{MCP_PACKAGE}.js); got {args[0]!r}")
-    missing = [token for token in MCP_ENTRY_ARGS if token not in args[1:]]
+    expect(str(args[0]).replace("\\", "/").endswith(MCP_ENTRY_SUFFIX),
+           f"{label}: args[0] must be the installed package entry (...{MCP_ENTRY_SUFFIX}); "
+           f"got {args[0]!r}")
+    missing = [flag for flag in MCP_REQUIRED_FLAGS if flag not in args[1:]]
     expect(not missing,
-           f"{MCP_REL}: the managed server must keep the template's flags {missing} of "
-           f"{MCP_ASSET_REL}; got {args!r}")
-    env = entry.get("env", {})
-    expect(env.get(MCP_UPDATE_CHECK_ENV) == "1" and env.get(MCP_USAGE_ENV) == "1",
-           f"{MCP_REL}: update checks and usage statistics must stay disabled, got {env!r}")
-    for key in ("autoApprove", "permissions", "allowedTools", "browserUrl", "wsEndpoint"):
-        expect(key not in entry, f"{MCP_REL}: no blanket permission and no session attach, got {key!r}")
+           f"{label}: the required safety flags {missing} of {MCP_REQUIRED_FLAGS} are missing - a "
+           f"deployment without them is not the reviewed configuration; got {args!r}")
+    env = entry.get("env") or {}
+    wrong = [f"{key}={env.get(key)!r} (required {value!r})" for key, value in MCP_SAFETY_ENV.items()
+             if env.get(key) != value]
+    expect(not wrong,
+           f"{label}: the required environment switches are not set: {'; '.join(wrong)}; got {env!r}")
+    granted = [key for key in MCP_FORBIDDEN_KEYS if key in entry]
+    expect(not granted,
+           f"{label}: no blanket MCP permission and no attachment to a running browser may be "
+           f"granted by default; found {granted}")
+
+
+def managed_shape_of_root(root: pathlib.Path, label: str) -> None:
+    """The managed shape a deployment in `root` writes — derived from its COMMITTED asset alone.
+
+    `.kimi-code/mcp.json` is machine-local: the managed entry carries the absolute entry path of the
+    vendored package of THIS installation, and both deployers gitignore it, so a fresh clone only
+    has the committed asset. The check therefore works from the template and never from gitignored
+    machine state (F13).
+    """
+    assert_managed_shape(merged_entry_of_asset(root / MCP_ASSET_REL, root),
+                         f"{label}: a merge of the committed {MCP_ASSET_REL}")
+
+
+def mcp_asset_deploys_into_the_managed_shape() -> None:
+    """The committed asset of this repository, once merged, IS a managed configuration."""
+    managed_shape_of_root(REPO, "the factory repository")
+
+
+def mcp_shape_check_needs_no_local_config() -> None:
+    """F13: the configuration check must pass where `.kimi-code/mcp.json` does NOT exist.
+
+    A fresh clone carries the committed asset and no managed config — that file is per installation
+    and gitignored, so it can never be part of a clone. Requiring it made this suite fail there
+    (reproduced as 80 PASS / 1 FAIL). The fixture below is exactly that state; the real local file
+    is neither read nor deleted nor required.
+    """
+    with tempfile.TemporaryDirectory(prefix="cf clean clone ") as tmp:
+        clone = pathlib.Path(tmp) / "clean-clone"
+        (clone / MCP_ASSET_REL).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO / MCP_ASSET_REL, clone / MCP_ASSET_REL)
+        expect(not (clone / MCP_REL).exists(),
+               f"the fixture must model a fresh clone: it must not carry {MCP_REL}")
+        managed_shape_of_root(clone, "a fresh clone")
+
+
+def mcp_safety_switches_are_load_bearing() -> None:
+    """F14 mutation proof: dropping a safety switch from a COPY of the asset must fail the check.
+
+    Every required flag, every required environment switch and every forbidden permission/attach key
+    is removed from (or added to) a copy of the committed asset; the merge of that copy must be
+    REJECTED by `assert_managed_shape`, the same assertion a real deployment goes through. An
+    assertion that took its expectation out of the asset would stay green on every one of these
+    mutations — that is the defect this case is the vaccine against.
+    """
+    clean = assertion_error(lambda: managed_shape_of_root(REPO, "the unmutated asset"))
+    expect(clean is None, f"the unmutated control must PASS the managed-shape check; got: {clean}")
+
+    def drop_flag(flag: str) -> Callable[[dict], None]:
+        def mutate(entry: dict) -> None:
+            entry["args"] = [arg for arg in entry.get("args", []) if arg != flag]
+        return mutate
+
+    def drop_env(name: str) -> Callable[[dict], None]:
+        def mutate(entry: dict) -> None:
+            entry.get("env", {}).pop(name, None)
+        return mutate
+
+    def add_forbidden(key: str) -> Callable[[dict], None]:
+        def mutate(entry: dict) -> None:
+            entry[key] = True
+        return mutate
+
+    mutations = ([(f"the required flag {flag!r} was removed", drop_flag(flag))
+                  for flag in MCP_REQUIRED_FLAGS]
+                 + [(f"the required environment switch {name!r} was removed", drop_env(name))
+                    for name in sorted(MCP_SAFETY_ENV)]
+                 + [(f"the forbidden key {key!r} was added", add_forbidden(key))
+                    for key in MCP_FORBIDDEN_KEYS])
+    asset_text = read_text(REPO / MCP_ASSET_REL)
+    for label, mutate in mutations:
+        data = json.loads(asset_text)
+        mutate(data["mcpServers"][MCP_SERVER])
+        with tempfile.TemporaryDirectory(prefix="cf mutated asset ") as tmp:
+            mutated = pathlib.Path(tmp) / "mutated.mcp.json"
+            mutated.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            derived = merged_entry_of_asset(mutated, pathlib.Path(tmp))
+            failure = assertion_error(lambda: assert_managed_shape(derived, "a mutated asset"))
+        expect(failure is not None,
+               f"the managed-shape check passed although {label} in a copy of {MCP_ASSET_REL}: the "
+               f"expectation must come from the independent constants {MCP_REQUIRED_FLAGS} / "
+               f"{MCP_SAFETY_ENV} / {MCP_FORBIDDEN_KEYS}, never from the asset under test")
 
 
 # --- end-to-end deployment (Windows only) -----------------------------------------------------
@@ -1128,16 +1305,6 @@ def load_json_or_none(path: pathlib.Path) -> object | None:
         return json.loads(data.decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
-
-
-def mcp_asset_entry() -> dict:
-    """The pinned `chrome-devtools` server the shipped asset deploys (the single source of truth)."""
-    data = load_json_or_none(REPO / MCP_ASSET_REL)
-    expect(isinstance(data, dict) and isinstance(data.get("mcpServers"), dict),
-           f"{MCP_ASSET_REL} must be a JSON object with an mcpServers map")
-    entry = data["mcpServers"].get(MCP_SERVER)
-    expect(isinstance(entry, dict), f"{MCP_ASSET_REL} must define the {MCP_SERVER!r} server")
-    return entry
 
 
 def collect_deployment_facts(cmd_exe: str, target: pathlib.Path,
@@ -1277,17 +1444,9 @@ def same_path(left: str, right: str) -> bool:
     return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
 
 
-def expected_mcp_entry(target: pathlib.Path) -> dict:
-    """The managed entry the deployers must write for `target` — computed WITHOUT the helper.
-
-    The entry launches the per-installation vendored package: `node <absolute path>`. The flags and
-    the environment come from the shipped template (the single source of the safety defaults), the
-    path from the deployment layout.
-    """
-    template = mcp_asset_entry()
-    entry_path = target / pathlib.Path(*MCP_ENTRY_REL.split("/"))
-    return {"command": "node", "args": [str(entry_path), *template["args"][1:]],
-            "env": dict(template.get("env", {}))}
+def expected_mcp_entry_path(target: pathlib.Path) -> pathlib.Path:
+    """The absolute vendored entry path a deployment into `target` must launch (deployment layout)."""
+    return target / pathlib.Path(*MCP_ENTRY_REL.split("/"))
 
 
 def mcp_assert_managed(facts: dict) -> None:
@@ -1296,6 +1455,9 @@ def mcp_assert_managed(facts: dict) -> None:
     Core of the business scenario "deployment into a project with existing MCP settings": an
     unrelated server and the user's own settings survive byte-for-byte while the managed
     `chrome-devtools` entry - `node` plus the ABSOLUTE vendored entry of THIS project - is added.
+    The safety expectations are the INDEPENDENT constants of this test, not values read back out of
+    the asset that was deployed (F14): the same assertion is proven load-bearing by
+    `mcp_safety_switches_are_load_bearing`.
     """
     data = facts["mcp_json_run1"]
     expect(isinstance(data, dict),
@@ -1303,27 +1465,13 @@ def mcp_assert_managed(facts: dict) -> None:
     servers = data.get("mcpServers")
     expect(isinstance(servers, dict), f"{MCP_REL} must keep its mcpServers map")
     entry = servers.get(MCP_SERVER)
-    expected = expected_mcp_entry(pathlib.Path(facts["target"]))
     expect(isinstance(entry, dict),
            f"the managed {MCP_SERVER!r} server must be added; got {entry!r}")
-    expect(entry.get("command") == expected["command"],
-           f"the managed server must be launched as `node` (never npx/npx.cmd: a stdio spawn "
-           f"without a shell fails on Windows); got {entry.get('command')!r}")
-    args = entry.get("args")
-    expect(isinstance(args, list) and args,
-           f"the managed server must carry its arguments; got {args!r}")
-    expect(same_path(str(args[0]), expected["args"][0]),
-           f"args[0] must be the VENDORED entry of this project ({expected['args'][0]!r}); "
-           f"got {args[0]!r}")
-    expect(os.path.isabs(str(args[0])),
-           f"args[0] must be absolute - a relative path resolves against the server's working "
-           f"directory; got {args[0]!r}")
-    expect(args[1:] == expected["args"][1:],
-           f"the pinned flags of {MCP_ASSET_REL} must be kept verbatim; got {args[1:]!r}")
-    expect(entry.get("env") == expected["env"],
-           f"the documented environment switches must be kept; got {entry.get('env')!r}")
-    expect("type" not in entry,
-           f"'type' is not part of the documented Kimi mcp.json schema; got {sorted(entry)}")
+    assert_managed_shape(entry, f"the deployed {MCP_REL}")
+    expected_entry = expected_mcp_entry_path(pathlib.Path(facts["target"]))
+    expect(same_path(str(entry["args"][0]), str(expected_entry)),
+           f"args[0] must be the VENDORED entry of THIS project ({str(expected_entry)!r}); "
+           f"got {entry['args'][0]!r}")
     vendored = facts["vendor_entry"]
     expect(facts["vendor_entry_present"],
            f"the vendored package must be installed next to the config: {vendored} is missing — "
@@ -1728,11 +1876,13 @@ class Checker:
             return 1
         print("PASS - Windows launcher scripts behave as expected (encoding, .cmd/.ps1 contracts, "
               "CRLF pinned in .gitattributes, no drift in the inline start.cmd/start.sh templates, "
-              "task.yaml/launcher patterns ignored, launch directory exported, real deployment "
+              "task.yaml/launcher patterns ignored, the machine-local .kimi-code/mcp.json ignored by "
+              "both deployers, launch directory exported, real deployment "
               "idempotent, the pinned chrome-devtools-mcp installed into the per-installation vendor "
               "directory before the managed MCP entry is merged, existing settings preserved and "
               "the step degrading safely (and writing nothing broken) without python or package "
-              "install).")
+              "install, the merged shape of the committed asset checked against constants "
+              "independent of it and mutation-proven, without any machine-local config).")
         return 0
 
 
@@ -1815,6 +1965,9 @@ def main() -> int:
                   ps1_ignores_deployer_hazards)
     checker.check("prepare_factory.sh: .gitignore patterns cover task.yaml/start.cmd/start.sh "
                   "(and are really written)", sh_ignores_deployer_hazards)
+    checker.check(f"BOTH deployers: .gitignore covers {MCP_CONFIG_PATTERN} (the managed entry "
+                  "carries the absolute path of this installation's vendored package), list and "
+                  "written block", mcp_config_is_gitignored)
     checker.check(f"start.sh template (both carriers): exports {LAUNCH_DIR_VAR} as the launcher's "
                   "own absolute directory", sh_template_exports_launch_dir)
     checker.check(f"start.cmd template + repo/start.cmd: exports {LAUNCH_DIR_VAR} "
@@ -1822,8 +1975,8 @@ def main() -> int:
 
     # 10. The managed Chrome DevTools MCP deployment: its own step in both deployers (install the
     # pinned package, then merge the entry), one reported conflict/skip/failure contract, the pin
-    # only in the shipped asset, and this repository's own `.kimi-code/mcp.json` in the managed
-    # shape.
+    # only in the shipped asset, and the committed asset's merged shape (computed from constants
+    # independent of it, mutation-proven, and never from the machine-local config).
     checker.check("prepare_factory.ps1: MCP step (vendor-install before merge-config via the probed "
                   "interpreter, nothing written when the install failed)", ps1_mcp_step)
     checker.check("prepare_factory.sh: MCP step (vendor-install before merge-config via the probed "
@@ -1835,8 +1988,15 @@ def main() -> int:
                   mcp_readiness_contract)
     checker.check(f"the pin {MCP_PIN} and the entry-path layout live only in {MCP_ASSET_REL} / the "
                   "merge helper (never duplicated into a deployer)", mcp_pin_lives_in_the_asset_only)
-    checker.check(f"repo {MCP_REL}: the managed server has the derived shape (node + absolute "
-                  "vendored entry + the template's flags)", repo_own_mcp_config)
+    checker.check(f"{MCP_ASSET_REL}: a merge of the COMMITTED asset is the managed shape (node + "
+                  "absolute vendored entry + the required flags/env, no permission/attach key)",
+                  mcp_asset_deploys_into_the_managed_shape)
+    checker.check(f"that shape check needs no machine-local {MCP_REL} - it passes against a "
+                  "clean-clone fixture in which the file does not exist",
+                  mcp_shape_check_needs_no_local_config)
+    checker.check("the MCP safety assertions are INDEPENDENT of the asset: dropping a required "
+                  "flag/env switch from a copy of it (or adding a forbidden key) makes them FAIL",
+                  mcp_safety_switches_are_load_bearing)
 
     # 11. Real deployment (Windows only): fresh, pre-existing MCP settings, conflicting entry and
     # the two no-python degradations.

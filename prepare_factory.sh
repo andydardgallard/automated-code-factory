@@ -317,9 +317,12 @@ gitignore_has() {
 }
 # The factory's own files inside a DEPLOYED project — the task file and the launchers — must never
 # be mistaken for a new task and never get committed: a leftover from a previous run in a TARGET
-# project stays invisible to git.
+# project stays invisible to git. The managed MCP config is ignored too: its `chrome-devtools` entry
+# carries the ABSOLUTE path of the vendored package of THIS installation, so a committed config
+# would hand a fresh clone a launch path that does not exist there (ignoring the vendor directory
+# alone protects the package, not the config pointing at it).
 NEED_GITIGNORE=false
-for pat in ".agents/" ".code-factory/" ".kimi-code/vendor/" "__pycache__/" "*.pyc" ".env" ".env.*" "*.env" "*.pem" "*.key" "task.yaml" "start.cmd" "start.sh"; do
+for pat in ".agents/" ".code-factory/" ".kimi-code/mcp.json" ".kimi-code/vendor/" "__pycache__/" "*.pyc" ".env" ".env.*" "*.env" "*.pem" "*.key" "task.yaml" "start.cmd" "start.sh"; do
     gitignore_has "$pat" || NEED_GITIGNORE=true
 done
 
@@ -330,6 +333,7 @@ if [[ "$NEED_GITIGNORE" == true ]]; then
         echo "# --- Code Factory (auto-added by prepare_factory.sh) ---"
         echo ".agents/"
         echo ".code-factory/"
+        echo ".kimi-code/mcp.json"
         echo ".kimi-code/vendor/"
         echo "__pycache__/"
         echo "*.pyc"

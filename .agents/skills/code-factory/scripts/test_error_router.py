@@ -19,13 +19,16 @@ and idempotent `merge` output, `export-defaults` as a byte-exact starter, the ex
 (2 for an unusable patterns JSON, 1 for an unreadable log), the OPTIONAL `--repo` anchor — a
 RELATIVE `--log` / patterns file / `--out` resolves against it, an absolute path never does —
 the EQUALITY OF PATH SPELLINGS (two spellings of one file — a non-ASCII/8.3 short-name base,
-simulated — compare as one path through `realpath`+`normcase`, never as raw strings) plus the
+simulated — compare as one path through `realpath`+`normcase`, never as raw strings), the
+PROBE-WORDING regression (the missing-node line the Web GUI probe ACTUALLY emits is rendered from
+`chrome_devtools_mcp.py` itself, never hand-copied, and must classify as row I1) plus the
 stdlib-only import contract.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
 from __future__ import annotations
 
+import ast
 import ctypes
 import json
 import os
@@ -40,6 +43,54 @@ import error_router as er
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 TOOL = SCRIPTS / "error_router.py"
 DEFAULT = SCRIPTS.parent / "references" / "error-patterns.default.json"
+PROBE = SCRIPTS / "chrome_devtools_mcp.py"     # the Web GUI probe (read-only here)
+
+# The invariant wording of the probe's missing-tool line — the tail that separates it from the
+# installer's own `{name} was not found on PATH` message further up the same file. Both are in the
+# probe, only this one carries the Web GUI run consequence.
+PROBE_MISSING_TOOL_MARKER = "was not found on PATH; a Web GUI run cannot start the "
+
+
+def render_probe_fstring(node: ast.JoinedStr, values: dict[str, str]) -> str | None:
+    """Render one f-string literal of the probe; None when it needs a value the caller did not give."""
+    parts: list[str] = []
+    for part in node.values:
+        if isinstance(part, ast.Constant) and isinstance(part.value, str):
+            parts.append(part.value)
+        elif isinstance(part, ast.FormattedValue):
+            key = ast.unparse(part.value)             # `name`, `SERVER_NAME`, ...
+            if key not in values:
+                return None
+            parts.append(values[key])
+        else:
+            return None
+    return "".join(parts)
+
+
+def probe_missing_tool_message(tool: str = "node") -> str:
+    """The EXACT line the Web GUI probe emits when `tool` is missing — parsed, never hand-copied.
+
+    The wording is read out of the probe's own source (`probe_capabilities` of
+    `scripts/chrome_devtools_mcp.py`) and rendered with a real tool name plus the probe's own
+    `SERVER_NAME`, so this regression cannot drift from what the probe actually prints: an edit of the
+    probe's message re-renders the sample here, and the routing table has to keep up with it.
+    """
+    tree = ast.parse(PROBE.read_text(encoding="utf-8"))
+    consts: dict[str, str] = {}
+    for node in tree.body:                            # module-level constants only (`SERVER_NAME`)
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    consts[target.id] = node.value.value
+    values = {**consts, "name": tool}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            text = render_probe_fstring(node, values)
+            if text and PROBE_MISSING_TOOL_MARKER in text:
+                return text
+    raise AssertionError(f"no f-string with {PROBE_MISSING_TOOL_MARKER!r} in {PROBE}")
+
 
 # §1 rows 1-20 plus the browser/MCP infrastructure rows I1-I4, in table (match) order:
 # id, category, route to. I1-I4 sit between rows 4 and 5 ON PURPOSE — that position is what keeps a
@@ -108,6 +159,11 @@ SAMPLES = [
     ("MCP server 'chrome-devtools' failed to start", "I3", "MCP_STARTUP", "infrastructure"),
     ("npx chrome-devtools-mcp@1.11.0 exited with code 1", "I4", "CHROME_DEVTOOLS_MCP",
      "infrastructure"),
+    # The line the Web GUI probe ACTUALLY emits for a missing tool, rendered from the probe's own
+    # f-string above (never a hand-written lookalike). A missing Node is an environment problem: row
+    # I1 has to match this exact wording, otherwise a real missing-Node run falls through to UNKNOWN
+    # and the DIAGNOSTICIAN is dispatched instead of the INFRASTRUCTURE role.
+    (probe_missing_tool_message(), "I1", "BROWSER_TOOLCHAIN", "infrastructure"),
     # A GUI implementation/test FAILURE is not infrastructure: it keeps the existing ASSERTION/coder
     # route, because no GUI-specific pattern was added.
     ("AssertionError: the submit button did not call the handler", "19", "ASSERTION", "coder"),

@@ -239,7 +239,9 @@ The `task_type` selects the planning mode:
 - HITL: ask the user via `AskUserQuestion` for (1) the concrete business scenario/user story,
   (2) which configs and input data to run, (3) expected business results. Then present the plan
   via `EnterPlanMode` + `ExitPlanMode` and WAIT for approval. On revision, update the plan and
-  re-present. Count every rejection in `retry_counters.plan_rejections` of
+  re-present; on APPROVAL the run continues with Phase 4 (pre-flight) — an approval is a decision,
+  not an environment probe, so pre-flight still runs before the backup and the implement phases.
+  Count every rejection in `retry_counters.plan_rejections` of
   `.code-factory/state/pipeline.yaml`.
 - **Plan committee (double rejection)**: when the user rejects the plan a SECOND time
   (`plan_rejections >= 2`), do not re-plan a third time in the same context:
@@ -385,9 +387,10 @@ task the WHOLE codebase (see the shard protocol below). Findings carry a severit
   log is read through `scripts/log_tail.py` (counters + tail).
 
 **Shard protocol (whole-repo review / security_audit — never one whole-repo context)**:
-1. `python .agents/skills/code-factory/scripts/repo_inventory.py shards --repo <project>
-   --max-lines 20000` → deterministic shards of at most 20 000 lines (a single longer file
-   becomes its own shard, flagged `oversized`).
+1. `python .agents/skills/code-factory/scripts/repo_inventory.py shards --repo <project> --tracked
+   --max-lines 20000` → deterministic shards of at most 20 000 lines taken from the TRACKED tree
+   (`git ls-files -z`, so an untracked or ignored machine-local file stays out of the review; a
+   single longer file becomes its own shard, flagged `oversized`).
 2. One subagent per shard in parallel (`factory-code-reviewer` / `factory-security-auditor`),
    each reading only its own shard and writing a findings JSON
    `{shard, verdict, findings[{severity, file, line, title, detail}]}` — shard contents never
@@ -399,7 +402,7 @@ task the WHOLE codebase (see the shard protocol below). Findings carry a severit
    merged verdict is the verdict of Phase 8b / Phase 2b; the merged markdown goes to
    `.code-factory/logs/code-review.md`.
 <!-- factory-rule: shard-protocol begin -->
-**Shard protocol (canonical wording):** whole-repo review and security_audit never fit into one context: `scripts/repo_inventory.py shards --max-lines 20000` cuts the repository into shards of ≤20000 lines, each shard is processed by its own parallel subagent (reviewer or auditor) and writes one findings file. The result is produced by the deterministic `scripts/merge_findings.py` (deduplication, sorting by severity, merged verdict), and the canonical review gate is applied to the MERGED findings, not to individual shards. A regular `implement` task is reviewed by diff and needs no sharding.
+**Shard protocol (canonical wording):** whole-repo review and security_audit never fit into one context: `scripts/repo_inventory.py shards --tracked --max-lines 20000` cuts the TRACKED tree (`git ls-files -z` at `--repo`, so an untracked or ignored machine-local file stays out of the review) into shards of ≤20000 lines, each shard is processed by its own parallel subagent (reviewer or auditor) and writes one findings file. The result is produced by the deterministic `scripts/merge_findings.py` (deduplication, sorting by severity, merged verdict), and the canonical review gate is applied to the MERGED findings, not to individual shards. A regular `implement` task is reviewed by diff and needs no sharding.
 <!-- factory-rule: shard-protocol end -->
 
 **Review task** (`task_type: review`): the code reviewer runs EARLIER — right after analysis

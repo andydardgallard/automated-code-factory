@@ -9,9 +9,11 @@ touches the internet, so it stays fast and reproducible.
 Verifies: source classification (local / http_doc / http_git and the rejected schemes and
 credential URLs), HTTP materialization into `<repo>/.code-factory/cache/reference-docs/`, the
 create -> reuse -> update lifecycle, redirect re-validation, download size and timeout limits,
-offline/stale reuse after the source stops, Git materialization (shallow clone, `.git` exclusion,
-fresh-clone hash stability, resolved revision), manifest backward compatibility and the
-`resolve` / `hash` / `record` CLI contract for URLs.
+supervision of a clone that crosses the size cap DURING transfer (abort + cleanup, stub git),
+recording the already-resolved materialization without a second fetch (and the rejection of a
+divergent digest), offline/stale reuse after the source stops, Git materialization (shallow clone,
+`.git` exclusion, fresh-clone hash stability, resolved revision), manifest backward compatibility and
+the `resolve` / `hash` / `record` CLI contract for URLs.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -412,6 +414,16 @@ def test_git(check: Check, root: pathlib.Path, www: pathlib.Path) -> None:
     check(offline[0].stale is True and offline[0].resolved_revision,
           "offline Git reuse must keep the persisted resolved revision")
 
+    recorded = cli("--repo", str(root), "--base", str(root / "skill-base"), "record", "gitrepo",
+                   url, updated_hash, "--resolved-hash", updated_hash, "--task-id", "10")
+    check(recorded.returncode == 0,
+          f"record must reuse the resolved Git materialization without the source: {recorded.stderr}")
+    entry = sb.load_manifest(root / "skill-base")["skills"]["gitrepo"]
+    check(entry["sha256"] == updated_hash and entry["source_type"] == "http_git",
+          "the recorded Git entry must describe the resolved tree")
+    check(entry["resolved_revision"] == updated.resolved_revision,
+          "the recorded Git entry must keep the revision of the materialization it signs")
+
 
 def test_manifest_compatibility(check: Check, root: pathlib.Path, base: pathlib.Path,
                                 doc_url: str) -> None:
@@ -449,6 +461,139 @@ def test_manifest_compatibility(check: Check, root: pathlib.Path, base: pathlib.
           "the remote entry must carry its source type")
 
 
+def test_record_resolved_hash(check: Check, root: pathlib.Path, base: pathlib.Path) -> None:
+    """`record --resolved-hash` writes the materialization the skill was built from.
+
+    The source changes (and then disappears) between the resolution and the recording: a second
+    fetch would describe bytes other than the ones the skill was generated from, so the recorded
+    digest must stay the resolved one, and a materialization that no longer matches it is refused.
+    """
+    pages = root / "record-www"
+    pages.mkdir()
+    (pages / "spec.md").write_text("# Spec\n\nv1\n", encoding="utf-8")
+    server = serve(DocHandler, pages)
+    url = url_of(server, "/spec.md")
+    try:
+        resolved = cli("--repo", str(root), "resolve", url)
+        check(resolved.returncode == 0, f"resolve must materialize the fixture: {resolved.stderr}")
+        payload = json.loads(resolved.stdout)
+        digest = payload["sha256"]
+        materialized = pathlib.Path(payload["local_path"])
+        check(sb.hash_path(materialized) == digest,
+              "resolve must report the hash of exactly the path it materialized")
+
+        (pages / "spec.md").write_text("# Spec\n\nv2, moved on after the resolve\n", encoding="utf-8")
+        recorded = cli("--repo", str(root), "--base", str(base), "record", "spec", url, digest,
+                       "--resolved-hash", digest, "--task-id", "9")
+        check(recorded.returncode == 0,
+              f"record must reuse the resolved materialization instead of fetching again: "
+              f"{recorded.stderr}")
+        entry = sb.load_manifest(base)["skills"]["spec"]
+        check(entry["sha256"] == digest,
+              "the manifest must describe the bytes the skill was generated from, not a later fetch")
+        check(entry["source_type"] == "http_doc" and "resolved_revision" in entry,
+              "recording a resolved materialization must keep the remote metadata")
+        check(sb.hash_path(materialized) == digest,
+              "recording must not replace the materialization the skill was generated from")
+
+        refreshed = cli("--repo", str(root), "resolve", url)
+        check(json.loads(refreshed.stdout)["sha256"] != digest, "the fixture must have changed")
+        divergent = cli("--repo", str(root), "--base", str(base), "record", "spec", url, digest,
+                        "--resolved-hash", digest)
+        check(divergent.returncode == 1 and "divergen" in divergent.stderr.lower(),
+              "recording a materialization that no longer matches the resolved digest must be "
+              f"refused (got rc={divergent.returncode}: {divergent.stderr})")
+        check(sb.load_manifest(base)["skills"]["spec"]["sha256"] == digest,
+              "a refused record must not touch the manifest")
+    finally:
+        stop(server)
+
+    gone_pages = root / "gone-www"
+    gone_pages.mkdir()
+    (gone_pages / "spec.md").write_text("# Gone\n", encoding="utf-8")
+    server2 = serve(DocHandler, gone_pages)
+    url2 = url_of(server2, "/spec.md")
+    first = json.loads(cli("--repo", str(root), "resolve", url2).stdout)
+    stop(server2)                       # the source is gone: only the materialization is left
+    offline_record = cli("--repo", str(root), "--base", str(base), "record", "gone", url2,
+                         first["sha256"], "--resolved-hash", first["sha256"])
+    check(offline_record.returncode == 0,
+          f"a resolved materialization must be recordable without its source: {offline_record.stderr}")
+    check(sb.load_manifest(base)["skills"]["gone"]["sha256"] == first["sha256"],
+          "recording without a fetch must store the resolved digest")
+
+    anchored = cli("--base", str(base), "record", "anchored", url2, first["sha256"],
+                   "--resolved-hash", first["sha256"], "--repo", str(root))
+    check(anchored.returncode == 0,
+          f"record must accept --repo after the subcommand as resolve/hash do: {anchored.stderr}")
+    check(sb.load_manifest(base)["skills"]["anchored"]["source"] == url2,
+          "the anchored record must store the canonical original URL")
+
+
+STUB_GIT = '''\
+import pathlib
+import sys
+import time
+
+dest = pathlib.Path(sys.argv[-1])                    # the clone destination is the last argument
+(dest / ".git" / "objects").mkdir(parents=True, exist_ok=True)
+chunk = b"x" * 16384
+while True:                                          # a clone that never finishes on its own
+    (dest / ".git" / "objects" / f"pack{time.time_ns()}.tmp").write_bytes(chunk)
+    time.sleep(0.02)
+'''
+
+
+def test_clone_supervision(check: Check, root: pathlib.Path) -> None:
+    """A clone that crosses `--max-bytes` WHILE transferring is aborted, explained and cleaned up.
+
+    The git executable is replaced by a stub that emulates a clone growing without end, so the
+    abort is deterministic and offline: without supervision the clone can only be stopped by the
+    overall timeout (and its partial tree stays behind), with supervision it ends as soon as the
+    temporary tree crosses the limit.
+    """
+    stub = root / "stub-git.py"
+    stub.write_text(STUB_GIT, encoding="utf-8")
+    source = "http://127.0.0.1:9/never.git"
+    repo = root / "supervised"
+    repo.mkdir()
+    real_popen, real_run = subprocess.Popen, subprocess.run
+
+    def as_stub(argv):
+        """Only the `git` executable is redirected: every other spawn stays untouched."""
+        if isinstance(argv, (list, tuple)) and argv and argv[0] == "git":
+            return [sys.executable, str(stub), *argv[1:]]
+        return argv
+
+    def fake_popen(argv, *args, **kwargs):
+        return real_popen(as_stub(argv), *args, **kwargs)
+
+    def fake_run(argv, *args, **kwargs):
+        return real_run(as_stub(argv), *args, **kwargs)
+
+    sb.subprocess.Popen, sb.subprocess.run = fake_popen, fake_run
+    started = time.monotonic()
+    try:
+        message = error_of(lambda: sb.materialize_and_hash(source, repo=repo, max_bytes=150_000,
+                                                           timeout=4.0))
+    finally:
+        sb.subprocess.Popen, sb.subprocess.run = real_popen, real_run
+    elapsed = time.monotonic() - started
+    check("limit" in message.lower() and "during transfer" in message,
+          f"an oversized clone must be aborted mid-transfer with an explicit reason (got: {message})")
+    check(elapsed < 2.0,
+          f"the size limit must end the transfer itself, not wait for the overall timeout "
+          f"({elapsed:.1f}s)")
+
+    cache = repo / ".code-factory" / "cache" / "reference-docs"
+    leftovers = sorted(p.relative_to(cache).as_posix()
+                       for p in cache.rglob("*") if p.is_file()) if cache.exists() else []
+    check(leftovers == [], f"an aborted clone must leave no partial content behind, got {leftovers}")
+    check(not (cache / "git").exists(), "an aborted clone must not publish a cache entry")
+    check(not (cache / "_clones").exists() or not any((cache / "_clones").iterdir()),
+          "an aborted clone must remove its temporary clone folder")
+
+
 def run(check: Check, root: pathlib.Path) -> None:
     www = root / "www"
     www.mkdir()
@@ -470,12 +615,15 @@ def run(check: Check, root: pathlib.Path) -> None:
         test_fetch_limits(check, root, server, doc_url)
         test_cli(check, root, base, fetch_url, digest)
         test_manifest_compatibility(check, root, base, fetch_url)
+        test_record_resolved_hash(check, root, base)
         test_offline(check, root, base, server, fetch_url, digest)
     finally:
         try:
             stop(server)
         except (AttributeError, OSError, ValueError):
             pass                      # the offline phase already closed this socket
+
+    test_clone_supervision(check, root)
 
     try:
         result = subprocess.run(["git", "--version"], capture_output=True, text=True)

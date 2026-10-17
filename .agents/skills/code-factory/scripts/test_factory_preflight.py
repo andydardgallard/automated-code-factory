@@ -14,6 +14,12 @@ Verifies that the probe:
     MCP server start feasibility, delegated to `chrome_devtools_mcp.py`) — where a missing
     capability or a `--simulate-missing <name>` forced miss is DATA with a reason, never a change of
     the exit code (only python+git are fatal),
+  - never calls the browser path usable on the strength of the shipped template alone: the resolved
+    repository (`--repo`) is threaded into the delegated probe, and `mcp_usable` may only be true
+    when that repository's OWN `.kimi-code/mcp.json` exists, passes the safety invariants of
+    `chrome_devtools_mcp.py` AND the pinned vendored entry the managed server launches is on disk —
+    anything else reports the exact missing capability (a clean repository without a deployed config
+    must never claim a usable browser path),
   - prints a human-readable summary naming python, git, bash/sh, the OS and the flag,
   - anchors a RELATIVE `--out` at the OPTIONAL `--repo`/`--root` anchor (the run's resolved
     repo_path) instead of the launch directory, while an absolute `--out` stays as it is and the
@@ -25,6 +31,7 @@ Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import pathlib
@@ -35,6 +42,11 @@ import tempfile
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 TOOL = SCRIPTS / "factory_preflight.py"
+HELPER = SCRIPTS / "chrome_devtools_mcp.py"
+# The managed-config contract of `.kimi-code/mcp.json` (validity + the pinned vendored entry) lives in
+# `chrome_devtools_mcp.py`, so the fixtures below are built with ITS functions instead of a second,
+# hand-written copy of the config that could drift.
+MCP_RELPARTS = (".kimi-code", "mcp.json")
 
 # The BASE schema — exactly these keys are written WITHOUT `--web-gui`, so a non-Web-GUI run keeps
 # the byte-compatible capability file it had before the flag existed.
@@ -42,10 +54,43 @@ KEYS = ("python_cmd", "python_version", "git", "git_version", "bash", "sh", "os"
         "secondary_model_env")
 # The OPT-IN nested block (`--web-gui`) and the browser capabilities it reports, delegated to the
 # sibling `chrome_devtools_mcp.py` probe; a missing capability is DATA with a reason, never fatal.
-WEB_GUI_KEYS = ("source", "simulate_missing", "capabilities", "missing", "browser_usable",
-                "mcp_usable", "verdict")
+WEB_GUI_KEYS = ("source", "managed_config", "simulate_missing", "capabilities", "missing",
+                "browser_usable", "mcp_usable", "verdict")
 WEB_GUI_CAPABILITIES = ("node", "npm", "npx", "chrome", "chrome_for_testing", "mcp_server")
 PYTHON_CANDIDATES = ("python", "python3", "py")
+
+
+def load_helper():
+    """The sibling `chrome_devtools_mcp.py`, loaded by path (no package, no side effects)."""
+    spec = importlib.util.spec_from_file_location("chrome_devtools_mcp_fixture", HELPER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def deploy(repo: pathlib.Path, helper) -> pathlib.Path:
+    """Deploy the managed MCP layout of `repo` WITHOUT npm (the documented offline seam).
+
+    Returns the managed config path. `vendor-install --offline` writes the pinned package skeleton and
+    `merge-config` then writes the config that points at it — the two steps the deployers run.
+    """
+    config = repo.joinpath(*MCP_RELPARTS)
+    installed = helper.vendor_install(helper.vendor_dir_for(config), offline=True)
+    expect(installed["installed"] is True,
+           f"the offline vendor-install seam must write the pinned entry: {installed!r}")
+    merged = helper.merge_config(config)
+    expect(merged["status"] == "created" and config.is_file(),
+           f"merge-config must create the managed config: {merged!r}")
+    return config
+
+
+def web_gui(tmp: pathlib.Path, *args: str, name: str) -> dict:
+    """Run the pre-flight with `--web-gui` and return its nested block (always exit 0 here)."""
+    out = tmp / name
+    res = run("--web-gui", *args, "--out", str(out))
+    expect(res.returncode == 0,
+           f"--web-gui must exit 0 while python+git are present: rc={res.returncode} {res.stderr!r}")
+    return json.loads(out.read_text(encoding="utf-8"))["web_gui"]
 
 
 def run(*args: str, env: dict | None = None,
@@ -175,6 +220,19 @@ def main() -> int:
                f"the block must name the delegated probe: {block['source']!r}")
         expect(isinstance(block["mcp_usable"], bool) and isinstance(block["browser_usable"], bool),
                f"the block must report the aggregate verdicts: {block!r}")
+        #    Without --repo no managed config of a CONCRETE project could be inspected, so the server
+        #    must be reported missing WITH that reason: the shipped template is a launch shape, never
+        #    a deployment, and it must not be able to turn the browser path usable on its own.
+        expect(block["managed_config"] is None,
+               f"without --repo no managed config may be assumed: {block['managed_config']!r}")
+        expect(block["mcp_usable"] is False,
+               f"the shipped template alone must never make mcp_usable true: {block!r}")
+        server = block["capabilities"]["mcp_server"]
+        expect(server["present"] is False and "mcp_server" in block["missing"],
+               f"an unchecked managed config must report the server missing: {server!r}")
+        expect("--repo" in server["reason"] and "UNVERIFIED" in block["verdict"],
+               f"the miss must name what to do (--repo) and the verdict must degrade: "
+               f"{server!r} {block['verdict']!r}")
         for needle in ("web gui", "node:", "npx:", "chrome:", "web gui verdict:"):
             expect(needle in res.stdout,
                    f"the summary must report the browser class ({needle!r}): {res.stdout!r}")
@@ -232,11 +290,78 @@ def main() -> int:
         expect(empty_block["mcp_usable"] is False,
                f"without the Node.js toolchain the MCP server cannot be usable: {empty_block!r}")
 
+        # 12. F4 regression: the managed MCP configuration of the RESOLVED repository decides the
+        #     browser path. `--repo` is threaded into the delegated probe, so `mcp_usable` may only be
+        #     true when that repository's OWN `.kimi-code/mcp.json` exists, passes the safety
+        #     invariants and the pinned vendored entry it launches is on disk. A clean clone with no
+        #     config, a half-deployed repo whose entry is gone, and a drifted config each report the
+        #     exact missing capability instead of a usable browser path.
+        helper = load_helper()
+        clean = tmp / "clean-repo"
+        clean.mkdir()
+        clean_cfg = clean.joinpath(*MCP_RELPARTS)
+        block = web_gui(tmp, "--repo", str(clean), name="managed-clean.json")
+        expect(block["managed_config"] == str(clean_cfg),
+               f"the block must name the config it checked: {block['managed_config']!r}")
+        server = block["capabilities"]["mcp_server"]
+        expect(block["mcp_usable"] is False and server["present"] is False,
+               f"a repository without a deployed config must report the server missing: {server!r}")
+        expect("mcp_server" in block["missing"] and str(clean_cfg) in server["reason"]
+               and "does not exist" in server["reason"],
+               f"the miss must name the missing config: {block['missing']!r} {server!r}")
+        expect("UNVERIFIED" in block["verdict"],
+               f"a missing managed config must refuse browser verification: {block['verdict']!r}")
+
+        #    (b) config present, pinned vendored entry GONE (the package was never installed, or was
+        #    removed): the server cannot start from a missing file, so it is reported missing and the
+        #    reason names the entry plus the vendor-install step that fixes it.
+        deployed = tmp / "deployed-repo"
+        deployed_cfg = deploy(deployed, helper)
+        entry = helper.vendored_entry_path(deployed_cfg)
+        expect(entry.is_file(), f"the deployed fixture must carry the vendored entry: {entry}")
+        entry.unlink()
+        block = web_gui(tmp, "--repo", str(deployed), name="managed-no-entry.json")
+        server = block["capabilities"]["mcp_server"]
+        expect(block["mcp_usable"] is False and server["present"] is False,
+               f"a config without its vendored entry must report the server missing: {server!r}")
+        expect(str(entry) in server["reason"] and "vendor-install" in server["reason"],
+               f"the miss must name the entry and the fix: {server!r}")
+
+        #    (c) fully deployed (valid config + pinned vendored entry on disk): the managed server is
+        #    reported present, and `mcp_usable` then follows the HOST capabilities alone (Chrome and
+        #    the Node.js toolchain) — never the template.
+        again = helper.vendor_install(helper.vendor_dir_for(deployed_cfg), offline=True)
+        expect(again["installed"] is True, f"the offline seam must restore the entry: {again!r}")
+        block = web_gui(tmp, "--repo", str(deployed), name="managed-deployed.json")
+        server = block["capabilities"]["mcp_server"]
+        expect(server["present"] is True and str(deployed_cfg) in server["reason"],
+               f"a fully deployed repository must report the server present: {server!r}")
+        host_ready = (all(block["capabilities"][n]["present"] for n in ("node", "npm", "npx"))
+                      and block["browser_usable"])
+        expect(block["mcp_usable"] is host_ready,
+               f"a deployment may only be usable when the host capabilities are: {block['mcp_usable']} "
+               f"vs {host_ready} {server!r}")
+
+        #    (d) a drifted config (not the managed launch shape) is invalid, not usable: the safety
+        #    invariants of the managed contract are enforced on the REPOSITORY's file too.
+        drifted = tmp / "drifted-repo"
+        drifted_cfg = drifted.joinpath(*MCP_RELPARTS)
+        drifted_cfg.parent.mkdir(parents=True)
+        drifted_cfg.write_text(json.dumps({"mcpServers": {"chrome-devtools": {
+            "command": "npx", "args": ["-y", "chrome-devtools-mcp"]}}}), encoding="utf-8")
+        block = web_gui(tmp, "--repo", str(drifted), name="managed-drifted.json")
+        server = block["capabilities"]["mcp_server"]
+        expect(block["mcp_usable"] is False and server["present"] is False,
+               f"a config violating the invariants must report the server missing: {server!r}")
+        expect("safety invariants" in server["reason"] and "command" in server["reason"],
+               f"the miss must name the violated invariant: {server!r}")
+
     print("PASS - factory_preflight.py reports the real python/git/shell/os capabilities "
           "(file + summary), follows the secondary-model flag, anchors a relative --out at --repo, "
           "degrades to nulls with exit 1, and appends the OPT-IN `web_gui` browser block "
           "(--web-gui / --simulate-missing) while the base schema and the exit-code contract stay "
-          "as they were.")
+          "as they were; `mcp_usable` follows the resolved repository's own managed config and its "
+          "pinned vendored entry (clean / entry-missing / drifted repos report the exact miss).")
     return 0
 
 

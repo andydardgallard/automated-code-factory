@@ -17,11 +17,14 @@ Usage (`--base` and `--repo` are TOP-LEVEL options, so they must precede the sub
   python3 skill_base.py [--base skill-base] [--repo <root>] resolve <path-or-url> [--offline]
   python3 skill_base.py [--base skill-base] [--repo <root>] hash <path-or-url>
   python3 skill_base.py [--base skill-base] lookup <name> [--hash <hex>] # reuse|update|found|missing
-  python3 skill_base.py [--base skill-base] [--repo <root>] record <name> <source> <hash> [--task-id <id>]
+  python3 skill_base.py [--base skill-base] [--repo <root>] record <name> <source> <hash> [--resolved-hash <hex>] [--task-id <id>]
   python3 skill_base.py [--base skill-base] list
 
 `resolve`, `hash` and `record` also accept the remote-source flags `--offline`, `--allow-stale`,
 `--timeout <seconds>` (default 60) and `--max-bytes <n>` (default 67108864 — the download/clone cap).
+The cap is enforced DURING a transfer too: a download is counted chunk by chunk, a clone is
+supervised while its temporary tree grows, and crossing the cap aborts the transfer with an explicit
+reason and removes the partial content.
 
 `resolve` materializes a source (fetching/caching it when remote) and prints its metadata as JSON on
 stdout: `source`, `source_type`, `local_path`, `sha256`, `resolved_revision`, `offline`, `stale`. A
@@ -29,8 +32,15 @@ fetch failure is reported on stderr with the source and the reason and exits 1. 
 reused ONLY when explicitly asked for with `--offline` (no network access at all) or `--allow-stale`
 (fetch attempted, failed, cached copy used); it is then marked `stale: true`, because a cached copy
 is never fresh remote content. `--repo <root>` (a synonym: `--root`) is the resolved repo_path of
-the run: the cache lives under it and a relative source path is resolved against it (default: the
-caller's working directory, so nothing changes without the flag).
+the run: the cache lives under it and a RELATIVE source path is resolved against it — for `resolve`,
+`hash` AND `record` alike (default: the caller's working directory, so nothing changes without the
+flag).
+
+`record` stores the signature of the materialization the skill was generated FROM: pass
+`--resolved-hash <hex>` (the `sha256` that `resolve` printed) and the already materialized content is
+recorded WITHOUT a second fetch. A materialization that no longer matches that digest is refused
+with exit 1 instead of being described by a diverging hash — re-run `resolve` and regenerate the
+skill in that case. Without the flag a URL is fetched first, exactly as before.
 
 `lookup` exits 1 for a missing skill (the reference_skills error contract). stdlib only.
 """
@@ -48,6 +58,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -74,6 +85,18 @@ def hash_path(p: pathlib.Path) -> str:
     raise SystemExit(f"hash: not a file or directory: {p}")
 
 
+def local_path_of(source: str, repo: str | pathlib.Path | None = None) -> pathlib.Path:
+    """The absolute path of a LOCAL source: a relative one is anchored to the declared repo root.
+
+    The single resolution contract of the whole tool: `resolve`, `hash` and `record` all reach a
+    relative source through it, so a relative path never depends on the process working directory.
+    """
+    path = pathlib.Path(source)
+    if repo and not path.is_absolute():
+        path = pathlib.Path(repo) / path
+    return path.resolve()
+
+
 # --- remote `reference_docs` support ------------------------------------------------------------
 #
 # Public, unauthenticated http(s) sources only. Remote content is UNTRUSTED reference data: nothing
@@ -97,6 +120,11 @@ _CONTENT_TYPE_SUFFIXES = {
 _USER_AGENT = "code-factory-skill-base/1.0 (reference_docs)"
 REPO_HELP = ("Resolved repo_path of the run: the remote-source cache lives under it and a RELATIVE "
              "source path is resolved against it (default: the caller's working directory)")
+CLONE_POLL_SECONDS = 0.05          # how often a running clone's temporary tree is measured
+_GIT_CONFIG = ("-c", f"core.hooksPath={os.devnull}",     # a downloaded hook must never run
+               "-c", "core.autocrlf=false", "-c", "core.eol=lf",   # platform-independent content
+               "-c", "core.symlinks=false", "-c", "core.fsmonitor=false",
+               "-c", "credential.helper=")
 
 
 class SourceError(RuntimeError):
@@ -319,12 +347,8 @@ def _git_env(timeout: float) -> dict:
 
 def _git(args: list[str], *, timeout: float, cwd: pathlib.Path | None = None) -> subprocess.CompletedProcess:
     """Run the git executable with hooks, filters and auto-conversion disabled."""
-    config = ["-c", f"core.hooksPath={os.devnull}",     # a downloaded hook must never run
-              "-c", "core.autocrlf=false", "-c", "core.eol=lf",   # platform-independent content
-              "-c", "core.symlinks=false", "-c", "core.fsmonitor=false",
-              "-c", "credential.helper="]
     try:
-        return subprocess.run(["git", *config, *args], cwd=str(cwd) if cwd else None,
+        return subprocess.run(["git", *_GIT_CONFIG, *args], cwd=str(cwd) if cwd else None,
                               env=_git_env(timeout), timeout=timeout, capture_output=True,
                               text=True, errors="replace")
     except FileNotFoundError as exc:
@@ -341,7 +365,15 @@ def _first_line(text: str | None) -> str:
 
 
 def _content_bytes(path: pathlib.Path) -> int:
-    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+    """Total size of the files under `path` (a tree being written can change during the walk)."""
+    total = 0
+    for entry in path.rglob("*"):
+        try:
+            if entry.is_file():
+                total += entry.stat().st_size
+        except OSError:
+            continue          # a temporary pack file may vanish between the walk and the stat
+    return total
 
 
 def _remove_entry(entry: pathlib.Path) -> None:
@@ -396,20 +428,79 @@ def _export_clean_tree(clone: pathlib.Path, tree: pathlib.Path) -> None:
     _replace_tree(tmp, tree)
 
 
+def _kill_clone(proc: subprocess.Popen) -> None:
+    """Terminate a supervised clone and wait for it, so its temporary files can be removed."""
+    try:
+        proc.kill()
+        proc.wait(timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass              # the caller reports the removal result, which covers a survivor
+
+
+def _supervised_clone(source: str, tmp: pathlib.Path, *, max_bytes: int,
+                      timeout: float) -> tuple[int, str]:
+    """Run a shallow clone while its temporary tree is measured; abort at the cap or the deadline.
+
+    Returns `(returncode, stderr)` of a clone that finished on its own. A clone that crosses
+    `max_bytes` DURING the transfer (or the overall time limit) is killed, its partial content is
+    removed and a `SourceError` carrying the explicit reason is raised — the limit is a transfer
+    limit, not a check applied to whatever has already been downloaded.
+    """
+    args = ["clone", "--quiet", "--depth", "1", "--single-branch", "--no-tags",
+            "--no-recurse-submodules", source, str(tmp)]
+    deadline = time.monotonic() + timeout
+    reason = ""
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err:
+        try:
+            proc = subprocess.Popen(["git", *_GIT_CONFIG, *args], env=_git_env(timeout),
+                                    stdout=subprocess.DEVNULL, stderr=err)
+        except FileNotFoundError as exc:
+            raise SourceError("the git executable is not available on PATH, so a Git repository "
+                              "source cannot be materialized") from exc
+        except OSError as exc:
+            raise SourceError(f"git clone could not be started: {exc}") from exc
+        try:
+            while proc.poll() is None:
+                size = _content_bytes(tmp)
+                if size > max_bytes:
+                    reason = (f"the clone exceeded the {max_bytes} byte limit during transfer "
+                              f"({size} bytes)")
+                    break
+                if time.monotonic() >= deadline:
+                    reason = f"the clone exceeded the {timeout:g}s time limit during transfer"
+                    break
+                time.sleep(CLONE_POLL_SECONDS)
+        except BaseException:
+            _kill_clone(proc)     # an interrupted run must not leave a transfer running behind it
+            raise
+        if reason:
+            _kill_clone(proc)
+            for _ in range(5):        # a killed transfer may still be releasing its files
+                remove_tree(tmp)
+                if not tmp.exists():
+                    break
+                time.sleep(0.2)
+            if tmp.exists():
+                raise SourceError(f"{reason}; the partial clone at {tmp} could not be removed")
+            raise SourceError(f"{reason}; the partial clone was removed")
+        err.seek(0)
+        return proc.returncode, err.read()
+
+
 def _clone_git(source: str, clone: pathlib.Path, *, max_bytes: int, timeout: float) -> str | None:
     """Shallow, single-branch clone without submodules/tags; returns the resolved commit sha."""
     tmp = clone.with_name(clone.name + ".part")
     remove_tree(tmp)
     tmp.parent.mkdir(parents=True, exist_ok=True)
-    result = _git(["clone", "--quiet", "--depth", "1", "--single-branch", "--no-tags",
-                   "--no-recurse-submodules", source, str(tmp)], timeout=timeout)
-    if result.returncode != 0:
+    returncode, stderr = _supervised_clone(source, tmp, max_bytes=max_bytes, timeout=timeout)
+    if returncode != 0:
         remove_tree(tmp)
-        raise SourceError(f"git clone failed: {_first_line(result.stderr)}")
-    size = _content_bytes(tmp)
+        raise SourceError(f"git clone failed: {_first_line(stderr)}")
+    size = _content_bytes(tmp)            # the cap can also be crossed between two polls
     if size > max_bytes:
         remove_tree(tmp)
-        raise SourceError(f"the clone is larger than the {max_bytes} byte limit ({size} bytes)")
+        raise SourceError(f"the clone is larger than the {max_bytes} byte limit ({size} bytes); "
+                          "the partial clone was removed")
     _replace_tree(tmp, clone)
     revision = _git(["rev-parse", "HEAD"], cwd=clone, timeout=timeout)
     sha = revision.stdout.strip() if revision.returncode == 0 else ""
@@ -447,10 +538,8 @@ def resolve_source(source: str, *, repo: str | pathlib.Path | None = None,
     """
     kind = classify_source(source)
     if kind == "local":
-        path = pathlib.Path(source)
-        if repo and not path.is_absolute():
-            path = pathlib.Path(repo) / path
-        return Materialized(source=str(source), source_type="local", local_path=path.resolve())
+        return Materialized(source=str(source), source_type="local",
+                            local_path=local_path_of(source, repo))
     cache_dir = cache if cache is not None else cache_root(repo)
     fetch = _materialize_git if kind == "http_git" else _materialize_http_doc
     options = {"max_bytes": max_bytes, "timeout": timeout}
@@ -536,9 +625,13 @@ def cmd_init(base: pathlib.Path) -> int:
 
 
 def cmd_hash(args) -> int:
-    """Print the SHA-256 of a local path OR of a remote source (resolved into the cache first)."""
+    """Print the SHA-256 of a local path OR of a remote source (resolved into the cache first).
+
+    A relative local path goes through the same `--repo` anchor as `resolve` and `record`: the
+    declared repository root decides which file is meant, never the process working directory.
+    """
     if classify_source(args.path) == "local":
-        print(hash_path(pathlib.Path(args.path).resolve()))
+        print(hash_path(local_path_of(args.path, getattr(args, "repo", None))))
         return 0
     materialized, digest = materialize_and_hash(args.path, **_source_options(args))
     if materialized.stale:
@@ -574,22 +667,52 @@ def cmd_lookup(args) -> int:
     return 0
 
 
+def _divergent(source: str, expected: str, actual: str) -> SourceError:
+    """A materialization that is no longer the one the skill was generated from."""
+    return SourceError(
+        f"divergent materialization of {_redact(source)}: the resolved hash {expected} does not "
+        f"describe the materialized content ({actual}); recording it would sign bytes other than "
+        "the ones the skill was generated from — re-run resolve and regenerate the skill")
+
+
 def _record_source(args) -> tuple[str, str, dict]:
     """The manifest `source`, `sha256` and the remote-only metadata of a `record` call.
 
     A URL is materialized first, so the stored signature is the content signature of the fetched
     content, while `source` stays the canonical original URL. A local path is recorded unchanged.
+
+    `--resolved-hash <hex>` (the digest `resolve` reported) switches BOTH kinds to recording the
+    already-resolved materialization: no second fetch happens, the materialization is verified
+    against that digest, and a divergence is refused instead of being signed with another hash.
     """
-    if classify_source(args.source) == "local":
-        return args.source, args.hash, {}
-    materialized, digest = materialize_and_hash(args.source, **_source_options(args))
+    source = args.source
+    kind = classify_source(source)
+    repo = getattr(args, "repo", None)
+    expected = getattr(args, "resolved_hash", None)
+    if kind == "local":
+        if expected:
+            digest = hash_path(local_path_of(source, repo))
+            if digest != expected:
+                raise _divergent(source, expected, digest)
+            return source, digest, {}
+        return source, args.hash, {}
+    if expected:
+        materialized = resolve_source(source, repo=repo, offline=True)
+        digest = hash_path(materialized.local_path)
+        if digest != expected:
+            raise _divergent(source, expected, digest)
+        return source, digest, {
+            "source_type": materialized.source_type,
+            "resolved_revision": materialized.resolved_revision,
+        }
+    materialized, digest = materialize_and_hash(source, **_source_options(args))
     if materialized.stale:
-        print(f"stale: {_redact(args.source)} was NOT fetched; the cached content was recorded",
+        print(f"stale: {_redact(source)} was NOT fetched; the cached content was recorded",
               file=sys.stderr)
     if args.hash and args.hash != digest:
         print(f"warning: the given hash {args.hash} is not the content hash {digest} of "
-              f"{_redact(args.source)}; recording the content hash", file=sys.stderr)
-    return args.source, digest, {
+              f"{_redact(source)}; recording the content hash", file=sys.stderr)
+    return source, digest, {
         "source_type": materialized.source_type,
         "resolved_revision": materialized.resolved_revision,
     }
@@ -666,7 +789,10 @@ def main() -> int:
     pr = add_remote_options(add_repo(sub.add_parser("record")))
     pr.add_argument("name")
     pr.add_argument("source", help="Canonical source of the skill: a local path OR a public URL")
-    pr.add_argument("hash", help="Content hash (recomputed from the fetched content for a URL)")
+    pr.add_argument("hash", help="Content hash (for a URL: the digest of the resolved materialization)")
+    pr.add_argument("--resolved-hash", dest="resolved_hash", metavar="HEX",
+                    help="Digest printed by `resolve`: record the ALREADY materialized content of a "
+                         "URL without fetching it again, and refuse a divergent materialization")
     pr.add_argument("--task-id")
 
     ps = add_remote_options(add_repo(sub.add_parser(

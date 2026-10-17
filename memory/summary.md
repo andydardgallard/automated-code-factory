@@ -8,22 +8,20 @@ repo_path: .
 (порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
 
 ## Current state
-Factory v12.14.2 — FULL-BACKLOG ATTEMPT FAILED AND ROLLED BACK (run 20261017-1955b445).
-The run attempted all three open fixes on a temporary branch with vaccination-first evidence.
-PowerShell and installer scenarios passed on the attempted snapshot; launcher work passed the full
-suite and every explicit reviewer/Advisor vector, but the final independent business matrix found 10
-`builtin --` mismatches still ALLOWING destructive tails. The deterministic route required another
-Diagnostician, but Diagnostician=1/1 and Advisor=1/1 were already exhausted; auto mode has no human
-branch. No assertion was weakened and no further retry was made. All attempted product changes were
-rolled back to base commit 4607793; the temporary branch was deleted, VERSION remains 12.14.2, and
-no acceptance was claimed. Failure snapshot c77c772386d30e30cacb517515bfa4b8e5076eea is an
-unreferenced evidence object only, with the diff archived in `.code-factory/logs/failed-diff.patch`.
-Latest delivered product remains v12.14.2 at commit 15ea6a6 (PowerShell single-quote hardening).
-Latest run: full-backlog implement attempt (run_id 20261017-1955b445), FAILED; previous delivered
-run: 20261017-5cdfc7af. Open backlog remains 3 items — decoded PowerShell POSIX-backslash splitting
-(critical), launcher prefixes and $(...) substitutions (warning; now with concrete `builtin --`
-evidence), and installer-side missing-Node routing (warning). Their attempted fixes are not closed
-because rollback restored the base tree. Rulebook: 25 rules, 100 carriers. Memory owner: repo.
+Factory v12.14.3 — FULL REMAINING BACKLOG CLOSED (run 20261017-4beb46d5, hitl retry of the failed
+attempt 20261017-1955b445). All three open items are fixed on branch
+factory/fix-full-backlog-v2-20261017, delivered in commit 692e518: decoded PowerShell payloads are
+split in PowerShell's own dialect (the review-2 backslash vectors are HARD_DENY in hitl and auto),
+env/sudo/builtin launcher prefixes and readable $(...) substitutions are analyzed recursively
+without execution — including the `builtin --` option terminator whose blind ALLOW killed the
+previous attempt — and the REAL vendor_install() missing-Node line routes to infrastructure via a
+new row-I1 alternative. Vaccination-first throughout (red-then-green archived per item), business
+harness PASS on all scenarios (786 + 2439 + 56 assertions, 0 mismatches), review APPROVE at
+iteration 1 (1 deferrable minor: unterminated-quote launcher lines keep the pre-existing ALLOW,
+recorded info/follow_up=false), verified acceptance SUCCESS (5 verify criteria MET + 1 derived).
+Latest delivered product: v12.14.3 at commit 692e518. Latest run: full-backlog implement
+(run_id 20261017-4beb46d5), SUCCESS; previous run: 20261017-1955b445 (FAILED attempt). Open
+backlog: 0 items (39 closed with evidence). Rulebook: 25 rules, 100 carriers. Memory owner: repo.
 Prior history has 36 items closed with evidence. Lineage: v12.8.0 (shard protocol, two-level
 fingerprint, review gate, verified acceptance, evidence ledger, advisor, preflight) → v12.9.0
 (rulebook, run_id, memory v2 provenance, golden set, vaccination) → v12.10.0–12.10.2 (severity
@@ -31,7 +29,8 @@ boundary, plan committee, precedent index, utf8-guards, no-shared-tree-git-mutat
 (git-stash classification, content fingerprint, memory actuality) → v12.12.0/12.12.1 (English-only
 package, v8 review rework) → v12.13.0 (repo-scoping contract, 25th rule) → v12.14.0 (gui-expert +
 Chrome DevTools MCP, remote reference_docs) → v12.14.1 (v12 review rework) → v12.14.2 (PowerShell
-single-quote hardening).
+single-quote hardening) → v12.14.3 (full remaining backlog closed: PowerShell-dialect splitting,
+launcher/substitution analysis, installer routing).
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле

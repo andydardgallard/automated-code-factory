@@ -86,6 +86,34 @@ def main() -> int:
                             capture_output=True, text=True)
         expect(r2.returncode == 0, f"check CLI must exit 0 for md-only change: {r2.stderr}")
 
+        # 10. Regression (F11): the SAME indented executable line occurs twice - once as real code
+        # and once inside a docstring. Deleting the CODE occurrence (the docstring copy stays) is a
+        # code change and must be rejected; a content search for the line would find the docstring
+        # copy first and miss it, so the validator has to classify changed lines by POSITION.
+        dup_old = 'def f():\n    """doc\n    return 1\n    """\n    return 1\n'
+        dup_new = 'def f():\n    """doc\n    return 1\n    """\n'
+        (root / "src" / "dup.py").write_text(dup_old, encoding="utf-8")
+        vd.snapshot(root, base, ["src/dup.py"])
+        (root / "src" / "dup.py").write_text(dup_new, encoding="utf-8")
+        expect(vd.check(root, base, ["src/dup.py"]) != [],
+               "deleting the code copy of a line duplicated in a docstring must fail")
+
+        # 11. Same duplicated shape, but only the docstring text changes -> still allowed.
+        (root / "src" / "dup.py").write_text(dup_old, encoding="utf-8")
+        vd.snapshot(root, base, ["src/dup.py"])
+        (root / "src" / "dup.py").write_text(dup_old.replace("doc", "new doc"), encoding="utf-8")
+        expect(vd.check(root, base, ["src/dup.py"]) == [],
+               "docstring-only change in a file with a duplicated line must pass")
+
+        # 12. Same duplicated shape, deleting the DOCSTRING copy of the line -> documentation-only
+        # edit, must still be allowed (the fix must not over-reject).
+        (root / "src" / "dup.py").write_text(dup_old, encoding="utf-8")
+        vd.snapshot(root, base, ["src/dup.py"])
+        (root / "src" / "dup.py").write_text('def f():\n    """doc\n    """\n    return 1\n',
+                                            encoding="utf-8")
+        expect(vd.check(root, base, ["src/dup.py"]) == [],
+               "deleting the docstring copy of a duplicated line must pass")
+
     print("PASS - documentation validator allows only documentation-only changes.")
     return 0
 

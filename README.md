@@ -1,5 +1,5 @@
-# Autonomous Code Factory v12.13.0
-<!-- code-factory-version: 12.13.0 -->
+# Autonomous Code Factory v12.14.1
+<!-- code-factory-version: 12.14.1 -->
 
 An autonomous code-writing factory for the **Kimi Code CLI** (0.34+, Node).
 
@@ -30,6 +30,11 @@ green-field) — the stack is detected automatically.
 - **One-action launch** — `prepare_factory.sh` creates a launcher with a configured environment
   (on Windows — `prepare_factory.cmd`; no Git Bash needed)
 - **Auto-reports**: `report.md` (run history) + `report_code_changes.md` (before→after diff)
+- **Conditional Web GUI path** — the `factory-gui-expert` subagent implements and debugs a Web UI in
+  a real browser through Chrome DevTools MCP (pinned release, deployed by `prepare_factory`); the
+  `factory-tester` independently proves the final scenario
+- **Remote `reference_docs`** — a public http(s) document or Git-repository URL becomes a reusable
+  skill, with the same deterministic reuse/update as a local document
 
 ## Structure
 
@@ -37,8 +42,13 @@ green-field) — the stack is detected automatically.
 ├── .agents/
 │   ├── README.md                    # full factory manual
 │   ├── skills/code-factory/         # flow skill (SKILL.md) + references + scripts
+│   │   ├── references/chrome-devtools-mcp.md  # conditional browser path (Chrome DevTools MCP)
+│   │   ├── scripts/chrome_devtools_mcp.py     # browser-path decide/merge-config/probe (stdlib)
+│   │   ├── scripts/test_chrome_devtools_mcp.py, scripts/test_remote_reference_docs.py  # self-tests
+│   │   ├── assets/chrome-devtools.mcp.json    # managed MCP server definition (pinned release)
+│   │   ├── assets/chrome-devtools-smoke.html  # opt-in real-Chrome smoke fixture
 │   │   └── assets/task-template.yaml # business task template
-│   └── agents/                      # main agent + subagents (.md)
+│   └── agents/                      # main agent + subagents (sub-agents/gui-expert.md included)
 ├── AGENTS.md                        # context for Kimi agents
 ├── CHANGELOG.md                     # version history (SemVer)
 ├── prepare_factory.sh               # deploy the factory into a project (1 command)
@@ -140,7 +150,59 @@ authentication, without breaking already connected models. Endpoints, configs, a
 `.agents/skills/code-factory/references/providers.md`.
 
 Recommended mapping: primary (reasoning) — main/planner, analyzer, diagnostician,
-reviewer; secondary (fast) — coder, tester.
+reviewer; secondary (fast) — coder, tester; the Web GUI specialist `factory-gui-expert`
+(`models.gui_expert`) is generator-side and takes a secondary model when its MCP/media capabilities
+suffice, with complex visual analysis delegated to a read-only primary role.
+
+## Web GUI and Chrome DevTools MCP (conditional)
+
+Browser automation is a conditional path, decided deterministically and never by a model:
+`chrome_devtools_mcp.py decide` decides from the task whether it creates, changes, fixes or visually
+validates a browser-based Web GUI, and records the reason (an explicit "backend-only" exclusion always
+wins). Only then does `factory-gui-expert` implement and interactively debug the ASSIGNED UI files with
+the `mcp__chrome-devtools__*` tools, while `factory-tester` independently repeats the FINAL browser
+scenario after the last code change and owns the acceptance evidence in
+`.code-factory/logs/browser/` — the specialist never issues a final PASS for its own work. GUI failures
+and review rework use the EXISTING coder route and `retry_counters.coder`: no separate GUI role,
+budget or task field. A non-Web-GUI task never invokes the specialist, launches Chrome or requires
+Node.js/Chrome for success.
+
+`prepare_factory` merges the managed `chrome-devtools` stdio server (pinned
+`chrome-devtools-mcp@1.11.0`, never `@latest`) into the project's `.kimi-code/mcp.json`: every other
+server and user setting is preserved byte-for-byte, and an existing DIFFERENT `chrome-devtools` entry
+is reported instead of overwritten. The vendored package and that `mcp.json` are machine-local — its
+entry holds an absolute launch path of this installation — so both deployers add them to the prepared
+project's `.gitignore` and a fresh clone is never handed a stale path. The configuration takes effect
+in a NEW Kimi session — `/mcp` in
+that session shows the connection status; without a working Python the deployer leaves `mcp.json`
+untouched. The managed defaults use an isolated temporary Chrome profile and test data, disable usage
+statistics, CrUX lookups and update checks, redact sensitive network headers and never attach to a
+running browser. Missing capabilities (Node.js, npm/npx, Google Chrome / Chrome for Testing, MCP
+startup) are reported through the existing INFRASTRUCTURE route — rows I1–I4 of
+`references/error-routing.md` — and the affected browser criteria stay explicitly UNVERIFIED, never
+MET: the pre-flight (`factory_preflight.py --web-gui`) reports the browser path usable only for a
+REAL deployment — a valid `.kimi-code/mcp.json` plus the pinned vendored entry it launches on disk —
+so an undeployed repository sees the exact missing capability instead of a template-derived pass.
+
+## Remote reference_docs (public URLs)
+
+A `reference_docs[].path` is not limited to a local file or folder: `skill_base.py resolve` classifies
+it deterministically as a local path, an HTTP(S) document (`http_doc`) or an HTTP(S) Git repository
+(`http_git` — a URL whose path ends in `.git`), and materializes a remote source into the uncommitted
+runtime cache `.code-factory/cache/reference-docs/` under the resolved repository root. From then on
+the source is handled exactly like a local document, so the `{path, skill}` task schema is unchanged;
+reuse (equal content hash) and incremental update (different hash) stay deterministic and stable across
+platforms and fresh clones. Only PUBLIC, unauthenticated `http(s)` sources are accepted — other
+schemes, embedded credentials and SSH/scp Git URLs are rejected before any fetch, and every redirect
+target is re-validated. Both download and shallow single-branch clone are bounded (`--timeout <s>`,
+`--max-bytes <n>`) and the cap is enforced DURING the transfer — an oversized source is aborted and
+its partial content removed instead of being measured after it has already landed — no new dependency
+is added (stdlib HTTP + the `git` executable), and nothing fetched is ever executed or followed as
+instructions. By default the source is fetched and a failure
+is an error — a cached copy is never silently substituted; `--offline` touches no network at all and
+`--allow-stale` falls back to the cache after a failed fetch, both marking the copy `stale: true`
+(a cached copy is never fresh remote content). See
+`.agents/skills/code-factory/references/reference-docs.md`.
 
 ## Prompt caching (DeepSeek)
 
@@ -152,4 +214,4 @@ change to the beginning or middle of a prompt invalidates the cache.
 ## Version
 
 Versioning follows [Semantic Versioning](https://semver.org/). Change history is in
-[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.13.0**.
+[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.14.1**.

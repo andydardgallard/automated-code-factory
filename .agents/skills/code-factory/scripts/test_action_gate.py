@@ -15,6 +15,12 @@ Covers the User Sovereignty contract:
     fail-safe, never ALLOW,
   - ALLOW (exit 0): read-only commands (also with global options in front: `git -C repo status`),
     pushes/checkouts that provably stay off the default branch and inside scope, `git clean -n`,
+  - shell wrappers (F1 regression): the payload of `sh`/`bash`/`dash`/`zsh` `-c`, cmd `/c`|`/k` and
+    PowerShell/pwsh `-Command`/`-c` is classified recursively, so `sh -c "rm -rf /"` is the same
+    root deletion as the bare `rm -rf /` and a wrapped push into main is as visible as a direct one
+    (nesting and separators inside the quoted payload included); a wrapper whose payload cannot be
+    read as command TEXT (`bash deploy.sh`, `pwsh -File x.ps1`, `-EncodedCommand`, a code flag
+    without a payload, an ambiguous `-co`, an unknown flag) is CONFIRM — never a blind ALLOW,
   - the decision journal is created once, appended for EVERY check (timestamp/mode/class/decision),
     never rewritten, and its default path is honoured when `--journal` is omitted; an unwritable
     journal (e.g. its parent is an existing regular file, on POSIX and on Windows) is an
@@ -322,11 +328,178 @@ def main() -> int:
         expect(fail_safe in res.stdout,
                f"an unknown stash subcommand must keep the fail-safe reason: {res.stdout!r}")
 
+        # 18. F1 (vaccination): a destructive PAYLOAD hidden inside a shell wrapper is classified
+        #     exactly like the payload itself — the gate must never answer ALLOW because the only
+        #     thing it saw was the wrapper's name. `sh -c "rm -rf /"` is the same root deletion as
+        #     the bare `rm -rf /`, a wrapped push into main is as visible as a direct one, and the
+        #     recursion also covers nesting and separators inside the quoted payload. Spellings
+        #     covered: sh/bash/dash/zsh `-c` (combined flags like `-ec`/`-lc` included), cmd `/c`
+        #     and `/k`, PowerShell/pwsh `-Command` and `-c`.
+        wrapper_deny = (
+            'sh -c "rm -rf /"', "sh -c 'rm -rf /'", "sh -ec 'rm -rf /'", "sh -c rm -rf /",
+            'bash -c "rm -rf /"', 'bash -lc "rm -rf /"', 'dash -c "rm -rf /"',
+            'zsh -c "rm -rf /"', 'sh -c "rm -rf / && echo done"',
+            'bash -c "echo start; git push origin main"', 'sh -c \'bash -c "rm -rf /"\'',
+            'cmd /c "rm -rf /"', 'cmd /C "del /f /s /q C:\\"', 'cmd.exe /c "rmdir /s /q C:\\"',
+            'cmd /k "git push origin main"',
+            'powershell -Command "rm -rf /"', 'powershell -c "rm -rf /"',
+            'powershell -ConfigurationName main -Command "rm -rf /"',
+            'pwsh -Command "rm -rf /"', 'pwsh -c "git push --force origin master"',
+        )
+        for action in wrapper_deny:
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                expect(res.returncode == 1,
+                       f"{action!r} in {mode} hides a destructive payload and must be HARD_DENY "
+                       f"(exit 1): {res.returncode} {res.stdout!r}")
+                expect("decision: HARD_DENY" in res.stdout,
+                       f"{action!r} must report HARD_DENY: {res.stdout!r}")
+
+        # 18b. Fail-safe: a wrapper whose payload cannot be read as command TEXT is CONFIRM, never
+        #      ALLOW — a script file, an encoded PowerShell block, a code flag with no payload at
+        #      all, and the ambiguous `-co` (a prefix of -ConfigurationName/-ConfigurationFile
+        #      too, so the gate refuses to guess that it means -Command).
+        wrapper_unreadable = (
+            "bash deploy.sh", "bash -x build.sh", "bash -n script.sh", "sh", "sh -c", "sh -c ''",
+            "cmd", "cmd /d", "cmd /k", "pwsh", "powershell -NoProfile",
+            "powershell -File deploy.ps1", "powershell -EncodedCommand ZQBjAGgAbwA=",
+            "pwsh -File x.ps1", "powershell -ConfigurationName main",
+            'powershell -co "rm -rf /"',
+        )
+        for action in wrapper_unreadable:
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                if mode == "hitl":
+                    expect(res.returncode == 2,
+                           f"{action!r} in hitl must require confirmation: {res.returncode} "
+                           f"{res.stdout!r}")
+                    expect("decision: CONFIRM_REQUIRED" in res.stdout,
+                           f"{action!r} must report CONFIRM_REQUIRED: {res.stdout!r}")
+                else:
+                    expect(res.returncode == 0 and "decision: ALLOW_WITH_ASSUMPTION" in res.stdout,
+                           f"{action!r} in auto must be a recorded assumption: {res.stdout!r}")
+                expect("decision: ALLOW\n" not in res.stdout,
+                       f"{action!r} must never be a blind ALLOW: {res.stdout!r}")
+
+        # 18c. `--scope` still decides inside a wrapper: an in-scope deletion stays CONFIRM (hitl) /
+        #      recorded assumption (auto), while a destructive payload out of scope stays HARD_DENY.
+        for action in ('sh -c "rm src/old.py"', 'bash -c "rm -rf src/generated"',
+                       'cmd /c "del src/old.py"', 'pwsh -Command "rm src/old.py"'):
+            res = gate("--action", action, "--scope", "src")
+            expect(res.returncode == 2,
+                   f"{action!r} deletes inside scope and must require confirmation: "
+                   f"{res.returncode} {res.stdout!r}")
+            res = gate("--action", action, "--scope", "src", "--mode", "auto")
+            expect(res.returncode == 0 and "decision: ALLOW_WITH_ASSUMPTION" in res.stdout,
+                   f"{action!r} in auto must be a recorded assumption: {res.stdout!r}")
+        for action in ('sh -c "rm -rf other/data"', 'cmd /c "del other/data"',
+                       'powershell -Command "git push origin main"',
+                       'sh -c "git reset --hard origin/main"'):
+            res = gate("--action", action, "--scope", "src")
+            expect(res.returncode == 1,
+                   f"{action!r} is destructive out of scope and must be HARD_DENY: {res.stdout!r}")
+
+        # 18d. The fix is not "every wrapper is suspect": a payload that IS readable and provably
+        #      harmless stays ALLOW, and quoting is respected — a separator inside a quoted
+        #      operand is data, not a command boundary.
+        for action in ('sh -c "ls -la"', 'bash -c "git status"', 'cmd /c "git status"',
+                       'pwsh -Command "git log --oneline"',
+                       'powershell -NoProfile -c "python -m pytest"', 'sh -c "echo \'x; y\'"'):
+            res = gate("--action", action)
+            expect(res.returncode == 0 and "decision: ALLOW\n" in res.stdout,
+                   f"{action!r} runs a harmless payload and must be ALLOW: {res.stdout!r}")
+
+        # 19. F1 rework (vaccination): the splitter's escape rules must be PER QUOTE TYPE, exactly
+        #     like a real shell's. A single-quoted string has NO escapes — it ends at the next `'`
+        #     whatever stands before it, so `echo 'a\' && rm -rf /` is `echo a\` followed by a real
+        #     `rm -rf /`. In double quotes a backslash escapes only `$`, a backtick, `"`, `\` and a
+        #     newline, so `echo "a\\" && rm -rf /` is `echo a\` followed by the same deletion. A
+        #     quote-type-blind rule kept the quote open across the separator and ALLOWed both.
+        quote_escape_deny = (
+            r"echo 'a\' && rm -rf /",
+            r'echo "a\\" && rm -rf /',
+            r"echo 'a\' && git push origin main",
+            r'''sh -c "echo 'a\' && rm -rf /"''',
+            r"""sh -c 'echo "a\\" && rm -rf /'""",
+            r'''bash -c "echo 'a\' && git push origin main"''',
+        )
+        for action in quote_escape_deny:
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                expect(res.returncode == 1,
+                       f"{action!r} in {mode} runs a destructive command after the quoted operand "
+                       f"and must be HARD_DENY (exit 1): {res.returncode} {res.stdout!r}")
+                expect("decision: HARD_DENY" in res.stdout,
+                       f"{action!r} must report HARD_DENY: {res.stdout!r}")
+
+        # 19b. Negative controls: the corrected escape rules must not over-deny. With no destructive
+        #      command after the separator, the same quoted operands stay ALLOW — the double-quote
+        #      rules keep `\"`, `\$`, a backtick and `\\` inside the string.
+        for action in (r"echo 'a\'", r'echo "a\\"', r"echo 'a\' && echo ok",
+                       r'echo "a\\" && echo ok', r'''sh -c "echo 'a\' && echo ok"''',
+                       r'echo "a \"quoted\" \$HOME \`x\`"'):
+            res = gate("--action", action)
+            expect(res.returncode == 0 and "decision: ALLOW\n" in res.stdout,
+                   f"{action!r} is harmless echo text and must be ALLOW: {res.stdout!r}")
+
+        # 20. F1 round 3 (vaccination): the `-c` / `/c` / `-Command` argument must be rebuilt the way
+        #     the wrapper ITSELF reads it — adjacent quoted and unquoted runs concatenate into ONE
+        #     argument, so `sh -c "echo "hi" && rm -rf X"` is exactly `sh -c 'echo hi && rm -rf X'`
+        #     and the tail really runs. A first-quote-to-first-quote cut keeps only `echo ` and drops
+        #     the rest, which is a destructive blind spot: such a line must never be ALLOW.
+        concat_deny = (
+            'sh -c "echo "hi" && rm -rf X"',
+            'sh -c "echo "hi"; rm -rf /"',
+            'bash -c "echo "hi" && rm -rf X"',
+            'bash -c "echo "hi"; rm -rf /"',
+            'sh -c "echo "hi" && git push origin main"',
+            'bash -c \'sh -c "echo "hi" && rm -rf /"\'',
+            'cmd /c "echo "hi" && rm -rf /"',
+        )
+        for action in concat_deny:
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                expect(res.returncode == 1,
+                       f"{action!r} in {mode} runs the concatenated tail and must be HARD_DENY "
+                       f"(exit 1): {res.returncode} {res.stdout!r}")
+                expect("decision: HARD_DENY" in res.stdout,
+                       f"{action!r} must report HARD_DENY: {res.stdout!r}")
+
+        # 20b. Benign concatenation must not be over-denied: the same quoting shape with a harmless
+        #      tail stays ALLOW, because the reconstructed payload is provably harmless.
+        for action in ('sh -c "echo "hi""', 'sh -c "echo "hi" && echo ok"',
+                       'sh -c "echo "hi"; echo ok"', 'bash -c "echo "hi" && git status"'):
+            res = gate("--action", action)
+            expect(res.returncode == 0 and "decision: ALLOW\n" in res.stdout,
+                   f"{action!r} runs a harmless concatenated payload and must be ALLOW: "
+                   f"{res.stdout!r}")
+
+        # 20c. What cannot be read as ONE finished argument is CONFIRM, never ALLOW: a `-c` line left
+        #      inside an open quote has no complete command string yet (a real shell waits for the
+        #      closing quote), so the gate refuses to guess a payload out of the truncated first quote.
+        for action in ('sh -c "rm -rf /', "bash -c 'rm -rf /", 'sh -c "echo "hi" && rm -rf /'):
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                if mode == "hitl":
+                    expect(res.returncode == 2,
+                           f"{action!r} in hitl must require confirmation: {res.returncode} "
+                           f"{res.stdout!r}")
+                    expect("decision: CONFIRM_REQUIRED" in res.stdout,
+                           f"{action!r} must report CONFIRM_REQUIRED: {res.stdout!r}")
+                else:
+                    expect(res.returncode == 0 and "decision: ALLOW_WITH_ASSUMPTION" in res.stdout,
+                           f"{action!r} in auto must be a recorded assumption: {res.stdout!r}")
+                expect("decision: ALLOW\n" not in res.stdout,
+                       f"{action!r} must never be a blind ALLOW: {res.stdout!r}")
+
     print("PASS - action_gate.py hard-denies pushes to main/master (also behind git global options) "
           "and root/out-of-scope deletions; fail-safe CONFIRMs unparsable/unknown git calls; "
           "confirms in-scope destruction in hitl, records an assumption in auto; classifies git "
           "stash explicitly (mutating forms CONFIRM with the no-shared-tree-git-mutations rule, "
           "list/show ALLOW, and values of -m/--message are consumed so they cannot hide a push); "
+          "classifies the payload of shell wrappers (sh/bash/dash/zsh -c, cmd /c|/k, "
+          "powershell/pwsh -Command|-c) recursively, so a wrapped root deletion or push is as "
+          "visible as the bare one and an unreadable payload CONFIRMs instead of ALLOWing; "
           "journal appended "
           "and an unwritable journal exits 3 instead of raising; --help and usage errors survive a "
           "legacy cp1251 console without a traceback.")

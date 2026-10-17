@@ -4,7 +4,10 @@
 #
 # Purpose: copy the factory (.agents/) into the project, create the memory of
 # THIS specific project (`memory/` — the long-term memory of the target project:
-# journal `memory/change-log.md` + summary `memory/summary.md`), configure
+# journal `memory/change-log.md` + summary `memory/summary.md`), configure the
+# Kimi Code MCP servers (`.kimi-code/mcp.json` — the managed `chrome-devtools`
+# entry plus the pinned package vendored beside it, merged without clobbering
+# anything already there), configure
 # .gitignore, initialize a git repository if needed, create the `start.sh`
 # launcher (it sets the required environment variables itself) and verify readiness.
 #
@@ -204,7 +207,103 @@ EOF
 chmod +x "$LAUNCHER"
 info "    Launcher: created $LAUNCHER"
 
-# --- 5. .gitignore ------------------------------------------------------------------
+# --- 5. Chrome DevTools MCP configuration --------------------------------------------
+# The Kimi Code CLI reads its stdio MCP servers from `.kimi-code/mcp.json` at the project
+# root. The factory manages exactly ONE entry there — the `chrome-devtools` server (the PINNED
+# chrome-devtools-mcp release, isolated temporary browser profile, usage statistics, CrUX
+# lookups and update checks disabled) — and touches nothing else: unrelated servers and user
+# settings survive byte-for-byte, and an existing DIFFERENT `chrome-devtools` entry is
+# preserved and reported (never silently replaced). Only this project's file is written;
+# user-level configuration is never modified.
+# The launch shape is `node <vendored entry>`: the Kimi Code CLI spawns stdio servers WITHOUT a
+# shell, so `npx` fails with ENOENT and `npx.cmd` with EINVAL on Windows. The deployer therefore
+# installs the pinned package ONCE into `.kimi-code/vendor/chrome-devtools-mcp/` (npm with
+# --no-save --ignore-scripts --omit=dev — package scripts never run at deploy time) and merges
+# the entry that points at it. When python, node or npm is unavailable, or the install fails,
+# NO entry is written: an absent server that is REPORTED is far better than a config whose
+# launch file does not exist, which would break every Kimi session in this project.
+# Deployment must not newly require Python: without a working interpreter an existing mcp.json
+# is left untouched and nothing new is created (the per-installation entry path is derived by
+# the helper, so a copied template would be a broken config).
+MCP_DIR="$PROJECT_DIR/.kimi-code"
+MCP_FILE="$MCP_DIR/mcp.json"
+MCP_VENDOR="$MCP_DIR/vendor/chrome-devtools-mcp"
+MCP_ASSET="$PROJECT_DIR/.agents/skills/code-factory/assets/chrome-devtools.mcp.json"
+MCP_MERGE="$PROJECT_DIR/.agents/skills/code-factory/scripts/chrome_devtools_mcp.py"
+# created | updated | unchanged | conflict | failed | vendor-skipped | no-python-skipped
+MCP_STATE="absent"
+MCP_REASON=""
+
+if [[ -n "$PY_BIN" && -f "$MCP_MERGE" ]]; then
+    # 5a. The pinned package comes first: an entry may only point at an installed file.
+    VENDOR_RC=0
+    VENDOR_OUT="$("$PY_BIN" "$MCP_MERGE" vendor-install --target "$MCP_VENDOR" --asset "$MCP_ASSET" 2>&1)" || VENDOR_RC=$?
+    # The reported line is the LAST non-empty one: it is the helper's message, never a traceback.
+    VENDOR_MSG="$(printf '%s\n' "$VENDOR_OUT" | awk 'NF{last=$0}END{print last}')"
+    if [[ "$VENDOR_RC" -ne 0 ]]; then
+        MCP_STATE="vendor-skipped"
+        MCP_REASON="${VENDOR_MSG:-no output}"
+        warn "    chrome-devtools MCP: package install skipped/failed — ${MCP_REASON}"
+        warn "      No managed entry is written: a server launched from a file that does not exist would break every Kimi session in this project."
+        if [[ -f "$MCP_FILE" ]]; then
+            warn "      The existing $MCP_FILE is left untouched."
+        fi
+    else
+        info "    MCP package: ${VENDOR_MSG:-pinned chrome-devtools-mcp is vendored}"
+        MCP_EXISTED=false
+        if [[ -f "$MCP_FILE" ]]; then MCP_EXISTED=true; fi
+        MCP_OUT=""
+        MCP_RC=0
+        MCP_OUT="$("$PY_BIN" "$MCP_MERGE" merge-config --target "$MCP_FILE" --asset "$MCP_ASSET" 2>&1)" || MCP_RC=$?
+        # The reason shown for a failure is the LAST non-empty line of the helper's output: a
+        # conflict message is explicit, while a crashed interpreter would only add a traceback.
+        MCP_REASON="$(printf '%s\n' "$MCP_OUT" | awk 'NF{last=$0}END{print last}')"
+        case "$MCP_RC" in
+            0)
+                if [[ "$MCP_EXISTED" != true ]]; then
+                    MCP_STATE="created"
+                    info "    MCP config: created — $MCP_FILE (server chrome-devtools, node + the vendored pinned package)"
+                elif [[ "$MCP_OUT" == unchanged* ]]; then
+                    MCP_STATE="unchanged"
+                    info "    MCP config: already in place — $MCP_FILE (server chrome-devtools, no diff)"
+                else
+                    MCP_STATE="updated"
+                    info "    MCP config: updated — $MCP_FILE (server chrome-devtools merged; existing servers and settings preserved)"
+                fi
+                ;;
+            3)
+                # A DIFFERENT `chrome-devtools` entry already exists: it is preserved byte-for-byte and
+                # nothing is overwritten — resolving the difference stays an explicit user decision.
+                MCP_STATE="conflict"
+                warn "    MCP config: CONFLICT — an existing 'chrome-devtools' entry differs from the factory definition; it is preserved and nothing was overwritten"
+                warn "      reason: ${MCP_REASON:-an existing chrome-devtools entry differs from the factory definition}"
+                warn "      Resolve the difference in $MCP_FILE explicitly, then run prepare_factory.sh again."
+                ;;
+            *)
+                MCP_STATE="failed"
+                warn "    MCP config: not configured — ${MCP_REASON:-no output}"
+                warn "    The factory starts without the managed server; the existing $MCP_FILE is left as it is."
+                ;;
+        esac
+    fi
+else
+    # No working Python (or the helper is missing): an existing mcp.json is NEVER touched, and no
+    # new one is created — its managed entry needs the per-installation vendored entry path.
+    MCP_STATE="no-python-skipped"
+    if [[ -z "$PY_BIN" ]]; then
+        MCP_REASON="python not found"
+    else
+        MCP_REASON="merge helper $MCP_MERGE is missing"
+    fi
+    if [[ -f "$MCP_FILE" ]]; then
+        warn "    MCP config: skipped — ${MCP_REASON}: the existing $MCP_FILE is left untouched (no merge, nothing clobbered)"
+    else
+        warn "    MCP config: skipped — ${MCP_REASON}: no managed entry is written (its launch path is per-installation and only the helper derives it)"
+    fi
+fi
+info "      The MCP configuration takes effect in a NEW Kimi session — /mcp in that session shows the connection status."
+
+# --- 6. .gitignore ------------------------------------------------------------------
 # Note: .gitignore only affects git tracking, not access to files on disk.
 # Ignoring .agents/ does not break reading/writing the factory's data (cache,
 # history, context) — the factory works with .agents/ directly through the file
@@ -218,9 +317,12 @@ gitignore_has() {
 }
 # The factory's own files inside a DEPLOYED project — the task file and the launchers — must never
 # be mistaken for a new task and never get committed: a leftover from a previous run in a TARGET
-# project stays invisible to git.
+# project stays invisible to git. The managed MCP config is ignored too: its `chrome-devtools` entry
+# carries the ABSOLUTE path of the vendored package of THIS installation, so a committed config
+# would hand a fresh clone a launch path that does not exist there (ignoring the vendor directory
+# alone protects the package, not the config pointing at it).
 NEED_GITIGNORE=false
-for pat in ".agents/" ".code-factory/" "__pycache__/" "*.pyc" ".env" ".env.*" "*.env" "*.pem" "*.key" "task.yaml" "start.cmd" "start.sh"; do
+for pat in ".agents/" ".code-factory/" ".kimi-code/mcp.json" ".kimi-code/vendor/" "__pycache__/" "*.pyc" ".env" ".env.*" "*.env" "*.pem" "*.key" "task.yaml" "start.cmd" "start.sh"; do
     gitignore_has "$pat" || NEED_GITIGNORE=true
 done
 
@@ -231,6 +333,8 @@ if [[ "$NEED_GITIGNORE" == true ]]; then
         echo "# --- Code Factory (auto-added by prepare_factory.sh) ---"
         echo ".agents/"
         echo ".code-factory/"
+        echo ".kimi-code/mcp.json"
+        echo ".kimi-code/vendor/"
         echo "__pycache__/"
         echo "*.pyc"
         echo ".env"
@@ -244,7 +348,7 @@ if [[ "$NEED_GITIGNORE" == true ]]; then
     } >> "$GITIGNORE"
 fi
 
-# --- 6. Readiness check -------------------------------------------------------------
+# --- 7. Readiness check -------------------------------------------------------------
 # The memory line is assembled from the state of step 3 (we do not run init again).
 # Three distinguishable states: ok — the memory belongs to this project; mixed —
 # entries from different projects; other — the memory is declared for another project (we are deploying to the wrong place).
@@ -275,6 +379,19 @@ case "$MEM_STATE" in
         ;;
     *)        MEM_LINE="MISSING ✗" ;;
 esac
+
+# The MCP line is assembled from the state of step 5. A conflict, an uninstalled package or a
+# skipped merge is REPORTED here — a managed server that silently did not arrive costs a browser run.
+case "$MCP_STATE" in
+    created)           MCP_LINE="created ✓ (server chrome-devtools, node + the vendored pinned package)" ;;
+    updated)           MCP_LINE="updated ✓ (server chrome-devtools merged; existing servers and settings preserved)" ;;
+    unchanged)         MCP_LINE="OK ✓ (server chrome-devtools, already pinned)" ;;
+    conflict)          MCP_LINE="CONFLICT ✗ (existing chrome-devtools entry preserved — resolve it explicitly, then re-run)" ;;
+    failed)            MCP_LINE="not configured ✗ (${MCP_REASON:-merge failed})" ;;
+    vendor-skipped)    MCP_LINE="skipped ✗ (chrome-devtools MCP: package install skipped/failed — ${MCP_REASON:-no output}; no managed entry written)" ;;
+    no-python-skipped) MCP_LINE="skipped (${MCP_REASON}) — no managed entry written" ;;
+    *)                 MCP_LINE="MISSING ✗" ;;
+esac
 echo ""
 info "==> Readiness check:"
 echo "    • .agents/:            $([ -f "$PROJECT_DIR/.agents/skills/code-factory/SKILL.md" ] && echo 'OK ✓' || echo 'MISSING ✗')"
@@ -282,6 +399,7 @@ echo "    • start.sh:            $([ -x "$LAUNCHER" ] && echo 'OK ✓' || echo
 echo "    • .git/:               $([ -d "$PROJECT_DIR/.git" ] && echo 'OK ✓' || echo 'MISSING ✗')"
 echo "    • .gitignore:          $(gitignore_has '.agents/' && gitignore_has '.code-factory/' && echo 'OK ✓ (.agents/ + .code-factory/)' || echo 'no .agents/ or .code-factory/ ✗')"
 echo "    • memory/:              $MEM_LINE"
+echo "    • .kimi-code/mcp.json: $MCP_LINE"
 echo "    • git status:"
 git -C "$PROJECT_DIR" status --short | head -20 || true
 [[ -z "$(git -C "$PROJECT_DIR" status --short)" ]] && echo "      (clean tree)"

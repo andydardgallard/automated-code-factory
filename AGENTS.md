@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.13.0 -->
+<!-- code-factory-version: 12.14.1 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.
@@ -35,13 +35,16 @@ mandatory code review before acceptance.
   `calibrate_reviewer.py` (reviewer golden-set calibration: precision/recall/accuracy),
   `plan_arbiter.py` (deterministic merge of two competing plans + list of discrepancies —
   committee on double plan rejection), `precedent_index.py` (FTS5 precedent index: memory +
-  codebase, `build`/`query` — searching "how was this solved before" instead of re-reading history).
+  codebase, `build`/`query` — searching "how was this solved before" instead of re-reading history),
+  `chrome_devtools_mcp.py` (conditional Web GUI browser path: applicability `decide`, existing
+  E2E-stack discovery, browser matrix, vendored pinned install (`vendor-install`) + idempotent merge
+  of the node-direct `chrome-devtools` server into `.kimi-code/mcp.json`, fail-soft capability probe).
   Every argparse script reconfigures stdout/stderr to UTF-8 itself (`stream.reconfigure(encoding="utf-8",
   errors="replace")` under try/except), so `--help` and error messages with non-ASCII characters
   do not crash with `UnicodeEncodeError` on a console with a legacy code page (cp1251/cp866); the argparse
   contract is unchanged: `--help` → exit 0, usage error → exit 2, no traceback.
 - `.agents/agents/` — the factory's main agent (Markdown `code-factory.md`) and subagents
-  (`sub-agents/analyzer|planner|coder|tester|diagnostician|advisor|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
+  (`sub-agents/analyzer|planner|coder|gui-expert|tester|diagnostician|advisor|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
 - `VERSION` — single source of truth for the factory version (one line X.Y.Z)
 - `skill-base/` — persistent skill base from `reference_docs`/`reference_skills` (optional)
 - `.agents/README.md` — the full factory usage manual
@@ -150,7 +153,8 @@ mandatory code review before acceptance.
 
 - **Code review**: every task passes through the `factory-code-reviewer` subagent before
   acceptance. A regular task — a review of the changes diff; `task_type: review` and `security_audit` —
-  a review/audit of all the code in SHARDS (`repo_inventory.py shards --max-lines 20000` → parallel
+  a review/audit of all the code in SHARDS (`repo_inventory.py shards --tracked --max-lines 20000`
+  over the TRACKED tree; `inventory --tracked` prints the same file set → parallel
   subagents per shard → `merge_findings.py` produces a deterministic merged verdict); the findings of a
   review task become the plan. The critical/major boundary is set by `references/code-review.md` §3
   (critical — EXISTING behavior is damaged; major — a NEW path left unprotected or lost
@@ -165,7 +169,7 @@ mandatory code review before acceptance.
 **Review gate (canonical wording):** a task is NOT accepted while the reviewer has open severity=critical findings (verdict `request_changes` with open critical findings). The reviewer budget = 2 iterations. If the budget is exhausted and critical findings remain: in hitl mode the factory STOPS and asks the user; in auto mode only a conditional pass is allowed — the corresponding criterion is marked `unverified_review` in `.code-factory/state/acceptance.md`, and the unresolved findings go into `.code-factory/report.md` (unresolved findings section), never silently. A full SUCCESS with open critical findings is impossible.
 <!-- factory-rule: review-gate-policy end -->
 <!-- factory-rule: shard-protocol begin -->
-**Shard protocol (canonical wording):** whole-repo review and security_audit never fit into one context: `scripts/repo_inventory.py shards --max-lines 20000` cuts the repository into shards of ≤20000 lines, each shard is processed by its own parallel subagent (reviewer or auditor) and writes one findings file. The result is produced by the deterministic `scripts/merge_findings.py` (deduplication, sorting by severity, merged verdict), and the canonical review gate is applied to the MERGED findings, not to individual shards. A regular `implement` task is reviewed by diff and needs no sharding.
+**Shard protocol (canonical wording):** whole-repo review and security_audit never fit into one context: `scripts/repo_inventory.py shards --tracked --max-lines 20000` cuts the TRACKED tree (`git ls-files -z` at `--repo`, so an untracked or ignored machine-local file stays out of the review) into shards of ≤20000 lines, each shard is processed by its own parallel subagent (reviewer or auditor) and writes one findings file. The result is produced by the deterministic `scripts/merge_findings.py` (deduplication, sorting by severity, merged verdict), and the canonical review gate is applied to the MERGED findings, not to individual shards. A regular `implement` task is reviewed by diff and needs no sharding.
 <!-- factory-rule: shard-protocol end -->
 
 - **Verified acceptance**: criteria with `verify` are executed for real (`scripts/verify_acceptance.py`

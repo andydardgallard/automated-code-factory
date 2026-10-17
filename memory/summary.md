@@ -8,37 +8,35 @@ repo_path: .
 (порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
 
 ## Current state
-Factory v12.13.0 — REPO-SCOPED: a run resolves the task's `repo_path` ONCE and does everything
-relative to the resolved repository (`.code-factory/`, backups, `git -C <repo>`, rollback);
-deployment-root exceptions: `memory/`, `version_manager.py`. 25th rule `repo-scoping` +
-amended `git-native`/`task-format`; mandatory Repository-root in briefings; optional
-`--repo`/`--root`/`--base` flags in run_id/factory_preflight/task_graph/error_router/
-verify_quotes (cwd default unchanged); contract test `test_repo_scoping.py`; deployer
-`.gitignore` hazards (task.yaml/start.cmd/start.sh) + `KIMI_FACTORY_LAUNCH_DIR` anchor;
-verification-strategy §4.3 rollback order fixed (reset --hard <base> BEFORE switch);
-test_error_router non-ASCII/8.3 path comparison fixed with vaccination. Previous: v12.12.1
-(ENGLISH-ONLY translation + translation-quality gates `check_english_only.py` /
-`check_translation_structure.py`, deleted-file gate hole closed, auditor severity mapping, ps1
-parity, skill_base guard). History:
-v12.8.0 (shard protocol, two-level fingerprint, Think in Code, review gate, verified acceptance,
-verify_quotes, evidence ledger, advisor, preflight) + v12.9.0 (rulebook, run_id, memory v2
-provenance, golden set, vaccination, WIP, error-patterns JSON) + v12.10.0 (severity boundary §3,
-committee + plan_arbiter, root auto-detect → SKIP, precedent_index FTS5) + v12.10.1/12.10.2
-(utf8-guard in all argparse scripts, 22nd rule no-shared-tree-git-mutations) + v12.11.0 (explicit
-git stash classification in action_gate; content fingerprint over the working tree; memory
-actuality mechanism: backlog [--check] + closed:+evidence: + 23rd rule memory-actuality;
-project-learned overlay error_router §1.2; providers.md §5.2) + v12.12.0/12.12.1 (English-only
-package + 24th rule; v8 review rework) + v12.13.0 (v10: repo-scoping contract, 25th rule).
-Rulebook: 25 rules, 98 carriers. Memory owner: repo. 30/30 self-tests PASS (29 test_*.py +
-test_env_propagation.sh).
-Latest runs: v8 whole-project review (run_id 20260924-96879f22, task_type=review, no version
-change): 8 findings, rework became `task-v9.yaml`, implemented by run v9 (run_id
-20260924-8b9caeeb, v12.12.1, commit 2f53d2f). Run v10 (run_id 20260929-a4f03186, v12.13.0,
-commit bbd4d4c, task_type=implement): the F1-F18 fix task of review run 20260929-62232c10 —
-repo-scoping contract implemented, review approve (0 critical/0 major), acceptance SUCCESS
-(7/7 MET, ledger FRESH), business mini-runs BT-1/BT-2 PASS.
-Open backlog: 0 (34 items closed with evidence; 2 v10 reviewer nits recorded as info,
-follow_up=false).
+Factory v12.14.1 — V12 REVIEW REWORK: all 14 findings of the v12 whole-project review fixed and
+vaccination-proven (run 20261017-7a5130ac, commit 756de71): recursive shell-wrapper classification in
+action_gate (per-quote-type escapes, real shell tokenization, unreadable payload → CONFIRM),
+`--tracked` NUL-safe inventory/shards mode (git ls-files; the shard-protocol rule now mandates it in
+all 5 carriers), HITL approval routed through pre-flight (SKILL.md Approve→PF + flow regression),
+Web pre-flight `mcp_usable` gated on a real managed config + pinned vendored entry, fail-soft MCP
+`env` validation + credential-NAME scanning, I1 aligned to the exact probe wording, skill_base
+repo-anchored hash / mid-transfer clone abort / `record --resolved-hash` without re-fetch,
+position-based documentation validator, both deployers gitignore `.kimi-code/mcp.json`, Windows suite
+clean-clone-safe (84 PASS) with mutation-proven MCP safety constants. Acceptance: DEGRADED
+conditional pass (10 MET / 0 FAILED / 1 derived; reviewer budget 2/2 exhausted at request_changes
+with 0 critical open; criterion 2 unverified_review; honest review_gate=fail ledger entry).
+Rulebook: 25 rules, 100 carriers. Memory owner: repo. Current regression: 32/32 self-tests PASS
+(31 test_*.py + test_env_propagation.sh), deterministic rules/english/model/mermaid/version gates PASS.
+Lineage: v12.8.0 (shard protocol, two-level fingerprint, review gate, verified acceptance, evidence
+ledger, advisor, preflight) → v12.9.0 (rulebook, run_id, memory v2 provenance, golden set,
+vaccination) → v12.10.0–12.10.2 (severity boundary, plan committee, precedent index, utf8-guards,
+no-shared-tree-git-mutations) → v12.11.0 (git-stash classification, content fingerprint, memory
+actuality) → v12.12.0/12.12.1 (English-only package, v8 review rework) → v12.13.0 (repo-scoping
+contract, 25th rule) → v12.14.0 (gui-expert + Chrome DevTools MCP, remote reference_docs) →
+v12.14.1 (v12 review rework).
+Latest run: v12-review rework (run_id 20261017-7a5130ac, branch factory/v12-review-rework-20261017,
+commit 756de71, task_type=implement, v12.14.0 → 12.14.1 patch, reviewer-validated). Previous: v12
+whole-project review (run_id 20261017-8afa3aae, 2c+12m findings) and v11 (run_id 20261016-2ddb58eb,
+v12.14.0 gui-expert + remote reference_docs). Open backlog: 3 items — pwsh/powershell SINGLE-quoted
+-Command payload still fail-open (critical, reviewer iteration-2 major, pre-existing at base HEAD),
+wrapper analysis misses launcher prefixes (env/sudo/builtin) and $(...) substitutions (warning),
+installer-side missing-Node line (chrome_devtools_mcp.py:632) routes to diagnostician not I1
+(warning). Prior history has 35 items closed with evidence.
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле

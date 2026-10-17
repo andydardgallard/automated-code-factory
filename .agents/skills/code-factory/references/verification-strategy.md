@@ -153,6 +153,31 @@ data, and check that the **business results** match what the user expected.
 - **Sandbox side effects**: a run may create output dirs (e.g., `opt_results/`). Treat them as
   temporary; remove them after verifying, or add them to `.gitignore`.
 
+### 3.1 Browser business tests (Web GUI tasks) — tester-owned acceptance
+
+When the task's Web GUI path is applicable (`references/chrome-devtools-mcp.md`), the business test
+of the user scenario runs in a real browser through the Chrome DevTools MCP tools and is owned by
+`factory-tester`:
+
+- **Independence**: `factory-gui-expert` may capture a baseline and debug during implementation, but
+  the final scenario is executed by the tester AFTER the last code change — never by the
+  implementer, and never by reusing the specialist's diagnostic run as acceptance.
+- **Evidence location**: the artifacts live under the resolved repository's
+  `.code-factory/logs/browser/` and carry the run_id — scenario and URL, the actions, the
+  expected/actual results, the fresh accessibility snapshots/screenshots at the required viewport,
+  and the console/network findings. The specialist's files are marked DIAGNOSTIC and stay distinct
+  from the tester's ACCEPTANCE files; both sets are referenced from `business-tests.md`,
+  `test-results.md` and `report.md`.
+- **A screenshot alone is not proof of behavior**: acceptance needs the executed scenario and its
+  observed result, with the relevant console errors and failed network requests reported. A console
+  error or a failed request on the accepted path is a failure, not a cosmetic note, and is routed
+  through the normal error routing (CODER route).
+- **FRESH/STALE applies** (§2.2): any code change after the browser run makes that evidence STALE —
+  the scenario is re-run and re-stamped, never carried forward.
+- **Degradation**: when Node.js, Chrome/Chrome for Testing or the MCP server is missing, the browser
+  criterion is reported UNVERIFIED (never MET) with an infrastructure diagnosis; no artifact is
+  fabricated to fill the gap.
+
 
 ## 4. Rollback mechanism (critical)
 
@@ -270,6 +295,7 @@ SUCCESS | FAILED
 | main agent (planning) | <session model> |
 | analyzer | <model from models_used> |
 | coder | ... |
+| gui_expert | ... (only when the Web GUI path applied) |
 | tester | ... |
 | diagnostician | ... |
 

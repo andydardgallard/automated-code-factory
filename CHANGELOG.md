@@ -5,6 +5,176 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.14.1] — 2026-10-17
+
+### Fixed
+- **`action_gate.py` — shell wrappers are transparent** (v12 review, critical). The payload of
+  `sh`/`bash`/`dash`/`zsh`/`ksh` with `-c` (combined flags such as `-ec`/`-lc` included), of `cmd`
+  with `/c` or `/k` and of `powershell`/`pwsh` with `-Command` (the short `-c` included) is now
+  classified RECURSIVELY with the same rules, so a root deletion or a default-branch push can no
+  longer hide behind the wrapper's name. Quoting is resolved before the line is cut, escapes are read
+  per quote type (a single-quoted string has NONE, a double-quoted one takes `\\` and `\"`), and
+  adjacent quoted/unquoted runs CONCATENATE into one argument as in a real shell — `sh -c "echo "hi"
+  && rm -rf X"` is read as `echo hi && rm -rf X`. A payload that cannot be read as command TEXT
+  (script file, encoded block, unknown or ambiguous flag, no payload, an open quote), an unreadable
+  wrapper and nesting deeper than `MAX_WRAPPER_DEPTH` are CONFIRM — never ALLOW.
+- **`repo_inventory.py` — `--tracked`** (critical). `inventory` and `shards` accept `--tracked`,
+  which takes the file set from a NUL-safe `git ls-files -z` at `--repo`: untracked and git-ignored
+  paths (machine-local configs, build output, leftovers) can no longer enter a tracked-only review,
+  while a tracked file under `build/` or `node_modules/` is inventoried like any other. Without git
+  or a repository the flag fails with the reason instead of silently falling back to the walk; the
+  flag-less filesystem walk is unchanged and stays the documented escape hatch.
+- **HITL plan approval routed through the pre-flight** (major) — `SKILL.md` and the reference flow
+  no longer jump from plan approval straight to the execution node: the approval edge passes the
+  pre-flight (PF) and preserves PF to the next node, as the auto path already did.
+- **`factory_preflight.py --web-gui` — `mcp_usable` requires a real deployment** (major). The block
+  now passes the resolved repository's `.kimi-code/mcp.json` into the delegated probe and is usable
+  only when that config is valid AND the pinned vendored entry it launches is on disk at the pinned
+  version; otherwise the MCP server is reported missing with the exact reason, so the shipped
+  template alone can never make a clean clone look like a deployed browser path.
+- **`chrome_devtools_mcp.py` — malformed `env` and credential-like variable NAMES** (major). A
+  non-object `env` (string, list, number, boolean) is a validation problem instead of an
+  `AttributeError` (only `null`/absent means "no environment"), and secret scanning now also rejects
+  a credential-like NAME with a non-empty value, reporting the variable name and the reason — never
+  the value.
+- **`chrome_devtools_mcp.py` — probe wording matched by I1** (major). The actual probe message
+  (`<node|npm|npx> was not found on PATH; a Web GUI run cannot start …`) is part of the I1 pattern
+  in `references/error-patterns.default.json` and `references/error-routing.md`, and the router test
+  classifies that real line instead of a paraphrase.
+- **`skill_base.py` — `hash --repo` anchor, supervised clone, `record --resolved-hash`** (major). A
+  relative local path passed to `hash` is resolved against the declared `--repo`, exactly like
+  `resolve` and `record`, so the caller's working directory no longer decides which bytes are
+  hashed; a clone is supervised WHILE its temporary tree grows and is aborted (with the partial
+  content removed and an explicit reason) as soon as it crosses `--max-bytes` or the deadline,
+  instead of being measured after the transfer; and `record --resolved-hash <hex>` records the
+  materialization `resolve` already produced without a second fetch, refusing a divergent digest
+  (exit 1) so the manifest can never describe different bytes from the generated skill.
+- **`validate_documentation.py` — position-based line classification** (major). Changed lines are
+  mapped through the diff opcodes (old↔new positions) instead of the first content match, so a
+  deleted executable line can no longer be classified as a docstring line when the same text also
+  appears inside one.
+- **`prepare_factory.sh` / `prepare_factory.ps1` — `.kimi-code/mcp.json` is git-ignored** (major).
+  Both deployer pattern lists add the machine-local managed config next to `.kimi-code/vendor/`
+  (its entry holds an absolute launch path of that installation), so a prepared project never
+  commits it and a fresh clone is never handed a path that does not exist there.
+- **`test_windows_scripts.py` — clean-clone suite and independent safety expectations** (major). The
+  Windows suite no longer requires the git-ignored machine-local MCP state (it validates the
+  committed asset or generates a config in a temporary fixture), so it passes in a clean clone; its
+  MCP safety assertions now compare against independent constants and carry a mutation check, instead
+  of deriving the expectations from the asset under test.
+
+### Changed
+- **Documentation** — `references/reference-docs.md` documents the transfer-time `--max-bytes`
+  enforcement, the `hash --repo` anchor and the no-second-fetch `record`; `references/chrome-devtools-mcp.md`
+  documents the `mcp_usable` deployment gate, the `validate-config` rules (non-object `env`,
+  credential-like names) and the I1 wording; `README.md` and `.agents/README.md` carry the tracked
+  review command (`repo_inventory.py shards --repo <root> --max-lines 20000 --tracked`), the extended
+  deployer ignore list, the clean-clone consequence and the pre-flight usable gate; the
+  `action_gate.py` docstring states the wrapper rules and their KNOWN limitation.
+
+Conditional pass (open major, backlog). `powershell`/`pwsh` with a SINGLE-quoted `-Command` payload
+is still fail-open — `pwsh -Command 'rm -rf /'` classifies ALLOW while the double-quoted form is
+HARD_DENY — and launcher prefixes (`env`/`sudo`) and `$(...)` substitutions are not expanded; the
+limitation is now documented in the `action_gate.py` docstring instead of being an undocumented
+assumption. A minor (dead `simple_commands` helper) is carried in the backlog as well. Nothing above
+claims more than the suite and the deterministic gates prove: the 14 findings of the v12.14.0
+whole-project review are closed, these two items are not.
+
+## [12.14.0] — 2026-10-16
+
+### Added
+- **`factory-gui-expert` subagent** — a coder-class Web GUI specialist
+  (`.agents/agents/sub-agents/gui-expert.md`) that implements and interactively debugs the ASSIGNED UI
+  files in a real browser: it reproduces defects, inspects DOM/CSS/console/network and records
+  DIAGNOSTIC artifacts under `.code-factory/logs/browser/`, but never treats its own run as acceptance
+  and never issues a final PASS for its own work. Registered in the main agent allowlist and in both
+  orchestration flows (`code-factory.md`, `SKILL.md`), in the reference-skill relevance matrix with
+  coder-like access and in the handoff-briefing roster. Only `factory-gui-expert` and `factory-tester`
+  receive the `mcp__chrome-devtools__*` tools; the tester independently repeats the FINAL browser
+  scenario after the last code change and owns the acceptance evidence; analyzer, planner,
+  diagnostician and reviewer stay read-only and generic `factory-coder` keeps non-GUI work.
+- **Conditional Chrome DevTools MCP browser path** — `scripts/chrome_devtools_mcp.py` (stdlib) decides
+  applicability from the task with a recorded REASON and never by a model call (`decide`: an explicit
+  `backend-only` / `no web UI` exclusion always wins; a repository that merely contains a frontend never
+  forces activation, while a green-field Web GUI task still activates), discovers the project's EXISTING
+  browser/E2E stack and its config file (`discover-e2e`), derives the required browser matrix from the
+  acceptance criteria (`browser-matrix`), merges the managed server into `.kimi-code/mcp.json`
+  (`merge-config`) and probes the environment fail-soft (`probe`). Workflow reference:
+  `references/chrome-devtools-mcp.md`; opt-in real-Chrome smoke fixture:
+  `assets/chrome-devtools-smoke.html`.
+- **Deployer-managed MCP configuration** — `assets/chrome-devtools.mcp.json` defines the single managed
+  `chrome-devtools` stdio server (PINNED `chrome-devtools-mcp@1.11.0`, never `@latest`) with the safety
+  defaults: isolated temporary Chrome profile and test data, usage statistics and CrUX lookups disabled,
+  update checks disabled, sensitive network headers redacted, no blanket tool permission and no attaching
+  to a running browser. `prepare_factory.sh` and the Windows `prepare_factory.cmd` →
+  `prepare_factory.ps1` path first vendor the pinned package into `.kimi-code/vendor/chrome-devtools-mcp/`
+  (`npm install --no-save --ignore-scripts --omit=dev`) and then merge a node-direct entry
+  (`node <vendored entry point>` — the CLI spawns stdio servers without a shell, so `npx`/`npx.cmd`
+  cannot launch on Windows) into the project's `.kimi-code/mcp.json` idempotently: every other server
+  and user setting is
+  preserved byte-for-byte, an existing DIFFERENT `chrome-devtools` entry is preserved and reported
+  instead of overwritten (exit 3, nothing written), a target that is not valid JSON is never
+  overwritten, and without a working Python the file is left untouched while the deployment still
+  completes. The readiness report prints created/updated/unchanged/conflict and reminds that the
+  configuration takes effect in a NEW Kimi session, where `/mcp` shows the connection status.
+- **Remote `reference_docs` sources** — `skill_base.py resolve` classifies `reference_docs[].path`
+  deterministically as a local path, a public HTTP(S) document (`http_doc`) or a public HTTP(S) Git
+  repository (`http_git` — a URL whose path ends in `.git`) and materializes remote sources under the
+  resolved repository's uncommitted runtime cache `.code-factory/cache/reference-docs/`
+  (`http/<key>/`, `git/<key>/`, `_clones/<key>/`, `_meta/<key>.json`; `<key>` = stable hash of the
+  canonical URL), then handles them exactly like local documents — the `{path, skill}` task schema is
+  unchanged. Freshness stays content-hash based and stable across platforms and fresh clones (clone with
+  `core.autocrlf=false`, `core.eol=lf`; hooks, filters, symlinks and the host git config ignored; `.git`
+  and the cache metadata excluded from the hash). The manifest keeps the canonical URL as `source` plus
+  the optional `source_type`/`resolved_revision` keys, and old manifests load and are written unchanged.
+  New flags `--offline`, `--allow-stale`, `--timeout <seconds>`, `--max-bytes <n>`: a cached copy is
+  never fresh remote content — it is marked `offline: true`/`stale: true` — and a fetch failure without
+  a usable cache reports the source and reason and skips the skill instead of inventing one.
+- **Tests** — new `test_chrome_devtools_mcp.py` (decision reasons and exclusions, E2E-stack discovery,
+  browser matrix, idempotent merge, conflict preservation, probe degradation, safety invariants) and
+  `test_remote_reference_docs.py` (loopback HTTP server + temporary local/bare Git fixtures ONLY:
+  classification, create/reuse/update, redirects, rejected schemes and credentials, size/time limits,
+  deterministic hashing, offline/stale, old-manifest compatibility; the default suite needs no internet
+  access). `test_factory_preflight.py` covers the opt-in `--web-gui` block and `--simulate-missing`
+  (the base schema without the flag stays byte-compatible), `test_error_router.py` covers the
+  browser/MCP infrastructure rows I1–I4 and the absence of a GUI-specific `recommended_role`,
+  `test_windows_scripts.py` covers the deployer MCP step, conflict preservation and the no-Python
+  fallback, and `test_run_id.py` re-pins the digest of the changed task-template fixture.
+
+### Changed
+- **Error routing** — `references/error-patterns.default.json` and `references/error-routing.md` gained
+  the browser/MCP INFRASTRUCTURE rows I1–I4 (node/npm/npx missing, Chrome / Chrome for Testing missing,
+  MCP connection/startup failure, chrome-devtools-mcp launch error), placed between the git-hygiene and
+  the generic rows so a browser capability line cannot be stolen by `command not found` (PLANNER) or
+  `file not found` (BA); they route through the existing infrastructure auto-fix path (budget 3) with no
+  new role and no new budget, and existing ids are untouched so project-learned overrides keep matching.
+  GUI implementation failures and review rework are NOT infrastructure: they keep the existing coder
+  route and `retry_counters.coder`.
+- **Pre-flight** — `factory_preflight.py --web-gui` appends the nested `web_gui` capability block
+  (node/npm/npx versions, Chrome / Chrome for Testing presence, MCP server start feasibility) for an
+  applicable Web GUI run, delegated to `chrome_devtools_mcp.py`; it is OPT-IN, so a non-Web-GUI run
+  keeps the previous output schema and never requires Node.js or Chrome, and a missing capability is
+  DATA with a reason, never a fatal error — the affected browser criteria stay explicitly UNVERIFIED,
+  never MET.
+- **Models and briefings** — `references/providers.md` documents the optional `models.gui_expert` role
+  key (generator-side like `models.coder`, so its family differs from the judge family, while coder and
+  gui_expert may share one generator family; logged as `models_used.gui_expert` with
+  `model_preference: secondary` as the fallback); `references/handoff-briefing.md`,
+  `references/verification-strategy.md` §3.1 (browser evidence split and FRESH/STALE rules) and
+  `agents/sub-agents/tester.md` state the browser evidence split;
+  `agents/sub-agents/skill-manager.md` and `references/reference-docs.md` state the remote-source
+  lifecycle and security contract; `assets/task-template.yaml` and `.example.task.yaml` show the
+  `gui_expert` models key.
+- **Manuals** — `README.md`, `.agents/README.md` and `AGENTS.md` document the two delivered scopes: the
+  conditional Web GUI path (activation decision, specialist/tester evidence split, deployer-managed
+  `.kimi-code/mcp.json`, safety defaults, pre-flight and I1–I4 degradation) and the remote-URL
+  `reference_docs` capability (URL kinds, cache layout, deterministic hashing, offline/stale semantics,
+  security contract). The scripts trees list `chrome_devtools_mcp.py` and the two new self-tests, and
+  the assets list `chrome-devtools.mcp.json` and `chrome-devtools-smoke.html`.
+- **Factory rule carriers** — `references/factory-rules.md` adds
+  `.agents/agents/sub-agents/gui-expert.md` as a carrier of `no-shared-tree-git-mutations` and
+  `english-only` (`check_factory_rules.py` stays exit 0, rule bodies byte-identical).
+
 ## [12.13.0] — 2026-09-29
 
 ### Added

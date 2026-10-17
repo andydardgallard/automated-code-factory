@@ -16,14 +16,18 @@ anchored by `--repo <scratch>`:
   task_graph.py --repo <scratch> create --id task_01 --title ...
   error_router.py classify --repo <scratch> --log .code-factory/logs/errors.md
   verify_quotes.py --repo <scratch> --claims .code-factory/state/claims.json --report ...
+  repo_inventory.py inventory --repo <scratch> --tracked
 
 Asserted: every artifact lands under `<scratch>/.code-factory/` (and is read back from there), while
 the launch directory stays untouched — the full path walk before/after the mini-run is identical and
 `git -C <launch> status --porcelain` stays empty (a misplaced artifact would show up as untracked);
 the git half of the contract holds too — the branch and the commit made via `git -C <scratch>` appear
 in `git -C <scratch> log` while the launch repository's HEAD, branch, commit list and reflog are
-byte-for-byte unchanged; and the LEGACY default still works — the same invocations WITHOUT `--repo`,
-run from cwd = the target repository, land in that repository (backward compatibility).
+byte-for-byte unchanged; the tracked inventory is anchored at `--repo` as well — `--tracked` reads
+the TARGET repository's tracked set, so an untracked machine-local file inside the target stays out
+of the review inventory while the flag-less walk still sees it; and the LEGACY default still works —
+the same invocations WITHOUT `--repo`, run from cwd = the target repository, land in that repository
+(backward compatibility).
 
 The temp directories are removed at the end with a retry + read-only-attribute fallback (git keeps
 its objects read-only and Windows can hold a just-closed file briefly). `git` must be on PATH: the
@@ -51,6 +55,7 @@ PREFLIGHT = SCRIPTS / "factory_preflight.py"
 TASK_GRAPH = SCRIPTS / "task_graph.py"
 ERROR_ROUTER = SCRIPTS / "error_router.py"
 VERIFY_QUOTES = SCRIPTS / "verify_quotes.py"
+REPO_INVENTORY = SCRIPTS / "repo_inventory.py"
 
 # A tiny but real task file (the workspace of the mini-run) and an error log routing to the coder.
 TASK_YAML = "title: repo scoping mini-run\nrepo_path: scratch\nmode: auto\n"
@@ -318,14 +323,33 @@ def main() -> int:
                f"without --repo verify_quotes must write into the cwd: {res.stdout!r} {res.stderr!r}")
         expect(tree(launch) == set() and git(launch, "status", "--porcelain").stdout == "",
                "the launch directory must still hold nothing after the flag-less invocations")
+
+        # 12. The tracked inventory is anchored at `--repo` like everything else: `inventory --tracked`
+        #     reads the TARGET repository's tracked set (its committed `.code-factory/` artifacts are
+        #     tracked, so they do appear), while an untracked machine-local file dropped into the target
+        #     stays out of the review inventory — and the flag-less walk still sees it.
+        (scratch / "machine.config.local").write_text("API_KEY=local-only\n", encoding="utf-8")
+        res = run(REPO_INVENTORY, "inventory", "--repo", str(scratch), "--tracked", cwd=launch)
+        expect(res.returncode == 0, f"inventory --tracked must exit 0: {res.stderr!r}")
+        tracked_paths = [f["path"] for f in json.loads(res.stdout)["files"]]
+        expect(".code-factory/state/task.yaml" in tracked_paths,
+               f"the tracked set must come from the target repository: {tracked_paths}")
+        expect("machine.config.local" not in tracked_paths,
+               f"an untracked local file must stay out of the tracked inventory: {tracked_paths}")
+        res = run(REPO_INVENTORY, "inventory", "--repo", str(scratch), cwd=launch)
+        expect("machine.config.local" in [f["path"] for f in json.loads(res.stdout)["files"]],
+               f"the flag-less walk must still see the local file: {res.stdout!r}")
+        expect(tree(launch) == launch_before
+               and git(launch, "status", "--porcelain").stdout == "",
+               "the tracked-mode step must leave the launch directory untouched")
     finally:
         remove_tree(tmp)
 
     print("PASS - with repo_path != cwd every deterministic step of a run (run_id gen/check, "
-          "preflight, task graph, error routing, quote verification) places and reads its artifacts "
-          "under <repo>/.code-factory/ via --repo, leaving the launch directory, its work tree, its "
-          "HEAD and its reflog untouched; the git half lives in the target (`git -C <repo>`); and "
-          "the flag-less invocation still resolves against the cwd.")
+          "preflight, task graph, error routing, quote verification, tracked inventory) places and "
+          "reads its artifacts under <repo>/.code-factory/ via --repo, leaving the launch directory, "
+          "its work tree, its HEAD and its reflog untouched; the git half lives in the target "
+          "(`git -C <repo>`); and the flag-less invocation still resolves against the cwd.")
     return 0
 
 

@@ -9,6 +9,30 @@
       "task_ids": [
         "task-improvements-2026-09-24"
       ]
+    },
+    "playwright-mcp": {
+      "name": "playwright-mcp",
+      "source": "https://playwright.dev/docs/getting-started-mcp",
+      "sha256": "8c159f0a76d167cbf2a927f794472ee4a865c026049c9836428ac72093c6e3f5",
+      "created_at": "2026-10-16T21:17:18+00:00",
+      "last_used": "2026-10-16T21:17:18+00:00",
+      "task_ids": [
+        "20261016-2ddb58eb"
+      ],
+      "source_type": "http_doc",
+      "resolved_revision": null
+    },
+    "chrome-devtools-mcp": {
+      "name": "chrome-devtools-mcp",
+      "source": "https://github.com/ChromeDevTools/chrome-devtools-mcp.git",
+      "sha256": "4e0d378014de46382d67ca37243114141547313d2df915eaee8fb074cae8f5d7",
+      "created_at": "2026-10-16T21:17:18+00:00",
+      "last_used": "2026-10-16T21:17:18+00:00",
+      "task_ids": [
+        "20261016-2ddb58eb"
+      ],
+      "source_type": "http_git",
+      "resolved_revision": "2777fa05b296cdb51507e6fd33ae05c06fe0b9e7"
     }
   }
 }

@@ -9,7 +9,10 @@
 #
 # Purpose: copy the factory (.agents/) into the project, create the memory of
 # THIS specific project (`memory/` — the long-term memory of the target project:
-# journal `memory/change-log.md` + summary `memory/summary.md`), configure
+# journal `memory/change-log.md` + summary `memory/summary.md`), configure the
+# Kimi Code MCP servers (`.kimi-code/mcp.json` — the managed `chrome-devtools`
+# entry plus the pinned package vendored beside it, merged without clobbering
+# anything already there), configure
 # .gitignore, initialize a git repository if needed, create the `start.cmd`
 # (Windows) and `start.sh` (Git Bash/Linux) launchers and verify readiness.
 #
@@ -24,8 +27,10 @@
 # declared for ANOTHER project or mixes projects — only a warning (the script
 # still exits with exit 0).
 #
-# Python is needed only for the factory scripts (project memory) and may be
-# absent — in that case the deployment continues and completes successfully.
+# Python is needed only for the factory scripts (project memory, MCP merge) and may be
+# absent — in that case the deployment continues and completes successfully, an existing
+# `.kimi-code/mcp.json` is never touched, and no new one is created (its managed entry
+# path is per-installation).
 #
 # Usage:
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File prepare_factory.ps1 <path-to-project>
@@ -379,7 +384,93 @@ $CmdWritten = Write-FileStrict -Path $LauncherCmd -Text $cmdText -Encoding $EncN
 if ($CmdWritten) { Info "    Launcher: created $LauncherCmd" }
 if ($ShWritten)  { Info "    Launcher: created $LauncherSh" }
 
-# --- 5. .gitignore -----------------------------------------------------------------
+# --- 5. Chrome DevTools MCP configuration -------------------------------------------
+# The Kimi Code CLI reads its stdio MCP servers from `.kimi-code/mcp.json` at the project
+# root. The factory manages exactly ONE entry there — the `chrome-devtools` server (the PINNED
+# chrome-devtools-mcp release, isolated temporary browser profile, usage statistics, CrUX
+# lookups and update checks disabled) — and touches nothing else: unrelated servers and user
+# settings survive byte-for-byte, and an existing DIFFERENT `chrome-devtools` entry is
+# preserved and reported (never silently replaced). Only this project's file is written;
+# user-level configuration is never modified.
+# The launch shape is `node <vendored entry>`: the Kimi Code CLI spawns stdio servers WITHOUT a
+# shell, so `npx` fails with ENOENT and `npx.cmd` with EINVAL on Windows. The deployer therefore
+# installs the pinned package ONCE into `.kimi-code/vendor/chrome-devtools-mcp/` (npm with
+# --no-save --ignore-scripts --omit=dev — package scripts never run at deploy time) and merges
+# the entry that points at it. When python, node or npm is unavailable, or the install fails,
+# NO entry is written: an absent server that is REPORTED is far better than a config whose
+# launch file does not exist, which would break every Kimi session in this project.
+# Deployment must not newly require Python: without a working interpreter an existing mcp.json
+# is left untouched and nothing new is created (the per-installation entry path is derived by
+# the helper, so a copied template would be a broken config).
+$McpDir    = Join-Path $ProjectDir '.kimi-code'
+$McpFile   = Join-Path $McpDir 'mcp.json'
+$McpVendor = Join-Path $McpDir 'vendor\chrome-devtools-mcp'
+$McpAsset  = Join-Path $ProjectAgents 'skills\code-factory\assets\chrome-devtools.mcp.json'
+$McpMerge  = Join-Path $ProjectAgents 'skills\code-factory\scripts\chrome_devtools_mcp.py'
+# created | updated | unchanged | conflict | failed | vendor-skipped | no-python-skipped
+$McpState  = 'absent'
+$McpReason = ''
+
+if ($HasPython -and (Test-Path -LiteralPath $McpMerge -PathType Leaf)) {
+    # 5a. The pinned package comes first: an entry may only point at an installed file.
+    $vendorRes  = Invoke-Capture -Command (@($PyExe) + @($PyPrefix) + @($McpMerge, 'vendor-install', '--target', $McpVendor, '--asset', $McpAsset))
+    # The reported line is the LAST non-empty one: it is the helper's message, never a traceback.
+    $vendorMsg  = @($vendorRes.Output) | Where-Object { "$_".Trim() -ne '' } | Select-Object -Last 1
+    if ($vendorRes.ExitCode -ne 0) {
+        $McpState  = 'vendor-skipped'
+        $McpReason = $(if ($vendorMsg) { $vendorMsg } else { 'no output' })
+        Warn "    chrome-devtools MCP: package install skipped/failed — $McpReason"
+        Warn "      No managed entry is written: a server launched from a file that does not exist would break every Kimi session in this project."
+        if (Test-Path -LiteralPath $McpFile -PathType Leaf) {
+            Warn "      The existing $McpFile is left untouched."
+        }
+    } else {
+        Info "    MCP package: $(if ($vendorMsg) { $vendorMsg } else { 'pinned chrome-devtools-mcp is vendored' })"
+        $McpExisted = Test-Path -LiteralPath $McpFile -PathType Leaf
+        $mergeRes   = Invoke-Capture -Command (@($PyExe) + @($PyPrefix) + @($McpMerge, 'merge-config', '--target', $McpFile, '--asset', $McpAsset))
+        $mergeOut   = (@($mergeRes.Output) | ForEach-Object { "$_" }) -join "`n"
+        # The reason shown for a failure is the LAST non-empty line of the helper's output: a
+        # conflict message is explicit, while a crashed interpreter would only add a traceback.
+        $McpReason  = @($mergeRes.Output) | Where-Object { "$_".Trim() -ne '' } | Select-Object -Last 1
+        if ($mergeRes.ExitCode -eq 0) {
+            if (-not $McpExisted) {
+                $McpState = 'created'
+                Info "    MCP config: created — $McpFile (server chrome-devtools, node + the vendored pinned package)"
+            } elseif ("$mergeOut" -like 'unchanged*') {
+                $McpState = 'unchanged'
+                Info "    MCP config: already in place — $McpFile (server chrome-devtools, no diff)"
+            } else {
+                $McpState = 'updated'
+                Info "    MCP config: updated — $McpFile (server chrome-devtools merged; existing servers and settings preserved)"
+            }
+        } elseif ($mergeRes.ExitCode -eq 3) {
+            # A DIFFERENT `chrome-devtools` entry already exists: it is preserved byte-for-byte and
+            # nothing is overwritten — resolving the difference stays an explicit user decision.
+            $McpState = 'conflict'
+            Warn "    MCP config: CONFLICT — an existing 'chrome-devtools' entry differs from the factory definition; it is preserved and nothing was overwritten"
+            Warn "      reason: $(if ($McpReason) { $McpReason } else { 'an existing chrome-devtools entry differs from the factory definition' })"
+            Warn "      Resolve the difference in $McpFile explicitly, then run prepare_factory.cmd again."
+        } else {
+            $McpState = 'failed'
+            Warn "    MCP config: not configured — $(if ($McpReason) { $McpReason } else { 'no output' })"
+            Warn "    The factory starts without the managed server; the existing $McpFile is left as it is."
+        }
+    }
+} else {
+    # No working Python (or the helper is missing): an existing mcp.json is NEVER touched, and no
+    # new one is created — its managed entry needs the per-installation vendored entry path.
+    $McpState = 'no-python-skipped'
+    if (-not $HasPython) { $McpReason = 'python not found' }
+    else                 { $McpReason = "merge helper $McpMerge is missing" }
+    if (Test-Path -LiteralPath $McpFile -PathType Leaf) {
+        Warn "    MCP config: skipped — ${McpReason}: the existing $McpFile is left untouched (no merge, nothing clobbered)"
+    } else {
+        Warn "    MCP config: skipped — ${McpReason}: no managed entry is written (its launch path is per-installation and only the helper derives it)"
+    }
+}
+Info "      The MCP configuration takes effect in a NEW Kimi session — /mcp in that session shows the connection status."
+
+# --- 6. .gitignore -----------------------------------------------------------------
 # Note: .gitignore only affects git tracking, not access to files on disk.
 # Ignoring .agents/ does not break reading/writing the factory's data (cache,
 # history, context) — the factory works with .agents/ directly through the file
@@ -387,8 +478,11 @@ if ($ShWritten)  { Info "    Launcher: created $LauncherSh" }
 $Gitignore        = Join-Path $ProjectDir '.gitignore'
 # task.yaml / start.cmd / start.sh are the factory's own files in a DEPLOYED project: a leftover
 # task file or launcher sitting in a TARGET project must never be mistaken for a new task and
-# never get committed.
-$CfPatterns       = @('.agents/', '.code-factory/', '__pycache__/', '*.pyc', '.env', '.env.*', '*.env', '*.pem', '*.key', 'task.yaml', 'start.cmd', 'start.sh')
+# never get committed. The managed MCP config is ignored too: its chrome-devtools entry carries the
+# ABSOLUTE path of the vendored package of THIS installation, so a committed config would hand a
+# fresh clone a launch path that does not exist there (ignoring the vendor directory alone protects
+# the package, not the config pointing at it).
+$CfPatterns       = @('.agents/', '.code-factory/', '.kimi-code/mcp.json', '.kimi-code/vendor/', '__pycache__/', '*.pyc', '.env', '.env.*', '*.env', '*.pem', '*.key', 'task.yaml', 'start.cmd', 'start.sh')
 $GitignoreExists  = Test-Path -LiteralPath $Gitignore -PathType Leaf
 $GitignoreText    = ''
 if ($GitignoreExists) { $GitignoreText = [System.IO.File]::ReadAllText($Gitignore) }
@@ -412,7 +506,7 @@ if ($NeedGitignore) {
     Write-FileStrict -Path $Gitignore -Text $add -Encoding $EncNoBom -Append | Out-Null
 }
 
-# --- 6. Readiness check -------------------------------------------------------------
+# --- 7. Readiness check -------------------------------------------------------------
 # The memory line is assembled from the state of step 3 (we do not run init again).
 # Three distinguishable states: ok — the memory belongs to this project; mixed —
 # entries from different projects; other — the memory is declared for another project (we are deploying to the wrong place).
@@ -443,6 +537,19 @@ switch ($MemState) {
     default       { $MemLine = "MISSING ✗" }
 }
 
+# The MCP line is assembled from the state of step 5. A conflict, an uninstalled package or a
+# skipped merge is REPORTED here — a managed server that silently did not arrive costs a browser run.
+switch ($McpState) {
+    'created'           { $McpLine = 'created ✓ (server chrome-devtools, node + the vendored pinned package)' }
+    'updated'           { $McpLine = 'updated ✓ (server chrome-devtools merged; existing servers and settings preserved)' }
+    'unchanged'         { $McpLine = 'OK ✓ (server chrome-devtools, already pinned)' }
+    'conflict'          { $McpLine = 'CONFLICT ✗ (existing chrome-devtools entry preserved — resolve it explicitly, then re-run)' }
+    'failed'            { $McpLine = "not configured ✗ ($(if ($McpReason) { $McpReason } else { 'merge failed' }))" }
+    'vendor-skipped'    { $McpLine = "skipped ✗ (chrome-devtools MCP: package install skipped/failed — $(if ($McpReason) { $McpReason } else { 'no output' }); no managed entry written)" }
+    'no-python-skipped' { $McpLine = "skipped ($(if ($McpReason) { $McpReason } else { 'python not found' })) — no managed entry written" }
+    default             { $McpLine = 'MISSING ✗' }
+}
+
 $AgentsOk = if (Test-Path -LiteralPath (Join-Path $ProjectDir '.agents\skills\code-factory\SKILL.md') -PathType Leaf) { 'OK ✓' } else { 'MISSING ✗' }
 $ShOk     = if (Test-Path -LiteralPath $LauncherSh  -PathType Leaf) { 'OK ✓' } else { 'MISSING ✗' }
 $CmdOk    = if (Test-Path -LiteralPath $LauncherCmd -PathType Leaf) { 'OK ✓' } else { 'MISSING ✗' }
@@ -459,6 +566,7 @@ Write-Host "    • start.cmd:           $CmdOk"
 Write-Host "    • .git/:               $GitOk"
 Write-Host "    • .gitignore:          $GiOk"
 Write-Host "    • memory/:              $MemLine"
+Write-Host "    • .kimi-code/mcp.json: $McpLine"
 Write-Host "    • git status:"
 $statusOut = @()
 if ($GitExe) {
@@ -469,7 +577,7 @@ foreach ($line in $statusOut) { Write-Host "$line" }
 if (@($statusOut).Count -eq 0) { Write-Host "      (clean tree)" }
 Write-Host ""
 
-# --- 7. Summary ----------------------------------------------------------------------
+# --- 8. Summary ----------------------------------------------------------------------
 # A hard error (factory not copied / launcher file not written) means the deployment is
 # incomplete: an honest exit code 1 and a clear explanation instead of a cheerful "Done".
 # All other states (no python, memory not verified) are warnings, exit code 0.

@@ -35,6 +35,46 @@
       "route": "infrastructure"
     },
     {
+      "id": "I1",
+      "category": "BROWSER_TOOLCHAIN",
+      "patterns": [
+        "(node|npm|npx)'?\\s*:\\s*(command not found|not found|no such file or directory)",
+        "'?(node|npm|npx)'?\\s+is\\s+not\\s+recognized",
+        "spawn\\s+(node|npm|npx)\\b[^\\n]{0,20}(ENOENT|EACCES|failed)",
+        "(node|npm|npx)\\b[^\\n]{0,20}was not found on PATH; a Web GUI run cannot start"
+      ],
+      "route": "infrastructure"
+    },
+    {
+      "id": "I2",
+      "category": "BROWSER_MISSING",
+      "patterns": [
+        "(chrome|chromium|google[- ]chrome|chrome[- ]for[- ]testing)\\b[^\\n]{0,60}(not found|not installed|is missing|could not be found|fails? to launch|failed to launch|does not exist|doesn't exist|no such file)",
+        "(could not find|unable to find|cannot launch|failed to launch)\\s+(the\\s+)?(google\\s+)?(chrome|chromium|chrome[- ]for[- ]testing)",
+        "no\\s+(google\\s+)?chrome\\s+(binary|executable|installation)"
+      ],
+      "route": "infrastructure"
+    },
+    {
+      "id": "I3",
+      "category": "MCP_STARTUP",
+      "patterns": [
+        "mcp\\b[^\\n]{0,60}(failed to start|failed to connect|could not start|cannot start|not initialized|startup (failed|error)|connection (refused|reset|failed)|disconnected|timed? out|no such server|unknown server)",
+        "(failed to connect|could not connect|unable to connect|failed to start)[^\\n]{0,40}\\bmcp\\b",
+        "\\bmcp\\b[^\\n]{0,40}server[^\\n]{0,20}(crashed|exited unexpectedly)"
+      ],
+      "route": "infrastructure"
+    },
+    {
+      "id": "I4",
+      "category": "CHROME_DEVTOOLS_MCP",
+      "patterns": [
+        "chrome[- ]devtools[- ]mcp[^\\n]{0,80}(error|failed|exited|not found|EPERM|ENOENT|cannot find|timed? out)",
+        "(error|failed|exited|EPERM|ENOENT|cannot find|ENOTFOUND)[^\\n]{0,60}chrome[- ]devtools[- ]mcp"
+      ],
+      "route": "infrastructure"
+    },
+    {
       "id": "5",
       "category": "MISSING_FILE",
       "patterns": ["No such file or directory", "cannot open file", "file not found", "does not exist"],

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contact form — local Web GUI fixture</title>
+<!--
+  chrome-devtools-mcp business fixture (dependency-free, no network calls).
+
+  Expected behaviour: after the user fills in the name and the email and submits the form, the
+  visible result panel must show the entered name and email.
+
+  FIXTURE STATE: an INTENTIONAL DEFECT is planted in the inline script below. The result paragraph
+  has the id "result-text", but the submit handler looks up "resultt", so getElementById returns
+  null and the handler throws before the panel is updated. The browser console shows
+  "TypeError: Cannot set properties of null" on submit and the panel keeps the previous text.
+
+  This file is the local UI fixture for the factory's Chrome DevTools MCP business test: the GUI
+  specialist reproduces that defect in the real browser and fixes it, the tester then repeats the
+  scenario independently. The documented fix is the one-line element id in the inline script; the
+  fixture itself must never be rewritten in place, work on a copy under
+  .code-factory/logs/browser/.
+-->
+<style>
+  :root { color-scheme: light; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0;
+    padding: 2rem;
+    background: #f5f6f8;
+    color: #1f2430;
+  }
+  main { max-width: 32rem; margin: 0 auto; background: #ffffff; padding: 1.5rem 2rem 2rem;
+         border-radius: 0.5rem; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+  h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+  h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+  label { display: block; margin: 0 0 0.25rem; font-weight: 600; }
+  input { display: block; width: 100%; padding: 0.5rem; margin: 0 0 1rem;
+          border: 1px solid #c3c8d2; border-radius: 0.25rem; font-size: 1rem; box-sizing: border-box; }
+  button { padding: 0.5rem 1rem; border: 0; border-radius: 0.25rem; background: #2b5bd7;
+           color: #ffffff; font-size: 1rem; cursor: pointer; }
+  section#result { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #e2e5eb; }
+  #result-text { margin: 0; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Contact form</h1>
+  <form id="contact-form" novalidate>
+    <label for="name">Name</label>
+    <input id="name" name="name" type="text" autocomplete="off" placeholder="Ada Lovelace">
+
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="off" placeholder="ada@example.com">
+
+    <button id="submit-button" type="submit">Submit</button>
+  </form>
+
+  <section id="result" aria-live="polite">
+    <h2>Result</h2>
+    <p id="result-text">No submission yet.</p>
+  </section>
+</main>
+
+<script>
+  (function () {
+    "use strict";
+
+    var form = document.getElementById("contact-form");
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+
+      var name = document.getElementById("name").value.trim();
+      var email = document.getElementById("email").value.trim();
+
+      // INTENTIONAL DEFECT: the result paragraph above has the id "result-text"; looking up
+      // "resultt" returns null, so this assignment throws and the visible panel never changes.
+      var panel = document.getElementById("resultt");
+      panel.textContent = "Thanks, " + name + " <" + email + ">";
+    });
+  })();
+</script>
+</body>
+</html>

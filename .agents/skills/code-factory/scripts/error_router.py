@@ -4,7 +4,7 @@ Deterministic error router (stdlib only, zero LLM tokens) for the routing tables
 `references/error-routing.md`.
 
 `references/error-patterns.default.json` is the machine-readable snapshot of those tables: section 1
-rows 1-20 (`patterns`) and section 1.1 provider rows A-F (`provider_patterns`), each entry
+rows 1-24 (`patterns`) and section 1.1 provider rows A-F (`provider_patterns`), each entry
 `{id, category, patterns[], route}`. The ARRAY ORDER IS THE PRIORITY ("first match wins") and every
 regex is matched case-insensitively. A project LEARNS its own patterns in
 `.code-factory/state/error-patterns.json`: they are merged PROJECT-FIRST over the defaults
@@ -45,7 +45,7 @@ than silently writing a wrong union.
 Regexes are compiled with re.IGNORECASE (the tables are case-insensitive) and re.MULTILINE, so
 line-anchored patterns such as `^error: ` keep their meaning inside a multi-line log.
 
-Match order is section-1 rows 1-20 first, then section-1.1 provider rows A-F: that is the document's
+Match order is section-1 rows 1-24 first, then section-1.1 provider rows A-F: that is the document's
 own order, and it keeps every non-provider log classified as before (e.g. `expected 500 but got 502`
 stays WRONG_RESULTS instead of being caught by the provider pattern `5\\d\\d`).
 

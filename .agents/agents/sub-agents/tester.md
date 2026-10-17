@@ -9,6 +9,7 @@ tools:
   - Grep
   - Glob
   - Bash
+  - mcp__chrome-devtools__*
 model_preference: secondary
 ---
 
@@ -37,6 +38,15 @@ Responsibilities in order:
    definition of "done" and check that the story's outcome is actually produced.
 4. Refactor tasks — see `.agents/skills/code-factory/references/refactoring.md`: the ONLY
    acceptance signal is that the existing suite passes 100% unchanged; any test edit is a failure.
+
+**Web GUI acceptance is independent and yours.** When the task involves a Web GUI, YOU execute the
+final browser business scenario through the Chrome DevTools MCP tools (`mcp__chrome-devtools__*`)
+AFTER the last UI code change: navigate to the resolved local/test application, take a FRESH
+accessibility snapshot, run the user scenario, check console and network health, and capture visual
+evidence at the required viewport under `.code-factory/logs/browser/` with the run_id. The
+`factory-gui-expert` specialist produces DIAGNOSTIC artifacts only; you OWN the acceptance evidence
+and never reuse the specialist's diagnostic artifacts as acceptance proof. Re-run and re-stamp this
+evidence after any later change, and never report an unexecuted browser criterion as MET.
 
 **Think in Code — never pull a full test log into the context.** Test output larger than 16 KB
 MUST be saved as a file under `.code-factory/logs/`; the context then receives only

@@ -3,7 +3,7 @@ name: code-factory
 description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 type: flow
 ---
-<!-- code-factory-version: 12.13.0 -->
+<!-- code-factory-version: 12.14.1 -->
 
 # Code Factory
 
@@ -17,11 +17,13 @@ Turns business tasks (described by non-technical users) into working, tested cod
 - `references/error-routing.md` — deterministic error classification, retry budgets, Diagnostician fallback (on any failure)
 - `references/code-review.md` — static quality gate: checklist, severity, verdict, rework task (before acceptance)
 - `references/providers.md` — model routing for Kimi (K3) and Qwen providers (Phase 4)
+- `references/chrome-devtools-mcp.md` — conditional Chrome DevTools MCP browser path: activation, managed server/config facts, specialist vs tester evidence split, safety defaults, degradation (Phases 0/4/5/8)
 - `references/refactoring.md` — refactor task type: freeze functionality, 100% tests unchanged
 - `references/security-audit.md` — security_audit task type: adaptive full audit + fix-task file
 - `references/documentation.md` — factory-documenter: documentation methodology + validator (Finish phase)
 - `references/reference-docs.md` — reference_docs/reference_skills: persistent skill base + relevance matrix (Phase 0/5)
 - `references/factory-rules.md` — the ONE home of the mandatory rules + the documents that must quote each one verbatim (`scripts/check_factory_rules.py` verifies the byte-identical blocks; any phase)
+- `.agents/agents/sub-agents/gui-expert.md` — factory-gui-expert: coder-class Web GUI implementation/debugging in a real browser (conditional, only when the Web GUI path applies; Phases 4/5/8)
 - `assets/task-template.yaml` — business task template (Phase 0)
 
 ## Runtime state (at the root of the RESOLVED repo_path)
@@ -94,14 +96,14 @@ flowchart TD
     R1 --> E
     C2 -->|Yes| F[Create the development plan following references/planning-guide.md: DAG of tasks with dependencies and per-task verification commands; business tests are first-class tasks in the plan. If the task needs new in-project skills, scripts or plugins, include them in the plan. Save the plan to .code-factory/state/plan.md. For task_type=review, the plan is the review rework list produced by the code reviewer.]
     F --> TT{task_type?}
-    TT -->|review| CR0[Run factory-code-reviewer over the WHOLE codebase — in shards, never as one whole-repo context: repo_inventory.py shards with --max-lines 20000 → one reviewer subagent per shard in parallel → merge_findings.py prints the deterministic merged verdict (request_changes if any shard returned it or any critical finding exists). Write the verdict to .code-factory/logs/code-review.md and log models_used.reviewer. On request_changes the rework list becomes the plan.]
+    TT -->|review| CR0[Run factory-code-reviewer over the WHOLE codebase — in shards, never as one whole-repo context: repo_inventory.py shards --tracked --max-lines 20000 (the TRACKED tree via git ls-files at --repo) → one reviewer subagent per shard in parallel → merge_findings.py prints the deterministic merged verdict (request_changes if any shard returned it or any critical finding exists). Write the verdict to .code-factory/logs/code-review.md and log models_used.reviewer. On request_changes the rework list becomes the plan.]
     CR0 --> CRV0{Review verdict?}
     CRV0 -->|approve| W
     CRV0 -->|request_changes| G
     TT -->|implement| G
     TT -->|refactor| RF[Refactor flow: baseline the existing test suite, plan structural-only tasks, implement with factory-refactorer, verify 100% of existing tests pass unchanged — any behavior change is a critical error and rolls back automatically. See references/refactoring.md.]
     RF --> L
-    TT -->|security_audit| SA[Security audit flow: detect artifact types, run only the relevant checks with factory-security-auditor (read-only) over the same shards — repo_inventory.py shards ≤20000 lines → parallel auditors → merge_findings.py — write reports + a generated fix-task file. No code change and no auto-fixing. See references/security-audit.md.]
+    TT -->|security_audit| SA[Security audit flow: detect artifact types, run only the relevant checks with factory-security-auditor (read-only) over the same shards — repo_inventory.py shards --tracked --max-lines 20000 over the TRACKED tree → parallel auditors → merge_findings.py — write reports + a generated fix-task file. No code change and no auto-fixing. See references/security-audit.md.]
     SA --> W
     G -->|hitl| H[Business test definition: ask the user via AskUserQuestion for 1 a concrete business scenario (user story), 2 which configs and input data to run, 3 expected business results. Only business-logic questions. Store answers in the plan.]
     H --> I[Present the full plan for approval: write it to the plan file and call EnterPlanMode then ExitPlanMode. Wait for approval or revision comments. Count every rejection in retry_counters.plan_rejections of .code-factory/state/pipeline.yaml.]
@@ -111,11 +113,11 @@ flowchart TD
     PC --> PC2[Run the deterministic arbiter: python .agents/skills/code-factory/scripts/plan_arbiter.py --plan-a .code-factory/state/plan.md --plan-b .code-factory/state/plan-2.md --out .code-factory/state/plan_merged.md. It merges the machine-readable sections (DAG tasks by id, risks, business tests) and lists every divergence.]
     PC2 --> PC3[Present the merged plan and the divergence list to the user in business language; the merged plan becomes the plan of record and every further revision applies to it (the committee runs at most once per task).]
     PC3 --> F
-    J -->|Approve| K
+    J -->|Approve| PF
     G -->|auto| L[Make reasonable business assumptions from the task description. Record every assumption explicitly in the plan.]
-    L --> PF[Pre-flight: probe the real environment first with scripts/factory_preflight.py --out .code-factory/state/preflight.json — it reports the python command that actually works (python / python3 / py), git, bash/sh, the OS and KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL, and every command below is emitted for the capabilities found. Then the git check: if the project has no git repository, run git init. Working tree must be clean: auto-untrack build artifacts (target/, node_modules/, __pycache__/ etc.) and commit factory artifacts (AGENTS.md). Record git HEAD and git status in .code-factory/state/. Also verify model setup: for the new CLI check that KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 is exported (otherwise secondary-model split is INACTIVE); record a models_warning in pipeline.yaml if missing.]
+    L --> PF[Pre-flight: probe the real environment first with scripts/factory_preflight.py --out .code-factory/state/preflight.json — it reports the python command that actually works (python / python3 / py), git, bash/sh, the OS and KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL, and every command below is emitted for the capabilities found. Then the git check: if the project has no git repository, run git init. Working tree must be clean: auto-untrack build artifacts (target/, node_modules/, __pycache__/ etc.) and commit factory artifacts (AGENTS.md). Record git HEAD and git status in .code-factory/state/. Also verify model setup: for the new CLI check that KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 is exported (otherwise secondary-model split is INACTIVE); record a models_warning in pipeline.yaml if missing. Conditional browser probes: only for an applicable Web GUI run add --web-gui, which appends the node/npm/npx, Chrome / Chrome for Testing and MCP-start capability block to the same file — a not-applicable run never probes the browser, never launches Chrome and never needs Node.js.]
     PF --> K[Backup the current state: copy every file that will be modified to .code-factory/backups/ preserving relative paths. Track created files in .code-factory/manifest.json. Write the checkpoint .code-factory/state/pipeline.yaml after every phase for resume.]
-    K --> M[Implement: launch factory-coder subagents for the plan tasks, respecting dependencies; independent tasks can run in parallel. Every delegation uses the mandatory briefing template references/handoff-briefing.md. Models are passed by the main agent: pass model: explicitly to the Agent tool (supported by the CLI) following the task's models matrix — model_preference in the sub-agent .md files is only the FALLBACK for roles the task does not name. After each subagent returns, log the used model for each role to pipeline.yaml models_used. Each coder follows the plan and the project coding style in an isolated context. After every change, update manifest.json. Also create any new skills/scripts/plugins defined in the plan.]
+    K --> M[Implement: launch factory-coder subagents for the plan tasks, respecting dependencies; independent tasks can run in parallel. Every delegation uses the mandatory briefing template references/handoff-briefing.md. Models are passed by the main agent: pass model: explicitly to the Agent tool (supported by the CLI) following the task's models matrix — model_preference in the sub-agent .md files is only the FALLBACK for roles the task does not name. After each subagent returns, log the used model for each role to pipeline.yaml models_used. Each coder follows the plan and the project coding style in an isolated context. After every change, update manifest.json. Also create any new skills/scripts/plugins defined in the plan. Conditional Web GUI routing: when the Phase 1 applicability decision is applicable, factory-gui-expert implements and debugs the assigned UI files in the real browser through Chrome DevTools MCP with models.gui_expert honored and models_used.gui_expert logged, the tester — never the specialist — owns the browser acceptance, and non-GUI work stays with factory-coder.]
     M --> N[Integration tests: write and run per-task tests for the changed modules following references/verification-strategy.md.]
     N --> O{Tests passed?}
     O -->|No| RR[Route the failure per references/error-routing.md: classify deterministically by regex, record the error context in .code-factory/logs/errors.md, and update retry counters in pipeline.yaml.]
@@ -147,7 +149,7 @@ flowchart TD
     V2 -->|stop| Y
     Q --> R{Tests passed?}
     R -->|No| RR
-    R -->|Yes| S[Business tests: run the program with the user-provided configs and input data. Collect actual business results and compare them with the expected business results.]
+    R -->|Yes| S[Business tests: run the program with the user-provided configs and input data. Collect actual business results and compare them with the expected business results. Browser acceptance for an applicable Web GUI task is tester-owned: after the last code change factory-tester INDEPENDENTLY executes the final scenario through the Chrome DevTools MCP tools — fresh accessibility snapshot, real interaction, console/network inspection, visual evidence at the required viewport, artifacts under .code-factory/logs/browser/ carrying the run_id — while the specialist's diagnostic artifacts stay distinct and a screenshot alone is never proof; missing Node/Chrome/MCP leaves the browser criteria unverified, never MET.]
     S --> T{Business results match?}
     T -->|No| U[Show the user actual vs expected results. Ask via AskUserQuestion: fix the code, or revise the expectations?]
     U --> V{User decision}
@@ -325,7 +327,11 @@ Rules that always apply:
 - **Models**: the main agent PASSES the model explicitly to the Agent tool (`model:` is supported
   by the CLI) following the task's `models` matrix and the generator≠judge rule of
   `references/providers.md` (coder/tester and reviewer/diagnostician/advisor come from different
-  model families). The ONE exception where the matrix does NOT apply is the second planner of the
+  model families). `models.gui_expert` is the optional task key for the Web GUI specialist
+  `factory-gui-expert`: generator-class like `models.coder` (its family therefore differs from the
+  reviewer/diagnostician/advisor family), used only when the Web GUI path applies, defaulting to the
+  role's secondary fallback when its MCP/media capabilities suffice, and the model actually used is
+  logged as `models_used.gui_expert`. The ONE exception where the matrix does NOT apply is the second planner of the
   plan committee (double rejection): it always comes from the family contrasting the first planner
   — the committee rule outranks the matrix (`references/providers.md` §5.2). The per-role
   `model_preference: primary|secondary` in each sub-agent `.md` is the FALLBACK, resolved against
@@ -364,11 +370,12 @@ Rules that always apply:
   analyzers: `scripts/repo_stats.py` — sizes, entry points, imports). Long test/build output goes
   to `.code-factory/logs/`; the context gets counters + tail only, via `scripts/log_tail.py`.
 - **Sharded whole-repo operations (review / security_audit)**: `scripts/repo_inventory.py shards
-  --max-lines 20000` → one reviewer/auditor subagent per shard in parallel → `scripts/
+  --tracked --max-lines 20000` (the TRACKED tree via `git ls-files`, the same file set `inventory
+  --tracked` prints) → one reviewer/auditor subagent per shard in parallel → `scripts/
   merge_findings.py` returns the deterministic merged verdict; an entire repository never enters
   one context.
 <!-- factory-rule: shard-protocol begin -->
-**Shard protocol (canonical wording):** whole-repo review and security_audit never fit into one context: `scripts/repo_inventory.py shards --max-lines 20000` cuts the repository into shards of ≤20000 lines, each shard is processed by its own parallel subagent (reviewer or auditor) and writes one findings file. The result is produced by the deterministic `scripts/merge_findings.py` (deduplication, sorting by severity, merged verdict), and the canonical review gate is applied to the MERGED findings, not to individual shards. A regular `implement` task is reviewed by diff and needs no sharding.
+**Shard protocol (canonical wording):** whole-repo review and security_audit never fit into one context: `scripts/repo_inventory.py shards --tracked --max-lines 20000` cuts the TRACKED tree (`git ls-files -z` at `--repo`, so an untracked or ignored machine-local file stays out of the review) into shards of ≤20000 lines, each shard is processed by its own parallel subagent (reviewer or auditor) and writes one findings file. The result is produced by the deterministic `scripts/merge_findings.py` (deduplication, sorting by severity, merged verdict), and the canonical review gate is applied to the MERGED findings, not to individual shards. A regular `implement` task is reviewed by diff and needs no sharding.
 <!-- factory-rule: shard-protocol end -->
 
 - **Verified acceptance**: acceptance is machine-checked with `scripts/verify_acceptance.py` —

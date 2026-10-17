@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.13.0 -->
+<!-- code-factory-version: 12.14.1 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -30,6 +30,7 @@ projects or creates projects from scratch.
 │       │   ├── documentation.md     # documentation subagent: methodology + validator
 │       │   ├── handoff-briefing.md  # mandatory subagent briefing template (files by path)
 │       │   ├── reference-docs.md    # reference_docs/reference_skills: skill base + matrix
+│       │   ├── chrome-devtools-mcp.md  # conditional browser path: applicability, MCP config, evidence split, degradation
 │       │   ├── factory-rules.md     # single rulebook of mandatory rules + carriers line
 │       │   └── error-patterns.default.json  # snapshot of the error-routing tables: defaults on which the project's project-learned overlay is layered
 │       ├── scripts/
@@ -58,13 +59,16 @@ projects or creates projects from scratch.
 │       │   ├── test_env_propagation.sh     # self-test: model env-flag propagation
 │       │   ├── validate_documentation.py   # documentation validator (documentation subagent)
 │       │   ├── test_validate_documentation.py  # documentation validator self-test
-│       │   ├── skill_base.py               # persistent skill base (reference_docs)
+│       │   ├── skill_base.py               # persistent skill base (reference_docs; local paths + public http(s) URLs)
 │       │   ├── test_skill_base.py          # skill base self-test
+│       │   ├── test_remote_reference_docs.py # remote reference_docs self-test (loopback HTTP + local/bare Git fixtures)
+│       │   ├── chrome_devtools_mcp.py      # conditional browser path: decide/discover-e2e/browser-matrix/vendor-install/merge-config/probe/validate-config
+│       │   ├── test_chrome_devtools_mcp.py # Chrome DevTools MCP helper self-test
 │       │   ├── version_manager.py          # single version source: get/bump/sync/validate/set/suggest
 │       │   ├── test_version_manager.py     # version script self-test (≥12 cases)
 │       │   ├── validate_mermaid.py         # structural Mermaid diagram validator
 │       │   ├── test_validate_mermaid.py    # Mermaid validator self-test
-│       │   ├── repo_inventory.py           # repository inventory + shards (shard protocol)
+│       │   ├── repo_inventory.py           # repository inventory + shards (shard protocol; --tracked = the `git ls-files -z` set)
 │       │   ├── test_repo_inventory.py      # inventory self-test
 │       │   ├── merge_findings.py           # deterministic merge of shard findings + verdict
 │       │   ├── test_merge_findings.py      # findings merge self-test
@@ -74,9 +78,9 @@ projects or creates projects from scratch.
 │       │   ├── test_repo_stats.py          # analyses self-test
 │       │   ├── log_tail.py                 # counters + tail of a long log (without pulling it into context)
 │       │   ├── test_log_tail.py            # log tail self-test
-│       │   ├── factory_preflight.py        # environment pre-flight (python/python3/py etc.)
+│       │   ├── factory_preflight.py        # environment pre-flight (python/python3/py etc.; --web-gui adds the browser capability block)
 │       │   ├── test_factory_preflight.py   # pre-flight self-test
-│       │   ├── action_gate.py              # destructive actions: ALLOW/CONFIRM/HARD_DENY (mutating git stash → CONFIRM, `stash list/show` → ALLOW)
+│       │   ├── action_gate.py              # destructive actions: ALLOW/CONFIRM/HARD_DENY (shell wrappers classified by payload; mutating git stash → CONFIRM, `stash list/show` → ALLOW)
 │       │   ├── test_action_gate.py         # action gate self-test (+ --help/usage under cp1251)
 │       │   ├── task_graph.py               # on-disk task graph: create/claim/complete/ready/list
 │       │   ├── test_task_graph.py          # task graph self-test
@@ -90,13 +94,16 @@ projects or creates projects from scratch.
 │       │   ├── test_review_gate.py         # canonical review gate self-test (5 documents)
 │       │   └── test_windows_scripts.py     # Windows deployment/launch scripts self-test
 │       └── assets/
-│           └── task-template.yaml   # business task template
+│           ├── task-template.yaml   # business task template
+│           ├── chrome-devtools.mcp.json  # managed `chrome-devtools` server TEMPLATE: pinned release + entry-path placeholder
+│           └── chrome-devtools-smoke.html # opt-in real-Chrome smoke fixture for the browser path
 └── agents/
     ├── code-factory.md              # main agent (Kimi Code 0.34+, --agent-file Markdown)
     └── sub-agents/
         ├── analyzer.md              # subagent: project analysis (read-only)
         ├── planner.md               # subagent: independent alternative plan (committee, read-only)
         ├── coder.md                 # subagent: code implementation
+        ├── gui-expert.md            # subagent: Web GUI implementation and browser debugging (Chrome DevTools MCP)
         ├── tester.md                # subagent: tests and result verification
         ├── diagnostician.md         # subagent: deep error analysis (read-only)
         ├── advisor.md               # subagent: second opinion on an error after the Diagnostician
@@ -172,11 +179,19 @@ Preparation and launch are a single action. First prepare the project:
 ```
 
 The script copies the factory, configures `.gitignore`/git (in the prepared project it ignores
-`.agents/`, `.code-factory/`, the secret patterns, and the factory's own `task.yaml`/`start.cmd`/
-`start.sh`, so a leftover task file or launcher is never mistaken for a new task and never
-committed), and creates a `start.sh` launcher in the project (with
-`KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` and `KIMI_FACTORY_LAUNCH_DIR` — the absolute launch
-directory, the anchor against which the task's `repo_path` is resolved — already set in it). Then — just launch:
+`.agents/`, `.code-factory/`, `.kimi-code/vendor/` — the machine-local vendored package — and
+`.kimi-code/mcp.json`, the machine-local managed MCP config whose entry holds an absolute path of
+THIS installation, so neither a vendor tree nor a launch path of one machine is ever committed or
+handed to a fresh clone; it also ignores the secret patterns and the factory's own
+`task.yaml`/`start.cmd`/`start.sh`, so a leftover task file or launcher is never mistaken for a new
+task and never committed), and creates a `start.sh` launcher in
+the project (with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` and `KIMI_FACTORY_LAUNCH_DIR` — the
+absolute launch directory, the anchor against which the task's `repo_path` is resolved — already set
+in it). It also installs the pinned `chrome-devtools-mcp` release into the project's
+`.kimi-code/vendor/` and merges the managed `chrome-devtools` MCP server into
+`.kimi-code/mcp.json` (see *Web GUI and the Chrome DevTools MCP path* below; the readiness report
+prints `created`/`updated`/`unchanged`/`conflict` for it, and a skip when the package could not be
+installed). Then — just launch:
 
 ```bash
 cd /path/to/your-project
@@ -190,8 +205,13 @@ No additional `export` commands need to be memorized.
 
 The same one-action preparation via `prepare_factory.cmd`: it invokes `prepare_factory.ps1`
 (the Windows version of the deployer; PowerShell ships with Windows) and forwards its exit code. The script
-copies the factory, configures git/`.gitignore`, creates the `start.cmd` (Windows) and
-`start.sh` (Git Bash/Linux) launchers in the project, and prints a readiness report:
+copies the factory, configures git/`.gitignore` with the SAME pattern list as the shell deployer
+(`.agents/`, `.code-factory/`, `.kimi-code/vendor/`, `.kimi-code/mcp.json`, the secret patterns and
+the factory's own task/launcher files), creates the `start.cmd` (Windows) and
+`start.sh` (Git Bash/Linux) launchers in the project, installs the pinned `chrome-devtools-mcp`
+release into `.kimi-code/vendor/`, merges the managed `chrome-devtools` MCP entry into
+`.kimi-code/mcp.json` (the same preservation/conflict rules as in the shell deployer) and prints
+a readiness report:
 
 ```bat
 rem prepare the project (copies the factory, configures git/.gitignore, and creates the launchers)
@@ -208,8 +228,13 @@ start.cmd --auto
 
 Python is not required for deployment: without it, the long-term memory step (`memory/`) degrades with a
 clear warning, the deployment still completes successfully, and the factory will create the memory on
-first access to the project. The factory itself uses Python for the memory and version scripts
-(`memory_project.py`, `version_manager.py`, etc.).
+first access to the project. The same holds for the managed MCP configuration: the helper
+(`chrome_devtools_mcp.py`) needs Python for both the vendored install and the merge, so without a
+working interpreter an existing `.kimi-code/mcp.json` is left untouched, no new one is created (its
+managed entry launches a per-installation path only the helper derives) and the deployment reports
+the skip. The factory itself uses Python
+for the memory, version and browser-path scripts (`memory_project.py`, `version_manager.py`,
+`chrome_devtools_mcp.py`, etc.).
 
 The Windows launchers get CRLF on checkout regardless of the `core.autocrlf` setting: the `.cmd`
 and `.ps1` files are marked in `.gitattributes` as `text eol=crlf` (the same protection as
@@ -360,10 +385,18 @@ discrepancies; the user is presented with the merged plan, and further edits are
 Before acceptance, every task passes through the `factory-code-reviewer` subagent:
 
 - **regular task** — the reviewer examines the **diff** of the changes (not the whole project);
-- **`task_type: review` / `security_audit`** — a review/audit of **all the code** in SHARDS at the start:
-  `scripts/repo_inventory.py shards --max-lines 20000` → one subagent per shard →
-  a deterministic merged verdict by `scripts/merge_findings.py` (each subagent
-  sees only the files of its own shard); the findings of a review task become the plan.
+- **`task_type: review` / `security_audit`** — a review/audit of **all the TRACKED code** in SHARDS at
+  the start: `scripts/repo_inventory.py shards --repo <resolved repo_path> --max-lines 20000
+  --tracked` → one subagent per shard → a deterministic merged verdict by
+  `scripts/merge_findings.py` (each subagent sees only the files of its own shard); the findings of
+  a review task become the plan. `--tracked` takes the file set from a NUL-safe `git ls-files -z` at
+  `--repo`, so untracked and git-ignored paths (a machine-local config, a build output, a leftover
+  artifact) can never enter the review or land in a shard, while a TRACKED file under `build/` or
+  `node_modules/` is reviewed like any other. When `--tracked` is requested and git or the repository
+  is unavailable the command fails with the reason instead of silently walking the worktree — a
+  fallback would put back exactly the paths the mode exists to exclude. Without the flag the
+  filesystem walk stays the default (the escape hatch for callers that must also see untracked
+  files).
 
 A verdict of `approve` → the task proceeds to acceptance; `request_changes` → a rework list
 is produced for the coder, and after the fixes the tests and the review are run again. When the budget is exhausted, the
@@ -420,6 +453,13 @@ On the failure of any test, the factory does NOT roll back blindly:
 4. **Human**: if the Advisor or Diagnostician recommends it — show the user and ask.
 5. **FAILED**: only when all budgets are exhausted, with a full log in
    `.code-factory/logs/errors.md`. The factory never fails silently.
+
+Browser/GUI routing adds no role and no budget: browser/MCP environment problems (Node.js, npm/npx,
+Google Chrome or Chrome for Testing missing, MCP startup/connection failure, chrome-devtools-mcp
+launch errors) are matched by the INFRASTRUCTURE rows I1–I4 of `references/error-routing.md` and
+follow the existing infrastructure auto-fix path (budget 3), while a Web GUI implementation failure or
+review rework is handed to `factory-gui-expert`/`factory-coder` under the EXISTING coder route and
+`retry_counters.coder`. There is no GUI-specific `recommended_role` and no separate GUI retry budget.
 <!-- factory-rule: rollback-on-retry begin -->
 **Rollback before retry (canonical wording):** every test or build failure is first routed deterministically (`references/error-routing.md`), then the state is rolled back: files are restored from `.code-factory/backups/`, factory-created files are deleted, the git state is brought back to the recorded one. Only after the rollback is the error handed to the executing role — otherwise the retry runs on an already corrupted state. Infrastructure auto-fixes (environment, dependencies) do not roll back code.
 <!-- factory-rule: rollback-on-retry end -->
@@ -455,6 +495,70 @@ Practical techniques (proven on a real run):
 - run business tests with exactly the commands the user provided (build + run);
 - delete the run's side artifacts (results folders) after verification, or ignore them in git.
 
+## Web GUI and the Chrome DevTools MCP path (conditional)
+
+The factory's only browser MCP, and a conditional capability: it exists for tasks that create, change,
+fix or visually validate a browser-based Web GUI, and is invisible for every other task.
+
+- **Activation is deterministic and carries a REASON** (never a model call):
+  `chrome_devtools_mcp.py decide --task-file .code-factory/state/task.yaml --repo <resolved repo_path>`.
+  An explicit exclusion in the task text (`backend-only`, `no web UI`, `out of scope`) always wins over
+  GUI keywords; a repository that merely contains a frontend does not force activation, while a
+  green-field Web GUI task still activates. `discover-e2e --repo <root>` names the project's EXISTING
+  browser/E2E stack and its config file (Playwright Test, Cypress, WebdriverIO, Selenium), and
+  `browser-matrix` derives the required matrix from the acceptance criteria — it is never assumed. The
+  decision, the discovered stack and the reasons are recorded in the run plan/state.
+- **Roles and evidence split**: `factory-gui-expert` (coder-class) implements and interactively debugs
+  the ASSIGNED UI files, may capture a baseline, and writes DIAGNOSTIC artifacts under
+  `.code-factory/logs/browser/` (run_id-stamped); `factory-tester` independently executes the FINAL
+  browser business scenario AFTER the last code change and owns the ACCEPTANCE artifacts in the same
+  directory, labelled and distinct from the specialist's. The specialist never issues a final PASS for
+  its own work. Only these two roles receive the `mcp__chrome-devtools__*` tools; analyzer, planner,
+  diagnostician and reviewer stay read-only, and `factory-coder` keeps non-GUI work without routine
+  browser access. GUI implementation failures and review rework use the EXISTING coder route and
+  `retry_counters.coder` — no separate role, no separate retry budget.
+- **Deployed configuration**: the server is named `chrome-devtools` (transport `stdio`, launched as
+  `node <absolute path of the vendored package entry>` — PINNED release `chrome-devtools-mcp@1.11.0`,
+  never `@latest`) and is defined by `assets/chrome-devtools.mcp.json`, whose entry path is the
+  placeholder `{CHROME_DEVTOOLS_MCP_ENTRY}`: the path is per-installation. The deployer
+  (`prepare_factory.sh`, on Windows `prepare_factory.cmd` → `prepare_factory.ps1`) first installs the
+  pinned package into `<project>/.kimi-code/vendor/chrome-devtools-mcp/` through
+  `chrome_devtools_mcp.py vendor-install` (`npm install --prefix <vendor dir> --no-save
+  --ignore-scripts --omit=dev`) and only then merges the entry via `chrome_devtools_mcp.py
+  merge-config`: idempotent, every other server and user setting preserved byte-for-byte, and an
+  existing DIFFERENT `chrome-devtools` entry is reported and preserved instead of overwritten (exit 3,
+  nothing written) — resolve the conflict explicitly and re-run. `npx`/`npx.cmd` is never used: the
+  CLI spawns stdio servers without a shell (ENOENT/EINVAL on Windows). When node/npm is unavailable
+  or the install fails, NO entry is written and the deployer reports
+  `chrome-devtools MCP: package install skipped/failed — <reason>`; without a working Python an
+  existing `mcp.json` is left untouched and no new one is created. MCP configuration takes effect in
+  a NEW Kimi session; `/mcp` in that session shows the connection status, so a session started before
+  the deployment has no browser tools whatever the config says.
+- **Safety defaults (enforced by the managed config)**: an isolated TEMPORARY Chrome profile and test
+  data, never the user's personal profile, cookies or saved credentials; no attaching to a running
+  browser (`autoConnect`/remote debugging) unless the user explicitly opts in; no blanket MCP
+  permission rule; usage statistics and CrUX lookups disabled, update checks disabled, sensitive
+  network headers redacted, secrets kept out of configuration, artifacts and reports. Automated
+  navigation and mutations are restricted to the local/test application; browser profiles, screenshots
+  and traces are run artifacts and never committed into `memory/`.
+- **Pre-flight and degradation**: `chrome_devtools_mcp.py probe` (Node.js, npm/npx, Google Chrome or
+  Chrome for Testing, MCP server start feasibility — and with
+  `--target <project>/.kimi-code/mcp.json` the vendored package entry that project's server launches)
+  is fail-soft — a missing capability is DATA with a reason, never a crash; `factory_preflight.py
+  --web-gui` appends the same nested `web_gui` capability block for an applicable run (opt-in,
+  `--simulate-missing <name>` forces one capability to report missing). Its `mcp_usable` is true only
+  for a REAL deployment of the resolved repository: the managed `.kimi-code/mcp.json` must be valid
+  under the `chrome_devtools_mcp.py validate-config` invariants AND the pinned vendored entry it
+  launches must be on disk at the pinned version — otherwise the server is reported missing with the
+  exact reason and the browser criteria stay UNVERIFIED (the shipped template alone can never make a
+  clean clone look like a deployed browser path). A missing or incompatible
+  capability is routed through the INFRASTRUCTURE rows I1–I4 of `references/error-routing.md`
+  (node/npm/npx not found, Chrome/Chrome for Testing missing, MCP connection/startup failure,
+  chrome-devtools-mcp launch errors) — no new role, no new budget — and the affected browser criteria
+  stay explicitly UNVERIFIED, never MET: no screenshot, console result or acceptance artifact is ever
+  fabricated. A non-Web-GUI run never invokes the specialist, launches Chrome or calls a browser tool,
+  and does not need Node.js or Chrome to succeed.
+
 ## Auto-documentation, debt, and version
 
 **Auto-documentation**: after every successful `implement`/`refactor` run, the factory
@@ -478,6 +582,29 @@ follow_up items.
 freshness is determined by the SHA256 hash of the source; management is done by the `factory-skill-manager` subagent
 and the `scripts/skill_base.py` script. Skills enter the subagents' dynamic context via a
 deterministic matrix (see `references/reference-docs.md`).
+
+`reference_docs[].path` may also be a PUBLIC http(s) URL, so the `{path, skill}` task schema is
+unchanged: `skill_base.py resolve` classifies the source deterministically as a local path, an HTTP(S)
+document (`http_doc`) or an HTTP(S) Git repository (`http_git` — a URL whose path ends in `.git`) and
+materializes a remote source into the uncommitted runtime cache
+`.code-factory/cache/reference-docs/` under the resolved repository root (one `<key>` per canonical
+URL: `http/`, `git/`, `_clones/`, `_meta/`). Handled from then on exactly like a local document, the
+source keeps the same content-hash freshness: equal hash → reuse, different hash → incremental update,
+a new name → generate; the hash is stable across platforms and fresh clones (clone with
+`core.autocrlf=false`, `core.eol=lf`, symlinks/hooks/filters/host config ignored, `.git` and the cache
+metadata excluded). The manifest stores the canonical URL as `source` plus the optional remote-only
+`source_type` and `resolved_revision` — old manifests load and are written unchanged. Only public,
+unauthenticated `http(s)` sources are accepted (other schemes, embedded credentials and SSH/scp Git
+URLs are rejected before any fetch; rejected sources are reported with userinfo stripped, and every
+redirect target is re-validated). Both the download and the shallow single-branch clone are bounded by
+`--timeout <seconds>` and `--max-bytes <n>` (plus a git low-speed abort), the HTTP part is Python
+stdlib and Git uses the `git` executable — no new dependency — and nothing fetched is ever executed
+(no hooks, submodules, LFS or tags) or followed as instructions. Default: fetch the source, and a
+failure is an error (a cached copy is never silently substituted); `--offline` touches no network at
+all and exits 1 when no cache exists; `--allow-stale` retries the fetch and falls back to the cache on
+failure — both reuse paths are reported `offline: true`/`stale: true`, because a cached copy is never
+fresh remote content, and a failed fetch without a usable cache skips the skill instead of inventing
+one.
 
 **Version (single source of truth)**: the `VERSION` file (one line X.Y.Z). After a successful
 run, the version type is determined by a deterministic matrix (`scripts/version_manager.py suggest`),
@@ -505,6 +632,12 @@ The main agent passes the model to each subagent explicitly: the `model:` argume
 is supported by the CLI — the model is taken from the task's `models` matrix under the generator≠judge rule
 (coder/tester and reviewer/diagnostician/advisor come from different model families), while `model_preference`
 (`primary|secondary`) in the `.md` subagents serves as a fallback for roles the task did not name.
+The optional `models.gui_expert` key names the model of the Web GUI specialist `factory-gui-expert`: it
+is generator-side like `models.coder` (so its family differs from the reviewer's), a secondary model is
+preferred for routine implementation when its MCP/media capabilities suffice, and the used model is
+logged as `models_used.gui_expert` in `pipeline.yaml`/`report.md`. Complex visual analysis may be
+delegated to a read-only primary role without making it the implementer — generator≠judge is preserved
+either way.
 The only exception where the matrix is NOT applied is the committee's second planner (double plan
 rejection): the committee rule is stronger than the matrix, and its family is chosen deterministically —
 contrasting with the first planner (`references/providers.md` §5.2).
@@ -523,7 +656,9 @@ the factory will see `unset` — this is a property of the launch environment, n
 
 Recommended role mapping:
 - primary (reasoning): main/planner, analyzer, diagnostician, reviewer;
-- secondary (fast): coder, tester;
+- secondary (fast): coder, tester; the Web GUI specialist `factory-gui-expert` is generator-side and
+  may use a secondary model for routine UI implementation (`models.gui_expert`), with complex visual
+  analysis delegated to a read-only primary role;
 - planner-2 (committee on double rejection): a model from a family CONTRASTING with the planner
   (`sub-agents/planner.md`; `model_preference: secondary` is only a fallback), so that the second plan is
   truly independent rather than a retelling of the first.

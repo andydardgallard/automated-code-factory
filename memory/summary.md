@@ -8,35 +8,29 @@ repo_path: .
 (порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
 
 ## Current state
-Factory v12.14.1 — V12 REVIEW REWORK: all 14 findings of the v12 whole-project review fixed and
-vaccination-proven (run 20261017-7a5130ac, commit 756de71): recursive shell-wrapper classification in
-action_gate (per-quote-type escapes, real shell tokenization, unreadable payload → CONFIRM),
-`--tracked` NUL-safe inventory/shards mode (git ls-files; the shard-protocol rule now mandates it in
-all 5 carriers), HITL approval routed through pre-flight (SKILL.md Approve→PF + flow regression),
-Web pre-flight `mcp_usable` gated on a real managed config + pinned vendored entry, fail-soft MCP
-`env` validation + credential-NAME scanning, I1 aligned to the exact probe wording, skill_base
-repo-anchored hash / mid-transfer clone abort / `record --resolved-hash` without re-fetch,
-position-based documentation validator, both deployers gitignore `.kimi-code/mcp.json`, Windows suite
-clean-clone-safe (84 PASS) with mutation-proven MCP safety constants. Acceptance: DEGRADED
-conditional pass (10 MET / 0 FAILED / 1 derived; reviewer budget 2/2 exhausted at request_changes
-with 0 critical open; criterion 2 unverified_review; honest review_gate=fail ledger entry).
-Rulebook: 25 rules, 100 carriers. Memory owner: repo. Current regression: 32/32 self-tests PASS
-(31 test_*.py + test_env_propagation.sh), deterministic rules/english/model/mermaid/version gates PASS.
-Lineage: v12.8.0 (shard protocol, two-level fingerprint, review gate, verified acceptance, evidence
-ledger, advisor, preflight) → v12.9.0 (rulebook, run_id, memory v2 provenance, golden set,
-vaccination) → v12.10.0–12.10.2 (severity boundary, plan committee, precedent index, utf8-guards,
-no-shared-tree-git-mutations) → v12.11.0 (git-stash classification, content fingerprint, memory
-actuality) → v12.12.0/12.12.1 (English-only package, v8 review rework) → v12.13.0 (repo-scoping
-contract, 25th rule) → v12.14.0 (gui-expert + Chrome DevTools MCP, remote reference_docs) →
-v12.14.1 (v12 review rework).
-Latest run: v12-review rework (run_id 20261017-7a5130ac, branch factory/v12-review-rework-20261017,
-commit 756de71, task_type=implement, v12.14.0 → 12.14.1 patch, reviewer-validated). Previous: v12
-whole-project review (run_id 20261017-8afa3aae, 2c+12m findings) and v11 (run_id 20261016-2ddb58eb,
-v12.14.0 gui-expert + remote reference_docs). Open backlog: 3 items — pwsh/powershell SINGLE-quoted
--Command payload still fail-open (critical, reviewer iteration-2 major, pre-existing at base HEAD),
-wrapper analysis misses launcher prefixes (env/sudo/builtin) and $(...) substitutions (warning),
-installer-side missing-Node line (chrome_devtools_mcp.py:632) routes to diagnostician not I1
-(warning). Prior history has 35 items closed with evidence.
+Factory v12.14.3 — FULL REMAINING BACKLOG CLOSED (run 20261017-4beb46d5, hitl retry of the failed
+attempt 20261017-1955b445). All three open items are fixed on branch
+factory/fix-full-backlog-v2-20261017, delivered in commit 692e518: decoded PowerShell payloads are
+split in PowerShell's own dialect (the review-2 backslash vectors are HARD_DENY in hitl and auto),
+env/sudo/builtin launcher prefixes and readable $(...) substitutions are analyzed recursively
+without execution — including the `builtin --` option terminator whose blind ALLOW killed the
+previous attempt — and the REAL vendor_install() missing-Node line routes to infrastructure via a
+new row-I1 alternative. Vaccination-first throughout (red-then-green archived per item), business
+harness PASS on all scenarios (786 + 2439 + 56 assertions, 0 mismatches), review APPROVE at
+iteration 1 (1 deferrable minor: unterminated-quote launcher lines keep the pre-existing ALLOW,
+recorded info/follow_up=false), verified acceptance SUCCESS (5 verify criteria MET + 1 derived).
+Latest delivered product: v12.14.3 at commit 692e518. Latest run: full-backlog implement
+(run_id 20261017-4beb46d5), SUCCESS; previous run: 20261017-1955b445 (FAILED attempt). Open
+backlog: 0 items (39 closed with evidence). Rulebook: 25 rules, 100 carriers. Memory owner: repo.
+Prior history has 36 items closed with evidence. Lineage: v12.8.0 (shard protocol, two-level
+fingerprint, review gate, verified acceptance, evidence ledger, advisor, preflight) → v12.9.0
+(rulebook, run_id, memory v2 provenance, golden set, vaccination) → v12.10.0–12.10.2 (severity
+boundary, plan committee, precedent index, utf8-guards, no-shared-tree-git-mutations) → v12.11.0
+(git-stash classification, content fingerprint, memory actuality) → v12.12.0/12.12.1 (English-only
+package, v8 review rework) → v12.13.0 (repo-scoping contract, 25th rule) → v12.14.0 (gui-expert +
+Chrome DevTools MCP, remote reference_docs) → v12.14.1 (v12 review rework) → v12.14.2 (PowerShell
+single-quote hardening) → v12.14.3 (full remaining backlog closed: PowerShell-dialect splitting,
+launcher/substitution analysis, installer routing).
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле

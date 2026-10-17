@@ -37,7 +37,7 @@ specific first. First match wins.
 | 2 | WRONG_RESULTS | `zero Total_Return\|no trades occurred\|all combinations produced identical\|expected .* but got\|regression\|no meaningful signals\|no nonzero\|zero return` | DIAGNOSTICIAN |
 | 3 | INFRASTRUCTURE | `Merge conflict in (target/|node_modules/|__pycache__/|build/|dist/)` | INFRASTRUCTURE (auto-fix) |
 | 4 | INFRASTRUCTURE | `(build artifacts|target/|node_modules/) (tracked|committed) in git` | INFRASTRUCTURE (auto-fix) |
-| I1 | BROWSER_TOOLCHAIN | `(node|npm|npx)'?\s*:\s*(command not found|not found|no such file or directory)\|'?(node|npm|npx)'?\s+is\s+not\s+recognized\|spawn\s+(node|npm|npx)\b[^\n]{0,20}(ENOENT|EACCES|failed)\|(node|npm|npx)\b[^\n]{0,20}was not found on PATH; a Web GUI run cannot start` | INFRASTRUCTURE (auto-fix) |
+| I1 | BROWSER_TOOLCHAIN | `(node|npm|npx)'?\s*:\s*(command not found|not found|no such file or directory)\|'?(node|npm|npx)'?\s+is\s+not\s+recognized\|spawn\s+(node|npm|npx)\b[^\n]{0,20}(ENOENT|EACCES|failed)\|(node|npm|npx)\b[^\n]{0,20}was not found on PATH; a Web GUI run cannot start\|(node|npm|npx)\b[^\n]{0,20}was not found on PATH:[^\n]{0,60}the pinned chrome[- ]devtools[- ]mcp[^\n]{0,40}cannot be installed` | INFRASTRUCTURE (auto-fix) |
 | I2 | BROWSER_MISSING | `(chrome|chromium|google[- ]chrome|chrome[- ]for[- ]testing)\b[^\n]{0,60}(not found|not installed|is missing|could not be found|fails? to launch|failed to launch|does not exist|doesn't exist|no such file)\|(could not find|unable to find|cannot launch|failed to launch)\s+(the\s+)?(google\s+)?(chrome|chromium|chrome[- ]for[- ]testing)\|no\s+(google\s+)?chrome\s+(binary|executable|installation)` | INFRASTRUCTURE (auto-fix) |
 | I3 | MCP_STARTUP | `mcp\b[^\n]{0,60}(failed to start|failed to connect|could not start|cannot start|not initialized|startup (failed|error)|connection (refused|reset|failed)|disconnected|timed? out|no such server|unknown server)\|(failed to connect|could not connect|unable to connect|failed to start)[^\n]{0,40}\bmcp\b\|\bmcp\b[^\n]{0,40}server[^\n]{0,20}(crashed|exited unexpectedly)` | INFRASTRUCTURE (auto-fix) |
 | I4 | CHROME_DEVTOOLS_MCP | `chrome[- ]devtools[- ]mcp[^\n]{0,80}(error|failed|exited|not found|EPERM|ENOENT|cannot find|timed? out)\|(error|failed|exited|EPERM|ENOENT|cannot find|ENOTFOUND)[^\n]{0,60}chrome[- ]devtools[- ]mcp` | INFRASTRUCTURE (auto-fix) |
@@ -67,14 +67,25 @@ Notes:
   rows 5/7 ON PURPOSE: without that position a browser capability line would be stolen by
   `command not found` (PLANNER) or `file not found` (BA) instead of reaching INFRASTRUCTURE. The
   existing ids are untouched, so project-learned overrides keep matching.
-- Row I1 must cover the wording the probes THEMSELVES emit, not only the shell-level spellings: the
-  Web GUI probe (`scripts/chrome_devtools_mcp.py`, `probe_capabilities`) reports a missing tool as
-  `<node|npm|npx> was not found on PATH; a Web GUI run cannot start the chrome-devtools MCP server
-  without it` — no colon after the tool name, so the shell-shaped alternatives above miss it and the
-  line would fall through to UNKNOWN/DIAGNOSTICIAN. Its last alternative mirrors that sentence's
-  invariant part; `scripts/test_error_router.py` renders the template from the probe source and pins
-  the classification, so a wording change on either side fails the suite instead of silently
-  re-routing a real missing-Node run.
+- Row I1 must cover the wording the probes and the installer THEMSELVES emit, not only the
+  shell-level spellings. The Web GUI probe (`scripts/chrome_devtools_mcp.py`, `probe_capabilities`)
+  reports a missing tool as `<node|npm|npx> was not found on PATH; a Web GUI run cannot start the
+  chrome-devtools MCP server without it`, and the installer (`vendor_install` of the same module)
+  reports the deployment-side line `<node|npm> was not found on PATH: the pinned
+  chrome-devtools-mcp@<version> cannot be installed, so no managed 'chrome-devtools' entry is
+  written …` (the installer checks those two tools only — never `npx`) — no colon after the tool
+  name in the first, no Web GUI consequence in the second, so the shell-shaped alternatives above
+  miss both and either line would fall through to
+  UNKNOWN/DIAGNOSTICIAN. The last two alternatives of the row mirror those sentences' invariant
+  parts: a missing tool on PATH plus the Web GUI consequence for the probe, and the same missing
+  tool plus the pinned-package install consequence for the installer. The installer alternative
+  deliberately names the pinned `chrome-devtools-mcp` tail, so a bare `… was not found on PATH` from
+  an unrelated tool never becomes BROWSER_TOOLCHAIN. `scripts/test_error_router.py` renders the
+  probe template from the probe source, PRODUCES the installer line by calling `vendor_install()`
+  with only `node` (and separately `node`+`npm`) absent — never the `simulate_missing` seam and never
+  an npm call — and pins both classifications together with the JSON↔table agreement of this row,
+  so a wording change on either side fails the suite instead of silently re-routing a real
+  missing-Node run.
 - GUI implementation and browser-test FAILURES (a broken UI, a failing scenario) are NOT
   infrastructure: they use the existing CODER route and `retry_counters.coder` — there is no separate
   GUI role key and no separate GUI retry budget. Rows I1–I4 route environment/startup problems only,

@@ -721,3 +721,95 @@ unfinished:
     reason: reviewer iteration-2 minor; cosmetic cleanup, left to keep the exhausted review budget honest
     severity: info
     follow_up: false
+
+## 2026-10-17T08:54:25+03:00 — Factory v12.14.2: PowerShell single-quote hardening; conditional pass with one open major
+title: Factory: close the pwsh/powershell single-quoted -Command fail-open in the destructive-action gate (plus remove the dead simple_commands helper)
+project: repo
+timestamp: 2026-10-17T08:54:25+03:00
+run_id: 20261017-5cdfc7af
+branch: factory/fix-pwsh-single-quote-20261017
+commit: 15ea6a6
+task_type: implement
+goal: make single-quoted pwsh/powershell -Command/-c payloads classify like their double-quoted and bare twins, with vaccination-first tests and dead-helper cleanup, without changing the exit-code/journal contract or unrelated wrapper behavior
+changed_files: 8 files (commit 15ea6a6) — action_gate.py PowerShell single-quote tokenization + decoded-quote completeness + fixed-contract/open-limitation docstring; test_action_gate.py additive section 21a-f; CHANGELOG.md 12.14.2 entry; VERSION 12.14.2; synchronized README.md, AGENTS.md, SKILL.md and .agents/README.md version markers
+created_files: none to the product (only .code-factory/ runtime artifacts)
+results: integration=PASS (test_action_gate.py exit 0, all section 21a-f and pre-existing assertions) [verified: .code-factory/logs/integration.log]; regression=PASS (31 test_*.py + test_env_propagation.sh, 84 Windows PASS/0 FAIL, all rules/english/model/mermaid/version gates green on 12.14.2) [verified: .code-factory/logs/regression.log and acceptance.md criterion 1]; business=MATCH for the covered matrix (192/192 real CLI checks, 48/48 twin groups, 192/192 journal rows; scenario 2 33/33) with the separate review-2 hole explicitly not covered [verified: .code-factory/logs/business-tests.md and business-test.log]; vaccination=PASS (original 114 red assertions then green; review-1 12 red assertions then green; no existing assertion changed) [verified: .code-factory/logs/vaccination.md and vaccination/*.log]; review=request_changes at budget exhaustion (iteration 1 major unmatched decoded quote closed; iteration 2 major POSIX-backslash recursive splitting open, 0 critical) [verified: .code-factory/logs/code-review.md, 2/2 quotes verified]; acceptance=DEGRADED conditional pass (3 MET / 0 FAILED / 1 derived; all 5 ledger entries FRESH; honest review_gate=fail; criterion 2 unverified_review) [verified: .code-factory/state/acceptance.md and logs/acceptance.log, verify_acceptance.py exit 1]; version patch 12.14.1 -> 12.14.2 (matrix --fix, reviewer validated without override) [verified: version_manager.py validate exit 0 and logs/code-review.md]; backlog=1 critical + 2 warning items open [verified: memory_project.py backlog --repo . --check expected exit 1 for the conditional-pass residual]
+decisions: the plain single-quoted -Command/-c path now uses PowerShell tokenization, doubled single quotes are decoded, and unmatched decoded quotes become CONFIRM through the existing fail-safe [verified: action_gate.py powershell_argv/powershell_quote_complete and section-21 tests]; review iteration 2 found a DIFFERENT POSIX-backslash recursive-splitting hole after iteration 1 closed, and budgets were not extended: the canonical auto conditional pass was taken with criterion 2 unverified_review and the hole recorded in code-review, acceptance, CHANGELOG, the module docstring and this backlog [verified: logs/code-review.md iteration 2, state/acceptance.md criterion-2 annotation, CHANGELOG.md 12.14.2]; the original plain single-quote backlog item is closed with evidence, the dead helper is removed without a closure block because it was info/follow_up=false, and the new backslash finding remains a separate open item, so no residual is hidden [verified: business-tests.md covered matrix, report.md unresolved-findings section, this entry's closed/unfinished blocks]
+assumptions: benign negative controls were not required to fail pre-fix; they are over-deny controls, while every bug-reproducing assertion was observed red first [verified: logs/vaccination.md]; the 192-check business matrix proves only its covered scenarios and is not safety clearance for the separately reproduced review-2 vectors [verified: logs/business-tests.md overall-status and open-finding sections]; pre-existing untracked user files were left untouched and uncommitted [verified: git status after commit 15ea6a6]
+models_used: main=kimi-code/k3; analyzer=kimi-code/k3 x2; coder=deepseek-flash (initial vaccination/fix + review-1 vaccination/rework); tester=deepseek-flash (3 business runs); reviewer=kimi-k3 (2 iterations + patch validation); documenter=deepseek-flash; diagnostician=unused; advisor=unused
+factory_version: 12.14.2
+closed:
+  - item: pwsh/powershell with a SINGLE-quoted -Command payload still ALLOWs destructive commands (`pwsh -Command 'rm -rf /'` -> ALLOW, exit 0) — reviewer iteration-2 major, pre-existing at base HEAD
+    evidence: the three original destructive payloads across pwsh/powershell, -Command/-c, single/double/bare and hitl/auto now classify like their twins (HARD_DENY/CONFIRM, never blind ALLOW), and review-1 unmatched decoded quotes CONFIRM; section 21a-f plus 192/192 real CLI checks in .code-factory/logs/business-tests.md [verified: test_action_gate.py exit 0, vaccination pre/post logs, integration.log and acceptance.md criterion 2]
+unfinished:
+  - item: PowerShell DECODED payloads are recursively split with POSIX backslash rules, so `pwsh -Command 'echo "\"; rm -rf /'` and `powershell -c 'echo "\"; git push origin main'` still ALLOW in hitl and auto (review iteration-2 major)
+    reason: reviewer budget 2/2 and coder budget 1/1 exhausted; canonical conditional pass recorded; next gate-hardening task must add red-before vectors and balanced benign controls, then use PowerShell quote/backslash semantics for recursive splitting without changing cmd/POSIX behavior
+    severity: critical
+    follow_up: true
+  - item: action_gate wrapper analysis does not cover launcher prefixes (env/sudo/builtin) and does not expand $(...) substitutions — both pre-existing at HEAD and outside F1's supported-wrapper set
+    reason: explicit non-goal of this run; unchanged candidate for a separate gate-hardening task
+    severity: warning
+    follow_up: true
+  - item: installer-side missing-Node line (chrome_devtools_mcp.py:632, `... cannot be installed` tail) still routes to the diagnostician instead of infrastructure
+    reason: explicit non-goal of this run; extend I1 or add a sibling pattern in a follow-up
+    severity: warning
+    follow_up: true
+
+## 2026-10-17T11:24:39+03:00 — Factory full-backlog attempt FAILED: residual builtin -- bypass; product rolled back
+title: Factory full remaining backlog attempt — three fixes attempted, terminal launcher business failure, rollback to base
+project: repo
+timestamp: 2026-10-17T11:24:39+03:00
+run_id: 20261017-1955b445
+branch: factory/fix-full-backlog-20261017 (rolled back and deleted; memory recorded on factory/fix-pwsh-single-quote-20261017)
+commit: none delivered; base restored to 4607793; unreferenced failure snapshot c77c772386d30e30cacb517515bfa4b8e5076eea
+task_type: implement
+goal: close all three remaining backlog items with vaccination-first PowerShell, launcher/substitution, and installer-routing fixes, without weakening existing behavior or exceeding retry budgets
+changed_files: none delivered; seven attempted files are preserved only in the failure snapshot and .code-factory/logs/failed-diff.patch
+created_files: none to the product (only .code-factory/ runtime artifacts)
+results: baseline=PASS (31 test_*.py + shell contract + deterministic gates, 84 Windows PASS/0 FAIL) [verified: .code-factory/logs/baseline.md and baseline.log]; vaccination=PASS as evidence collection (item1 88 red, item2 255 red, sudo 66 red, review1 58 red, Advisor 111 red, item3 real-line wrong route, each followed by green on the attempted snapshot) [verified: .code-factory/logs/vaccination/]; integration=PASS and regression=PASS on the attempted snapshot [verified: .code-factory/logs/integration.log and regression.log]; business=FAIL overall (PowerShell PASS: 112 calls/786 assertions/0 mismatches; installer PASS: 56 assertions/0 mismatches; launchers FAIL: 346 calls/2439 assertions/10 mismatches, all builtin -- forms) [verified: .code-factory/logs/business-tests.md, business-test.log and builtin-business-failure.log]; review=request_changes across two iterations; four iteration-1 findings closed, iteration-2 quoted-control finding addressed by Advisor-authorized rework but no third review permitted [verified: .code-factory/logs/code-review.md and diagnostic.md]; acceptance=NOT RUN because the business gate failed [verified: .code-factory/logs/test-results.md]; rollback=COMPLETE (tracked diff and index empty, base 4607793, pre-existing untracked files unchanged) [verified: .code-factory/state/git-status-after.txt and git diff --exit-code]; backlog=3 open [verified: memory_project.py backlog --repo . --check expected exit 1 after this entry]
+decisions: the final business mismatch was not softened or reclassified as out of scope; error_router returned WRONG_RESULTS/diagnostician, but Diagnostician=1/1 and Advisor=1/1 were exhausted and auto mode has no human branch, so the run stopped [verified: .code-factory/logs/builtin-business-failure.log, pipeline.yaml retry_counters and errors.md]; no product commit, version bump, documenter step, or acceptance claim was made after failure [verified: VERSION 12.14.2, empty tracked diff, .code-factory/report.md]; the failure snapshot was retained only for audit and report_code_changes generation, not as a delivered commit [verified: .code-factory/state/failure-snapshot-commit.txt and report_code_changes.md]
+assumptions: auto mode cannot supply the Human escalation decision after the Advisor route fails, so FAILED with rollback is the honest terminal state [verified: task.yaml mode=auto and references/error-routing.md escalation ladder]; the new builtin -- vectors remain in the runtime business harness as red evidence for a future task [verified: .code-factory/state/business_acceptance.py and logs/business-test.log]
+models_used: main=kimi-code/k3; analyzer=kimi-k3 x2; coder=deepseek-flash; tester=deepseek-flash; reviewer=kimi-k3 x2; diagnostician=kimi-k3; advisor=deepseek-flash; documenter=unused
+factory_version: 12.14.2
+unfinished:
+  - item: PowerShell DECODED payloads are recursively split with POSIX backslash rules, so `pwsh -Command 'echo "\"; rm -rf /'` and `powershell -c 'echo "\"; git push origin main'` still ALLOW in hitl and auto (review iteration-2 major)
+    reason: the attempted fix passed its business scenario on the failure snapshot, but all product changes were rolled back after the launcher business failure; it remains open at base with reusable vaccination evidence
+    severity: critical
+    follow_up: true
+  - item: action_gate wrapper analysis does not cover launcher prefixes (env/sudo/builtin) and does not expand $(...) substitutions — both pre-existing at HEAD and outside F1's supported-wrapper set
+    reason: terminal residual on the attempted snapshot: builtin -- and quoted/wrapped/push analogues still ALLOW (10 business mismatches); all escalation budgets are exhausted and the attempted changes were rolled back
+    severity: warning
+    follow_up: true
+  - item: installer-side missing-Node line (chrome_devtools_mcp.py:632, `... cannot be installed` tail) still routes to the diagnostician instead of infrastructure
+    reason: the attempted I1 fix passed with the real vendor_install() line on the failure snapshot, but rollback restored the base tree; it remains open with reusable red/green evidence
+    severity: warning
+    follow_up: true
+
+## 2026-10-17T13:28:00+03:00 — Factory v12.14.3: full remaining backlog closed (3 -> 0)
+title: Factory full remaining backlog — PowerShell backslash splitting, launcher prefixes and command substitutions, installer missing-Node routing (retry of FAILED run 20261017-1955b445, hitl)
+project: repo
+timestamp: 2026-10-17T13:28:00+03:00
+run_id: 20261017-4beb46d5
+branch: factory/fix-full-backlog-v2-20261017
+commit: 692e518
+task_type: implement
+goal: close all three open backlog items with vaccination-first fixes, reusing the proven machinery of the failed attempt and correcting its builtin -- residual
+changed_files: .agents/skills/code-factory/scripts/action_gate.py, .agents/skills/code-factory/scripts/test_action_gate.py, .agents/skills/code-factory/scripts/test_error_router.py, .agents/skills/code-factory/references/error-patterns.default.json, .agents/skills/code-factory/references/error-routing.md, .agents/skills/code-factory/references/chrome-devtools-mcp.md, CHANGELOG.md, VERSION, AGENTS.md, README.md, .agents/README.md, .agents/skills/code-factory/SKILL.md (last two: version sync only)
+created_files: none to the product (only .code-factory/ runtime artifacts)
+results: baseline=PASS (31 test_*.py + shell contract, 84 Windows PASS/0 FAIL) [verified: .code-factory/logs/baseline.md and baseline.log]; vaccination=PASS (item1+item2 583 red assertions incl. the reused sections 22-26, item2 builtin -- 25 new red assertions in section 27, item3 REAL vendor_install() line routed to diagnostician; all green after the fixes) [verified: .code-factory/logs/vaccination/ item1-item2-red.log, item2-builtin-terminator-red.log, item3-red.log and the *-green.log pairs]; integration=PASS (the per-task suites of the changed modules, test_action_gate.py and test_error_router.py, green after each fix) [verified: .code-factory/logs/vaccination/item1-item2-green.log and item3-green.log]; regression=PASS exit 0, 84 PASS/0 FAIL [verified: .code-factory/logs/regression.log]; business=PASS (powershell 112 calls/786 assertions/0 mismatches, launchers 346 calls/2439 assertions/0 mismatches incl. the builtin -- vectors that failed the previous run, installer 56 assertions/0 mismatches) [verified: .code-factory/logs/business-tests-powershell.md, business-tests-launchers.md, business-tests-installer.md]; review=APPROVE at iteration 1 (0 critical, 0 major, 1 deferrable minor: unterminated-quote launcher lines keep the pre-existing ALLOW, recorded below; 6/6 quotes VERIFIED) [verified: .code-factory/logs/code-review.md and scripts/verify_quotes.py exit 0]; acceptance=SUCCESS exit 0 (5 verify criteria MET + 1 derived, FRESH evidence ledger 4/4) [verified: .code-factory/state/acceptance.md and acceptance.log]; version=patch 12.14.2 -> 12.14.3, matrix-suggested and reviewer-validated [verified: version_manager.py suggest --fix -> patch, code-review.md version_type, validate exit 0]
+decisions: reused the failed run's proven PowerShell-dialect and launcher/substitution machinery from .code-factory/logs/failed-diff.patch and corrected its diagnosed root cause — the builtin branch of strip_launcher() now skips one leading decoded `--` before reading the command name, mirrors env/sudo, and CONFIRMs an unsupported builtin option [verified: .code-factory/logs/builtin-business-failure.log root cause, action_gate.py strip_launcher, business-tests-launchers.md 0 mismatches]; the reviewer's minor finding (unterminated-quote launcher lines ALLOW, pre-existing and unreachable by any shell) is deferred as info, not folded into this scope [verified: .code-factory/logs/code-review.md finding 1, severity minor]; test-file changes are purely additive, no assertion weakened [verified: code-review.md iteration 1 and the test diff]
+assumptions: the failed run's artifact business harness .code-factory/state/business_acceptance.py remains the business oracle and was re-run green on the delivered tree [verified: business-tests-*.md RESULT PASS]
+models_used: main=kimi-code/k3; analyzer=kimi-k3; coder=deepseek-flash; reviewer=kimi-k3; documenter=deepseek-flash; diagnostician=unused; advisor=unused; tester=deepseek-flash (harness re-run by main)
+factory_version: 12.14.3
+closed:
+  - item: PowerShell DECODED payloads are recursively split with POSIX backslash rules, so `pwsh -Command 'echo "\"; rm -rf /'` and `powershell -c 'echo "\"; git push origin main'` still ALLOW in hitl and auto (review iteration-2 major)
+    evidence: decoded PowerShell payloads are now split in PowerShell's own dialect (backslash literal, doubled quotes escape only); both review vectors and all pwsh/powershell, -Command/-c, hitl/auto equivalents are HARD_DENY, benign balanced controls unchanged, ambiguous input CONFIRMs — section 22 of test_action_gate.py red-then-green, business powershell scenario 786 assertions/0 mismatches, acceptance criterion 2 MET [verified: .code-factory/logs/vaccination/item1-item2-red.log + item1-item2-green.log, .code-factory/logs/business-tests-powershell.md, .code-factory/state/acceptance.md]
+  - item: action_gate wrapper analysis does not cover launcher prefixes (env/sudo/builtin) and does not expand $(...) substitutions — both pre-existing at HEAD and outside F1's supported-wrapper set
+    evidence: env/sudo/builtin options, VAR=val assignments and the `--` terminator (including after `builtin`, the residual that failed run 20261017-1955b445) are parsed recursively without execution, readable $(...) substitutions are analyzed per the enclosing shell's quoting, unknown/ambiguous forms CONFIRM, benign forms stay ALLOW — sections 23-27 red-then-green, business launchers scenario 346 calls/2439 assertions/0 mismatches, acceptance criterion 3 MET [verified: .code-factory/logs/vaccination/item2-builtin-terminator-red.log + item1-item2-green.log, .code-factory/logs/business-tests-launchers.md, .code-factory/state/acceptance.md]
+  - item: installer-side missing-Node line (chrome_devtools_mcp.py:632, `... cannot be installed` tail) still routes to the diagnostician instead of infrastructure
+    evidence: row I1 of error-patterns.default.json (and the byte-consistent error-routing.md cell) gained the installer alternative; the REAL vendor_install() line is BROWSER_TOOLCHAIN/infrastructure, the probe route and unrelated routes unchanged — test_error_router.py red-then-green, business installer scenario 56 assertions/0 mismatches, acceptance criterion 4 MET [verified: .code-factory/logs/vaccination/item3-red.log + item3-green.log, .code-factory/logs/business-tests-installer.md, .code-factory/state/acceptance.md]
+unfinished:
+  - item: unterminated-quote launcher lines (`env "rm -rf /`, `builtin "rm -rf /`) keep the pre-existing ALLOW instead of the fail-safe CONFIRM the wrapper path gives the same unreadable shape
+    reason: reviewer iteration-1 minor finding; no shell parses such a line so nothing destructive can hide behind it, and the pre-change behavior was the same ALLOW — deferred as an optional hardening candidate
+    severity: info
+    follow_up: false

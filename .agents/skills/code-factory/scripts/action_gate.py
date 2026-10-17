@@ -29,13 +29,69 @@ tokenizer — adjacent quoted and unquoted runs CONCATENATE into one argument, a
 `sh -c "echo "hi" && rm -rf X"` is read as the `-c` argument `echo hi && rm -rf X` and denied,
 instead of stopping at the `echo ` before the first inner quote.
 
-KNOWN LIMITATION (open, carried in the backlog): a `powershell`/`pwsh` `-Command` payload in
-SINGLE quotes is still FAIL-OPEN — the Windows tokenizer reads `'` as a literal character, so
-`pwsh -Command 'rm -rf /'` is classified ALLOW while the same payload in double quotes is
-HARD_DENY. Never treat the wrapper rule as proof of safety for a single-quoted PowerShell payload.
-The gate also does not expand launcher prefixes (`env rm -rf /`, `sudo rm -rf /`) or command
-substitutions (`sh -c "$(rm -rf /)"`): it classifies what the line literally runs, so a
-substitution or a launcher prefix hides the payload from it.
+PowerShell single quotes (fixed contract): a `powershell`/`pwsh` `-Command` (or `-c`) payload may be
+a SINGLE-quoted literal — `pwsh -Command 'rm -rf /'`. From bash the outer shell strips those quotes
+and pwsh really runs the text, while from cmd.exe they are literal and pwsh prints a string; the gate
+cannot know the caller's shell, so it takes the fail-safe reading: the INNER text of a single-quoted
+`-Command`/`-c` argument is classified as a POTENTIAL command, exactly like its double-quoted and
+bare twins (`pwsh -Command 'rm -rf /'` is the same root deletion as `pwsh -Command "rm -rf /"` and
+`pwsh -Command rm -rf /`). A doubled `''` inside such a literal is ONE escaped quote, PowerShell's
+own rule, so `pwsh -Command 'echo ''ok''; rm -rf /'` is still the deletion behind the escaped quote.
+Benign inner text (`pwsh -Command 'Write-Host hi'`) stays ALLOW — this is not a blanket deny of
+single quotes — while an unreadable or ambiguous payload keeps the fail-safe CONFIRM, never an
+ALLOW: a quote left open in the argument, an empty payload, and also an unmatched quote left in the
+DECODED inner text (a doubled `''` that lost its partner turns `pwsh -Command 'echo ''; rm -rf /'`
+into `echo '; rm -rf /`, which cannot be read as a finished command and must be confirmed, not
+called harmless).
+
+Launcher prefixes (fixed contract, run 20261017-4beb46d5): `env`, `sudo` and `builtin` are
+TRANSPARENT. Their own options — a separate value (`sudo -u root`), a joined one (`--user=root`,
+`-uroot`) — and the `NAME=VALUE` assignments `env` and `sudo` both document in front of the command
+are parsed, never executed, and the command they run is classified recursively with the same rules:
+`env rm -rf /`, `sudo rm -rf /` and `builtin rm -rf /` are the root deletion they really are,
+`sudo FOO=1 rm -rf /` and `sudo -u root -- git push origin main` are that deletion and that push, the
+`--` option terminator is honoured in front of the command (`builtin -- rm -rf /` is still that
+deletion, while the benign `builtin -- echo hi` stays ALLOW), and
+launchers nest with each other and with the shell wrappers in either order (`sudo sh -c "rm -rf /"`,
+`env FOO=1 sudo FOO=2 rm -rf /`). The launcher's OWN words are read by their DECODED value — the shell
+hands `sudo "-u" root rm -rf /` the option `-u` and `env "--" rm -rf /` the terminator, and
+`env "FOO=a b" rm -rf /` the assignment — while the inner command keeps its original quoting, so those
+forms hide nothing and a quoted assignment is not mistaken for an unreadable one. Only the forms the
+gate models are read: an unknown or unsupported
+option (`env -S`, whose value is a split string), a valued option without its value (`sudo -u`),
+`sudo -i`/`-s` (they open a shell), `builtin` with no command, an unsupported `builtin` option
+(`builtin -v ...`), an empty command name (`env "" ...`) and
+a first word that only looks like an
+assignment (`sudo 1FOO=1 ...`) CONFIRM — never an ALLOW. A benign launcher
+(`env python -m pytest`, `sudo FOO=1 git status`, `builtin echo hi`) stays ALLOW, and `env` alone only
+prints the environment.
+
+Command substitutions (fixed contract, run 20261017-4beb46d5): a readable `$(...)` is a command the
+SHELL runs, so its body is classified as a potential command at EVERY level and in every wrapper —
+`sh -c "$(rm -rf /)"`, `echo $(rm -rf /)` and the PowerShell subexpression
+`pwsh -Command 'Write-Host "$(rm -rf /)"'` are the deletion they would run, nested substitutions
+included. A balanced body is read as ONE operand, separators inside it included, so
+`echo $(git push origin main && echo ok)` and `echo $(rm -rf /; echo ok)` are those destructive
+commands. Only what the enclosing shell really executes is read: a substitution inside a literal
+single-quoted string (`echo '$(rm -rf /)'`) and one whose `$` is escaped in POSIX double quotes
+(`echo "\\$(rm -rf /)"`) are text and stay ALLOW, while a `)` that never closes, an EMPTY body
+(`echo $()`) and a nesting deeper than `MAX_WRAPPER_DEPTH` levels CONFIRM. Nothing is
+evaluated or executed: no variable, arithmetic, glob or backtick expansion, and no substitution or
+launcher is run to classify it. The gate still classifies what the line literally runs beyond these
+constructs, which is why the two are read as commands rather than expanded.
+
+PowerShell backslash semantics (fixed contract, run 20261017-4beb46d5): the DECODED payload of a
+`powershell`/`pwsh` wrapper is command TEXT in PowerShell's OWN dialect, so it is split into simple
+commands with PowerShell's quote/backslash rules, not the POSIX ones. A backslash there is a LITERAL
+character and never escapes a quote, so `pwsh -Command 'echo "\\"; rm -rf /'` closes its string on
+the quote after the backslash and really runs `rm -rf /`, and
+`powershell -c 'echo "\\"; git push origin main'` is that push — both HARD_DENY, as is every
+pwsh/powershell and -Command/-c spelling of them. Only a DOUBLED quote (`''` / `""`) is an escaped
+quote inside its own quoting. The dialect belongs to that ONE payload: cmd.exe and POSIX payloads
+keep their own splitter (a POSIX `"a\\\\"` still escapes, so `echo "a\\\\" && rm -rf /` stays a
+deletion), and a balanced benign backslash string (`pwsh -c 'echo "C:\\temp\\x"; echo ok'`) stays
+ALLOW instead of becoming a blanket deny. An outer spelling the gate cannot read on those terms —
+or a payload whose PowerShell quoting never closes — keeps the fail-safe CONFIRM, never an ALLOW.
 
 HARD_DENY rules:
   * `git push` (also `--force` / `-f` / `--mirror` / `--all`) that targets the default branch
@@ -131,6 +187,14 @@ TOKEN_RE = re.compile(r'"([^"]*)"|\'([^\']*)\'|(\S+)')
 # thing the gate saw). `-c` is the command-string flag of every POSIX shell listed here, cmd uses
 # `/c` and `/k`, PowerShell/pwsh use `-Command` (the short `-c` included).
 SHELL_WRAPPERS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "cmd", "powershell", "pwsh"})
+# The wrappers whose payload is PowerShell TEXT. It is split with PowerShell's quoting rules, where a
+# backslash is a literal character (see `split_commands_powershell`); every other payload keeps the
+# POSIX / cmd.exe rules it is really read with.
+POWERSHELL_WRAPPERS = frozenset({"powershell", "pwsh"})
+# The dialect of ONE command TEXT: POSIX (backslash escapes a quote inside a quoted run, see
+# QUOTE_ESCAPES) or PowerShell (it never does). The dialect belongs to a single text, never to the
+# whole run, so a PowerShell payload cannot change how a POSIX or cmd.exe payload is read.
+POSIX_DIALECT, POWERSHELL_DIALECT = "posix", "powershell"
 POSIX_COMMAND_FLAG_RE = re.compile(r"-[A-Za-z]*c[A-Za-z]*")     # -c, -ec, -lc
 CMD_COMMAND_FLAGS = ("/c", "/k")
 # PowerShell parameter spellings the gate trusts as `-Command`. `-co` is deliberately NOT among
@@ -142,6 +206,35 @@ POWERSHELL_UNREADABLE = ("file", "encodedcommand")
 # A nested wrapper is analyzed recursively; the cap keeps a pathologically nested line from
 # blowing the stack — beyond it the wrapper is CONFIRM (fail-safe), never ALLOW.
 MAX_WRAPPER_DEPTH = 6
+
+# Launcher prefixes: a harmless OUTER name that merely runs the command after it. They are TRANSPARENT
+# like the shell wrappers — their own options (and `env`'s NAME=VALUE assignments) are parsed, never
+# executed, and the command they run is classified recursively, so `env rm -rf /` is the deletion it
+# really is. The values of a launcher's own options are consumed like a real `getopt` consumes them.
+LAUNCHER_PREFIXES = frozenset({"env", "sudo", "builtin"})
+# `NAME=VALUE` words a launcher accepts before the command it runs: `env` documents them, and `sudo`
+# documents environment settings in the same form, so a readable assignment is an ordinary launcher
+# argument on both. A word that only LOOKS like one stays unreadable (CONFIRM), never an ALLOW.
+LAUNCHER_ASSIGNMENTS = frozenset({"env", "sudo"})
+ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Launcher options that take NO value (joined `--opt=value` still carries its own).
+LAUNCHER_FLAGS = {
+    "env": frozenset({"-i", "--ignore-environment", "-0", "--null", "-v", "--debug"}),
+    "sudo": frozenset({"-A", "--askpass", "-b", "--background", "-E", "--preserve-env", "-e",
+                       "--edit", "-H", "--set-home", "-i", "--login", "-K", "--remove-timestamp",
+                       "-k", "--reset-timestamp", "-l", "--list", "-n", "--non-interactive",
+                       "-P", "--preserve-groups", "-S", "--stdin", "-s", "--shell", "-v",
+                       "--validate", "-V", "--version"}),
+    "builtin": frozenset(),
+}
+# ... and the options whose value is the NEXT token (or follows `=` / is joined to a short flag).
+LAUNCHER_VALUE_FLAGS = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir"}),
+    "sudo": frozenset({"-u", "--user", "-g", "--group", "-p", "--prompt", "-h", "--host", "-C",
+                       "--close-from", "-D", "--chdir", "-R", "--chroot", "-r", "--role", "-t",
+                       "--type", "-T", "--command-timeout", "-U", "--other-user"}),
+    "builtin": frozenset(),
+}
 
 DELETE_COMMANDS = {"rm", "rm.exe", "rmdir", "rd", "del", "erase", "remove-item", "ri"}
 DELETE_FLAG_RE = re.compile(r"^/[a-z][a-z0-9]*$")          # cmd.exe switches: /f /s /q /ah
@@ -184,7 +277,76 @@ def tokens(command: str) -> list[str]:
             for m in TOKEN_RE.finditer(command)]
 
 
-def split_commands(action: str) -> list[str]:
+def token_spans(command: str, dialect: str = POSIX_DIALECT) -> list[tuple[str, str]]:
+    """`(raw span, decoded value)` for every argv-like token, in order and INDEX-ALIGNED.
+
+    One launcher word needs both views: the DECODED value is what the shell hands the program, so a
+    control word is recognised however it was quoted (`env "-i"` IS the option `-i`), while the RAW span
+    keeps its quoting so the command text can be rebuilt without losing argument boundaries. Tying them
+    to one scan keeps index `i` naming the same word in both views, which is what lets `strip_launcher`
+    decide on `decoded[i]` and rebuild the remaining command from `raw[i:]`.
+
+    `tokens` DEQUOTES (a value is compared the way the shell would hand it over) but cannot rebuild
+    text; a raw-only view cannot recognise control words. This returns both. A quoted run stays quoted
+    in the raw span, adjacent quoted / unquoted runs stay ONE token, and the decoded value resolves
+    quotes and escapes per the enclosing dialect's rules (`QUOTE_ESCAPES` for POSIX, a doubled quote for
+    PowerShell), so `env FOO="a b" rm -rf /` still carries the assignment `FOO=a b` as ONE word.
+    """
+    spans: list[tuple[str, str]] = []
+    raw: list[str] = []
+    value: list[str] = []
+    quote = ""
+    powershell = dialect == POWERSHELL_DIALECT
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            raw.append(ch)
+            if powershell and ch == quote:
+                if i + 1 < len(command) and command[i + 1] == quote:    # '' / "" = escaped quote
+                    raw.append(command[i + 1])
+                    value.append(ch)
+                    i += 2
+                    continue
+                quote = ""
+            elif not powershell and ch == "\\" and i + 1 < len(command) \
+                    and command[i + 1] in QUOTE_ESCAPES[quote]:
+                raw.append(command[i + 1])
+                value.append(command[i + 1])                            # the escape resolves away
+                i += 2
+                continue
+            elif not powershell and ch == quote:
+                quote = ""
+            else:
+                value.append(ch)
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            raw.append(ch)
+            i += 1
+            continue
+        if ch.isspace():
+            if raw:
+                spans.append(("".join(raw), "".join(value)))
+                raw, value = [], []
+            i += 1
+            continue
+        if ch == "\\" and not powershell and i + 1 < len(command):
+            raw.append(ch)
+            raw.append(command[i + 1])
+            value.append(command[i + 1])                                # `\"` outside quotes is `"`
+            i += 2
+            continue
+        raw.append(ch)
+        value.append(ch)
+        i += 1
+    if raw:
+        spans.append(("".join(raw), "".join(value)))
+    return spans
+
+
+def split_commands(action: str, dialect: str = POSIX_DIALECT) -> list[str]:
     """Simple-command TEXTS of `action`, split only at separators OUTSIDE quotes.
 
     Quoting matters because a wrapper keeps its payload in ONE argument: cutting
@@ -194,10 +356,15 @@ def split_commands(action: str) -> list[str]:
     reads them — a single-quoted string has none, so `echo 'a\\' && rm -rf /` really is `echo a\\`
     followed by the deletion, while in double quotes `\\\\` and `\\"` are escapes.
 
+    `dialect` is the dialect of THIS text: a PowerShell payload is PowerShell's own quoting, where a
+    backslash never escapes anything (`split_commands_powershell`); everything else is POSIX.
+
     The returned text is the LINE VERBATIM (quotes and backslashes included): the splitter only
     decides where one simple command ends, and `posix_argv` re-reads the text afterwards — the
     tokenizer here must not resolve quoting on its own or argument boundaries would be lost.
     """
+    if dialect == POWERSHELL_DIALECT:
+        return split_commands_powershell(action)
     parts: list[str] = []
     buf: list[str] = []
     quote = ""
@@ -223,6 +390,9 @@ def split_commands(action: str) -> list[str]:
             buf.append(action[i + 1] if i + 1 < len(action) else "")
             i += 2
             continue
+        elif ch == "$" and action.startswith("$(", i):
+            i = copy_substitution(action, i, buf, POSIX_DIALECT)
+            continue
         else:
             match = COMMAND_SPLIT_RE.match(action, i)
             if match:
@@ -234,6 +404,187 @@ def split_commands(action: str) -> list[str]:
         i += 1
     parts.append("".join(buf))
     return [part for part in parts if part.strip()]
+
+
+def split_commands_powershell(action: str) -> list[str]:
+    """Simple-command TEXTS of a PowerShell payload, split with POWERSHELL's quoting rules.
+
+    PowerShell has NO backslash escape: a backslash is a literal character, so a `"` always ends the
+    string it opened, whatever stands before it. Read with the POSIX rules, `echo "\\"; rm -rf /` kept
+    the string open across the `;` (the `\\"` looked like an escaped quote) and swallowed the
+    deletion, although a real pwsh closes the string on that quote and runs `rm -rf /`. Only a DOUBLED
+    quote (`''` / `""`) is an escaped quote inside its own quoting — the same rule
+    `powershell_quote_complete` applies, and the two must agree: a payload that passes that check never
+    ends inside a quote here.
+
+    The POSIX and cmd.exe splitters are untouched: a POSIX `"a\\\\"` still escapes, so this dialect can
+    never change how a non-PowerShell payload is read. Like `split_commands`, the returned text is the
+    LINE VERBATIM (quotes and backslashes included) — only the boundaries are decided here.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(action):
+        ch = action[i]
+        if quote:
+            if ch == quote:
+                if i + 1 < len(action) and action[i + 1] == quote:   # '' / "" is one escaped quote
+                    buf += [ch, action[i + 1]]
+                    i += 2
+                    continue
+                quote = ""
+            buf.append(ch)
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "$" and action.startswith("$(", i):
+            i = copy_substitution(action, i, buf, POWERSHELL_DIALECT)
+            continue
+        match = COMMAND_SPLIT_RE.match(action, i)
+        if match:
+            parts.append("".join(buf))
+            buf = []
+            i = match.end()
+            continue
+        buf.append(ch)
+        i += 1
+    parts.append("".join(buf))
+    return [part for part in parts if part.strip()]
+
+
+def copy_substitution(text: str, start: int, buf: list[str], dialect: str) -> int:
+    """Copy the whole `$(...)` starting at `start` into `buf`; return the index just past it.
+
+    A substitution body is ONE operand of the enclosing command, whatever separators it contains, so
+    the separator scan must keep it intact and let `substitution_bodies` cut it out as a whole:
+    `echo $(git push origin main && echo ok)` is the push, not the fragment `echo $(git push origin
+    main ` followed by ` echo ok)` — cutting it first made a readable destructive body look like an
+    UNCLOSED substitution (a CONFIRM instead of the HARD_DENY it deserves). An unclosed `$(` is copied
+    to the end of the line, so `substitution_bodies` still reports it as unreadable.
+    """
+    end = matching_paren(text, start + 2, dialect)
+    stop = len(text) if end is None else end + 1
+    buf.append(text[start:stop])
+    return stop
+
+
+def matching_paren(text: str, start: int, dialect: str) -> int | None:
+    """Index of the `)` closing a substitution body that starts at `start`, or None if it never does.
+
+    Nested parentheses are counted (`$(echo $(rm -rf /))`), and quoting inside the body is skipped with
+    the dialect's own rules, so a `)` inside a quoted string of the body does not close it early.
+    """
+    depth = 0
+    quote = ""
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if dialect == POWERSHELL_DIALECT:
+                if ch == quote:
+                    if i + 1 < len(text) and text[i + 1] == quote:
+                        i += 2
+                        continue
+                    quote = ""
+                i += 1
+                continue
+            if ch == "\\" and i + 1 < len(text) and text[i + 1] in QUOTE_ESCAPES[quote]:
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch == "\\" and dialect == POSIX_DIALECT:
+            i += 2
+            continue
+        elif ch == "(":
+            depth += 1
+        elif ch == ")" and depth:
+            depth -= 1
+        elif ch == ")":
+            return i
+        i += 1
+    return None
+
+
+def substitution_bodies(text: str, dialect: str = POSIX_DIALECT) -> tuple[list[str], bool]:
+    """`(inner command texts of the `$(...)` this shell runs, was the text completely read)`.
+
+    A `$(...)` substitution is not a value the gate can expand: the shell RUNS it, so the only safe
+    reading is to classify its body as a potential command. Which substitutions really run depends on
+    the enclosing shell's quoting rules, and only those are returned:
+
+      * POSIX: a substitution inside a literal single-quoted string (`echo '$(rm -rf /)'`) is text,
+        and so is one whose `$` is escaped in double quotes (`echo "\\$(rm -rf /)"`) — both inert,
+      * PowerShell: a single-quoted string is literal too, while inside a double-quoted string a
+        subexpression DOES run (`Write-Host "$(Get-Date)"`),
+      * no expansion is attempted at all: this scans quoting, it does not evaluate anything.
+
+    `False` means a `$(` never closes, so no command string can be proven — the caller CONFIRMs it.
+    """
+    bodies: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if dialect == POWERSHELL_DIALECT:
+                if ch == quote:
+                    if i + 1 < len(text) and text[i + 1] == quote:
+                        i += 2
+                        continue
+                    quote = ""
+                    i += 1
+                    continue
+                if ch == "$" and quote == '"' and text.startswith("$(", i):
+                    end = matching_paren(text, i + 2, dialect)
+                    if end is None:
+                        return bodies, False
+                    bodies.append(text[i + 2:end])
+                    i = end + 1
+                    continue
+                i += 1
+                continue
+            if ch == "\\" and i + 1 < len(text) and text[i + 1] in QUOTE_ESCAPES[quote]:
+                i += 2                                  # escaped (`\$`, `\"`): never a substitution
+                continue
+            if ch == quote:
+                quote = ""
+                i += 1
+                continue
+            if ch == "$" and quote == '"' and text.startswith("$(", i):
+                end = matching_paren(text, i + 2, dialect)
+                if end is None:
+                    return bodies, False
+                bodies.append(text[i + 2:end])
+                i = end + 1
+                continue
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and dialect == POSIX_DIALECT:
+            i += 2                                      # `\$(x)` outside quotes is literal text
+            continue
+        if ch == "$" and text.startswith("$(", i):
+            end = matching_paren(text, i + 2, dialect)
+            if end is None:
+                return bodies, False
+            bodies.append(text[i + 2:end])
+            i = end + 1
+            continue
+        i += 1
+    return bodies, True
 
 
 def posix_argv(line: str) -> tuple[list[str], bool]:
@@ -293,13 +644,13 @@ def posix_argv(line: str) -> tuple[list[str], bool]:
 
 
 def windows_argv(line: str) -> tuple[list[str], bool]:
-    """`(argv cmd.exe or PowerShell builds from line, was the line completely read)`.
+    """`(argv cmd.exe builds from line, was the line completely read)`.
 
-    Neither has a POSIX backslash escape: a `"` merely TOGGLES quoting, so
-    `powershell -Command "Remove-Item -Recurse -Force C:\\"` really closes the argument on that
-    quote and keeps the backslash — a POSIX reading would swallow the closing quote and lose the
-    whole payload. Quotes are removed from the value and adjacent runs concatenate; an unbalanced
-    `"` makes the line unreadable (`complete` is False), so the caller CONFIRMs instead of guessing.
+    cmd.exe has no POSIX backslash escape and no single-quote quoting at all: a `"` merely TOGGLES
+    quoting and a `'` is a literal character, so it follows the line character by character. Quotes
+    are removed from the value and adjacent runs concatenate; an unbalanced `"` makes the line
+    unreadable (`complete` is False), so the caller CONFIRMs instead of guessing. PowerShell uses
+    `powershell_argv` instead — its single quotes are real quoting.
     """
     argv: list[str] = []
     buf: list[str] = []
@@ -322,10 +673,55 @@ def windows_argv(line: str) -> tuple[list[str], bool]:
     return argv, not in_quotes
 
 
-def simple_commands(action: str) -> list[list[str]]:
-    """The argv-only view of `split_commands` (quote-naive `tokens`; classification uses the raw
-    text instead, so it can rebuild wrapper arguments exactly)."""
-    return [tokens(part) for part in split_commands(action)]
+def powershell_argv(line: str) -> tuple[list[str], bool]:
+    """`(argv PowerShell builds from line, was the line completely read)`.
+
+    PowerShell quoting is the Windows one — `"` and now also `'` merely TOGGLE quoting, there is no
+    POSIX backslash escape, so `powershell -Command "Remove-Item -Recurse -Force C:\\"` really closes
+    the argument on that quote and keeps the backslash, and `pwsh -Command 'rm -rf /'` carries the
+    whole deletion as ONE argument. A doubled `''` inside a single-quoted literal is ONE escaped
+    quote (PowerShell's own rule), so it neither ends the literal nor hides what follows it.
+
+    Quotes are removed from the value and adjacent runs concatenate; a quote left OPEN makes the
+    line unreadable (`complete` is False), because the caller's shell has not finished reading the
+    argument and no payload can be proven — the caller CONFIRMs it instead of guessing.
+    """
+    argv: list[str] = []
+    buf: list[str] = []
+    open_token = False
+    quote = ""
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if ch == quote:
+                if quote == "'" and i + 1 < len(line) and line[i + 1] == "'":
+                    buf.append("'")                      # '' is one escaped quote, literal goes on
+                    open_token = True
+                    i += 2
+                    continue
+                quote = ""
+            else:
+                buf.append(ch)
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            open_token = True
+            i += 1
+            continue
+        if ch.isspace():
+            if open_token:
+                argv.append("".join(buf))
+                buf, open_token = [], False
+            i += 1
+            continue
+        buf.append(ch)
+        open_token = True
+        i += 1
+    if open_token:
+        argv.append("".join(buf))
+    return argv, not quote
 
 
 def is_git(argv: list[str]) -> bool:
@@ -525,6 +921,33 @@ def is_unreadable_powershell_flag(token: str) -> bool:
     return bool(flag) and any(word.startswith(flag) for word in POWERSHELL_UNREADABLE)
 
 
+def powershell_quote_complete(payload: str) -> bool:
+    """True when the DECODED payload's own quoting closes, read with PowerShell's rules.
+
+    The payload `powershell_payload` returns is command TEXT that the recursive classifier re-reads,
+    and decoding a doubled quote (`''` -> `'`) can leave a quote in it without a partner:
+    `pwsh -Command 'echo ''; rm -rf /'` decodes to `echo '; rm -rf /`. The splitter then treats the
+    rest of the line as quoted text, so a destructive tail would be swallowed and the wrapper
+    answered ALLOW. PowerShell quotes with `"` and `'` alike and escapes a quote by DOUBLING it, so a
+    payload whose quoting never closes carries no command string that can be proven harmless — the
+    caller must CONFIRM it (the fail-safe), never call it safe.
+    """
+    quote = ""
+    i = 0
+    while i < len(payload):
+        ch = payload[i]
+        if quote:
+            if ch == quote:
+                if i + 1 < len(payload) and payload[i + 1] == quote:
+                    i += 2                              # a doubled quote is one escaped quote
+                    continue
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        i += 1
+    return not quote
+
+
 def powershell_payload(argv: list[str]) -> str | None:
     """The command string a PowerShell wrapper runs, or None when it cannot be read.
 
@@ -535,6 +958,11 @@ def powershell_payload(argv: list[str]) -> str | None:
     including the ones the gate does not know, is skipped; if no command string is found afterwards
     the wrapper is unanalyzable too (the fail-safe), so an unknown flag cannot expose a payload that
     is silently dropped.
+
+    The decoded text must also be completely quoted on its OWN terms
+    (`powershell_quote_complete`): a doubled quote that lost its partner leaves an unmatched quote,
+    the recursive splitter would read the rest of the line as quoted text, and a destructive tail
+    behind it would be invisible — so an unterminated payload is unreadable (None -> CONFIRM) too.
     """
     for i, token in enumerate(argv[1:], start=1):
         flag = powershell_flag(token)
@@ -544,7 +972,10 @@ def powershell_payload(argv: list[str]) -> str | None:
             return None
         if flag in POWERSHELL_COMMAND_FLAGS:
             rest = argv[i + 1:]
-            return None if any(is_unreadable_powershell_flag(t) for t in rest) else " ".join(rest)
+            if any(is_unreadable_powershell_flag(t) for t in rest):
+                return None
+            payload = " ".join(rest)
+            return payload if powershell_quote_complete(payload) else None
     return None
 
 
@@ -558,17 +989,25 @@ def wrapper_payload(name: str, raw: str) -> str | None:
     `echo ` that a first-quote-to-first-quote cut would stop at.
 
     `None` means unreadable, and the caller CONFIRMs it: a script file, an encoded block, an unknown
-    flag, no command flag at all, an empty payload, or a line left INSIDE a quote (`sh -c "rm -rf /`)
-    whose argument a shell has not finished reading — none of those may ever become ALLOW.
+    flag, no command flag at all, an empty payload, or a line left INSIDE a quote (`sh -c "rm -rf /`,
+    `pwsh -Command 'rm -rf /`) whose argument a shell has not finished reading — none of those may
+    ever become ALLOW.
+
+    cmd.exe is read with `windows_argv` (a `'` is literal there), PowerShell with `powershell_argv`
+    (its single quotes are real quoting, so the inner text of `-Command '...'` is the payload — the
+    outer shell may have stripped those quotes before pwsh saw them).
     """
-    if name in ("cmd", "powershell", "pwsh"):
+    if name == "cmd":
         argv, complete = windows_argv(raw)
         if not complete:
             return None
-        if name == "cmd":
-            for i, token in enumerate(argv[1:], start=1):
-                if token.lower() in CMD_COMMAND_FLAGS:
-                    return " ".join(argv[i + 1:])
+        for i, token in enumerate(argv[1:], start=1):
+            if token.lower() in CMD_COMMAND_FLAGS:
+                return " ".join(argv[i + 1:])
+        return None
+    if name in ("powershell", "pwsh"):
+        argv, complete = powershell_argv(raw)
+        if not complete:
             return None
         return powershell_payload(argv)
     argv, complete = posix_argv(raw)
@@ -581,7 +1020,13 @@ def wrapper_payload(name: str, raw: str) -> str | None:
 
 
 def classify_wrapper(name: str, raw: str, scopes: list[str], depth: int) -> tuple[str, str]:
-    """Classify WHAT a shell wrapper runs: its payload, recursively, like a bare command line."""
+    """Classify WHAT a shell wrapper runs: its payload, recursively, like a bare command line.
+
+    The payload is read in the wrapper's OWN dialect: a `powershell`/`pwsh` payload is PowerShell text,
+    where a backslash is literal and cannot keep a string open across a `;` — so
+    `pwsh -Command 'echo "\\"; rm -rf /'` really runs `rm -rf /` (HARD_DENY) instead of reading as a
+    harmless `echo`. Every other wrapper keeps the POSIX / cmd.exe rules its payload is read with.
+    """
     payload = wrapper_payload(name, raw)
     if payload is None or not payload.strip():
         return CONFIRM, (f"the payload of `{name}` cannot be read as one finished command string "
@@ -590,15 +1035,137 @@ def classify_wrapper(name: str, raw: str, scopes: list[str], depth: int) -> tupl
     if depth >= MAX_WRAPPER_DEPTH:
         return CONFIRM, (f"`{name}` nests shell wrappers deeper than {MAX_WRAPPER_DEPTH} "
                          f"levels: the innermost payload cannot be proven harmless")
-    cls, reason = classify(payload, scopes, depth + 1)
+    dialect = POWERSHELL_DIALECT if name in POWERSHELL_WRAPPERS else POSIX_DIALECT
+    cls, reason = classify(payload, scopes, depth + 1, dialect)
     if cls == ALLOW:
         return ALLOW, f"`{name}` runs a payload that is not destructive ({reason})"
     return cls, f"`{name}` runs a destructive payload: {reason}"
 
 
+def strip_launcher(name: str, spans: list[tuple[str, str]]) -> tuple[list[str], str]:
+    """The command a launcher runs: `(inner RAW spans, problem)`.
+
+    `env` and `sudo` accept their own options first — with a separate value (`sudo -u root`), a joined
+    value (`--user=root`, `-uroot`) — and the `NAME=VALUE` assignments both of them document in front of
+    the command, in addition to a `--` terminator; `builtin` takes the command straight away, accepting
+    only the same `--` terminator in front of it. Nothing
+    here is executed or expanded: the launcher's own words are dropped so that the command it runs can
+    be classified like a bare one.
+
+    `spans` are the INDEX-ALIGNED `(raw span, decoded value)` pairs of `token_spans`: every control
+    decision below reads the DECODED value, because that is what the shell hands the launcher
+    (`env "-i"` is the option `-i`, `env "--"` is the terminator, `env "FOO=a b"` is an assignment),
+    while the inner command is rebuilt from the RAW spans at the same indices, so its quoting and its
+    argument boundaries survive the recursion. Reading raw spans here instead recognised none of the
+    quoted control words and blind-ALLOWed the destructive tail behind them.
+
+    A non-empty `problem` means the invocation could not be read (an unknown or unsupported option such
+    as `env -S`, whose value is a split string; a valued option without its value; `sudo -i`/`-s`,
+    which open a shell; `builtin` with no command or with a `--` terminator and no command behind it;
+    an unsupported `builtin` option such as `-v`; an EMPTY command name; a first word that looks like
+    an assignment but is not `NAME=VALUE`) — the caller CONFIRMs it, because a gate that cannot see the
+    command it would run must never call the action harmless. An empty inner list with no problem means
+    the launcher runs nothing at all (`env` alone prints the environment).
+    """
+    if name == "builtin":
+        if len(spans) < 2:
+            return [], "`builtin` names no command to run"
+        start = 1
+        if spans[start][1] == "--":
+            start += 1                                      # the `--` option terminator, like env/sudo
+            if start >= len(spans):
+                return [], "`builtin --` names no command to run"
+        command = spans[start][1]
+        if not command.strip():
+            return [], "`builtin` names an empty command"
+        if command.startswith("-") and command != "-":
+            return [], f"the option {command} of `builtin` is not one the gate can read"
+        if "=" in command:
+            return [], f"`builtin` names {command}, which cannot be read as a command"
+        return [raw for raw, _ in spans[start:]], ""
+    flags, value_flags = LAUNCHER_FLAGS[name], LAUNCHER_VALUE_FLAGS[name]
+    assigns = name in LAUNCHER_ASSIGNMENTS
+    opens_shell = False
+    i = 1
+    while i < len(spans):
+        token = spans[i][1]                                 # DECIDED on the decoded value
+        if token == "--":
+            i += 1
+            break
+        if assigns and ENV_ASSIGNMENT_RE.match(token):
+            i += 1
+            continue
+        if not token.startswith("-") or token == "-":
+            if assigns and "=" in token:
+                return [], f"the assignment {token} of `{name}` cannot be read"
+            break
+        flag, joined = token.partition("=")[0], "=" in token
+        if not joined and len(token) > 2 and token[:2] in value_flags:
+            flag, joined = token[:2], True                  # joined short value: `-uFOO`, `-C/tmp`
+        if flag in value_flags:
+            if joined:
+                i += 1
+            elif i + 1 >= len(spans):
+                return [], f"the option {token} of `{name}` is missing its value"
+            else:
+                i += 2
+            continue
+        if flag in flags:
+            if name == "sudo" and flag in ("-i", "--login", "-s", "--shell"):
+                opens_shell = True                          # env's -i means: ignore the environment
+            i += 1
+            continue
+        return [], f"the option {token} of `{name}` is not one the gate can read"
+    while assigns and i < len(spans) and ENV_ASSIGNMENT_RE.match(spans[i][1]):
+        i += 1                                              # assignments after `--`
+    inner = [raw for raw, _ in spans[i:]]                   # REBUILT from the aligned raw spans
+    if inner:
+        if not spans[i][1].strip():
+            return [], f"`{name}` runs a command whose name is empty"
+        return inner, ""
+    if opens_shell:
+        return [], f"`{name}` would open a shell whose commands cannot be read"
+    if name == "env":
+        return [], ""                                       # `env` alone only prints the environment
+    return [], f"`{name}` names no command to run"
+
+
+def classify_launcher(name: str, raw: str, scopes: list[str], depth: int,
+                      dialect: str) -> tuple[str, str]:
+    """Classify WHAT a launcher prefix runs: its inner command, recursively, like a bare command line.
+
+    The launcher is transparent, so `env rm -rf /`, `sudo -u root rm -rf /` and `builtin rm -rf /` are
+    the deletion they really are, and launchers nest with each other and with the shell wrappers in
+    either order (`sudo sh -c "rm -rf /"`, `env sudo git push origin main`). `dialect` is passed down
+    unchanged: a launcher does not change how its payload is quoted.
+
+    The launcher's own words are read as DECODED values, while the inner command is rebuilt from the RAW
+    spans aligned with them (`token_spans`): `env "-i"` and `env "--"` ARE its option and terminator (read
+    raw, they became the command name and blind-ALLOWed the tail), and `sudo sh -c "echo '; rm -rf /'"`
+    keeps the single-quoted wrapper text that no shell runs.
+    """
+    inner, problem = strip_launcher(name, token_spans(raw, dialect))
+    if problem:
+        return CONFIRM, (f"the `{name}` launcher cannot be read ({problem}): the command it would run "
+                         f"cannot be proven harmless")
+    if not inner:
+        return ALLOW, f"`{name}` runs no command"
+    if depth >= MAX_WRAPPER_DEPTH:
+        return CONFIRM, (f"`{name}` nests launchers and wrappers deeper than {MAX_WRAPPER_DEPTH} "
+                         f"levels: the innermost command cannot be proven harmless")
+    cls, reason = classify(" ".join(inner), scopes, depth + 1, dialect)
+    if cls == ALLOW:
+        return ALLOW, f"`{name}` runs a command that is not destructive ({reason})"
+    return cls, f"`{name}` runs a destructive command: {reason}"
+
+
 def classify_command(argv: list[str], scopes: list[str], depth: int = 0,
-                     raw: str = "") -> tuple[str, str]:
-    """Classify one simple command; `raw` is its text, kept for the wrapper payload rebuild."""
+                     raw: str = "", dialect: str = POSIX_DIALECT) -> tuple[str, str]:
+    """Classify one simple command; `raw` is its text, kept for the wrapper payload rebuild.
+
+    `dialect` is the quoting dialect of that text, passed on to a launcher's inner command so a
+    PowerShell payload keeps PowerShell rules all the way down.
+    """
     if not argv:
         return ALLOW, "empty command"
     name = pathlib.PurePath(argv[0]).name.lower()
@@ -632,26 +1199,62 @@ def classify_command(argv: list[str], scopes: list[str], depth: int = 0,
     wrapper = name[:-4] if name.endswith(".exe") else name
     if wrapper in SHELL_WRAPPERS:
         return classify_wrapper(wrapper, raw, scopes, depth)
+    if wrapper in LAUNCHER_PREFIXES:
+        return classify_launcher(wrapper, raw, scopes, depth, dialect)
     return ALLOW, f"{name} is not a destructive command"
 
 
-def classify(action: str, scopes: list[str], depth: int = 0) -> tuple[str, str]:
+def classify(action: str, scopes: list[str], depth: int = 0,
+             dialect: str = POSIX_DIALECT) -> tuple[str, str]:
     """Worst class over all simple commands of `action` (HARD_DENY > CONFIRM > ALLOW).
 
     `depth` counts the shell wrappers already unwrapped on the way down; a payload is classified
     with the same rules, so `sh -c "git push origin main"` is a wrapped push and not a command
     named `sh`. Each simple command keeps its RAW text next to its argv, so a wrapper can rebuild
     its own argument list (concatenated quoted/unquoted runs) instead of guessing it from tokens.
+
+    `dialect` is the quoting dialect of THIS text and only of this text: a decoded PowerShell payload
+    is PowerShell's own (backslash literal, see `split_commands_powershell`), everything the gate reads
+    elsewhere stays POSIX. A nested wrapper decides its own dialect again from its name, so the
+    PowerShell rules never leak into a POSIX or cmd.exe payload.
+
+    A segment is more than the command it names: a readable `$(...)` substitution inside it is a
+    command the SHELL runs, so its body is classified here too, at every nesting level
+    (`substitution_bodies` decides which substitutions this dialect really executes). Nesting is
+    BOUNDED by `MAX_WRAPPER_DEPTH` and an empty body CONFIRMs, so neither a pathologically nested line
+    nor a body with no command in it can be read as harmless (or crash the gate).
     """
     worst, reasons = ALLOW, []
     order = {ALLOW: 0, CONFIRM: 1, HARD_DENY: 2}
-    for segment in split_commands(action):
-        cls, reason = classify_command(tokens(segment), scopes, depth, segment)
+
+    def merge(cls: str, reason: str) -> None:
+        """Fold one finding into the worst-so-far, keeping the reasons of the worst class only."""
+        nonlocal worst, reasons
+        if order[cls] > order[worst]:
+            reasons = []
         if order[cls] >= order[worst]:
-            if order[cls] > order[worst]:
-                reasons = []
             worst = cls
             reasons.append(reason)
+
+    for segment in split_commands(action, dialect):
+        merge(*classify_command(tokens(segment), scopes, depth, segment, dialect))
+        bodies, complete = substitution_bodies(segment, dialect)
+        for body in bodies:                          # readable bodies are classified either way
+            if not body.strip():
+                merge(CONFIRM, ("a `$(...)` command substitution is empty: it carries no command that "
+                                "could be proven harmless"))
+                continue
+            if depth >= MAX_WRAPPER_DEPTH:
+                merge(CONFIRM, (f"a `$(...)` command substitution nests deeper than "
+                                f"{MAX_WRAPPER_DEPTH} levels: the innermost command cannot be proven "
+                                f"harmless"))
+                continue
+            body_cls, body_reason = classify(body, scopes, depth + 1, dialect)
+            if body_cls != ALLOW:                    # a harmless body cannot change the verdict
+                merge(body_cls, f"a `$(...)` command substitution: {body_reason}")
+        if not complete:
+            merge(CONFIRM, ("a `$(...)` command substitution never closes: the command it would run "
+                            "cannot be proven harmless"))
     if not reasons:
         return ALLOW, "no destructive command found"
     return worst, "; ".join(reasons)

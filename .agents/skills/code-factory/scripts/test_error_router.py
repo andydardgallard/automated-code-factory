@@ -19,9 +19,11 @@ and idempotent `merge` output, `export-defaults` as a byte-exact starter, the ex
 (2 for an unusable patterns JSON, 1 for an unreadable log), the OPTIONAL `--repo` anchor — a
 RELATIVE `--log` / patterns file / `--out` resolves against it, an absolute path never does —
 the EQUALITY OF PATH SPELLINGS (two spellings of one file — a non-ASCII/8.3 short-name base,
-simulated — compare as one path through `realpath`+`normcase`, never as raw strings), the
-PROBE-WORDING regression (the missing-node line the Web GUI probe ACTUALLY emits is rendered from
-`chrome_devtools_mcp.py` itself, never hand-copied, and must classify as row I1) plus the
+simulated — compare as one path through `realpath`+`normcase`, never as raw strings), the two
+MISSING-NODE WORDING regressions (the line the Web GUI probe ACTUALLY emits is rendered from
+`chrome_devtools_mcp.py` itself, and the line the INSTALLER ACTUALLY reports is produced by calling
+`vendor_install()` with only `node` absent — both produced, never hand-copied, and both must
+classify as row I1) with the row-I1 JSON to `references/error-routing.md` agreement, plus the
 stdlib-only import contract.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
@@ -37,18 +39,27 @@ import re
 import subprocess
 import sys
 import tempfile
+import types
 
+import chrome_devtools_mcp as cd              # the installer/probe (read-only here)
 import error_router as er
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 TOOL = SCRIPTS / "error_router.py"
 DEFAULT = SCRIPTS.parent / "references" / "error-patterns.default.json"
+DOC = SCRIPTS.parent / "references" / "error-routing.md"     # the documented tables (§1)
 PROBE = SCRIPTS / "chrome_devtools_mcp.py"     # the Web GUI probe (read-only here)
 
 # The invariant wording of the probe's missing-tool line — the tail that separates it from the
 # installer's own `{name} was not found on PATH` message further up the same file. Both are in the
 # probe, only this one carries the Web GUI run consequence.
 PROBE_MISSING_TOOL_MARKER = "was not found on PATH; a Web GUI run cannot start the "
+
+
+def expect(cond: bool, msg: str) -> None:
+    """One assertion of this suite (kept above the sample builders, which use it at import time)."""
+    if not cond:
+        raise AssertionError(msg)
 
 
 def render_probe_fstring(node: ast.JoinedStr, values: dict[str, str]) -> str | None:
@@ -90,6 +101,41 @@ def probe_missing_tool_message(tool: str = "node") -> str:
             if text and PROBE_MISSING_TOOL_MARKER in text:
                 return text
     raise AssertionError(f"no f-string with {PROBE_MISSING_TOOL_MARKER!r} in {PROBE}")
+
+
+def refuse_install(*_args, **_kwargs):
+    """The injected runner of the installer regression: reaching npm at all is a test failure."""
+    raise AssertionError("vendor_install must not run npm when a required tool is absent")
+
+
+def installer_missing_node_message(absent: tuple[str, ...] = ("node",)) -> str:
+    """The EXACT line the installer reports when `absent` tools are missing — produced, not copied.
+
+    `vendor_install()` is CALLED for real on a fresh temporary target: `shutil.which` is replaced by
+    a stub that finds every tool except `absent` (the plain "node is not installed on this machine"
+    path of a deployment — NOT the `simulate_missing` seam, whose reasons carry different wording,
+    and NOT the offline seam, which skips the toolchain check entirely), and the injected runner
+    fails the suite if npm is ever reached. `format_vendor_install()` then renders the result and its
+    LAST non-empty line — the one the deployers report — is returned, so an edit of the installer's
+    message re-renders the sample here and the routing table has to keep up with it.
+    """
+    stub = types.SimpleNamespace(
+        which=lambda name: None if name in absent else "/usr/bin/" + name)
+    real_shutil = cd.shutil
+    cd.shutil = stub
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            result = cd.vendor_install(pathlib.Path(td) / "vendor-missing-node", offline=False,
+                                       runner=refuse_install)
+            formatted = cd.format_vendor_install(result)
+    finally:
+        cd.shutil = real_shutil
+    expect(result["status"] == "skipped" and result["installed"] is False,
+           f"missing {absent} must skip the install, got {result['status']!r}")
+    lines = [line for line in formatted.splitlines() if line.strip()]
+    expect(lines and lines[-1].startswith("message: "),
+           f"the reported line must be the installer's message: {formatted!r}")
+    return lines[-1]
 
 
 # §1 rows 1-20 plus the browser/MCP infrastructure rows I1-I4, in table (match) order:
@@ -164,16 +210,20 @@ SAMPLES = [
     # I1 has to match this exact wording, otherwise a real missing-Node run falls through to UNKNOWN
     # and the DIAGNOSTICIAN is dispatched instead of the INFRASTRUCTURE role.
     (probe_missing_tool_message(), "I1", "BROWSER_TOOLCHAIN", "infrastructure"),
+    # The line the INSTALLER ACTUALLY reports when the toolchain is incomplete, produced by CALLING
+    # `vendor_install()` (a stub `which` — never the `simulate_missing` seam) and formatting the
+    # result with `format_vendor_install()`. A deployment on a machine without Node must reach the
+    # INFRASTRUCTURE role too: this exact wording carries no colon after the tool name and no Web GUI
+    # consequence, so row I1 has to name the installer's own invariant tail as well, otherwise the
+    # line falls through to UNKNOWN and the DIAGNOSTICIAN is dispatched.
+    (installer_missing_node_message(), "I1", "BROWSER_TOOLCHAIN", "infrastructure"),
+    (installer_missing_node_message(("node", "npm")), "I1", "BROWSER_TOOLCHAIN",
+     "infrastructure"),
     # A GUI implementation/test FAILURE is not infrastructure: it keeps the existing ASSERTION/coder
     # route, because no GUI-specific pattern was added.
     ("AssertionError: the submit button did not call the handler", "19", "ASSERTION", "coder"),
 ]
 UNMATCHED_LOG = "everything is fine here\n0 failed\n"
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        raise AssertionError(msg)
 
 
 def canonical_path(path: str | pathlib.Path) -> str:
@@ -296,6 +346,25 @@ def main() -> int:
            f"row 18 must snapshot the table's regex verbatim: {by_id['18']['patterns']}")
     raw = DEFAULT.read_bytes()
     expect(b"\r" not in raw and raw.endswith(b"}\n"), "the snapshot must be LF-terminated UTF-8")
+
+    # 1a. Row I1 of `references/error-routing.md` must agree with the JSON snapshot — the documentation
+    #     is what a maintainer edits, so a pattern added to only one side would silently leave the
+    #     installer/probe wording documented but unclassified (or the reverse). The comparison is
+    #     per PATTERN: in the table a TOP-LEVEL alternative is written `\|` while a pipe INSIDE a
+    #     regex stays raw (`(node|npm|npx)`), so splitting the cell on the escaped separator recovers
+    #     the JSON list exactly, while splitting on every `|` would shred the inner alternations and
+    #     compare nothing.
+    doc_text = DOC.read_text(encoding="utf-8")
+    i1_row = next((line for line in doc_text.splitlines() if line.startswith("| I1 |")), None)
+    expect(i1_row is not None, f"row I1 must keep its table row in {DOC}")
+    expect(i1_row.startswith("| I1 | BROWSER_TOOLCHAIN |")
+           and i1_row.rstrip().endswith("| INFRASTRUCTURE (auto-fix) |") and i1_row.count("`") == 2,
+           f"row I1 must keep its category, route and single pattern cell: {i1_row!r}")
+    documented = i1_row.split("`")[1]
+    expect(documented.split("\\|") == by_id["I1"]["patterns"],
+           "row I1 of error-routing.md must list exactly the JSON patterns in order (a top-level "
+           f"alternative is written `\\|`, an inner pipe stays raw): {documented.split(chr(92) + '|')!r} "
+           f"!= {by_id['I1']['patterns']!r}")
 
     # 2. Library classification of the table's error families.
     entries = er.match_order(doc)
@@ -656,7 +725,9 @@ def main() -> int:
     expect(imported <= allowed, f"error_router must be stdlib-only, imports={imported}")
 
     print("PASS - error_router.py mirrors the error-routing tables (24 section-1 rows + 6 provider "
-          "rows), classifies samples deterministically, merges the project-learned patterns over "
+          "rows, row I1 agreeing with the documented cell), classifies samples deterministically "
+          "(including the missing-Node wordings the Web GUI probe and the installer themselves emit), "
+          "merges the project-learned patterns over "
           "the defaults (project-first, both applied), falls back to the defaults with a warning "
           "when the learned file is unusable, merges byte-identically, anchors relative paths at "
           "--repo, compares every path spelling (8.3 short name / case / separators) as one path, "

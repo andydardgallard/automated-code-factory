@@ -721,3 +721,36 @@ unfinished:
     reason: reviewer iteration-2 minor; cosmetic cleanup, left to keep the exhausted review budget honest
     severity: info
     follow_up: false
+
+## 2026-10-17T08:54:25+03:00 — Factory v12.14.2: PowerShell single-quote hardening; conditional pass with one open major
+title: Factory: close the pwsh/powershell single-quoted -Command fail-open in the destructive-action gate (plus remove the dead simple_commands helper)
+project: repo
+timestamp: 2026-10-17T08:54:25+03:00
+run_id: 20261017-5cdfc7af
+branch: factory/fix-pwsh-single-quote-20261017
+commit: 15ea6a6
+task_type: implement
+goal: make single-quoted pwsh/powershell -Command/-c payloads classify like their double-quoted and bare twins, with vaccination-first tests and dead-helper cleanup, without changing the exit-code/journal contract or unrelated wrapper behavior
+changed_files: 8 files (commit 15ea6a6) — action_gate.py PowerShell single-quote tokenization + decoded-quote completeness + fixed-contract/open-limitation docstring; test_action_gate.py additive section 21a-f; CHANGELOG.md 12.14.2 entry; VERSION 12.14.2; synchronized README.md, AGENTS.md, SKILL.md and .agents/README.md version markers
+created_files: none to the product (only .code-factory/ runtime artifacts)
+results: integration=PASS (test_action_gate.py exit 0, all section 21a-f and pre-existing assertions) [verified: .code-factory/logs/integration.log]; regression=PASS (31 test_*.py + test_env_propagation.sh, 84 Windows PASS/0 FAIL, all rules/english/model/mermaid/version gates green on 12.14.2) [verified: .code-factory/logs/regression.log and acceptance.md criterion 1]; business=MATCH for the covered matrix (192/192 real CLI checks, 48/48 twin groups, 192/192 journal rows; scenario 2 33/33) with the separate review-2 hole explicitly not covered [verified: .code-factory/logs/business-tests.md and business-test.log]; vaccination=PASS (original 114 red assertions then green; review-1 12 red assertions then green; no existing assertion changed) [verified: .code-factory/logs/vaccination.md and vaccination/*.log]; review=request_changes at budget exhaustion (iteration 1 major unmatched decoded quote closed; iteration 2 major POSIX-backslash recursive splitting open, 0 critical) [verified: .code-factory/logs/code-review.md, 2/2 quotes verified]; acceptance=DEGRADED conditional pass (3 MET / 0 FAILED / 1 derived; all 5 ledger entries FRESH; honest review_gate=fail; criterion 2 unverified_review) [verified: .code-factory/state/acceptance.md and logs/acceptance.log, verify_acceptance.py exit 1]; version patch 12.14.1 -> 12.14.2 (matrix --fix, reviewer validated without override) [verified: version_manager.py validate exit 0 and logs/code-review.md]; backlog=1 critical + 2 warning items open [verified: memory_project.py backlog --repo . --check expected exit 1 for the conditional-pass residual]
+decisions: the plain single-quoted -Command/-c path now uses PowerShell tokenization, doubled single quotes are decoded, and unmatched decoded quotes become CONFIRM through the existing fail-safe [verified: action_gate.py powershell_argv/powershell_quote_complete and section-21 tests]; review iteration 2 found a DIFFERENT POSIX-backslash recursive-splitting hole after iteration 1 closed, and budgets were not extended: the canonical auto conditional pass was taken with criterion 2 unverified_review and the hole recorded in code-review, acceptance, CHANGELOG, the module docstring and this backlog [verified: logs/code-review.md iteration 2, state/acceptance.md criterion-2 annotation, CHANGELOG.md 12.14.2]; the original plain single-quote backlog item is closed with evidence, the dead helper is removed without a closure block because it was info/follow_up=false, and the new backslash finding remains a separate open item, so no residual is hidden [verified: business-tests.md covered matrix, report.md unresolved-findings section, this entry's closed/unfinished blocks]
+assumptions: benign negative controls were not required to fail pre-fix; they are over-deny controls, while every bug-reproducing assertion was observed red first [verified: logs/vaccination.md]; the 192-check business matrix proves only its covered scenarios and is not safety clearance for the separately reproduced review-2 vectors [verified: logs/business-tests.md overall-status and open-finding sections]; pre-existing untracked user files were left untouched and uncommitted [verified: git status after commit 15ea6a6]
+models_used: main=kimi-code/k3; analyzer=kimi-code/k3 x2; coder=deepseek-flash (initial vaccination/fix + review-1 vaccination/rework); tester=deepseek-flash (3 business runs); reviewer=kimi-k3 (2 iterations + patch validation); documenter=deepseek-flash; diagnostician=unused; advisor=unused
+factory_version: 12.14.2
+closed:
+  - item: pwsh/powershell with a SINGLE-quoted -Command payload still ALLOWs destructive commands (`pwsh -Command 'rm -rf /'` -> ALLOW, exit 0) — reviewer iteration-2 major, pre-existing at base HEAD
+    evidence: the three original destructive payloads across pwsh/powershell, -Command/-c, single/double/bare and hitl/auto now classify like their twins (HARD_DENY/CONFIRM, never blind ALLOW), and review-1 unmatched decoded quotes CONFIRM; section 21a-f plus 192/192 real CLI checks in .code-factory/logs/business-tests.md [verified: test_action_gate.py exit 0, vaccination pre/post logs, integration.log and acceptance.md criterion 2]
+unfinished:
+  - item: PowerShell DECODED payloads are recursively split with POSIX backslash rules, so `pwsh -Command 'echo "\"; rm -rf /'` and `powershell -c 'echo "\"; git push origin main'` still ALLOW in hitl and auto (review iteration-2 major)
+    reason: reviewer budget 2/2 and coder budget 1/1 exhausted; canonical conditional pass recorded; next gate-hardening task must add red-before vectors and balanced benign controls, then use PowerShell quote/backslash semantics for recursive splitting without changing cmd/POSIX behavior
+    severity: critical
+    follow_up: true
+  - item: action_gate wrapper analysis does not cover launcher prefixes (env/sudo/builtin) and does not expand $(...) substitutions — both pre-existing at HEAD and outside F1's supported-wrapper set
+    reason: explicit non-goal of this run; unchanged candidate for a separate gate-hardening task
+    severity: warning
+    follow_up: true
+  - item: installer-side missing-Node line (chrome_devtools_mcp.py:632, `... cannot be installed` tail) still routes to the diagnostician instead of infrastructure
+    reason: explicit non-goal of this run; extend I1 or add a sibling pattern in a follow-up
+    severity: warning
+    follow_up: true

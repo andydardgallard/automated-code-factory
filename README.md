@@ -1,5 +1,5 @@
-# Autonomous Code Factory v12.14.2
-<!-- code-factory-version: 12.14.2 -->
+# Autonomous Code Factory v12.14.3
+<!-- code-factory-version: 12.14.3 -->
 
 An autonomous code-writing factory for the **Kimi Code CLI** (0.34+, Node).
 
@@ -214,4 +214,4 @@ change to the beginning or middle of a prompt invalidates the cache.
 ## Version
 
 Versioning follows [Semantic Versioning](https://semver.org/). Change history is in
-[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.14.2**.
+[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.14.3**.

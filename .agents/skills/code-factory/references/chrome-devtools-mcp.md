@@ -116,9 +116,13 @@ capability:
 
 - it is reported through the INFRASTRUCTURE route (`references/error-routing.md` §1 rows I1–I4:
   node/npm/npx not found, Chrome/Chrome for Testing missing, MCP connection/startup failure,
-  chrome-devtools-mcp launch errors) — no new role, no new budget. Row I1 matches the probe's OWN
-  wording (`<node|npm|npx> was not found on PATH; a Web GUI run cannot start …`), so a real probe
-  line is classified without being retranslated;
+  chrome-devtools-mcp launch errors) — no new role, no new budget. Row I1 matches BOTH lines this
+  module really emits, in their own wording: the probe's
+  `<node|npm|npx> was not found on PATH; a Web GUI run cannot start …` AND the installer's
+  `<node|npm> was not found on PATH: the pinned chrome-devtools-mcp@<version> cannot be
+  installed …` (`vendor-install` checks those two tools only — never `npx`). A missing-Node
+  deployment therefore reaches the same automatic infrastructure route as a missing-Node run, and
+  neither line is retranslated to be classified;
 - the affected browser criteria stay explicitly UNVERIFIED — never MET, and no screenshot, console
   result or acceptance artifact is fabricated;
 - a non-Web-GUI run never invokes the specialist, launches Chrome or calls a browser tool, and does

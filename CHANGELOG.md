@@ -5,6 +5,50 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.14.3] — 2026-10-17
+
+### Fixed
+- **`action_gate.py` — decoded PowerShell payloads are split with PowerShell's quote/backslash
+  semantics** (critical, safety gate; backlog item 1). The recursive splitter of a decoded
+  `powershell`/`pwsh` `-Command`/`-c` payload used POSIX backslash escapes, but PowerShell treats a
+  backslash as a LITERAL character, so `pwsh -Command 'echo "\"; rm -rf /'` and
+  `powershell -c 'echo "\"; git push origin main'` were ALLOWED although PowerShell closes the
+  string before the `;` and really runs the destructive tail. Decoded PowerShell payloads are now
+  split in PowerShell's own dialect (backslash literal, only doubled `''`/`""` escape), so both
+  review vectors and their pwsh/powershell, -Command/-c and hitl/auto equivalents are HARD_DENY,
+  balanced benign backslash/quote strings keep their previous ALLOW/CONFIRM result, and unreadable
+  or ambiguous input CONFIRMs. The cmd.exe and POSIX splitters are untouched.
+- **`action_gate.py` — launcher prefixes and `$(...)` substitutions can no longer hide a destructive
+  command** (warning, safety gate; backlog item 2). `env`, `sudo` and `builtin` are transparent:
+  their own options (separate or joined values), the `NAME=VALUE` assignments `env`/`sudo` document
+  and the `--` option terminator — including after `builtin` (`builtin -- rm -rf /` is the deletion
+  it really is) — are parsed, never executed, and the inner command is classified recursively at
+  every supported nesting level, in either order with the shell wrappers. Readable `$(...)`
+  substitutions are analyzed as commands the shell runs, nested substitutions included, inside
+  POSIX and PowerShell double quotes; substitutions inside literal single quotes or behind an
+  escaped `$` stay inert ALLOW. Unknown, unsupported or ambiguous syntax (`env -S`, a valued option
+  without its value, `sudo -i`/`-s`, an unsupported `builtin` option such as `-v`, an unclosed or
+  empty substitution, nesting beyond the depth limit) CONFIRMs instead of ALLOWing, and benign
+  launchers/substitutions (`env python -m pytest`, `builtin -- echo hi`, `echo $(git status)`) stay
+  ALLOW. No general shell evaluation was added and no launcher or substitution is executed to
+  classify it.
+- **`error_router.py` — the installer-side missing-Node line reaches the infrastructure route**
+  (warning, deterministic routing; backlog item 3). `vendor_install()` in
+  `chrome_devtools_mcp.py` reports `<node|npm> was not found on PATH: the pinned
+  chrome-devtools-mcp@<version> cannot be installed ...`, which matched no I1 alternative and fell
+  through to the diagnostician. Row I1 of `error-patterns.default.json` (and the byte-consistent
+  `references/error-routing.md` cell) gained the installer alternative naming the pinned-package
+  tail, so the REAL emitted line is classified BROWSER_TOOLCHAIN → infrastructure while a bare
+  `... was not found on PATH` from an unrelated tool is not stolen, and the existing Web GUI probe
+  route is unchanged.
+
+### Tests
+- Vaccination-first regressions for all three fixes: `test_action_gate.py` sections 22-27
+  (PowerShell backslash matrix, launchers, substitutions, quoted control words, and the
+  `builtin --` terminator with benign negative controls) and the REAL `vendor_install()` line in
+  `test_error_router.py` were each observed failing on the pre-fix code and passing after it; no
+  existing assertion was weakened.
+
 ## [12.14.2] — 2026-10-17
 
 ### Fixed

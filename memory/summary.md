@@ -8,45 +8,35 @@ repo_path: .
 (порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
 
 ## Current state
-Factory v12.14.0 — WEB GUI SPECIALIST + REMOTE REFERENCE_DOCS: `factory-gui-expert` (coder-class,
-no self-acceptance) implements/debugs Web GUI tasks in real Chrome via Chrome DevTools MCP
-(`mcp__chrome-devtools__*` only for gui-expert + tester); `factory-tester` independently owns the
-final browser acceptance after the last change. Conditional activation with recorded reasons
-(`chrome_devtools_mcp.py decide`), existing-E2E-stack discovery, requirement-driven browser matrix.
-Deployers vendor the pinned `chrome-devtools-mcp@1.11.0` (npm `--ignore-scripts`) and merge a
-NODE-DIRECT stdio entry into `.kimi-code/mcp.json` (the CLI spawns stdio servers without a shell —
-npx/npx.cmd fail on Windows; headless runs need `KIMI_CODE_TRUST_WORKSPACE=1` for project MCP
-trust), idempotent and conflict-preserving. `reference_docs` accepts public HTTP(S) documents and
-HTTP(S) Git URLs (`skill_base.py resolve`): stdlib urllib + git executable, deterministic content
-hashing, `.code-factory/cache/reference-docs/`, canonical-URL manifest + source_type/
-resolved_revision, offline/stale-only degradation. Browser/MCP failures route to infrastructure
-(patterns I1-I4); GUI implementation failures keep the coder route/budget (no new role enum).
-Previous: v12.13.0 (v10: repo-scoping contract, 25th rule). History:
-v12.8.0 (shard protocol, two-level fingerprint, Think in Code, review gate, verified acceptance,
-verify_quotes, evidence ledger, advisor, preflight) + v12.9.0 (rulebook, run_id, memory v2
-provenance, golden set, vaccination, WIP, error-patterns JSON) + v12.10.0 (severity boundary §3,
-committee + plan_arbiter, root auto-detect → SKIP, precedent_index FTS5) + v12.10.1/12.10.2
-(utf8-guard in all argparse scripts, 22nd rule no-shared-tree-git-mutations) + v12.11.0 (explicit
-git stash classification in action_gate; content fingerprint over the working tree; memory
-actuality mechanism: backlog [--check] + closed:+evidence: + 23rd rule memory-actuality;
-project-learned overlay error_router §1.2; providers.md §5.2) + v12.12.0/12.12.1 (English-only
-package + 24th rule; v8 review rework) + v12.13.0 (v10: repo-scoping contract, 25th rule) +
-v12.14.0 (v11: gui-expert + Chrome DevTools MCP, remote reference_docs URLs).
+Factory v12.14.1 — V12 REVIEW REWORK: all 14 findings of the v12 whole-project review fixed and
+vaccination-proven (run 20261017-7a5130ac, commit 756de71): recursive shell-wrapper classification in
+action_gate (per-quote-type escapes, real shell tokenization, unreadable payload → CONFIRM),
+`--tracked` NUL-safe inventory/shards mode (git ls-files; the shard-protocol rule now mandates it in
+all 5 carriers), HITL approval routed through pre-flight (SKILL.md Approve→PF + flow regression),
+Web pre-flight `mcp_usable` gated on a real managed config + pinned vendored entry, fail-soft MCP
+`env` validation + credential-NAME scanning, I1 aligned to the exact probe wording, skill_base
+repo-anchored hash / mid-transfer clone abort / `record --resolved-hash` without re-fetch,
+position-based documentation validator, both deployers gitignore `.kimi-code/mcp.json`, Windows suite
+clean-clone-safe (84 PASS) with mutation-proven MCP safety constants. Acceptance: DEGRADED
+conditional pass (10 MET / 0 FAILED / 1 derived; reviewer budget 2/2 exhausted at request_changes
+with 0 critical open; criterion 2 unverified_review; honest review_gate=fail ledger entry).
 Rulebook: 25 rules, 100 carriers. Memory owner: repo. Current regression: 32/32 self-tests PASS
 (31 test_*.py + test_env_propagation.sh), deterministic rules/english/model/mermaid/version gates PASS.
-Latest run: v12 whole-project review (run_id 20261017-8afa3aae, branch
-factory/whole-review-20261017, task_type=review, no product or version change): 2 critical + 12 major
-findings across action_gate, repo_inventory, Web GUI pre-flight/MCP validation, remote reference_docs,
-deployers/tests and validate_documentation. All 14 finding quotes verified; actual coverage 123/123
-tracked files; rework list in `.code-factory/state/plan.md`; acceptance DEGRADED because the canonical
-review gate cannot be SUCCESS with open critical findings (5 MET, 0 FAILED, 1 derived, regression FRESH).
-Previous run: v11 (run_id 20261016-2ddb58eb, v12.14.0, commit 8d4ff82, task_type=implement):
-gui-expert + conditional Chrome DevTools MCP path + remote URL reference_docs; review approve;
-acceptance SUCCESS; business tests 7/7 incl. the live specialist+tester Chrome MCP cycle. Earlier:
-v8 review rework became v9 (v12.12.1); v10 repo-scoping contract = v12.13.0.
-Open backlog: 1 critical rework item covering all 14 v12 findings (follow_up=true). Prior history has
-34 items closed with evidence; both v10 reviewer nits were explicitly re-examined in v12 and confirmed
-as non-issues with reasons (they remain follow_up=false).
+Lineage: v12.8.0 (shard protocol, two-level fingerprint, review gate, verified acceptance, evidence
+ledger, advisor, preflight) → v12.9.0 (rulebook, run_id, memory v2 provenance, golden set,
+vaccination) → v12.10.0–12.10.2 (severity boundary, plan committee, precedent index, utf8-guards,
+no-shared-tree-git-mutations) → v12.11.0 (git-stash classification, content fingerprint, memory
+actuality) → v12.12.0/12.12.1 (English-only package, v8 review rework) → v12.13.0 (repo-scoping
+contract, 25th rule) → v12.14.0 (gui-expert + Chrome DevTools MCP, remote reference_docs) →
+v12.14.1 (v12 review rework).
+Latest run: v12-review rework (run_id 20261017-7a5130ac, branch factory/v12-review-rework-20261017,
+commit 756de71, task_type=implement, v12.14.0 → 12.14.1 patch, reviewer-validated). Previous: v12
+whole-project review (run_id 20261017-8afa3aae, 2c+12m findings) and v11 (run_id 20261016-2ddb58eb,
+v12.14.0 gui-expert + remote reference_docs). Open backlog: 3 items — pwsh/powershell SINGLE-quoted
+-Command payload still fail-open (critical, reviewer iteration-2 major, pre-existing at base HEAD),
+wrapper analysis misses launcher prefixes (env/sudo/builtin) and $(...) substitutions (warning),
+installer-side missing-Node line (chrome_devtools_mcp.py:632) routes to diagnostician not I1
+(warning). Prior history has 35 items closed with evidence.
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле

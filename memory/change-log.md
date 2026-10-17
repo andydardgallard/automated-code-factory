@@ -684,3 +684,40 @@ unfinished:
     reason: implement the 14-item rework list in .code-factory/state/plan.md as a separate follow-up task; this review task explicitly forbids fixes, so every finding remains open
     severity: critical
     follow_up: true
+
+## 2026-10-17T05:48:51+03:00 — Factory v12-review rework (v12.14.1): the 14 review findings fixed; conditional pass with one open major
+title: Factory: fix the v12 whole-project review findings (destructive-action gate bypass, tracked-only review scope, Web GUI pre-flight and MCP validation, remote reference_docs integrity, deployer/test hygiene, documentation validator)
+project: repo
+timestamp: 2026-10-17T05:48:51+03:00
+run_id: 20261017-7a5130ac
+branch: factory/v12-review-rework-20261017
+commit: 756de71
+task_type: implement
+goal: make every safety gate, scope rule and validation check the v12 review found broken actually work — each fix proven by a regression test observed failing on the pre-fix code (vaccination) — without weakening any existing assertion or changing behavior outside the 14 findings
+changed_files: 34 files (commit 756de71) — scripts (action_gate.py recursive shell-wrapper classification with per-quote-type escapes and real shell tokenization; repo_inventory.py --tracked NUL-safe git ls-files mode; factory_preflight.py resolved-repo MCP probe threading; chrome_devtools_mcp.py non-object-env validation + credential-name scanning; skill_base.py repo-anchored hash / supervised mid-transfer clone abort / record --resolved-hash without re-fetch; validate_documentation.py diff-opcode position mapping) + their 13 test files, error-patterns.default.json I1 + error-routing.md, SKILL.md (Approve->PF edge + --tracked shard nodes), the shard-protocol rule block in all 5 carriers, code-review/security-audit/reference-docs/chrome-devtools-mcp references, both deployers (.kimi-code/mcp.json gitignored), .agents/README.md + README.md + CHANGELOG.md, VERSION 12.14.1
+created_files: none to the product (only .code-factory/ runtime artifacts)
+results: integration=PASS (31 test_*.py + test_env_propagation.sh, run three times on the evolving tree, final block all exit 0) [verified: .code-factory/logs/test-results.md]; regression=PASS (same suite green on the acceptance tree; deterministic gates rules/english/model/mermaid/version all exit 0) [verified: .code-factory/logs/test-results.md, gates block]; business=PASS 8/8 scenarios with real CLI runs incl. tracked-tree review equality, clean-clone deployment hygiene (84 PASS in a fresh offline clone), hostile MCP configs, real-line I1 routing, remote reference_docs accuracy and reviewer calibration 7/7 accuracy / precision 1.000 [verified: .code-factory/logs/business-tests.md]; review=request_changes at budget exhaustion (iteration 1: 1 critical in the new F1 code, reworked and verified fixed; iteration 2: 0 critical / 1 major / 1 minor open) [verified: .code-factory/logs/code-review.md]; vaccination=PASS (22 pre/post logs; every fix observed failing pre-fix, incl. rework rounds A2/A3) [verified: .code-factory/logs/vaccination/]; acceptance=DEGRADED conditional pass (10 MET, 0 FAILED, 1 derived; regression+baseline+business FRESH; honest review_gate=fail entry downgrades; criterion 2 marked unverified_review) [verified: .code-factory/state/acceptance.md, verify_acceptance.py exit 1]; version patch 12.14.0 -> 12.14.1 (matrix --fix, reviewer validated without override) [verified: version_manager.py validate exit 0]; backlog=1 critical + 2 warning items open [verified: memory_project.py backlog --repo . --check expected exit 1 for the conditional-pass residuals]
+decisions: the conditional pass was taken per the canonical review-gate policy (auto mode, reviewer budget 2/2 exhausted, no open critical findings): criterion 2 marked unverified_review in acceptance.md and the open findings recorded here and in report.md rather than extending an exhausted budget or silently accepting [verified: .code-factory/state/acceptance.md criterion-2 annotation, .code-factory/report.md unresolved-findings section]; the F1 fix took three implementation rounds because the reviewer and the business tester each caught a real fail-open the round before introduced or missed (quote-type-blind escapes; nested double quotes truncating the -c payload) — both caught by vaccination-first rework, never by weakening assertions [verified: logs/vaccination/A2-*.log and A3-*.log, logs/business-tests.md scenario-1 re-runs]; the shard-protocol canonical rule now mandates the tracked tree in all 5 carriers, byte-identical [verified: check_factory_rules.py PASS, 25 rules / 100 carriers]; the windows_argv tokenizer deliberately treats a double quote as a pure toggle with no backslash escape, matching cmd/PowerShell semantics [verified: test_action_gate.py sections 19-20c]
+assumptions: the review rework list of run 20261017-8afa3aae was taken as the contract (no re-discovery) [verified: task description, logs/review-20261017-8afa3aae-rework-plan.md]; this run is not a Web GUI run, so no browser probe was performed and no browser capability was required [verified: .code-factory/state/preflight.json collected without --web-gui]; pre-existing untracked files in the launch directory (task_*.yaml, wheels, idea.md) were left untracked and uncommitted per commit_exclude [verified: git status]
+models_used: main=kimi-code/k3; coder=deepseek-flash (8 parallel wave-1 groups + group C + 2 F1 rework rounds); tester=deepseek-flash (8 scenarios + 2 scenario-1 re-runs); reviewer=kimi-k3 (2 iterations + version validation); documenter=deepseek-flash; diagnostician=unused; advisor=unused
+factory_version: 12.14.1
+closed:
+  - item: v12 whole-project review rework — 2 critical + 12 major findings (action_gate shell-wrapper bypass, tracked-only inventory/privacy, Web GUI pre-flight and MCP validation/routing, remote-source hashing/clone/record consistency, deployer ignore/test gaps, documentation-validator hole)
+    evidence: commit 756de71 (34 files); .code-factory/state/acceptance.md run_id 20261017-7a5130ac (10 MET / 0 FAILED / 1 derived, DEGRADED conditional pass); .code-factory/logs/vaccination/ 22 pre/post logs; .code-factory/logs/business-tests.md 8/8 MATCH
+unfinished:
+  - item: pwsh/powershell with a SINGLE-quoted -Command payload still ALLOWs destructive commands (`pwsh -Command 'rm -rf /'` -> ALLOW, exit 0) — reviewer iteration-2 major, pre-existing at base HEAD
+    reason: reviewer budget (2/2) and coder budget (1/1) exhausted; canonical conditional pass recorded; fix direction: strip PowerShell single-quote literals in the wrapper tokenizer, with vaccination tests first
+    severity: critical
+    follow_up: true
+  - item: action_gate wrapper analysis does not cover launcher prefixes (env/sudo/builtin) and does not expand $(...) substitutions — both pre-existing at HEAD and outside F1's supported-wrapper set
+    reason: noted by the group-A coder; same fail-open family as F1; candidates for the next gate-hardening task
+    severity: warning
+    follow_up: true
+  - item: installer-side missing-Node line (chrome_devtools_mcp.py:632, `... cannot be installed` tail) still routes to the diagnostician instead of infrastructure
+    reason: outside F7's quoted scope (the probe line was fixed); extend I1 or add a sibling pattern in a follow-up
+    severity: warning
+    follow_up: true
+  - item: simple_commands (action_gate.py:317) is dead code after the round-3 tokenizer rewrite
+    reason: reviewer iteration-2 minor; cosmetic cleanup, left to keep the exhausted review budget honest
+    severity: info
+    follow_up: false

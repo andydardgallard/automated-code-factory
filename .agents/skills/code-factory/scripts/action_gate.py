@@ -29,13 +29,32 @@ tokenizer — adjacent quoted and unquoted runs CONCATENATE into one argument, a
 `sh -c "echo "hi" && rm -rf X"` is read as the `-c` argument `echo hi && rm -rf X` and denied,
 instead of stopping at the `echo ` before the first inner quote.
 
-KNOWN LIMITATION (open, carried in the backlog): a `powershell`/`pwsh` `-Command` payload in
-SINGLE quotes is still FAIL-OPEN — the Windows tokenizer reads `'` as a literal character, so
-`pwsh -Command 'rm -rf /'` is classified ALLOW while the same payload in double quotes is
-HARD_DENY. Never treat the wrapper rule as proof of safety for a single-quoted PowerShell payload.
-The gate also does not expand launcher prefixes (`env rm -rf /`, `sudo rm -rf /`) or command
-substitutions (`sh -c "$(rm -rf /)"`): it classifies what the line literally runs, so a
-substitution or a launcher prefix hides the payload from it.
+PowerShell single quotes (fixed contract): a `powershell`/`pwsh` `-Command` (or `-c`) payload may be
+a SINGLE-quoted literal — `pwsh -Command 'rm -rf /'`. From bash the outer shell strips those quotes
+and pwsh really runs the text, while from cmd.exe they are literal and pwsh prints a string; the gate
+cannot know the caller's shell, so it takes the fail-safe reading: the INNER text of a single-quoted
+`-Command`/`-c` argument is classified as a POTENTIAL command, exactly like its double-quoted and
+bare twins (`pwsh -Command 'rm -rf /'` is the same root deletion as `pwsh -Command "rm -rf /"` and
+`pwsh -Command rm -rf /`). A doubled `''` inside such a literal is ONE escaped quote, PowerShell's
+own rule, so `pwsh -Command 'echo ''ok''; rm -rf /'` is still the deletion behind the escaped quote.
+Benign inner text (`pwsh -Command 'Write-Host hi'`) stays ALLOW — this is not a blanket deny of
+single quotes — while an unreadable or ambiguous payload keeps the fail-safe CONFIRM, never an
+ALLOW: a quote left open in the argument, an empty payload, and also an unmatched quote left in the
+DECODED inner text (a doubled `''` that lost its partner turns `pwsh -Command 'echo ''; rm -rf /'`
+into `echo '; rm -rf /`, which cannot be read as a finished command and must be confirmed, not
+called harmless). The gate still does not expand launcher prefixes
+(`env rm -rf /`, `sudo rm -rf /`) or command substitutions (`sh -c "$(rm -rf /)"`): it classifies
+what the line literally runs, so a substitution or a launcher prefix hides the payload from it.
+
+KNOWN LIMITATION (open, review iteration 2 of run 20261017-5cdfc7af): the DECODED payload of a
+PowerShell wrapper is still SPLIT into simple commands with the POSIX backslash rules, not
+PowerShell's. PowerShell has no backslash escape, so it ends a `"` string on the quote itself, while
+the splitter reads `\\"` as an escaped quote and keeps the rest of the line inside that string. Two
+exact vectors therefore still classify ALLOW although a real pwsh runs the destructive tail:
+`pwsh -Command 'echo \\"; rm -rf /'` and `powershell -c 'echo \\"; git push origin main'`. The
+single-quote contract above covers the plain-literal and the unmatched-decoded-quote vectors; this
+backslash-splitting class is NOT covered by it and remains an open hole, so a single-quoted
+PowerShell payload is not a proven-safe form as a whole.
 
 HARD_DENY rules:
   * `git push` (also `--force` / `-f` / `--mirror` / `--all`) that targets the default branch
@@ -293,13 +312,13 @@ def posix_argv(line: str) -> tuple[list[str], bool]:
 
 
 def windows_argv(line: str) -> tuple[list[str], bool]:
-    """`(argv cmd.exe or PowerShell builds from line, was the line completely read)`.
+    """`(argv cmd.exe builds from line, was the line completely read)`.
 
-    Neither has a POSIX backslash escape: a `"` merely TOGGLES quoting, so
-    `powershell -Command "Remove-Item -Recurse -Force C:\\"` really closes the argument on that
-    quote and keeps the backslash — a POSIX reading would swallow the closing quote and lose the
-    whole payload. Quotes are removed from the value and adjacent runs concatenate; an unbalanced
-    `"` makes the line unreadable (`complete` is False), so the caller CONFIRMs instead of guessing.
+    cmd.exe has no POSIX backslash escape and no single-quote quoting at all: a `"` merely TOGGLES
+    quoting and a `'` is a literal character, so it follows the line character by character. Quotes
+    are removed from the value and adjacent runs concatenate; an unbalanced `"` makes the line
+    unreadable (`complete` is False), so the caller CONFIRMs instead of guessing. PowerShell uses
+    `powershell_argv` instead — its single quotes are real quoting.
     """
     argv: list[str] = []
     buf: list[str] = []
@@ -322,10 +341,55 @@ def windows_argv(line: str) -> tuple[list[str], bool]:
     return argv, not in_quotes
 
 
-def simple_commands(action: str) -> list[list[str]]:
-    """The argv-only view of `split_commands` (quote-naive `tokens`; classification uses the raw
-    text instead, so it can rebuild wrapper arguments exactly)."""
-    return [tokens(part) for part in split_commands(action)]
+def powershell_argv(line: str) -> tuple[list[str], bool]:
+    """`(argv PowerShell builds from line, was the line completely read)`.
+
+    PowerShell quoting is the Windows one — `"` and now also `'` merely TOGGLE quoting, there is no
+    POSIX backslash escape, so `powershell -Command "Remove-Item -Recurse -Force C:\\"` really closes
+    the argument on that quote and keeps the backslash, and `pwsh -Command 'rm -rf /'` carries the
+    whole deletion as ONE argument. A doubled `''` inside a single-quoted literal is ONE escaped
+    quote (PowerShell's own rule), so it neither ends the literal nor hides what follows it.
+
+    Quotes are removed from the value and adjacent runs concatenate; a quote left OPEN makes the
+    line unreadable (`complete` is False), because the caller's shell has not finished reading the
+    argument and no payload can be proven — the caller CONFIRMs it instead of guessing.
+    """
+    argv: list[str] = []
+    buf: list[str] = []
+    open_token = False
+    quote = ""
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if ch == quote:
+                if quote == "'" and i + 1 < len(line) and line[i + 1] == "'":
+                    buf.append("'")                      # '' is one escaped quote, literal goes on
+                    open_token = True
+                    i += 2
+                    continue
+                quote = ""
+            else:
+                buf.append(ch)
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            open_token = True
+            i += 1
+            continue
+        if ch.isspace():
+            if open_token:
+                argv.append("".join(buf))
+                buf, open_token = [], False
+            i += 1
+            continue
+        buf.append(ch)
+        open_token = True
+        i += 1
+    if open_token:
+        argv.append("".join(buf))
+    return argv, not quote
 
 
 def is_git(argv: list[str]) -> bool:
@@ -525,6 +589,33 @@ def is_unreadable_powershell_flag(token: str) -> bool:
     return bool(flag) and any(word.startswith(flag) for word in POWERSHELL_UNREADABLE)
 
 
+def powershell_quote_complete(payload: str) -> bool:
+    """True when the DECODED payload's own quoting closes, read with PowerShell's rules.
+
+    The payload `powershell_payload` returns is command TEXT that the recursive classifier re-reads,
+    and decoding a doubled quote (`''` -> `'`) can leave a quote in it without a partner:
+    `pwsh -Command 'echo ''; rm -rf /'` decodes to `echo '; rm -rf /`. The splitter then treats the
+    rest of the line as quoted text, so a destructive tail would be swallowed and the wrapper
+    answered ALLOW. PowerShell quotes with `"` and `'` alike and escapes a quote by DOUBLING it, so a
+    payload whose quoting never closes carries no command string that can be proven harmless — the
+    caller must CONFIRM it (the fail-safe), never call it safe.
+    """
+    quote = ""
+    i = 0
+    while i < len(payload):
+        ch = payload[i]
+        if quote:
+            if ch == quote:
+                if i + 1 < len(payload) and payload[i + 1] == quote:
+                    i += 2                              # a doubled quote is one escaped quote
+                    continue
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        i += 1
+    return not quote
+
+
 def powershell_payload(argv: list[str]) -> str | None:
     """The command string a PowerShell wrapper runs, or None when it cannot be read.
 
@@ -535,6 +626,11 @@ def powershell_payload(argv: list[str]) -> str | None:
     including the ones the gate does not know, is skipped; if no command string is found afterwards
     the wrapper is unanalyzable too (the fail-safe), so an unknown flag cannot expose a payload that
     is silently dropped.
+
+    The decoded text must also be completely quoted on its OWN terms
+    (`powershell_quote_complete`): a doubled quote that lost its partner leaves an unmatched quote,
+    the recursive splitter would read the rest of the line as quoted text, and a destructive tail
+    behind it would be invisible — so an unterminated payload is unreadable (None -> CONFIRM) too.
     """
     for i, token in enumerate(argv[1:], start=1):
         flag = powershell_flag(token)
@@ -544,7 +640,10 @@ def powershell_payload(argv: list[str]) -> str | None:
             return None
         if flag in POWERSHELL_COMMAND_FLAGS:
             rest = argv[i + 1:]
-            return None if any(is_unreadable_powershell_flag(t) for t in rest) else " ".join(rest)
+            if any(is_unreadable_powershell_flag(t) for t in rest):
+                return None
+            payload = " ".join(rest)
+            return payload if powershell_quote_complete(payload) else None
     return None
 
 
@@ -558,17 +657,25 @@ def wrapper_payload(name: str, raw: str) -> str | None:
     `echo ` that a first-quote-to-first-quote cut would stop at.
 
     `None` means unreadable, and the caller CONFIRMs it: a script file, an encoded block, an unknown
-    flag, no command flag at all, an empty payload, or a line left INSIDE a quote (`sh -c "rm -rf /`)
-    whose argument a shell has not finished reading — none of those may ever become ALLOW.
+    flag, no command flag at all, an empty payload, or a line left INSIDE a quote (`sh -c "rm -rf /`,
+    `pwsh -Command 'rm -rf /`) whose argument a shell has not finished reading — none of those may
+    ever become ALLOW.
+
+    cmd.exe is read with `windows_argv` (a `'` is literal there), PowerShell with `powershell_argv`
+    (its single quotes are real quoting, so the inner text of `-Command '...'` is the payload — the
+    outer shell may have stripped those quotes before pwsh saw them).
     """
-    if name in ("cmd", "powershell", "pwsh"):
+    if name == "cmd":
         argv, complete = windows_argv(raw)
         if not complete:
             return None
-        if name == "cmd":
-            for i, token in enumerate(argv[1:], start=1):
-                if token.lower() in CMD_COMMAND_FLAGS:
-                    return " ".join(argv[i + 1:])
+        for i, token in enumerate(argv[1:], start=1):
+            if token.lower() in CMD_COMMAND_FLAGS:
+                return " ".join(argv[i + 1:])
+        return None
+    if name in ("powershell", "pwsh"):
+        argv, complete = powershell_argv(raw)
+        if not complete:
             return None
         return powershell_payload(argv)
     argv, complete = posix_argv(raw)

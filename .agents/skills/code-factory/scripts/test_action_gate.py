@@ -492,6 +492,168 @@ def main() -> int:
                 expect("decision: ALLOW\n" not in res.stdout,
                        f"{action!r} must never be a blind ALLOW: {res.stdout!r}")
 
+        # 21. F1 round 4 (vaccination, run 20261017-5cdfc7af): a PowerShell SINGLE-quoted
+        #     `-Command`/`-c` payload must be classified exactly like its double-quoted and bare
+        #     twins. PowerShell has a real single-quote literal (a doubled '' inside one is a single
+        #     escaped quote), so the text after -Command is a command string carried in ONE argument;
+        #     the gate cannot know whether the caller's shell already stripped those quotes, so the
+        #     fail-safe contract makes it classify the inner text as a POTENTIAL command. The pre-fix
+        #     Windows tokenizer reads `'` as a literal character, so the payload collapses into one
+        #     harmless-looking token and every destructive vector below is ALLOW. Failures are
+        #     COLLECTED here instead of raised one by one: the vaccination run has to enumerate EVERY
+        #     failing vector, not stop at the first one.
+        vaccination_failures: list[str] = []
+
+        def check(cond: bool, msg: str) -> None:
+            """Record a vaccination failure instead of aborting, so one red run lists them all."""
+            if not cond:
+                print(f"FAIL: {msg}")
+                vaccination_failures.append(msg)
+
+        def class_of(res: subprocess.CompletedProcess[str]) -> str:
+            match = re.search(r"^class: (\S+)$", res.stdout, re.MULTILINE)
+            return match.group(1) if match else ""
+
+        def ps_spellings(binary: str, flag: str, payload: str) -> tuple[str, str, str]:
+            """The three spellings of ONE payload: single-quoted, double-quoted, bare."""
+            return (f"{binary} {flag} '{payload}'", f'{binary} {flag} "{payload}"',
+                    f"{binary} {flag} {payload}")
+
+        # 21a. Every destructive vector of the task in BOTH modes: pwsh and powershell, -Command and
+        #      -c, the three payloads, single vs double vs bare. HARD_DENY (exit 1) in both modes and
+        #      the SAME class in all three spellings - the single-quoted form must never be the one
+        #      spelling that buys an ALLOW.
+        ps_destructive = ("rm -rf /", "Remove-Item -Recurse -Force C:\\", "git push origin main")
+        for binary in ("pwsh", "powershell"):
+            for flag in ("-Command", "-c"):
+                for payload in ps_destructive:
+                    single, double, bare = ps_spellings(binary, flag, payload)
+                    for mode in ("hitl", "auto"):
+                        res = gate("--action", single, "--mode", mode)
+                        check(res.returncode == 1,
+                              f"{single!r} in {mode} hides a destructive payload and must be "
+                              f"HARD_DENY (exit 1): {res.returncode} {res.stdout!r}")
+                        check("decision: HARD_DENY" in res.stdout,
+                              f"{single!r} must report HARD_DENY: {res.stdout!r}")
+                        twins = [gate("--action", twin, "--mode", mode) for twin in (double, bare)]
+                        for spelling, twin in zip((double, bare), twins):
+                            check(twin.returncode == 1 and "decision: HARD_DENY" in twin.stdout,
+                                  f"the twin {spelling!r} in {mode} must stay HARD_DENY: "
+                                  f"{twin.returncode} {twin.stdout!r}")
+                        check(class_of(res) == class_of(twins[0]) == class_of(twins[1])
+                              == "HARD_DENY",
+                              f"{single!r} in {mode} must classify like its twins, got "
+                              f"{class_of(res)!r} vs {class_of(twins[0])!r} / "
+                              f"{class_of(twins[1])!r}")
+
+        # 21b. Scoped destruction stays CONFIRM: the single-quoted spelling of an IN-SCOPE deletion is
+        #      the same CONFIRM_REQUIRED (hitl, exit 2) and ALLOW_WITH_ASSUMPTION (auto, exit 0) as its
+        #      twins - never the blind ALLOW the pre-fix tokenizer answers.
+        for binary, flag, payload in (("pwsh", "-Command", "rm -rf src/generated"),
+                                      ("pwsh", "-c", "rm -rf src/generated"),
+                                      ("powershell", "-Command", "Remove-Item src/old.py"),
+                                      ("powershell", "-c", "Remove-Item src/old.py")):
+            single, double, bare = ps_spellings(binary, flag, payload)
+            hitl = gate("--action", single, "--scope", "src")
+            check(hitl.returncode == 2 and "decision: CONFIRM_REQUIRED" in hitl.stdout,
+                  f"{single!r} inside scope must require confirmation in hitl: "
+                  f"{hitl.returncode} {hitl.stdout!r}")
+            auto = gate("--action", single, "--scope", "src", "--mode", "auto")
+            check(auto.returncode == 0 and "decision: ALLOW_WITH_ASSUMPTION" in auto.stdout,
+                  f"{single!r} inside scope must be a recorded assumption in auto: {auto.stdout!r}")
+            for twin in (double, bare):
+                twin_hitl = gate("--action", twin, "--scope", "src")
+                check(twin_hitl.returncode == 2
+                      and "decision: CONFIRM_REQUIRED" in twin_hitl.stdout,
+                      f"the twin {twin!r} inside scope must stay CONFIRM_REQUIRED: "
+                      f"{twin_hitl.returncode} {twin_hitl.stdout!r}")
+                check(class_of(hitl) == class_of(twin_hitl) == "CONFIRM",
+                      f"{single!r} must classify {class_of(hitl)!r} like its twin {twin!r} "
+                      f"{class_of(twin_hitl)!r}")
+
+        # 21c. Negative controls (no over-deny): a benign single-quoted payload is ALLOW in every
+        #      spelling - "PowerShell invoked with single quotes" must not become a blanket deny.
+        for binary, flag, payload in (("pwsh", "-Command", "Write-Host hi"),
+                                      ("pwsh", "-c", "Write-Host hi"),
+                                      ("powershell", "-Command", "Write-Host hi"),
+                                      ("powershell", "-c", "Write-Host hi"),
+                                      ("pwsh", "-Command", "hello"),
+                                      ("powershell", "-c", "hello")):
+            for spelling in ps_spellings(binary, flag, payload):
+                res = gate("--action", spelling)
+                check(res.returncode == 0 and "decision: ALLOW\n" in res.stdout,
+                      f"the benign payload {spelling!r} must stay ALLOW: {res.stdout!r}")
+        res = gate("--action", "pwsh -Command 'Write-Host hi'", "--mode", "auto")
+        check(res.returncode == 0 and "decision: ALLOW\n" in res.stdout,
+              f"a benign single-quoted payload must stay ALLOW in auto too: {res.stdout!r}")
+
+        # 21d. Fail-safe: what cannot be read as ONE finished command string is CONFIRM, never ALLOW -
+        #      a single quote left open (the caller's shell has not finished reading the argument yet)
+        #      and an empty or blank payload carry no command text that could be proven harmless.
+        for action in ("pwsh -Command 'rm -rf /", "powershell -c 'git push origin main",
+                       "pwsh -Command ''", "powershell -c ''", "powershell -c ' '"):
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                if mode == "hitl":
+                    check(res.returncode == 2 and "decision: CONFIRM_REQUIRED" in res.stdout,
+                          f"{action!r} in hitl must require confirmation: "
+                          f"{res.returncode} {res.stdout!r}")
+                else:
+                    check(res.returncode == 0 and "decision: ALLOW_WITH_ASSUMPTION" in res.stdout,
+                          f"{action!r} in auto must be a recorded assumption: {res.stdout!r}")
+                check("decision: ALLOW\n" not in res.stdout,
+                      f"{action!r} must never be a blind ALLOW: {res.stdout!r}")
+
+        # 21e. A doubled single quote inside such a payload is ONE escaped quote (PowerShell's own
+        #      rule), so it must not hide what follows it: a destructive tail after the escaped quote
+        #      is still HARD_DENY, a benign one is still ALLOW.
+        for action in ("pwsh -Command 'echo ''ok''; rm -rf /'",
+                       "powershell -c 'Write-Host ''hi'' && git push origin main'",
+                       "pwsh -c 'echo ''a''; Remove-Item -Recurse -Force C:\\'"):
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                check(res.returncode == 1 and "decision: HARD_DENY" in res.stdout,
+                      f"{action!r} in {mode} runs a destructive command after an escaped quote and "
+                      f"must be HARD_DENY (exit 1): {res.returncode} {res.stdout!r}")
+        for action in ("pwsh -Command 'echo ''ok''; git status'",
+                       "powershell -c 'Write-Host ''hi''; echo done'"):
+            res = gate("--action", action)
+            check(res.returncode == 0 and "decision: ALLOW\n" in res.stdout,
+                  f"{action!r} is benign text around an escaped quote and must be ALLOW: "
+                  f"{res.stdout!r}")
+
+        # 21f. Review rework (iteration 1, run 20261017-5cdfc7af): decoding a doubled quote can leave
+        #      the INNER payload with an UNMATCHED quote — `pwsh -Command 'echo ''; rm -rf /'` decodes
+        #      to the text `echo '; rm -rf /`, and `powershell -c 'echo ''; git push origin main'` to
+        #      `echo '; git push origin main` — so what follows the stray quote is never read as a
+        #      command boundary. A text whose quoting does not close cannot be proven harmless: the
+        #      class must be CONFIRM and the mode mapping applied to it (CONFIRM_REQUIRED with exit 2
+        #      in hitl, ALLOW_WITH_ASSUMPTION with exit 0 in auto), never a blind ALLOW.
+        for action in ("pwsh -Command 'echo ''; rm -rf /'",
+                       "powershell -c 'echo ''; git push origin main'"):
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                check(class_of(res) == "CONFIRM",
+                      f"{action!r} in {mode} leaves an unterminated inner quote and must be CONFIRM, "
+                      f"not {class_of(res)!r}: {res.stdout!r}")
+                if mode == "hitl":
+                    check(res.returncode == 2 and "decision: CONFIRM_REQUIRED" in res.stdout,
+                          f"{action!r} in hitl must require confirmation: "
+                          f"{res.returncode} {res.stdout!r}")
+                else:
+                    check(res.returncode == 0 and "decision: ALLOW_WITH_ASSUMPTION" in res.stdout,
+                          f"{action!r} in auto must be a recorded assumption: {res.stdout!r}")
+                check("decision: ALLOW\n" not in res.stdout,
+                      f"{action!r} must never be a blind ALLOW: {res.stdout!r}")
+
+        # One red run must list every failing vector, so the collected failures are raised only here,
+        # after all of them have been exercised.
+        if vaccination_failures:
+            raise AssertionError(
+                f"{len(vaccination_failures)} PowerShell single-quote vaccination assertion(s) "
+                f"failed: every line above starting with FAIL is one bug-reproducing vector "
+                f"(a single-quoted -Command/-c payload must classify like its twins)")
+
     print("PASS - action_gate.py hard-denies pushes to main/master (also behind git global options) "
           "and root/out-of-scope deletions; fail-safe CONFIRMs unparsable/unknown git calls; "
           "confirms in-scope destruction in hitl, records an assumption in auto; classifies git "

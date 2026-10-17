@@ -5,6 +5,53 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.14.2] — 2026-10-17
+
+### Fixed
+- **`action_gate.py` — PowerShell single-quoted `-Command` payloads are classified** (major, safety
+  gate). `powershell`/`pwsh` with `-Command` (or its `-c` abbreviation) now rebuilds the command
+  string with PowerShell's OWN tokenizer, where `'` is real quoting, so the payload is ONE argument
+  and its inner text is classified as a POTENTIAL command: `pwsh -Command 'rm -rf /'`,
+  `pwsh -Command 'Remove-Item -Recurse -Force C:\'` and `powershell -c 'git push origin main'` are
+  the SAME class as their double-quoted and bare twins (HARD_DENY for a root deletion or a
+  default-branch push, CONFIRM for in-scope destruction) instead of ALLOW. From bash the outer shell
+  strips those quotes and pwsh really runs the text, from cmd.exe they are literal and pwsh prints a
+  string — the gate cannot know the caller's shell, so it takes the fail-safe reading. A doubled `''`
+  inside such a literal is ONE escaped quote (PowerShell's rule), and a payload whose own quoting
+  never closes — including a doubled quote that lost its partner, as in
+  `pwsh -Command 'echo ''; rm -rf /'`, which decodes to `echo '; rm -rf /` — is unreadable and
+  CONFIRMs (mode mapping applied) instead of being called harmless. Benign inner text
+  (`pwsh -Command 'Write-Host hi'`) stays ALLOW, so single quotes are not denied as a class. The
+  exit-code contract (ALLOW 0, HARD_DENY 1, CONFIRM 2 in hitl / 0 in auto, journal failure 3), the
+  `cmd` and POSIX wrapper handling and the git/stash classification are unchanged.
+- **`action_gate.py` — dead `simple_commands` helper removed** (minor). It had no callers since the
+  shell-wrapper tokenizer rewrite of 12.14.1; no behavior changes with it.
+
+### Tests
+- `test_action_gate.py` section 21 (a–f) covers the whole contract in hitl and auto: the three
+  destructive payloads across pwsh/powershell, `-Command`/`-c` and the single/double/bare spellings
+  compared against each other, in-scope destruction as CONFIRM_REQUIRED / ALLOW_WITH_ASSUMPTION,
+  benign negative controls (`Write-Host hi`, `hello`) proving no over-deny, unreadable payloads (an
+  open quote, an empty or blank payload) as CONFIRM, destructive tails behind an escaped `''`, and
+  the unmatched-decoded-quote vectors of review iteration 1. Failures are COLLECTED, so one red run
+  lists every failing vector instead of stopping at the first.
+- Vaccination first: the new vectors were observed failing on the pre-fix code and passing after the
+  fix (`logs/vaccination/single-quote-pre-fix.log` / `single-quote-post-fix.log` for the original
+  fail-open, `review-round1-pre-fix.log` / `review-round1-post-fix.log` for the iteration-1 rework).
+  No existing assertion was weakened, skipped or deleted.
+
+Conditional pass (open major, backlog). Review iteration 2 returned `request_changes` with 0 critical
+and ONE major still open: the DECODED payload of a PowerShell wrapper is still split into simple
+commands with the POSIX backslash rules, not PowerShell's, so the two exact vectors
+`pwsh -Command 'echo "\"; rm -rf /'` and `powershell -c 'echo "\"; git push origin main'` still
+classify ALLOW (reproduced in both modes) although a real pwsh closes the string before the `;` and
+runs the destructive tail. The entry above therefore does not close the single-quote class as a
+whole — it closes the plain-literal and the unmatched-decoded-quote vectors only. Reviewer budget
+2/2 and coder budget 1/1 were exhausted, the affected acceptance criterion is marked
+`unverified_review`, and the residual is carried in the project backlog and stated as a KNOWN
+LIMITATION in the `action_gate.py` docstring. The two pre-existing limitations (launcher prefixes and
+`$(...)` substitutions are not expanded) remain open as well.
+
 ## [12.14.1] — 2026-10-17
 
 ### Fixed

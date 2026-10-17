@@ -754,3 +754,33 @@ unfinished:
     reason: explicit non-goal of this run; extend I1 or add a sibling pattern in a follow-up
     severity: warning
     follow_up: true
+
+## 2026-10-17T11:24:39+03:00 — Factory full-backlog attempt FAILED: residual builtin -- bypass; product rolled back
+title: Factory full remaining backlog attempt — three fixes attempted, terminal launcher business failure, rollback to base
+project: repo
+timestamp: 2026-10-17T11:24:39+03:00
+run_id: 20261017-1955b445
+branch: factory/fix-full-backlog-20261017 (rolled back and deleted; memory recorded on factory/fix-pwsh-single-quote-20261017)
+commit: none delivered; base restored to 4607793; unreferenced failure snapshot c77c772386d30e30cacb517515bfa4b8e5076eea
+task_type: implement
+goal: close all three remaining backlog items with vaccination-first PowerShell, launcher/substitution, and installer-routing fixes, without weakening existing behavior or exceeding retry budgets
+changed_files: none delivered; seven attempted files are preserved only in the failure snapshot and .code-factory/logs/failed-diff.patch
+created_files: none to the product (only .code-factory/ runtime artifacts)
+results: baseline=PASS (31 test_*.py + shell contract + deterministic gates, 84 Windows PASS/0 FAIL) [verified: .code-factory/logs/baseline.md and baseline.log]; vaccination=PASS as evidence collection (item1 88 red, item2 255 red, sudo 66 red, review1 58 red, Advisor 111 red, item3 real-line wrong route, each followed by green on the attempted snapshot) [verified: .code-factory/logs/vaccination/]; integration=PASS and regression=PASS on the attempted snapshot [verified: .code-factory/logs/integration.log and regression.log]; business=FAIL overall (PowerShell PASS: 112 calls/786 assertions/0 mismatches; installer PASS: 56 assertions/0 mismatches; launchers FAIL: 346 calls/2439 assertions/10 mismatches, all builtin -- forms) [verified: .code-factory/logs/business-tests.md, business-test.log and builtin-business-failure.log]; review=request_changes across two iterations; four iteration-1 findings closed, iteration-2 quoted-control finding addressed by Advisor-authorized rework but no third review permitted [verified: .code-factory/logs/code-review.md and diagnostic.md]; acceptance=NOT RUN because the business gate failed [verified: .code-factory/logs/test-results.md]; rollback=COMPLETE (tracked diff and index empty, base 4607793, pre-existing untracked files unchanged) [verified: .code-factory/state/git-status-after.txt and git diff --exit-code]; backlog=3 open [verified: memory_project.py backlog --repo . --check expected exit 1 after this entry]
+decisions: the final business mismatch was not softened or reclassified as out of scope; error_router returned WRONG_RESULTS/diagnostician, but Diagnostician=1/1 and Advisor=1/1 were exhausted and auto mode has no human branch, so the run stopped [verified: .code-factory/logs/builtin-business-failure.log, pipeline.yaml retry_counters and errors.md]; no product commit, version bump, documenter step, or acceptance claim was made after failure [verified: VERSION 12.14.2, empty tracked diff, .code-factory/report.md]; the failure snapshot was retained only for audit and report_code_changes generation, not as a delivered commit [verified: .code-factory/state/failure-snapshot-commit.txt and report_code_changes.md]
+assumptions: auto mode cannot supply the Human escalation decision after the Advisor route fails, so FAILED with rollback is the honest terminal state [verified: task.yaml mode=auto and references/error-routing.md escalation ladder]; the new builtin -- vectors remain in the runtime business harness as red evidence for a future task [verified: .code-factory/state/business_acceptance.py and logs/business-test.log]
+models_used: main=kimi-code/k3; analyzer=kimi-k3 x2; coder=deepseek-flash; tester=deepseek-flash; reviewer=kimi-k3 x2; diagnostician=kimi-k3; advisor=deepseek-flash; documenter=unused
+factory_version: 12.14.2
+unfinished:
+  - item: PowerShell DECODED payloads are recursively split with POSIX backslash rules, so `pwsh -Command 'echo "\"; rm -rf /'` and `powershell -c 'echo "\"; git push origin main'` still ALLOW in hitl and auto (review iteration-2 major)
+    reason: the attempted fix passed its business scenario on the failure snapshot, but all product changes were rolled back after the launcher business failure; it remains open at base with reusable vaccination evidence
+    severity: critical
+    follow_up: true
+  - item: action_gate wrapper analysis does not cover launcher prefixes (env/sudo/builtin) and does not expand $(...) substitutions — both pre-existing at HEAD and outside F1's supported-wrapper set
+    reason: terminal residual on the attempted snapshot: builtin -- and quoted/wrapped/push analogues still ALLOW (10 business mismatches); all escalation budgets are exhausted and the attempted changes were rolled back
+    severity: warning
+    follow_up: true
+  - item: installer-side missing-Node line (chrome_devtools_mcp.py:632, `... cannot be installed` tail) still routes to the diagnostician instead of infrastructure
+    reason: the attempted I1 fix passed with the real vendor_install() line on the failure snapshot, but rollback restored the base tree; it remains open with reusable red/green evidence
+    severity: warning
+    follow_up: true

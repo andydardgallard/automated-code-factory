@@ -8,34 +8,30 @@ repo_path: .
 (порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
 
 ## Current state
-Factory v12.14.2 — POWERSHELL SINGLE-QUOTE HARDENING (run 20261017-5cdfc7af, commit 15ea6a6):
-plain single-quoted pwsh/powershell -Command/-c payloads now classify recursively like their
-double-quoted and bare twins; doubled single quotes decode by PowerShell rules, unmatched decoded
-quotes CONFIRM, benign controls stay ALLOW, and dead simple_commands is removed. Vaccination covered
-114 original red assertions plus 12 review-1 red assertions before their fixes. Final regression is
-32/32 self-tests PASS (31 test_*.py + test_env_propagation.sh), 84 Windows PASS/0 FAIL, all
-rules/english/model/mermaid/version gates green; business evidence is 192/192 covered real-CLI checks
-and 192/192 journal rows. Acceptance: DEGRADED conditional pass (3 MET / 0 FAILED / 1 derived;
-reviewer 2/2 exhausted at request_changes with 0 critical and one major open; criterion 2
-unverified_review; all 5 evidence entries FRESH with honest review_gate=fail). The open major is a
-DIFFERENT recursive-splitting hole: decoded PowerShell payloads still use POSIX backslash rules, so
-the two review-2 `echo "\"; <destructive tail>` vectors ALLOW. It is documented in CHANGELOG and the
-action_gate docstring, not hidden by the original item's closure. Rulebook: 25 rules, 100 carriers.
-Memory owner: repo. Lineage: v12.8.0 (shard protocol, two-level fingerprint, review gate, verified
-acceptance, evidence ledger, advisor, preflight) → v12.9.0 (rulebook, run_id, memory v2 provenance,
-golden set, vaccination) → v12.10.0–12.10.2 (severity boundary, plan committee, precedent index,
-utf8-guards, no-shared-tree-git-mutations) → v12.11.0 (git-stash classification, content fingerprint,
-memory actuality) → v12.12.0/12.12.1 (English-only package, v8 review rework) → v12.13.0
-(repo-scoping contract, 25th rule) → v12.14.0 (gui-expert + Chrome DevTools MCP, remote
-reference_docs) → v12.14.1 (v12 review rework) → v12.14.2 (PowerShell single-quote hardening).
-Latest run: pwsh single-quote task (run_id 20261017-5cdfc7af, branch
-factory/fix-pwsh-single-quote-20261017, commit 15ea6a6, task_type=implement, v12.14.1 → 12.14.2
-patch, reviewer-validated). Previous: v12-review rework (run_id 20261017-7a5130ac, commit 756de71).
-Open backlog: 3 items — DECODED PowerShell payload recursive splitting with POSIX backslash rules
-(critical, review iteration-2 major), launcher prefixes and $(...) substitutions (warning),
-installer-side missing-Node routing to diagnostician instead of I1 (warning). Prior history has 36
-items closed with evidence, including the original plain single-quoted -Command finding; this run
-also removed dead simple_commands (an info/non-follow-up item, so no closure block is used).
+Factory v12.14.2 — FULL-BACKLOG ATTEMPT FAILED AND ROLLED BACK (run 20261017-1955b445).
+The run attempted all three open fixes on a temporary branch with vaccination-first evidence.
+PowerShell and installer scenarios passed on the attempted snapshot; launcher work passed the full
+suite and every explicit reviewer/Advisor vector, but the final independent business matrix found 10
+`builtin --` mismatches still ALLOWING destructive tails. The deterministic route required another
+Diagnostician, but Diagnostician=1/1 and Advisor=1/1 were already exhausted; auto mode has no human
+branch. No assertion was weakened and no further retry was made. All attempted product changes were
+rolled back to base commit 4607793; the temporary branch was deleted, VERSION remains 12.14.2, and
+no acceptance was claimed. Failure snapshot c77c772386d30e30cacb517515bfa4b8e5076eea is an
+unreferenced evidence object only, with the diff archived in `.code-factory/logs/failed-diff.patch`.
+Latest delivered product remains v12.14.2 at commit 15ea6a6 (PowerShell single-quote hardening).
+Latest run: full-backlog implement attempt (run_id 20261017-1955b445), FAILED; previous delivered
+run: 20261017-5cdfc7af. Open backlog remains 3 items — decoded PowerShell POSIX-backslash splitting
+(critical), launcher prefixes and $(...) substitutions (warning; now with concrete `builtin --`
+evidence), and installer-side missing-Node routing (warning). Their attempted fixes are not closed
+because rollback restored the base tree. Rulebook: 25 rules, 100 carriers. Memory owner: repo.
+Prior history has 36 items closed with evidence. Lineage: v12.8.0 (shard protocol, two-level
+fingerprint, review gate, verified acceptance, evidence ledger, advisor, preflight) → v12.9.0
+(rulebook, run_id, memory v2 provenance, golden set, vaccination) → v12.10.0–12.10.2 (severity
+boundary, plan committee, precedent index, utf8-guards, no-shared-tree-git-mutations) → v12.11.0
+(git-stash classification, content fingerprint, memory actuality) → v12.12.0/12.12.1 (English-only
+package, v8 review rework) → v12.13.0 (repo-scoping contract, 25th rule) → v12.14.0 (gui-expert +
+Chrome DevTools MCP, remote reference_docs) → v12.14.1 (v12 review rework) → v12.14.2 (PowerShell
+single-quote hardening).
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле

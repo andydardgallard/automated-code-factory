@@ -21,7 +21,9 @@ iteration 1 (1 deferrable minor: unterminated-quote launcher lines keep the pre-
 recorded info/follow_up=false), verified acceptance SUCCESS (5 verify criteria MET + 1 derived).
 Latest delivered product: v12.14.3 at commit 692e518. Latest run: full-backlog implement
 (run_id 20261017-4beb46d5), SUCCESS; previous run: 20261017-1955b445 (FAILED attempt). Open
-backlog: 0 items (39 closed with evidence). Rulebook: 25 rules, 100 carriers. Memory owner: repo.
+backlog: 1 item (39 closed with evidence) — version_manager.py does not sync a Rust workspace's
+[workspace.package] version and validate still exits 0 on the divergence (observed against
+farukon_v3.0.0 in run 20261023-6c8f973e; declared by the backlog entry 20261023-8170f3d9). Rulebook: 25 rules, 100 carriers. Memory owner: repo.
 Prior history has 36 items closed with evidence. Lineage: v12.8.0 (shard protocol, two-level
 fingerprint, review gate, verified acceptance, evidence ledger, advisor, preflight) → v12.9.0
 (rulebook, run_id, memory v2 provenance, golden set, vaccination) → v12.10.0–12.10.2 (severity

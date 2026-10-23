@@ -813,3 +813,26 @@ unfinished:
     reason: reviewer iteration-1 minor finding; no shell parses such a line so nothing destructive can hide behind it, and the pre-change behavior was the same ALLOW — deferred as an optional hardening candidate
     severity: info
     follow_up: false
+
+## 2026-10-23T16:20:00+03:00 — Backlog: version_manager.py ignores a Rust workspace version
+
+title: Factory backlog — version_manager.py sync/validate does not see [workspace.package] version, so a Cargo workspace keeps the old version while the factory reports PASS
+project: repo
+timestamp: 2026-10-23T16:20:00+03:00
+run_id: 20261023-8170f3d9
+branch: none (backlog entry, no code change)
+commit: none
+task_type: backlog
+goal: record a defect observed while run 20261023-6c8f973e (target project farukon_v3.0.0) bumped a Rust workspace to 3.11.0, so the next factory run can close it with vaccination.
+changed_files: none — this record only declares the debt (evidence note: .code-factory/state/backlog-note-version-manager.md)
+created_files: none
+results: finding=CONFIRMED (version_manager.py sync updated VERSION, README.md and AGENTS.md to 3.11.0 and validate exited 0 while farukon_v3.0.0/Cargo.toml:14 still read version = "3.10.0"; the workspace crates reported 3.10.0 until the file was corrected by hand and Cargo.lock refreshed) [verified: farukon_v3.0.0/Cargo.toml:14 fixed by hand in run 20261023-6c8f973e commit e63fe2d6, cargo check exit 0, version_manager.py validate PASS afterwards]; impact=NONE for shipped artifacts of that run (the version commit was corrected before delivery), but the validator is unsound for any Rust workspace [verified: the run's final Cargo.toml and VERSION both 3.11.0]
+decisions: the item is recorded as follow_up=true rather than fixed now, because this session was scoped to the farukon_v3.0.0 target project and the factory's own rulebook requires a vaccination-first fix with its own test [verified: AGENTS.md factory rules, vaccination rule]
+assumptions: the correct behaviour is to mirror VERSION into a workspace's [workspace.package] version (and a plain crate's [package] version), and for validate to fail on any divergence; the exact locations to sync are for the fixing run to confirm [inferred]
+models_used: main=deepseek-flash (the session that observed it); no factory agents ran for this backlog entry
+factory_version: 12.14.3
+unfinished:
+  - item: version_manager.py does not sync a Rust workspace's [workspace.package] version and validate still exits 0 on the divergence
+    reason: observed in run 20261023-6c8f973e against farukon_v3.0.0 (validate PASS while Cargo.toml stayed 3.10.0); needs a vaccination-first fix (a test that fails on the current script) plus a validate rule covering Cargo.toml
+    severity: warning
+    follow_up: true

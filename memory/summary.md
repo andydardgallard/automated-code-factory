@@ -8,31 +8,37 @@ repo_path: .
 (порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
 
 ## Current state
-Factory v12.14.3 — FULL REMAINING BACKLOG CLOSED (run 20261017-4beb46d5, hitl retry of the failed
-attempt 20261017-1955b445). All three open items are fixed on branch
-factory/fix-full-backlog-v2-20261017, delivered in commit 692e518: decoded PowerShell payloads are
-split in PowerShell's own dialect (the review-2 backslash vectors are HARD_DENY in hitl and auto),
-env/sudo/builtin launcher prefixes and readable $(...) substitutions are analyzed recursively
-without execution — including the `builtin --` option terminator whose blind ALLOW killed the
-previous attempt — and the REAL vendor_install() missing-Node line routes to infrastructure via a
-new row-I1 alternative. Vaccination-first throughout (red-then-green archived per item), business
-harness PASS on all scenarios (786 + 2439 + 56 assertions, 0 mismatches), review APPROVE at
-iteration 1 (1 deferrable minor: unterminated-quote launcher lines keep the pre-existing ALLOW,
-recorded info/follow_up=false), verified acceptance SUCCESS (5 verify criteria MET + 1 derived).
-Latest delivered product: v12.14.3 at commit 692e518. Latest run: full-backlog implement
-(run_id 20261017-4beb46d5), SUCCESS; previous run: 20261017-1955b445 (FAILED attempt). Open
-backlog: 1 item (39 closed with evidence) — version_manager.py does not sync a Rust workspace's
-[workspace.package] version and validate still exits 0 on the divergence (observed against
-farukon_v3.0.0 in run 20261023-6c8f973e; declared by the backlog entry 20261023-8170f3d9). Rulebook: 25 rules, 100 carriers. Memory owner: repo.
-Prior history has 36 items closed with evidence. Lineage: v12.8.0 (shard protocol, two-level
-fingerprint, review gate, verified acceptance, evidence ledger, advisor, preflight) → v12.9.0
-(rulebook, run_id, memory v2 provenance, golden set, vaccination) → v12.10.0–12.10.2 (severity
-boundary, plan committee, precedent index, utf8-guards, no-shared-tree-git-mutations) → v12.11.0
-(git-stash classification, content fingerprint, memory actuality) → v12.12.0/12.12.1 (English-only
-package, v8 review rework) → v12.13.0 (repo-scoping contract, 25th rule) → v12.14.0 (gui-expert +
-Chrome DevTools MCP, remote reference_docs) → v12.14.1 (v12 review rework) → v12.14.2 (PowerShell
-single-quote hardening) → v12.14.3 (full remaining backlog closed: PowerShell-dialect splitting,
-launcher/substitution analysis, installer routing).
+Factory v12.14.3 — the three most recent runs were REPORT-ONLY REVIEWS and none touched the
+product tree.
+Latest run: review (run_id 20261025-634bc01b, task-review-memory.yaml, hitl), report-only,
+acceptance SUCCESS (7 verify criteria MET, 2 derived, regression pass, ledger FRESH): merged
+verdict request_changes, 20 findings (2 critical, 11 major, 7 minor), report in
+`.code-factory/report.md`, findings in `.code-factory/logs/code-review.md`. Its decision
+question — is the long-term memory real end to end — is answered: the journal format v2, the
+`closed:`/`evidence:` fold and the ownership validator work, while the per-run write guarantee,
+the 50/20 compaction, the `## Current state` actuality beyond one WARN, and the precedent index
+are prose or unwired; the two named validators diverge on six axes; `memory_project.py check`
+and `check_factory_model.py` are red on this repository as found. The run also exposed and
+recorded a model-precedence defect: the canonical generator≠judge rule was applied against the
+task's explicit `models.reviewer` (a kimi-k3 pass that produced no verdict), and the task is
+authoritative — the precedence must be written once and pinned.
+Previous run: review (run_id 20261025-d412a454, task-review-workflow.yaml): a `task_type:
+review` run is NOT report-only in the flow — the review verdict `CRV0 -->|request_changes| G`
+(SKILL.md:102) reaches the implement entry and the acceptance-failure edge `X -->|No| RR`
+(SKILL.md:164) reaches a coder for every task type; 18 findings.
+Run before that: review (run_id 20261025-a32464ec, an earlier task-review-memory.yaml), NOT
+ACCEPTED — its unrequested 18-file rework was stopped by the owner and rolled back (tree back at
+d87592a; the diff is kept only as `.code-factory/rework-review-memory.patch`).
+Latest delivered product: v12.14.3 at commit 692e518 (unchanged by all three reviews).
+Open backlog: 8 items (39 closed with evidence) — the flow's review-to-implement routing
+(critical), the model-precedence defect (critical, new), the self-reported model attribution
+(new), the memory owner mismatch, the half-accepted backlog record kind, the Finish-vs-actuality
+contradiction, the unwired compaction and precedent index, and the open version_manager.py
+Rust-workspace item (now with mechanism evidence: `validate` prints PASS on a divergent
+Cargo.toml).
+Rulebook: 25 rules, 100 carriers, byte-identical (`check_factory_rules.py` exit 0). Memory owner:
+repo (the rule pins the basename; the migration is a pending item). Self-tests: 31 files, all
+passing.
 
 ## Key decisions
 - Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле
@@ -54,6 +60,28 @@ launcher/substitution analysis, installer routing).
 - Документер обновляет только doc-комментарии и `.md` (secondary-модель, валидатор, бюджет 1).
 
 ## Recent history
+- 2026-10-25 — "Review of the long-term memory (20261025-634bc01b)" (main, d87592a, report-only):
+  P1-P5 and M1-M8 plus owner-raised M9, each with a command, an exit code and an artifact; 20
+  findings (2 critical, 11 major, 7 minor); 30/30 quotations verified; no product change, no
+  version bump, 8 backlog items carried, 2 added. Established: the memory data is real and the
+  gate is red (owner `repo` vs the pinned basename); the two validators disagree on six axes; the
+  Finish node's `backlog --check` exit 0 cannot coexist with the carry-over branch; compaction is
+  prose plus a manual post-hoc check; the precedent index is built by no flow node and is stale;
+  and the model-precedence conflict let a live run override the task's reviewer model — the task
+  is authoritative from now on.
+- 2026-10-25 — "Review of the review flow (20261025-d412a454)" (main, d87592a, report-only): traced
+  every edge out of a review verdict in the SKILL.md flowchart by graph walk — the review verdict
+  leads into the implement entry (CRV0 -> G, SKILL.md:102) and the acceptance-failure edge
+  (X|No -> RR -> coder, SKILL.md:164) reaches a coder for every task type, security_audit included;
+  the read-only guarantee exists once and belongs to security_audit; the acceptance contract permits
+  a review criterion only a code change can satisfy, and no self-test or rulebook rule pins the
+  routing (0 tests name CRV0; 25 rules, none covers a report-only review). 18 findings
+  (3 critical, 8 major, 4 minor, 3 nit), 35/35 quotations verified. No product change, no version
+  bump, 6 backlog items carried with reasons.
+- 2026-10-25 — "Review of the long-term memory mechanism (20261025-a32464ec)" (main, d87592a,
+  report-only): 21 findings; the flow's review-to-implement edge produced an unrequested 18-file
+  rework that the owner stopped and rolled back. Established the memory findings still open today
+  (owner mismatch, `task_type: backlog` half-acceptance, Finish-vs-actuality, unwired compaction).
 - 2026-09-24 — "Factory v9 (v12.12.1)" (factory/v9-review-rework, 2f53d2f): v8 review rework —
   deleted no-skeleton files now fail the translation-structure gate (vaccination test first),
   security-auditor severity mapping aligned to §5.1, ps1 old-git fallback + last-line failure

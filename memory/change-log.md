@@ -836,3 +836,141 @@ unfinished:
     reason: observed in run 20261023-6c8f973e against farukon_v3.0.0 (validate PASS while Cargo.toml stayed 3.10.0); needs a vaccination-first fix (a test that fails on the current script) plus a validate rule covering Cargo.toml
     severity: warning
     follow_up: true
+
+## 2026-10-25T14:04:33+03:00 — Review run 20261025-a32464ec: long-term memory mechanism — report only, the rework was NOT executed
+title: Code review — is the long-term memory (memory/) real end to end? Report-only run; a flow violation (a review verdict entering the implement branch) was found, stopped by the owner and rolled back
+project: repo
+timestamp: 2026-10-25T14:04:33+03:00
+run_id: 20261025-a32464ec
+branch: none (report-only run; the tree stayed at the base commit)
+commit: d87592a (base commit; `git status` shows 0 modified tracked files outside memory/)
+task_type: review
+goal: decide whether the documented long-term-memory mechanism is real in the code, in the flow, in the validators and in the actual contents of memory/, and deliver findings — not fixes
+changed_files: none to the product (an unrequested rework was produced by the flow's review-to-implement edge and then rolled back; its diff is kept as .code-factory/rework-review-memory.patch)
+created_files: .code-factory/logs/code-review.md, .code-factory/logs/code-review-merged.json, .code-factory/logs/findings-shard-0.json, .code-factory/logs/findings-shard-1.json, .code-factory/logs/review-shards.json, .code-factory/logs/review-evidence.md, .code-factory/logs/business-tests-memory.md, .code-factory/report.md, .code-factory/rework-review-memory.patch, task-review-workflow.yaml
+results: review=request_changes (merged verdict, 21 findings: 1 critical, 9 major, 11 minor) [verified: merge_findings.py exit 1 over .code-factory/logs/findings-shard-0.json + findings-shard-1.json, summary in code-review.md]; integration=SKIP (no code change was delivered); regression=PASS (baseline 31 self-test files exit 0 each; the tree after the rollback equals the baseline tree) [verified: .code-factory/logs/baseline.log and .code-factory/logs/regression.log]; business=SKIP by construction (the six business scenarios need the rework; the harness .code-factory/state/business_memory.py is kept as the oracle for the next run) [verified: .code-factory/logs/business-tests-memory.md]; acceptance=FAILURE (2 of 8 criteria unmet: criterion 2 demands that memory_project.py check and check_factory_model.py both exit 0 on the delivered tree, criterion 8 demands that no memory rule be enforced by prose alone — both are only satisfiable by code changes, which a review run must not make) [verified: .code-factory/state/acceptance.md]
+decisions: the flow routes a review verdict `request_changes` into the implement/coder branch (SKILL.md:102 `CRV0 -->|request_changes| G`, SKILL.md:97 "the plan is the review rework list", code-factory.md:408-409 "its rework list becomes the plan"); the run followed that branch, rewrote 18 tracked files (+1768/-152), the owner stopped it and ordered a rollback, and the tree is back at d87592a [verified: git status --porcelain reports 0 modified files after `git restore`, HEAD d87592a, and .code-factory/rework-review-memory.patch holds the 2868-line diff of the discarded rework]; the memory-ownership question (P1) is answered by the rulebook — the owner is the basename of the resolved repo_path, so the committed `project: repo` is the wrong side — but the migration is work for a separate implement task, not for this review [verified: memory_project.py check --repo . exit 1 with the rename hint, back in its pre-run state]; the half-acceptance question (P2) is a real validator divergence, not a stale record: check_factory_model.py rejects the factory-written `task_type: backlog` record while memory_project.py accepts it [verified: check_factory_model.py --repo . exit 1 with the five errors, memory_project.py check --repo . --expect repo exit 0]; the task file's own acceptance criterion 2 is unsatisfiable in report-only mode and is recorded as the counter-example for task-review-workflow.yaml [verified: .code-factory/state/acceptance.md criterion 2 FAILED with exit 1]
+assumptions: the review's findings are the debt of the follow-up implement run; .code-factory/rework-review-memory.patch is a draft proposal, not an approved change, and must be re-validated against the then-current tree
+models_used: main=deepseek-flash; reviewer=kimi-k3 (2 parallel shards); analyzer=deepseek-flash; coder=deepseek-flash (discarded rework); tester=deepseek-flash; documenter=unused (review task); diagnostician=unused; advisor=unused
+factory_version: 12.14.3
+unfinished:
+  - item: the factory flow routes a review's request_changes verdict into the implement/coder branch, so a report-only task type implements its own findings (SKILL.md:102, SKILL.md:97, code-factory.md:408-409); the security_audit branch alone says "No code change and no auto-fixing"
+    reason: found by this run after the owner stopped an unrequested 18-file rework; needs a flow change (route the review verdict to the report + a fix-task artifact) plus a self-test that pins it; recorded as task-review-workflow.yaml for a separate review run
+    severity: critical
+    follow_up: true
+  - item: memory/summary.md and all 24 journal records declare `project: repo` while the ownership rule pins the owner to the basename of the resolved repo_path (automated-code-factory_v12.13.0); memory_project.py check exits 1 on the committed memory
+    reason: the rulebook makes the memory data the wrong side, but the migration (rename) and the escape-hatch documentation (subdirectory case) are work for an implement task
+    severity: warning
+    follow_up: true
+  - item: a memory record kind the factory itself writes (task_type backlog) is rejected by check_factory_model.py and accepted by memory_project.py — half-accepted, so the factory's own gate is red on this repository
+    reason: needs the record kind sanctioned in the journal format and enforced identically by both validators, with tests; history must not be rewritten
+    severity: warning
+    follow_up: true
+  - item: the SKILL.md Finish node demands backlog --check exit 0 while the canonical memory-actuality rule allows carrying an item over in unfinished with a reason, so the factory's own memory cannot pass its own Finish gate
+    reason: needs the Finish wording aligned with the canonical rule (critical/follow_up debt blocks Finish; warning/info with follow_up=false is a conditional pass), never a weakened validator
+    severity: warning
+    follow_up: true
+  - item: the compaction promise (threshold 50, keep last 20, critical/follow_up survive) has no implementation and compact-check is named in no SKILL.md node; the precedent index (precedent_index.py) is built by no flow node while AGENTS.md presents it as living state
+    reason: both mechanisms are tested but unwired; wiring or correcting the documentation is an implement task
+    severity: warning
+    follow_up: true
+  - item: completed review run 20260929-62232c10 (findings F1-F18) has neither a journal record nor a memory commit
+    reason: history is append-only and the run's artifacts were deleted, so a backfill record would fabricate provenance; kept as history evidence, not to be rewritten
+    severity: info
+    follow_up: false
+  - item: the 11 minor findings of the merged verdict (absent-memory verdict split, unreadable-journal traceback, pre-v2 warning gap, 'one entry per run' unenforced, english-only gate excluding memory/, and the rest) stay unaddressed
+    reason: recorded in .code-factory/logs/code-review.md with file:line; folded into the follow-up implement task
+    severity: info
+    follow_up: false
+
+## 2026-10-25T15:02:28+03:00 — Review run 20261025-d412a454: is a `task_type: review` run report-only in the factory's flow? No — the review verdict is routed into the implement branch
+title: Code review — the review branch of the factory flow versus the report-only contract; report-only run, no tracked file edited, no coder started after the verdict
+project: repo
+timestamp: 2026-10-25T15:02:28+03:00
+run_id: 20261025-d412a454
+branch: main (no feature branch: a report-only run produces no product change to isolate)
+commit: d87592a (base commit; `git status` shows 0 modified tracked files outside memory/)
+task_type: review
+goal: decide whether a `task_type: review` run is report-only in the factory's own flow, trace every edge that starts at a review verdict, and establish P0-P7 / W1-W6 each with a command, an exit code and an artifact — without drafting a patch
+changed_files: none to the product (this run's writes are .code-factory/ artifacts and its own memory records)
+created_files: .code-factory/logs/code-review.md, .code-factory/logs/findings/{shard-1,shard-2}.json, .code-factory/logs/findings/merged.{json,md}, .code-factory/logs/w1-flow-trace.log, .code-factory/logs/w5-gates.log, .code-factory/logs/p0-origin-criterion.log, .code-factory/logs/p3-read-only-statements.log, .code-factory/logs/quote-{claims,check,crosscheck}.json, .code-factory/logs/review-shards.json, .code-factory/report.md, .code-factory/state/{plan.md,criteria.json,trace_flow.py,build_claims.py,crosscheck_findings.py}
+results: review=request_changes (merged verdict of 2 shards, 18 findings: 3 critical, 8 major, 4 minor, 3 nit) [verified: merge_findings.py exit 1 over .code-factory/logs/findings/shard-1.json + shard-2.json, merged report in .code-factory/logs/code-review.md]; integration=SKIP (no code change was delivered); regression=PASS (all 31 self-test files exit 0 before and after the run; check_factory_rules.py 25 rules / 100 carriers exit 0; check_english_only.py exit 0; version_manager.py validate exit 0 at 12.14.3) [verified: .code-factory/logs/baseline.md and .code-factory/state/acceptance.md]; business=SKIP by construction (the five business scenarios describe a report-only outcome, which is verified by criterion 2 of the acceptance check instead of by a program run) [verified: .code-factory/state/acceptance.md]; acceptance=SUCCESS (4 verify criteria MET, 0 FAILED, 2 derived; regression=pass; evidence ledger FRESH) with the two red repository gates check_factory_model.py and memory_project.py check left exactly as found, exit 1 for pre-existing reasons this run must not fix [verified: verify_acceptance.py exit 0, .code-factory/state/acceptance.md, .code-factory/state/evidence-20261025-d412a454.json]
+decisions: a review verdict has TWO writing edges, not one — `CRV0 -->|request_changes| G` (SKILL.md:102), where G is literally the implement entry (`TT -->|implement| G`, SKILL.md:103) that leads to pre-flight, backups and `M` "launch factory-coder subagents" (SKILL.md:120), and the acceptance-failure edge `X -->|No| RR --> RR2 -->|coder| P --> M` (SKILL.md:164, :126) which every task type shares, including security_audit [verified: .code-factory/state/trace_flow.py exit 1, shortest-path trace in .code-factory/logs/w1-flow-trace.log]; the read-only guarantee exists exactly once in the whole rulebook-and-flow surface and belongs to security_audit (`No code change and no auto-fixing`, SKILL.md:106; `The factory must NOT start fixing after the audit.`, references/security-audit.md:58) — a census of every carrier finds 0 statements of the kind about review [verified: .code-factory/logs/p3-read-only-statements.log]; the review "plan" is defined as the implement DAG (`SKILL.md:97`, `:99`, code-factory.md:232, planning-guide.md:82), which is how a report becomes a work order [verified: 4 quotations pinned by line and re-checked by verify_quotes.py, 35/35 VERIFIED]; the acceptance contract permits a review criterion that only a code change can satisfy, and the reproduction case proves it — the origin task's criterion 2 verify command exits 1 for pre-existing reasons [verified: .code-factory/logs/p0-origin-criterion.log, both validators exit 1]; no self-test pins the routing: 0 tests name CRV0, the only flow-graph invariant pins J|Approve->K and G|auto->K, verify_acceptance.py never reads task_type, and none of the 25 rules covers a report-only review [verified: .code-factory/logs/w5-gates.log]; the finish side is correct — SKILL.md:171 skips the documenter and the version steps for review, `suggest --no-change` returns none and VERSION stayed 12.14.3, though a review run that took the G edge would therefore mutate the product with no version trace at all [verified: version_manager.py validate exit 0, suggest --no-change exit 0]
+assumptions: the six open backlog items are carried unchanged — this run produced the diagnosis of the routing item, not its fix, and a review run may not close an item without evidence of closure; the owner decides whether the findings become an implement task
+models_used: main=deepseek-flash; reviewer=kimi-k3 (2 parallel shards); analyzer=deepseek-flash (plan written by the main agent); coder=unused (no code change); tester=unused (no code change); documenter=unused (review task); diagnostician=unused; advisor=unused
+factory_version: 12.14.3
+unfinished:
+  - item: the factory flow routes a review's request_changes verdict into the implement/coder branch, so a report-only task type implements its own findings (SKILL.md:102, SKILL.md:97, code-factory.md:408-409); the security_audit branch alone says "No code change and no auto-fixing"
+    reason: diagnosed, not fixed — this run established the routing with a graph trace (trace_flow.py exit 1) and added the second, previously unrecorded edge X|No->RR->P->M that reaches a coder for every task type; changing the flow is an implement task and the decision belongs to the owner
+    severity: critical
+    follow_up: true
+  - item: version_manager.py does not sync a Rust workspace's [workspace.package] version and validate still exits 0 on the divergence
+    reason: no evidence of closure; untouched by this review run
+    severity: warning
+    follow_up: true
+  - item: memory/summary.md and all 24 journal records declare `project: repo` while the ownership rule pins the owner to the basename of the resolved repo_path (automated-code-factory_v12.13.0); memory_project.py check exits 1 on the committed memory
+    reason: re-verified red by this run (memory_project.py check exit 1); the migration is a memory/code change a review run must not make
+    severity: warning
+    follow_up: true
+  - item: a memory record kind the factory itself writes (task_type backlog) is rejected by check_factory_model.py and accepted by memory_project.py — half-accepted, so the factory's own gate is red on this repository
+    reason: re-verified red by this run (check_factory_model.py exit 1 on the 2026-10-23 backlog record); fixing it means editing history or a validator
+    severity: warning
+    follow_up: true
+  - item: the SKILL.md Finish node demands backlog --check exit 0 while the canonical memory-actuality rule allows carrying an item over in unfinished with a reason, so the factory's own memory cannot pass its own Finish gate
+    reason: this run is itself the demonstration — it carried six items over in unfinished with reasons, so `backlog --check` exits 1 while the canonical rule is satisfied
+    severity: warning
+    follow_up: true
+  - item: the compaction promise (threshold 50, keep last 20, critical/follow_up survive) has no implementation and compact-check is named in no SKILL.md node; the precedent index (precedent_index.py) is built by no flow node while AGENTS.md presents it as living state
+    reason: no evidence of closure; untouched by this review run
+    severity: warning
+    follow_up: true
+
+## 2026-10-25T19:20:00+03:00 — Review run 20261025-634bc01b: does the long-term memory (`memory/`) really work as the rulebook requires?
+title: Code review (report only) — read path, write path, ownership, compaction, actuality, validator cross-consistency and rulebook agreement of the factory's long-term memory
+project: repo
+timestamp: 2026-10-25T19:20:00+03:00
+run_id: 20261025-634bc01b
+branch: main (no feature branch: a report-only run produces no product change to isolate)
+commit: d87592a (base commit; `git status` shows 0 modified tracked files outside memory/)
+task_type: review
+goal: decide whether the long-term memory mechanism is real end to end — in the code, in the flow, in the validators and in the contents of memory/ today — establishing P1-P5 and M1-M8 each with a command, an exit code and an artifact, without drafting a patch
+changed_files: none to the product (this run's writes are .code-factory/ artifacts and this record plus the summary actualization)
+created_files: .code-factory/logs/code-review.md; .code-factory/logs/code-review-merged.json; .code-factory/logs/code-review-shards/shard-1.json; .code-factory/logs/code-review-shards/shard-2.json; .code-factory/logs/review-shards.json; .code-factory/logs/baseline-selftests.log; .code-factory/logs/probes-evidence.log; .code-factory/logs/m5-version-warning.log; .code-factory/logs/p2-validator-full.log; .code-factory/logs/quote-claims.json; .code-factory/logs/quote-report.json; .code-factory/report.md; .code-factory/state/plan.md; .code-factory/state/pipeline.yaml; .code-factory/state/criteria.json; .code-factory/state/acceptance.md
+results: review=request_changes (merged verdict of 2 shards, 20 findings: 2 critical, 11 major, 7 minor) [verified: merge_findings.py exit 1 over .code-factory/logs/code-review-shards/shard-1.json + shard-2.json, merged report .code-factory/logs/code-review.md]; integration=SKIP (no code change was delivered) [inferred]; regression=PASS (all 31 factory self-test files exit 0 before and after the run; check_factory_rules.py 25 rules / 100 carriers exit 0; check_english_only.py exit 0 over 119 files; VERSION stayed 12.14.3) [verified: .code-factory/logs/baseline-selftests.log, .code-factory/state/acceptance.md]; business=SKIP by construction (the six business scenarios describe a report-only outcome and are verified by the acceptance criteria, not by a program run) [verified: .code-factory/state/acceptance.md]; acceptance=SUCCESS (7 verify criteria MET, 0 FAILED, 2 derived; regression=pass; evidence ledger FRESH) with the two red repository gates memory_project.py check and check_factory_model.py left exactly as found at exit 1 [verified: verify_acceptance.py exit 0, .code-factory/state/acceptance.md]
+decisions: the read path is real for the main agent (SKILL.md:88 BEGIN names the summary, the recent journal entries and the exact backlog fold) but not for the delegated roles — the mandatory briefing template has 8 sections and no memory-facts slot, every consumer reads memory only "if the main agent provided them", and the folded backlog has no route into any briefing [verified: references/handoff-briefing.md, analyzer.md:21, finding 14 of .code-factory/logs/code-review.md]; the write path enforces the format (required keys, run_id shape, provenance marks in both validators) but not the lifecycle: run_id.py check excludes memory/ from ARTIFACT_GLOBS, a duplicate run_id in two valid records is accepted, and a deployment root without memory/ passes both memory_project.py check and backlog --check while check_factory_model.py fails — the two named validators disagree in opposite directions [verified: .code-factory/logs/probes-evidence.log, findings 6 and 7]; the ownership validator is right and the data is wrong (`project: repo` vs the pinned basename), but the identity model itself is defective — rename/re-version of the deployment root silently invalidates memory nobody edited, and the documented subdirectory configuration has no flag-free pass (plain check exit 1, --expect exit 0) [verified: .code-factory/logs/probes-evidence.log]; compaction is prose plus a manual post-hoc check: no compact subcommand (exit 2), the 50/20 numbers exist only in template text, only the critical/follow_up survival third is implemented and no SKILL.md node names compact-check [verified: .code-factory/logs/probes-evidence.log, finding 5]; actuality is half-real — the closed:/evidence: protocol and the whole-journal fold work (open 6, closed 39, legacy_drift 6, errors 0) and the version divergence IS computed but only as a WARN that never changes an exit code and is never called by check, while test counts and open backlog are compared with nothing [verified: .code-factory/logs/m5-version-warning.log, finding 16]; the two validators diverge on six axes in both directions (owner, task_type backlog, required keys, results sub-keys, empty project:, closed: without evidence:) and no test ties them together [verified: .code-factory/logs/probes-evidence.log, findings 2 and 11]; rulebook agreement: only memory-provenance is enforced as written; memory-ownership's single-writer/one-entry and compaction clauses are unenforced and memory-actuality's Finish node (backlog --check exit 0) contradicts the carry-over branch the same node and the rule allow [verified: finding 1 critical, memory_project.py backlog --repo . --check exit 1 with open: 6]; model precedence is stated three times and pinned nowhere (canonical generator-ne-judge unconditional in AGENTS.md:236, providers.md:159 "a warning, not a blocker", SKILL.md:334 matrix-first except the second planner), no code computes a model family and models_used is self-reported — this run is the live test: the first review pass overrode models.reviewer deepseek-flash with kimi-k3, produced no verdict, and both shards were re-run on deepseek-flash after the owner's ruling that the task is authoritative [verified: .code-factory/tmp/discarded-kimi-review/, session wire agents/agent-0 and agent-1 (80 llm.request events, model k3, 0 errors), findings 4 and 10]
+assumptions: the six pre-existing open backlog items are carried unchanged, because a review run may produce the diagnosis of an item but not its closure; this record declares project: repo (not the rule-pinned basename) because 26 existing records declare repo and one record with another value would make the journal mix projects — the mismatch is carried as open debt instead of being edited, and history is not rewritten; the model-matrix conflict is resolved in favor of the task per the owner's ruling and recorded as debt rather than silently applied
+models_used: main=deepseek-flash; reviewer=deepseek-flash (2 parallel shards, per the task models matrix); analyzer=deepseek-flash (plan written by the main agent); coder=unused (no code change); tester=unused (no code change); documenter=unused (review task); diagnostician=unused; advisor=unused
+factory_version: 12.14.3
+unfinished:
+  - item: the generator≠judge rule is written unconditionally and was applied against an explicit task models matrix (this run: models.reviewer deepseek-flash overridden with kimi-k3 for two shard passes, discarded and re-run); it must be a DEFAULT for roles the task does not name, with the task matrix winning whenever both are specified, and the precedence must be stated once and pinned by a test
+    reason: owner-raised in this run and not fixed here — a review run drafts no patch; the fix is a rulebook wording change plus a precedence test
+    severity: critical
+    follow_up: true
+  - item: models_used is self-reported by the main agent and nothing derives it from the session wire, so an override or a silent substitution is invisible in pipeline.yaml, report.md and this journal; this run could answer "did kimi-k3 really run" only from ~/.kimi-code/sessions/.../agents/agent-*/wire.jsonl
+    reason: diagnosed, not fixed — the artifact that proves model attribution is outside the repository and no script reads it
+    severity: warning
+    follow_up: true
+  - item: version_manager.py does not sync a Rust workspace's [workspace.package] version and validate still exits 0 on the divergence
+    reason: still open, and this run added the mechanism evidence (finding 9: validate on a tree with Cargo.toml on another version prints PASS and exits 0); a review run may not fix it
+    severity: warning
+    follow_up: true
+  - item: the factory flow routes a review's request_changes verdict into the implement/coder branch, so a report-only task type implements its own findings (SKILL.md:102, SKILL.md:97, code-factory.md:408-409); the security_audit branch alone says "No code change and no auto-fixing"
+    reason: still open; this run deliberately did not take the edge (no coder started after the verdict) per the owner's explicit instruction, which is the workaround the item exists to remove
+    severity: critical
+    follow_up: true
+  - item: memory/summary.md and all 24 journal records declare `project: repo` while the ownership rule pins the owner to the basename of the resolved repo_path (automated-code-factory_v12.13.0); memory_project.py check exits 1 on the committed memory
+    reason: re-verified red by this run (check exit 1; --expect repo exit 0) and grown to 26 records before this one; the migration is a memory change a report-only run must not make
+    severity: warning
+    follow_up: true
+  - item: a memory record kind the factory itself writes (task_type backlog) is rejected by check_factory_model.py and accepted by memory_project.py — half-accepted, so the factory's own gate is red on this repository
+    reason: re-verified red by this run (check_factory_model.py exit 1, five errors on the 2026-10-23 record); fixing it means editing history or completing a validator
+    severity: warning
+    follow_up: true
+  - item: the SKILL.md Finish node demands backlog --check exit 0 while the canonical memory-actuality rule allows carrying an item over in unfinished with a reason, so the factory's own memory cannot pass its own Finish gate
+    reason: this run is again the demonstration — it carries eight items with reasons, so backlog --check exits 1 while the canonical rule is satisfied; finding 1 rates the contradiction critical
+    severity: warning
+    follow_up: true
+  - item: the compaction promise (threshold 50, keep last 20, critical/follow_up survive) has no implementation and compact-check is named in no SKILL.md node; the precedent index (precedent_index.py) is built by no flow node while AGENTS.md presents it as living state
+    reason: re-verified by this run (no compact subcommand; compact-check exit 0 with --help only; 0 hits of precedent_index in SKILL.md; precedents.db stale — query a32464ec matches: 0)
+    severity: warning
+    follow_up: true

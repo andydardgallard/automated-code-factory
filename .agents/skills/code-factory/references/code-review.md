@@ -1,8 +1,9 @@
 # Code Review
 
 Goal: a static quality gate on the factory's work. The `factory-code-reviewer` subagent checks
-the produced code before the task can be accepted. It either **approves** the change or returns a
-**rework list** (a task for the coder).
+the produced code before the task can be accepted. In an `implement`/`refactor` run it either
+**approves** the change or returns a **rework list** (a task for the coder); a `task_type: review`
+run is report-only and is described in §1.2.
 
 Every `.code-factory/` path below lives at the root of the RESOLVED `repo_path` (the review
 target), never at the launch folder — see the canonical `repo-scoping` rule.
@@ -14,8 +15,11 @@ file, in an agent instruction or in a run document phrases it differently, this 
 wording is byte-identical everywhere it is quoted.
 
 <!-- factory-rule: review-gate-policy begin -->
-**Review gate (canonical wording):** a task is NOT accepted while the reviewer has open severity=critical findings (verdict `request_changes` with open critical findings). The reviewer budget = 2 iterations. If the budget is exhausted and critical findings remain: in hitl mode the factory STOPS and asks the user; in auto mode only a conditional pass is allowed — the corresponding criterion is marked `unverified_review` in `.code-factory/state/acceptance.md`, and the unresolved findings go into `.code-factory/report.md` (unresolved findings section), never silently. A full SUCCESS with open critical findings is impossible.
+**Review gate (canonical wording):** a task is NOT accepted while the reviewer has open severity=critical findings (verdict `request_changes` with open critical findings). The reviewer budget = 2 iterations. If the budget is exhausted and critical findings remain: in hitl mode the factory STOPS and asks the user; in auto mode only a conditional pass is allowed — the corresponding criterion is marked `unverified_review` in `.code-factory/state/acceptance.md`, and the unresolved findings go into `.code-factory/report.md` (unresolved findings section), never silently. A full SUCCESS with open critical findings is impossible. For a `task_type: review` run the gate judges the delivered review, not the reviewed code: the verdict stays `request_changes` in `results.review=` while the run's own acceptance records whether the report and the follow-up task file were produced.
 <!-- factory-rule: review-gate-policy end -->
+<!-- factory-rule: review-report-only begin -->
+**Report-only review (canonical wording):** a `task_type: review` run never edits the project: no review verdict, in either mode, reaches a node that starts a coder, writes a backup or changes a tracked source, test, config, documentation or data file — the run's own `.code-factory/` artifacts and its single `memory/` record are the only writes. The deliverable is the report (`.code-factory/logs/code-review.md` + `.code-factory/report.md`) plus a generated follow-up task file (`.code-factory/review/fix-tasks.yaml`, produced by `scripts/review_followup_task.py`) that the owner runs later as a separate `implement` task; the findings never become this run's plan. A review criterion that is not MET stops the run and asks the owner — it is never routed into error routing's coder branch — and because the run changes nothing, every `verify:` criterion of a review task must be satisfiable on the unmodified tree: a criterion that needs a change is an authoring error the run reports. A review run's acceptance judges the delivered report, while the verdict on the reviewed code stays recorded as `results.review=`; the two facts are never conflated. `security_audit` keeps its own guarantee (reports plus a fix-task file, no auto-fixing) unchanged, and this rule does not restate it.
+<!-- factory-rule: review-report-only end -->
 
 The reviewer does NOT fix code and does NOT run the full test suite. Its job is a fresh,
 critical look at the code itself.
@@ -102,6 +106,21 @@ bounds context, it is not extra ceremony.
    and the canonical gate policy (§0) is applied to the MERGED findings (never per shard). The
    shard files stay as the evidence behind it, and `verify_quotes.py` (§2.1) re-checks the merged
    headline findings.
+
+## 1.2 Review-run semantics (report-only)
+
+For a `task_type: review` run the canonical `review-report-only` block in §0 is the normative
+statement; this section only says what it means for the workflow of THIS file. The deliverable is
+the report (`.code-factory/logs/code-review.md` + `.code-factory/report.md`) plus ONE generated
+follow-up task file, `.code-factory/review/fix-tasks.yaml`, written deterministically from the merged
+findings by `scripts/review_followup_task.py` (`--findings .code-factory/logs/code-review-merged.json
+--repo <resolved repo_path> --out .code-factory/review/fix-tasks.yaml [--run-id <run_id>]`). The owner
+runs that file later as a separate `implement` task. Nothing is edited, so no rework happens in the
+same run and every `verify:` criterion of the review task must be satisfiable on the unmodified tree —
+a criterion that needs a change is an authoring error the run reports. The verdict on the reviewed
+code is recorded as `results.review=` while the run's acceptance judges the delivered report.
+`security_audit` keeps its own guarantee (reports + a fix-task file, no auto-fixing —
+`references/security-audit.md`), and §4/§5 below apply to `implement`/`refactor` runs only.
 
 ## 2. What to check (checklist)
 
@@ -210,10 +229,11 @@ This table classifies findings and picks the reviewer verdict; it is not the acc
 keeps a task unaccepted, and what happens when the reviewer budget runs out, is defined only by the
 canonical review-gate policy in §0 (severity=critical is the hard acceptance blocker there).
 
-## 4. Rework task (on request_changes)
+## 4. Rework task (on request_changes — `implement`/`refactor` runs only)
 
-The reviewer returns a concise, actionable rework list for the `factory-coder`, NOT prose
-essays. Each item:
+In an `implement` or `refactor` run the reviewer returns a concise, actionable rework list for the
+`factory-coder`, NOT prose essays. A `task_type: review` run has no rework leg at all: its merged
+findings go to `scripts/review_followup_task.py` (§1.2) instead. Each item:
 
 ```
 - file: <path> (or "scope: whole repo" for review tasks)
@@ -224,16 +244,20 @@ essays. Each item:
   fix: <concrete change to make, 1-2 sentences>
 ```
 
-The main agent passes this verbatim to the coder as the next task. minor/nit findings are
-attached separately as "optional" and the coder may skip them.
+In an `implement`/`refactor` run the main agent passes this verbatim to the coder as the next task.
+minor/nit findings are attached separately as "optional" and the coder may skip them. In a
+`task_type: review` run nothing is passed to a coder: the merged findings are the input of
+`scripts/review_followup_task.py` (§1.2), and the run ends with the report.
 
 ## 5. Iteration & budget
 
-- Review is bounded: **reviewer budget = 2** iterations per task (track `retry_counters.reviewer`
-  in `.code-factory/state/pipeline.yaml`).
-- After a `request_changes` round, the coder applies the rework list, then the factory MUST
-  re-run **integration + regression** tests (and business tests only if the rework touched
-  business logic) before re-invoking the reviewer.
+- Review is bounded: **reviewer budget = 2** iterations per `implement`/`refactor` task (track
+  `retry_counters.reviewer` in `.code-factory/state/pipeline.yaml`).
+- For `implement`/`refactor` only: after a `request_changes` round, the coder applies the rework
+  list, then the factory MUST re-run **integration + regression** tests (and business tests only if
+  the rework touched business logic) before re-invoking the reviewer. A `task_type: review` run has
+  no iteration at all — the first merged verdict is final for the run, reported and handed over per
+  §1.2, and no reviewer budget is ever spent reworking code in a report-only run.
 - When the budget is exhausted (the 2nd `request_changes` for the same task), escalate instead of
   looping — exactly as the canonical review-gate policy in §0 defines it:
   - hitl mode: show the user the findings and ask how to proceed — the run STOPS there;
@@ -272,7 +296,7 @@ findings:
     issue: <1 sentence>
     quote: <verbatim fragment of the code/log backing this finding, §2.1>
     fix: <1-2 sentences>   # required for critical/major, optional for minor/nit
-rework:                    # only when verdict=request_changes
+rework:                    # implement/refactor only, and only when verdict=request_changes
   - file: <path>
     line: <line number, or n/a>
     severity: critical | major

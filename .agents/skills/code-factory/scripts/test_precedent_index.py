@@ -7,11 +7,18 @@ A throwaway project tree is indexed — `memory/change-log.md` with three `## ` 
 (a binary file, a file over 200 KiB, `.code-factory/` runtime state and `skill-base/golden-set/`
 calibration data) — and every claimed property is checked: records per source, the `## `
 splitting, one unique marker per source found there and nowhere else, an FTS5 operator query with
-`--limit`, `--out`, a rebuild that reproduces the same rows in the same order, the git scan and
-the directory walk agreeing on the same records (a tracked symbolic link included: git lists it
-while the walk skips it, so the index must skip it in BOTH modes), and the CLI contract (`--help`,
-a missing argument, a missing/corrupt database, a broken MATCH expression and `--limit 0` all
-answer with a message, never a traceback).
+`--limit`, `--db` (and its legacy alias `--out`), a rebuild that reproduces the same rows in the
+same order, the git scan and the directory walk agreeing on the same records (a tracked symbolic
+link included: git lists it while the walk skips it, so the index must skip it in BOTH modes), and
+the CLI contract (`--help`, a missing argument, a missing/corrupt database, a broken MATCH
+expression and `--limit 0` all answer with a message, never a traceback).
+
+A second fixture pins the FRESHNESS contract, i.e. that the index is living state and not a file
+somebody built once: a build is idempotent (same rows, same content hash, no duplicates), prunes a
+source that disappeared, finds the newest journal record by its hyphenated `run_id`, reports
+`STALE - <reason>` naming the cause when the journal or the tracked tree changed (or the meta record
+or the database is gone), and `query --fresh` refuses a stale index with exit 3 instead of
+answering `matches: 0`.
 
 Creating a symbolic link needs privileges on Windows (Administrator or Developer Mode): when the OS
 refuses, the test prints a note and skips only that sub-check instead of failing.
@@ -97,6 +104,32 @@ EXPECTED_PATHS = {"memory/change-log.md", "memory/summary.md",
 # symbolic links. The index must skip it in BOTH modes, or `git scan == walk` breaks on one tree.
 SYMLINK_NAME = "alias_alpha.py"
 SYMLINK_REL = "pkg/" + SYMLINK_NAME
+
+# The freshness fixture: a journal whose newest record carries a hyphenated run_id — the shape FTS5
+# would otherwise read as `20261025` MINUS a column named `aaaa0001`.
+FRESH_LOG = """# Run journal
+
+Entry format: `## <timestamp> — <title>`, project marker — `project: <name>`.
+
+## 2026-10-24T09:00:00+03:00 — The older run of the freshness fixture
+project: demo
+run_id: 20261024-11112222
+The older record: it says nothing about the newest one.
+
+## 2026-10-25T10:00:00+03:00 — The newest run of the freshness fixture
+project: demo
+run_id: 20261025-aaaa0001
+The newest record must be findable by its run_id, hyphen and all.
+"""
+APPENDED_LOG = """
+## 2026-10-25T11:30:00+03:00 — A record appended after the build
+project: demo
+run_id: 20261025-bbbb0002
+A record the index cannot know about until the next build.
+"""
+RUN_ID = "20261025-aaaa0001"        # present at build time
+NEW_RUN_ID = "20261025-bbbb0002"    # appended afterwards
+BUILD_HINT = "precedent_index.py build"
 
 
 def expect(cond: bool, msg: str) -> None:
@@ -270,6 +303,146 @@ def check_cli(root: pathlib.Path, db: pathlib.Path) -> None:
     expect(db.is_file(), "the CLI checks must not disturb the index they query")
 
 
+def fresh_status(root: pathlib.Path, *extra: str) -> str:
+    """Assert a FRESH `status` in the documented line shape and return the content hash it prints."""
+    res = run("status", "--repo", str(root), *extra)
+    expect(res.returncode == 0, f"status must be FRESH here: {res.stdout!r}{res.stderr!r}")
+    head = res.stdout.splitlines()[0]
+    expect(re.fullmatch(r"FRESH - \d+ records, \d+ files "
+                        r"\(built \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\)", head) is not None,
+           f"the FRESH line must carry the counts and the build time: {head!r}")
+    hashes = re.findall(r"^hash: ([0-9a-f]{64})$", res.stdout, flags=re.M)
+    expect(len(hashes) == 1, f"status must print the content hash: {res.stdout!r}")
+    return hashes[0]
+
+
+def check_freshness() -> None:
+    """The index is living state: idempotent builds, pruning, and a stale index that never answers.
+
+    Every sub-check below fails on an implementation that builds once and then drifts: no `status`
+    at all, no meta record, a stale index answering `matches: 0`, or a `run_id` FTS5 cannot parse.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        (root / "memory").mkdir(parents=True)
+        (root / "pkg").mkdir()
+        write(root / "memory" / "change-log.md", FRESH_LOG)
+        write(root / "memory" / "summary.md", "project: demo\n\n## State\nThe fixture is built.\n")
+        write(root / "pkg" / "one.py", "ONE = 1\n")
+        write(root / "pkg" / "two.py", "TWO = 2\n")
+        maybe_git_init(root)  # the git manifest when git is here, the walk manifest otherwise
+        db = root / pi.DEFAULT_DB
+
+        # (a) One build, and the newest journal record is found by its run_id. A build-time index
+        #     that answers "matches: 0" for a record it holds is the defect this pins.
+        res = run("build", "--repo", str(root))
+        expect(res.returncode == 0, f"build: {res.stderr!r}")
+        fresh_status(root)
+        res = run("query", "--repo", str(root), RUN_ID)
+        expect(res.returncode == 0, f"query {RUN_ID}: {res.stderr!r}")
+        expect(counter(res.stdout, "matches") == "1",
+               f"the newest record must be findable by its run_id: {res.stdout!r}")
+        expect("memory/change-log.md" in res.stdout, f"the hit must name the journal: {res.stdout!r}")
+        res = run("query", "--repo", str(root), "findable", RUN_ID)
+        expect(res.returncode == 0 and counter(res.stdout, "matches") == "1",
+               f"several terms are joined into one MATCH expression: {res.stdout!r}")
+
+        # (b) Unchanged sources: the second build is a no-op — same rows in the same order, same
+        #     content hash, no duplicated rows.
+        built_rows = rows(db)
+        built_hash = fresh_status(root)
+        res = run("build", "--repo", str(root))
+        expect(res.returncode == 0, f"second build: {res.stderr!r}")
+        expect(counter(res.stdout, "records") == str(len(built_rows)),
+               f"a rebuild must re-index the same records: {res.stdout!r}")
+        expect(rows(db) == built_rows, "a rebuild must not duplicate or reorder rows")
+        expect(fresh_status(root) == built_hash,
+               "unchanged sources must leave the content hash identical")
+
+        # (c) A record appended after the build: STALE naming the journal, and `--fresh` refuses to
+        #     answer instead of reporting `matches: 0`.
+        write(root / "memory" / "change-log.md", FRESH_LOG + APPENDED_LOG)
+        res = run("status", "--repo", str(root))
+        expect(res.returncode == 1, f"a stale index must exit 1: {res.stdout!r}")
+        expect(res.stdout.startswith("STALE - ") and "journal" in res.stdout,
+               f"the reason must name the journal: {res.stdout!r}")
+        res = run("query", "--repo", str(root), RUN_ID, "--fresh")
+        expect(res.returncode == 3, f"query --fresh must refuse a stale index: {res.returncode}")
+        expect(res.stdout.startswith("STALE - ") and "journal" in res.stdout
+               and BUILD_HINT in res.stdout,
+               f"the refusal must name the cause and the fix: {res.stdout!r}")
+        res = run("query", "--repo", str(root), RUN_ID)
+        expect(res.returncode == 0 and counter(res.stdout, "matches") == "1",
+               f"a plain query keeps answering in the documented format: {res.stdout!r}")
+
+        # (d) The rebuild picks the appended record up and the index is FRESH again.
+        res = run("build", "--repo", str(root))
+        expect(res.returncode == 0, f"rebuild: {res.stderr!r}")
+        fresh_status(root)
+        expect(len(rows(db)) == len(built_rows) + 1, "the appended record must be indexed once")
+        res = run("query", "--repo", str(root), NEW_RUN_ID, "--fresh")
+        expect(res.returncode == 0 and counter(res.stdout, "matches") == "1",
+               f"the appended record must be findable now: {res.stdout!r}")
+
+        # (e) An edited tracked file: STALE naming the tracked tree.
+        write(root / "pkg" / "one.py", "ONE = 1\nEDITED_AFTER_THE_BUILD = True\n")
+        res = run("status", "--repo", str(root))
+        expect(res.returncode == 1 and "tree" in res.stdout,
+               f"an edited code file must make the tracked tree stale: {res.stdout!r}")
+        res = run("query", "--repo", str(root), RUN_ID, "--fresh")
+        expect(res.returncode == 3, f"query --fresh on a stale tree: {res.returncode}")
+
+        # (f) A source that disappeared takes its rows with it — nothing stale lingers.
+        expect(any(row[1] == "pkg/two.py" for row in rows(db)), "the fixture file must be indexed")
+        (root / "pkg" / "two.py").unlink()
+        res = run("build", "--repo", str(root))
+        expect(res.returncode == 0, f"rebuild after a deletion: {res.stderr!r}")
+        expect(not any(row[1] == "pkg/two.py" for row in rows(db)),
+               "a deleted file must be pruned from the index")
+        fresh_status(root)
+
+        # (g) An index built before the freshness record existed: STALE with the meta reason.
+        conn = sqlite3.connect(str(db))
+        conn.execute(f"DROP TABLE {pi.META_TABLE}")
+        conn.commit()
+        conn.close()
+        res = run("status", "--repo", str(root))
+        expect(res.returncode == 1 and "meta missing" in res.stdout,
+               f"a pre-freshness index must be STALE: {res.stdout!r}")
+
+        # (h) A missing database is a STALE verdict, never a crash and never "matches: 0".
+        db.unlink()
+        res = run("status", "--repo", str(root))
+        expect(res.returncode == 1 and "absent" in res.stdout,
+               f"a missing index must be STALE: {res.stdout!r}{res.stderr!r}")
+        expect("Traceback" not in res.stderr, f"status must not traceback: {res.stderr!r}")
+        res = run("query", "--repo", str(root), RUN_ID, "--fresh")
+        expect(res.returncode == 3 and "absent" in res.stdout,
+               f"query --fresh on a missing index: {res.returncode} {res.stdout!r}")
+
+        # (i) A corrupt database is an environment error: one message line, exit 2, no traceback.
+        db.write_bytes(b"not a database at all")
+        for args in (("status", "--repo", str(root)),
+                     ("query", "--repo", str(root), RUN_ID, "--fresh")):
+            res = run(*args)
+            expect(res.returncode == 2, f"{args[0]} on a corrupt index: {res.returncode}")
+            expect(res.stderr.startswith("error: ") and "Traceback" not in res.stderr,
+                   f"{args[0]} must report a message, not a traceback: {res.stderr!r}")
+            expect(len(res.stderr.strip().splitlines()) == 1,
+                   f"{args[0]} must report exactly one line: {res.stderr!r}")
+
+        # (j) --db names the database explicitly and --quiet keeps a successful build silent. The
+        #     custom database lives inside the tree, so this also pins that the index never hashes
+        #     itself into the manifest (it would be stale the instant it was written).
+        db.unlink()
+        custom = root / "custom" / "idx.db"
+        res = run("build", "--repo", str(root), "--db", "custom/idx.db", "--quiet")
+        expect(res.returncode == 0, f"--db/--quiet build: {res.stderr!r}")
+        expect(res.stdout == "", f"--quiet must print nothing on success: {res.stdout!r}")
+        expect(custom.is_file(), f"--db must write {custom}")
+        fresh_status(root, "--db", "custom/idx.db")
+
+
 def main() -> int:
     # 0. Without FTS5 the tool cannot exist: report SKIP instead of failing on the environment.
     unsupported = pi.fts5_error()
@@ -397,18 +570,23 @@ def main() -> int:
 
         check_cli(root, db)
 
-    # 11. stdlib-only contract (`repo_inventory` is the sibling script shared with the shard
+    # 11. The freshness contract: an idempotent build, pruning, named STALE reasons and a
+    #     `query --fresh` that refuses a stale index instead of answering `matches: 0`.
+    check_freshness()
+
+    # 12. stdlib-only contract (`repo_inventory` is the sibling script shared with the shard
     #     protocol: one implementation of the walk and the binary heuristic).
     source = pathlib.Path(pi.__file__).read_text(encoding="utf-8")
     imported = set(re.findall(r"^(?:import|from)\s+([A-Za-z0-9_]+)", source, flags=re.M))
-    allowed = {"__future__", "argparse", "hashlib", "pathlib", "repo_inventory", "sqlite3",
-               "subprocess", "sys"}
+    allowed = {"__future__", "argparse", "datetime", "hashlib", "pathlib", "repo_inventory",
+               "sqlite3", "subprocess", "sys"}
     expect(imported <= allowed, f"precedent_index.py must be stdlib-only, imports={imported}")
 
     print("PASS - precedent_index.py builds a deterministic FTS5 precedent index of memory/ and "
           "the code base (git ls-files or walk — a tracked symbolic link skipped by both), finds "
-          "each marker in exactly its own source, and answers every misuse with a message and "
-          "exit 2 instead of a traceback.")
+          "each marker in exactly its own source, keeps the index FRESH (an idempotent build, "
+          "pruned sources, named STALE reasons, `query --fresh` refusing a stale index with exit "
+          "3) and answers every misuse with a message and exit 2 instead of a traceback.")
     return 0
 
 

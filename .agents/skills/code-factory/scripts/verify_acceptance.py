@@ -32,6 +32,7 @@ criterion FAILED, so a hung command can never block the gate.
 Usage:
   python verify_acceptance.py --input criteria.json --output acceptance.md --repo . \\
          [--regression pass|fail|not-run] [--timeout 600] [--run-id 20260922-442cd2f8] \\
+         [--task-type implement|review|refactor|security_audit] \\
          [--ledger state/evidence.json --evidence-files src/a.py src/b.py]
 
 `--ledger`/`--evidence-files` are optional and off by default: when given, the ledger is
@@ -42,6 +43,13 @@ acceptance.md — a green log from an older revision is not proof about the curr
 
 `--run-id` (see `run_id.py`) is optional and only adds the line `run_id: <id>` to the header of
 acceptance.md, so the artifact names the run it belongs to.
+
+`--task-type` (default `implement`) is optional and only changes HOW a failure is reported; the
+header records `task_type: <value>`. In a `review` / `security_audit` context the tree is judged
+UNMODIFIED — such a run changes nothing — so a failing criterion is an OWNER DECISION, not a
+rework instruction: the reason line says so and the run stops for the owner. `VERDICTS` and the
+exit-code contract do not change (SUCCESS -> 0, DEGRADED/FAILURE -> 1, exactly as before), and no
+criterion is executed differently.
 
 Exit code 0 = SUCCESS, 1 = FAILURE / DEGRADED / usage error. stdlib only.
 """
@@ -67,6 +75,10 @@ EXCERPT_MAX_LINES = 20
 TRUNCATION_MARK = "[... output truncated, showing the tail]"
 REGRESSION_CHOICES = ("pass", "fail", "not-run")
 VERDICTS = ("SUCCESS", "DEGRADED", "FAILURE")
+TASK_TYPES = ("implement", "review", "refactor", "security_audit")
+# Task types whose run never edits the project: a failing criterion there is the owner's decision,
+# not an instruction to rework (the rule `review-report-only`). The verdicts stay as they are.
+REVIEW_CONTEXTS = ("review", "security_audit")
 
 
 def tail_excerpt(text: str, max_lines: int = EXCERPT_MAX_LINES,
@@ -167,13 +179,30 @@ def evaluate(criteria: list[dict], repo: pathlib.Path, timeout: int) -> list[dic
     return results
 
 
-def decide_verdict(results: list[dict], regression: str) -> tuple[str, str]:
+def failure_reason(failed: int, task_type: str) -> str:
+    """The reason of a FAILURE caused by criteria; a review-like run stops for the owner.
+
+    The verdict is not relaxed — `failure_reason` only changes WHAT the run is told to do with the
+    failure. In a `review`/`security_audit` context nothing may be reworked in-run (the rule
+    `review-report-only`), so the failure is a decision point, and the wording says which tree was
+    judged and that the verdicts did not move.
+    """
+    base = f"{failed} verify criterion/criteria failed"
+    if task_type not in REVIEW_CONTEXTS:
+        return base
+    return (f"{base} on the UNMODIFIED tree — OWNER DECISION, not a rework instruction: a "
+            f"{task_type} run edits no file, so the run stops here for the owner to decide. The "
+            f"verdicts are unchanged ({', '.join(VERDICTS)}); only SUCCESS exits 0")
+
+
+def decide_verdict(results: list[dict], regression: str,
+                   task_type: str = "implement") -> tuple[str, str]:
     """Map observed evidence to a verdict; only SUCCESS is acceptable at the gate."""
     if regression == "fail":
         return "FAILURE", "regression baseline failed"
     if any(r["status"] == "FAILED" for r in results):
         failed = [r for r in results if r["status"] == "FAILED"]
-        return "FAILURE", f"{len(failed)} verify criterion/criteria failed"
+        return "FAILURE", failure_reason(len(failed), task_type)
     if not any(r["command"] for r in results):
         return "DEGRADED", "no criterion carries a verify command: nothing was actually verified"
     if regression != "pass":
@@ -212,7 +241,8 @@ def _fence(text: str) -> str:
 
 
 def render_markdown(results: list[dict], verdict: str, reason: str, regression: str,
-                    ledger: dict | None = None, run_id: str = "") -> str:
+                    ledger: dict | None = None, run_id: str = "",
+                    task_type: str = "implement") -> str:
     verified = sum(1 for r in results if r["status"] in ("MET", "FAILED"))
     unverified = sum(1 for r in results if r["status"] == "UNVERIFIED")
     lines = [
@@ -224,6 +254,7 @@ def render_markdown(results: list[dict], verdict: str, reason: str, regression: 
     if run_id:  # run provenance: the artifact names the run it belongs to (see run_id.py)
         lines.append(f"- run_id: {run_id}")
     lines += [
+        f"- task_type: {task_type}",
         f"- Verdict reason: {reason}",
         f"- Regression baseline: {regression}",
         f"- Criteria: {len(results)} (verified: {verified}, unverified: {unverified})",
@@ -346,6 +377,11 @@ def main() -> int:
                          "--ledger: a different scope makes every entry STALE)")
     ap.add_argument("--run-id", default="",
                     help="Run id (see run_id.py); when given it is recorded in acceptance.md")
+    ap.add_argument("--task-type", choices=TASK_TYPES, default="implement",
+                    help="Task type being judged (default: implement). It only shapes HOW a "
+                         "failure is reported: in review/security_audit a failing criterion is an "
+                         "OWNER DECISION on the unmodified tree, not a rework instruction; the "
+                         "verdicts and the exit codes do not change")
     args = ap.parse_args()
 
     repo = pathlib.Path(args.repo)
@@ -359,7 +395,7 @@ def main() -> int:
         return 1
 
     results = evaluate(criteria, repo, args.timeout)
-    verdict, reason = decide_verdict(results, args.regression)
+    verdict, reason = decide_verdict(results, args.regression, args.task_type)
 
     ledger_report = None
     if args.ledger:
@@ -378,7 +414,7 @@ def main() -> int:
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(render_markdown(results, verdict, reason, args.regression,
-                                          ledger_report, args.run_id),
+                                          ledger_report, args.run_id, args.task_type),
                           encoding="utf-8")
     except OSError as exc:
         print(f"error: cannot write {output}: {exc}", file=sys.stderr)

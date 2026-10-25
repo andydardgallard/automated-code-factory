@@ -5,6 +5,67 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.15.0] — 2026-10-25
+
+### Changed
+- **A `task_type: review` run is report-only** (new canonical rule `review-report-only`, 5
+  carriers). No review verdict, in either mode, reaches a node that starts a coder, writes a backup
+  or edits a tracked file: both former write edges (`CRV0 -> G`, `CRV -> RCR`) now end at the new
+  delivery node `RD`, and the acceptance-failure edge splits by task type — `X -->|No,
+  implement/refactor| RR` for the coder route and `X -->|No, review/security_audit| XR`, a
+  stop-and-ask decision point, for a report-only run. The deliverable is the report plus a generated
+  follow-up task file (`.code-factory/review/fix-tasks.yaml`); a review's `verify:` criteria must
+  hold on the unmodified tree. `security_audit`'s guarantee is untouched and not restated.
+- **Model precedence is stated once and implemented once.** The task's `models:` matrix wins
+  verbatim for every role it names (a generator/judge family collision is a WARNING, never a
+  substitution); an unnamed role takes its model from the factory's default matrix, where the
+  generator != judge rule is enforced as an ERROR naming the fix; the plan committee's second
+  planner is the only override. `scripts/model_matrix.py` is the single implementation and
+  `scripts/test_model_precedence.py` pins it.
+- **Memory has one contract.** `memory_project.validate_memory` is the implementation;
+  `check_factory_model.py` delegates to it and the six previously divergent axes (owner, record
+  kind, required keys, `results` sub-keys, empty `project:`, `closed:` without `evidence:`) are
+  asserted equal in both directions. `task_type: backlog` becomes a documented record kind with its
+  own `results` contract, so the record the factory itself wrote is legal without rewriting history.
+- **Memory ownership no longer depends on the folder name.** The summary declares
+  `project_id` (the first 12 hex of the sha256 of the repository's root commit); a rename or a
+  versioned copy keeps the memory valid, while a memory of a different repository is refused.
+- **The English-only rule acts on new memory records.** The gate's memory pass runs by default over
+  v2 records that are not listed in the new `memory/.english-freeze` (history) and over
+  `memory/summary.md`; an internal reason the pass cannot run is exit 3, never a silent `ok`.
+- `## Current state` is actualized every run and compared on the version, the open-backlog and
+  closed counts and the test-file count — a warning under `check`, an error under `--strict`
+  (implied by `run_id check`).
+- The precedent index is a build product of the flow (`build`/`status`/`query --fresh`) instead of
+  standing runtime state; `query --fresh` refuses a stale index with exit 3.
+
+### Added
+- `scripts/model_matrix.py` — the single model-precedence resolver (family table incl. DeepSeek,
+  the two documented cases, the committee exception).
+- `scripts/model_attribution.py` — derives the model actually served per role from the CLI session
+  wire and cross-checks `models_used`: `match`/`mismatch` (exit 1)/`degraded` (exit 3).
+- `scripts/review_followup_task.py` — deterministic merged-findings → follow-up task generator.
+- `memory_project.py compact` — the real 50/20 compaction (critical and follow_up items and every
+  folded closure survive, semantic pre-write verification, idempotent), invoked by the Finish node.
+- `memory_project.py check --run-id/--strict/--allow-fresh`, duplicate-`run_id` detection, the
+  carried-with-a-reason backlog semantics (`backlog --check` exits 0 when nothing disappeared).
+- `version_manager.py` now validates and syncs the version in a Rust workspace/member `Cargo.toml`.
+- `check_factory_rules.py`'s pass line no longer reads a count as a collection; `merge_findings.py`
+  sorts shard ids numerically; `gen_code_changes_report.py` reports a bad `--commit` as one
+  `error:` line instead of a traceback.
+- Self-tests: `test_model_precedence.py`, `test_model_attribution.py`, `test_review_followup_task.py`,
+  `test_review_report_only.py`, `test_security_audit_guarantee.py`, `test_flow_contracts.py`,
+  `test_vaccination.py` (24 vaccines proven to fail on the pre-fix tree and pass here).
+
+### Fixed
+- `validate_documentation.py` no longer classifies a code line starting `*` or `|` as documentation
+  and protects test files by name, not only by directory.
+- `verify_acceptance.py` takes `--task-type`, so a review run's failed criterion is reported as an
+  owner decision on the unmodified tree instead of a rework order.
+- The task templates (`.example.task.yaml`, `assets/task-template.yaml`) state `repo_path` as
+  required (except green-field), show the `verify:` / `derived: true` criterion forms, and describe
+  a review run as report-only.
+
 ## [12.14.3] — 2026-10-17
 
 ### Fixed

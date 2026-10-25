@@ -20,6 +20,14 @@ e.g. `version_manager.py --repo . validate` (not `validate --repo .`).
   - README.md                title `# Autonomous Code Factory vX.Y.Z` + footer `Current version: **X.Y.Z**`
   - CHANGELOG.md             prepends `## [X.Y.Z] — <date>` when the top section is older
   - AGENTS.md / SKILL.md / .agents/README.md   marker `<!-- code-factory-version: X.Y.Z -->`
+  - Cargo.toml / <crate>/Cargo.toml   an EXISTING literal `[workspace.package] version` or
+                             `[package] version` that diverges (a field is never inserted and a
+                             file is never created; `version.workspace = true` is inherited, not
+                             a literal)
+
+`validate` fails on the same files; for Rust it reads every `Cargo.toml` below the repo except
+the pruned `.git`, `.code-factory`, `target`, `node_modules`, `vendor`, `dist`, `build`
+directories (a member that inherits the workspace version is correct and passes).
 
 `suggest` (the deterministic matrix — hybrid step 1, the reviewer validates in step 2):
   --new-subagent  -> minor   (new subagent)
@@ -45,7 +53,25 @@ README_TITLE_RE = re.compile(r"^(#\s+.*?\s+v)\d+\.\d+\.\d+(\s*)$")
 README_FOOTER_RE = re.compile(r"(Current version:\s*\*\*)\d+\.\d+\.\d+(\*\*)")
 CHANGELOG_SECTION_RE = re.compile(r"^##\s+\[(\d+\.\d+\.\d+)\]")
 
-SYNC_FILES = ["README.md", "AGENTS.md", ".agents/skills/code-factory/SKILL.md", ".agents/README.md"]
+CARGO_MANIFEST = "Cargo.toml"
+CARGO_SECTION_RE = re.compile(r"^\s*\[\[?\s*([A-Za-z0-9_.\-]+)\s*\]\]?")
+# `version = "X.Y.Z"` (or 'X.Y.Z') on one line: prefix, quote, value, quote, the rest of the line
+# (a trailing comment or the line ending — never rewritten).
+CARGO_VERSION_RE = re.compile(r"^(\s*version\s*=\s*)([\"'])([^\"']*)(\2)([^\r\n]*)")
+# The two Cargo sections that declare a version. A member inherits the workspace one through
+# `version.workspace = true` and then declares no literal at all.
+CARGO_VERSION_SECTIONS = ("workspace.package", "package")
+# Never searched for manifests: VCS data, the factory's runtime tree (it may hold scratch copies
+# of other projects), dependency trees and build outputs.
+CARGO_PRUNED_DIRS = frozenset({".git", ".code-factory", "target", "node_modules", "vendor",
+                               "dist", "build"})
+
+# The single list of version-carrying text files. Everything below is derived from it, so the
+# set cannot drift between `sync`, `file_version_reprs` and `validate`.
+SYNC_FILES = ["README.md", "AGENTS.md", ".agents/skills/code-factory/SKILL.md",
+              ".agents/README.md", "CHANGELOG.md"]
+# CHANGELOG carries a dated section, not a marker: the marker files are everything else.
+MARKER_FILES = [rel for rel in SYNC_FILES if rel != "CHANGELOG.md"]
 MARKER = "<!-- code-factory-version: {v} -->"
 
 
@@ -127,17 +153,91 @@ def sync_file(path: pathlib.Path, rel: str, v: str, date: str) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
 
 
-def sync(repo: pathlib.Path, v: str, date: str) -> None:
-    for rel in SYNC_FILES + ["CHANGELOG.md"]:
+def cargo_manifests(repo: pathlib.Path) -> list[pathlib.Path]:
+    """Every `Cargo.toml` below `repo`, pruning VCS, factory-state, dependency and build dirs."""
+    found: list[pathlib.Path] = []
+    stack = [repo]
+    while stack:
+        try:
+            entries = sorted(stack.pop().iterdir())
+        except OSError:                     # an unreadable directory is skipped, never fatal
+            continue
+        for entry in entries:
+            if entry.is_dir():
+                if entry.name not in CARGO_PRUNED_DIRS:
+                    stack.append(entry)
+            elif entry.name == CARGO_MANIFEST and entry.is_file():
+                found.append(entry)
+    return sorted(found)
+
+
+def cargo_version_lines(lines: list[str]) -> list[tuple[int, str, str]]:
+    """Literal Cargo versions as `(line index, section, declared version)`.
+
+    Only `[workspace.package] version` and `[package] version` are declarations; a member's
+    `version.workspace = true` inherits the workspace version and yields nothing.
+    """
+    found: list[tuple[int, str, str]] = []
+    section = ""
+    for i, ln in enumerate(lines):
+        m = CARGO_SECTION_RE.match(ln)
+        if m:
+            section = m.group(1)
+            continue
+        if section not in CARGO_VERSION_SECTIONS:
+            continue
+        m = CARGO_VERSION_RE.match(ln)
+        if m:
+            found.append((i, section, m.group(3)))
+    return found
+
+
+def validate_cargo(repo: pathlib.Path, v: str) -> list[str]:
+    problems: list[str] = []
+    for path in cargo_manifests(repo):
+        rel = path.relative_to(repo).as_posix()
+        text = path.read_text(encoding="utf-8")
+        for _i, section, declared in cargo_version_lines(text.splitlines()):
+            if declared != v:
+                problems.append(f"{rel}: [{section}] version {declared} != VERSION {v}")
+    return problems
+
+
+def sync_cargo(repo: pathlib.Path, v: str) -> list[str]:
+    """Rewrite a diverging literal Cargo version in an EXISTING manifest; never insert a field.
+
+    Every other byte of the file is preserved (line endings included), so a second run finds
+    nothing to rewrite and leaves the file identical.
+    """
+    notes: list[str] = []
+    for path in cargo_manifests(repo):
+        lines = path.read_bytes().decode("utf-8").splitlines(keepends=True)
+        stale = [(i, section, declared) for i, section, declared
+                 in cargo_version_lines(lines) if declared != v]
+        if not stale:
+            continue
+        for i, _section, _declared in stale:
+            m = CARGO_VERSION_RE.match(lines[i])
+            lines[i] = m.group(1) + m.group(2) + v + m.group(4) + m.group(5) + lines[i][m.end():]
+        path.write_bytes("".join(lines).encode("utf-8"))
+        rel = path.relative_to(repo).as_posix()
+        notes.extend(f"{rel}: [{section}] {declared} -> {v}" for _i, section, declared in stale)
+    return notes
+
+
+def sync(repo: pathlib.Path, v: str, date: str) -> list[str]:
+    """Propagate `v` into every synced file; return the Cargo rewrites that were applied."""
+    for rel in SYNC_FILES:
         p = repo / rel
         if p.is_file():
             sync_file(p, rel, v, date)
+    return sync_cargo(repo, v)
 
 
 def file_version_reprs(repo: pathlib.Path) -> dict[str, list[str]]:
     """Collect the version strings currently present in each synced file."""
     out: dict[str, list[str]] = {}
-    for rel in ["README.md", "AGENTS.md", ".agents/skills/code-factory/SKILL.md", ".agents/README.md"]:
+    for rel in MARKER_FILES:
         p = repo / rel
         found: list[str] = []
         if p.is_file():
@@ -150,7 +250,7 @@ def file_version_reprs(repo: pathlib.Path) -> dict[str, list[str]]:
 def validate(repo: pathlib.Path, v: str) -> tuple[bool, list[str]]:
     problems: list[str] = []
     reprs = file_version_reprs(repo)
-    for rel in ["README.md", "AGENTS.md", ".agents/skills/code-factory/SKILL.md", ".agents/README.md"]:
+    for rel in MARKER_FILES:
         found = reprs[rel]
         if not found:
             problems.append(f"{rel}: missing version marker")
@@ -177,6 +277,8 @@ def validate(repo: pathlib.Path, v: str) -> tuple[bool, list[str]]:
                 problems.append(f"CHANGELOG.md: top section {m.group(1)} != VERSION {v}")
         else:
             problems.append("CHANGELOG.md: no version section found")
+    # Rust manifests (`Cargo.toml`) below the repo, minus the pruned directories.
+    problems.extend(validate_cargo(repo, v))
     return (not problems), problems
 
 
@@ -211,6 +313,12 @@ def use_utf8_output() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):      # an old interpreter or a replaced stream
             pass
+
+
+def print_notes(notes: list[str]) -> None:
+    """Report what `sync` rewrote beyond the marker files (the Cargo manifests)."""
+    for note in notes:
+        print("  " + note)
 
 
 def main() -> int:
@@ -253,7 +361,7 @@ def main() -> int:
             return 1
         write_version(vf, v)
         date = args.date or datetime.date.today().isoformat()
-        sync(repo, v, date)
+        print_notes(sync(repo, v, date))
         print(f"version set to {v} and synced")
         return 0
 
@@ -262,14 +370,14 @@ def main() -> int:
         new = bump(cur, args.kind)
         write_version(vf, new)
         date = args.date or datetime.date.today().isoformat()
-        sync(repo, new, date)
+        print_notes(sync(repo, new, date))
         print(f"bumped {cur} -> {new} ({args.kind}) and synced")
         return 0
 
     if args.cmd == "sync":
         v = read_version(vf)
         date = args.date or datetime.date.today().isoformat()
-        sync(repo, v, date)
+        print_notes(sync(repo, v, date))
         print(f"synced version {v}")
         return 0
 

@@ -12,8 +12,8 @@ Builds a synthetic project, then verifies `check_factory_model.py`:
     `project` value -> fail, and a `project:` example inside a code block is not a declaration),
   - the memory format v2 (run_id + provenance marks) is enforced on the records of a
     current-generation factory: a missing or malformed `run_id`, or a missing provenance mark in
-    `decisions`/`results`, fails, while records written before the format and legacy records
-    without `project` only warn,
+    `decisions`/`results`, fails, while records written before the format only warn — with the
+    documented pre-v2 warning of the shared contract — and legacy records without `project` warn,
   - the WIP checkpoint `.code-factory/state/pipeline.yaml` is validated when it exists (required
     keys, `status` enum, `run_id` format, list/mapping types of the optional keys, empty flow
     collections `[]`/`{}` count as the list/mapping they spell) and a missing one is a SKIP, never
@@ -25,7 +25,19 @@ Builds a synthetic project, then verifies `check_factory_model.py`:
     (though `prepare_factory` deploys the skill into every target project) and with a model whose
     fingerprint went stale,
   - the two-level fingerprint line is validated: the `... content: <hash>` format passes, a
-    forged or stale CONTENT hash fails, and a legacy single-hash line only warns.
+    forged or stale CONTENT hash fails, and a legacy single-hash line only warns,
+  - ONE memory contract, TWO entry points: `check_factory_model.validate_memory` delegates to
+    `memory_project.validate_memory`, and the parity block runs BOTH functions and BOTH CLIs over
+    the SAME fixtures, asserting identical verdicts on the six axes the two hand-written copies
+    used to disagree about — the owner, `task_type: backlog` (a legal record kind: `results:
+    finding=/impact=`), an unknown `task_type`, a missing required key, a missing `results`
+    sub-key, an empty `project:`, `closed:` without `evidence:` — plus a valid journal accepted by
+    both, the same flags on both CLIs, `_v2_record` as a pinned alias and the duplicated
+    per-entry logic GONE from `check_factory_model.py`.
+
+Every fixture root is a directory NAMED `demo` (the owner of a memory is the basename of the
+resolved root since the contract is shared), and a deliberately MIS-named one probes the owner
+axis.
 
 `project_fingerprint.py` is covered as well:
   - the content fingerprint catches a change to an EXISTING file at depth >= 2 that the
@@ -51,13 +63,22 @@ import sys
 import tempfile
 
 import check_factory_model
+import memory_project
 import project_fingerprint
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 CHECKER = SCRIPTS / "check_factory_model.py"
 FP = SCRIPTS / "project_fingerprint.py"
+MEMORY = SCRIPTS / "memory_project.py"
 
 SECTIONS = check_factory_model.CANONICAL_SECTIONS
+
+# The project every fixture belongs to. The owner of a memory is the basename of the resolved
+# root (`memory_project.expected_owner`), so a fixture living in a RANDOM temp directory would
+# legitimately fail the owner axis: each fixture root is therefore a directory named `PROJECT`
+# inside its temp directory, and the journal/summary declare that same name. The parity block
+# below builds a deliberately MIS-named fixture for the owner-mismatch axis.
+PROJECT = "demo"
 
 VALID_ENTRY = """\
 ## 2026-09-01T00:00:00Z — First run
@@ -172,9 +193,46 @@ V2_HALF = V2_NO_RUN_ID.replace("factory_version: 12.9.0", "factory_version: 12.8
 # — only the captured version tuple can catch it (a non-capturing VERSION_RE would let it pass).
 V2_BY_VERSION_ENTRY = VALID_ENTRY.replace("factory_version: 12.5.0", "factory_version: 12.9.0")
 
-# A record of a pre-v2 factory: no run_id, no marks -> must PASS and stay silent, so memories
-# written before the format are never broken.
+# A record of a pre-v2 factory: no run_id, no marks -> must PASS, with only the documented pre-v2
+# warning (never an error), so memories written before the format are never broken.
 PRE_V2_ENTRY = VALID_ENTRY.replace("factory_version: 12.5.0", "factory_version: 12.8.0")
+
+# A `backlog` record kind: the factory itself writes one (a defect discovered WITHOUT a run), so
+# instead of the four run sub-keys it declares `results: finding=<what was found>; impact=<why it
+# matters>`. Both entry points must accept it — before, one rejected `task_type: backlog` outright
+# (so the factory's own gate was red on its own memory) and the other never looked at the kind.
+BACKLOG_ENTRY = """\
+## 2026-10-23T16:20:00+03:00 — Backlog: version_manager.py ignores a Rust workspace version
+title: Backlog — version_manager.py does not see a workspace version
+project: demo
+timestamp: 2026-10-23T16:20:00+03:00
+run_id: 20261023-8170f3d9
+branch: none (backlog record, no code change)
+commit: none
+task_type: backlog
+goal: record a defect observed while another run bumped a Rust workspace version.
+changed_files: none
+created_files: none
+results: finding=CONFIRMED (validate exited 0 while Cargo.toml kept the old version) [verified: Cargo.toml:14]; impact=the validator is unsound for any Rust workspace [verified: the final Cargo.toml]
+decisions: recorded as follow_up=true rather than fixed now [verified: AGENTS.md vaccination rule]
+assumptions: mirroring VERSION into [workspace.package] is the fix [inferred]
+models_used: main=deepseek-flash
+factory_version: 12.14.3
+unfinished:
+  - item: version_manager.py does not sync a Rust workspace version
+    reason: needs a vaccination-first fix
+    severity: warning
+    follow_up: true
+"""
+# The same backlog record missing one of ITS two result sub-keys (the four run keys are not the
+# contract of this kind — `finding=`/`impact=` are).
+BACKLOG_NO_IMPACT = BACKLOG_ENTRY.replace("; impact=", "; ")
+# A `closed:` element WITHOUT `evidence:`: invalid in every validator (the vaccination — only
+# `memory_project.py backlog --check` rejected it before, the model check never parsed `closed:`).
+CLOSED_NO_EVIDENCE = BACKLOG_ENTRY.replace(
+    "    follow_up: true\n",
+    "    follow_up: true\nclosed:\n"
+    "  - item: version_manager.py does not sync a Rust workspace version\n")
 
 VALID_PIPELINE = """\
 run_id: 20260922-442cd2f8
@@ -212,6 +270,24 @@ HAND_AUTHORED_AGENTS = """\
 
 - `task.yaml` — an example business task
 """
+
+
+def fixture(td: str, name: str = PROJECT) -> pathlib.Path:
+    """The fixture root inside a temp directory — a directory NAMED after the owning project."""
+    return pathlib.Path(td) / name
+
+
+def memory_fixture(root: pathlib.Path, entry: str = VALID_ENTRY,
+                   summary: str = SUMMARY) -> pathlib.Path:
+    """Write only `memory/` (journal + summary) into `root` — the memory contract's playground.
+
+    Used by the parity block, which compares the two entry points on the SAME memory without any
+    AGENTS.md or fingerprint in the way.
+    """
+    (root / "memory").mkdir(parents=True, exist_ok=True)
+    (root / "memory" / "change-log.md").write_text(CHANGE_LOG_HEADER + entry, encoding="utf-8")
+    (root / "memory" / "summary.md").write_text(summary, encoding="utf-8")
+    return root
 
 
 def build(root: pathlib.Path, entry: str = VALID_ENTRY) -> None:
@@ -273,6 +349,12 @@ def run_cli_out(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(CHECKER), *args], capture_output=True, text=True)
 
 
+def run_tool(tool: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run any script of the factory as a CLI and keep stdout/stderr plus the exit code."""
+    return subprocess.run([sys.executable, str(tool), *args], capture_output=True, text=True,
+                          errors="replace")
+
+
 def pipeline_errors(root: pathlib.Path, text: str) -> list[str]:
     """Write `text` as the WIP checkpoint of `root` and return the errors the checker reports."""
     state = root / ".code-factory" / "state"
@@ -310,22 +392,33 @@ def mem_warnings(root: pathlib.Path) -> list[str]:
     return check_factory_model.validate_memory(root)[1]
 
 
+def both_validators(root: pathlib.Path, *args: str) -> tuple[tuple[list[str], list[str]],
+                                                            tuple[list[str], list[str]]]:
+    """The SAME root through both entry points: (memory_project verdict, model-check verdict).
+
+    `memory_project.validate_memory` is the one implementation; `check_factory_model`'s is the
+    delegation. Comparing the two tuples is what proves the contract is not written twice.
+    """
+    return (memory_project.validate_memory(root, *args),
+            check_factory_model.validate_memory(root, *args))
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as td:
-        root = pathlib.Path(td)
+        root = fixture(td)
 
         # 1. Valid model -> PASS (functions + CLI).
         build(root)
         expect(check_factory_model.check_agents(root) == [], "valid AGENTS.md should pass check_agents")
         expect(mem_errors(root) == [], "valid memory should pass validate_memory")
-        expect(run_cli("--repo", td) == 0, "valid model should exit 0")
+        expect(run_cli("--repo", str(root)) == 0, "valid model should exit 0")
 
         # 2. Missing section -> FAIL.
         build(root)
         text = (root / "AGENTS.md").read_text(encoding="utf-8")
         (root / "AGENTS.md").write_text(text.replace("## Technology Stack\n", "", 1), encoding="utf-8")
         expect(check_factory_model.check_agents(root) != [], "missing section must fail")
-        expect(run_cli("--repo", td) != 0, "missing section must exit != 0")
+        expect(run_cli("--repo", str(root)) != 0, "missing section must exit != 0")
 
         # 3. Wrong (structural AND content) fingerprint -> FAIL.
         build(root)
@@ -379,25 +472,31 @@ def main() -> int:
         build(root, ENTRY_WITH_DEBT.replace("severity: warning", "severity: fatal"))
         expect(mem_errors(root) != [], "invalid unfinished severity must fail")
 
-        # 13. Canonical single-project memory (entry + summary both declare `project`) -> PASS
-        #     with no warnings at all.
+        # 13. Canonical single-project memory (entry + summary both declare `project`) -> PASS.
+        #     The fixture entry predates the format v2 (factory_version 12.5.0, no run_id, no
+        #     provenance marks), and the SHARED contract reports exactly that as a documented
+        #     pre-v2 WARNING (memory_project's rule, now the only one) — so the assertion pins the
+        #     whole warning list to those pre-v2 lines instead of demanding silence: any other
+        #     warning still fails it.
         build(root)
         expect(mem_errors(root) == [], "single-project memory must pass")
-        expect(mem_warnings(root) == [], f"canonical memory must not warn: {mem_warnings(root)}")
-        expect(run_cli("--repo", td, "--memory-only") == 0, "canonical memory must exit 0")
+        canonical_warnings = mem_warnings(root)
+        expect(canonical_warnings and all("pre-v2 format" in w for w in canonical_warnings),
+               f"canonical memory must warn only about the pre-v2 record: {canonical_warnings}")
+        expect(run_cli("--repo", str(root), "--memory-only") == 0, "canonical memory must exit 0")
 
         # 14. Legacy entry WITHOUT `project` -> PASS (warning only): old journals keep working.
         build(root, LEGACY_ENTRY_NO_PROJECT)
         expect(mem_errors(root) == [], "entry without 'project' must pass (no error)")
         expect(any("missing key 'project'" in w for w in mem_warnings(root)),
                "entry without 'project' must warn about the missing 'project' key")
-        expect(run_cli("--repo", td, "--memory-only") == 0, "legacy entry must exit 0")
+        expect(run_cli("--repo", str(root), "--memory-only") == 0, "legacy entry must exit 0")
 
         # 15. Two entries with DIFFERENT `project:` -> FAIL: one memory belongs to one project.
         build(root, VALID_ENTRY + FOREIGN_ENTRY)
         expect(any("mixes projects" in e and "other_project" in e for e in mem_errors(root)),
                "two different 'project' values must fail with 'mixes projects'")
-        expect(run_cli("--repo", td, "--memory-only") != 0, "mixed memory must exit != 0")
+        expect(run_cli("--repo", str(root), "--memory-only") != 0, "mixed memory must exit != 0")
 
         # 16. summary.md without a `project:` declaration -> warning, NOT an error.
         build(root)
@@ -405,7 +504,7 @@ def main() -> int:
         expect(mem_errors(root) == [], "summary without 'project' must not be an error")
         expect(any("does not declare" in w and "project" in w for w in mem_warnings(root)),
                "summary without 'project' must warn about the missing declaration")
-        expect(run_cli("--repo", td, "--memory-only") == 0,
+        expect(run_cli("--repo", str(root), "--memory-only") == 0,
                "summary without 'project' must still exit 0")
 
         # 17. summary.md declaring a foreign project while the journal belongs to `demo` -> FAIL.
@@ -419,7 +518,7 @@ def main() -> int:
         build(root, VALID_ENTRY.replace("project: demo\n", "project:\n"))
         expect(any("empty 'project' value" in e for e in mem_errors(root)),
                "an empty 'project' value must fail")
-        expect(run_cli("--repo", td, "--memory-only") != 0,
+        expect(run_cli("--repo", str(root), "--memory-only") != 0,
                "an empty 'project' value must exit != 0")
 
         # 19. A `project:` example inside a fenced code block below a `## ` section is NOT the
@@ -432,7 +531,7 @@ def main() -> int:
                                                         encoding="utf-8")
             expect(mem_errors(root) == [],
                    f"a 'project: {name}' example in a code block must not fail")
-            expect(run_cli("--repo", td, "--memory-only") == 0,
+            expect(run_cli("--repo", str(root), "--memory-only") == 0,
                    f"a 'project: {name}' example in a code block must still exit 0")
         #     Same but WITHOUT any real declaration: the block example must not be read as one
         #     (only the legacy warning, never a mismatch with the journal).
@@ -443,7 +542,7 @@ def main() -> int:
                "a 'project:' example in a code block must not be read as a declaration")
         expect(any("does not declare" in w for w in mem_warnings(root)),
                "a summary without a real declaration must still warn")
-        expect(run_cli("--repo", td, "--memory-only") == 0,
+        expect(run_cli("--repo", str(root), "--memory-only") == 0,
                "a 'project:' example in a code block must still exit 0")
 
         # 23. Two-hash format (structural + content): accepted without warnings, and a FORGED
@@ -455,7 +554,7 @@ def main() -> int:
                             % (parsed_fingerprint(root).group(1), "0" * 64))
         expect(any("content fingerprint mismatch" in e for e in check_factory_model.check_agents(root)),
                "a forged content hash must fail with a content mismatch")
-        expect(run_cli("--repo", td) != 0, "a forged content hash must exit != 0")
+        expect(run_cli("--repo", str(root)) != 0, "a forged content hash must exit != 0")
 
         # 23b. A REAL content-only change (structural signals untouched, hash left stale) must fail
         #      the model check as well — this is what makes "skip regeneration" safe.
@@ -475,19 +574,19 @@ def main() -> int:
         expect(check_factory_model.check_agents(root) == [], "legacy line must not be an error")
         expect(any("legacy" in w and "content" in w for w in agents_warnings(root)),
                "legacy line must warn about the missing content hash")
-        expect(run_cli("--repo", td) == 0, "legacy line must still exit 0 (warning only)")
+        expect(run_cli("--repo", str(root)) == 0, "legacy line must still exit 0 (warning only)")
 
         # 25. project_fingerprint.py CLI contract: no flag -> structural only (backwards
         #     compatible), --content -> content only, --all -> both labelled lines.
         build(root)
         struct = project_fingerprint.compute_fingerprint(root)
         content = project_fingerprint.compute_content_fingerprint(root)
-        default_out = run_fp("--repo", td).stdout.split()
+        default_out = run_fp("--repo", str(root)).stdout.split()
         expect(default_out == [struct],
                f"default CLI output must be the structural hash only: {default_out}")
-        expect(run_fp("--repo", td, "--content").stdout.split() == [content],
+        expect(run_fp("--repo", str(root), "--content").stdout.split() == [content],
                "--content must print the content hash only")
-        all_out = run_fp("--repo", td, "--all").stdout.splitlines()
+        all_out = run_fp("--repo", str(root), "--all").stdout.splitlines()
         expect(all_out == [f"structural: {struct}", f"content: {content}"],
                f"--all must print both labelled hashes: {all_out}")
 
@@ -497,22 +596,22 @@ def main() -> int:
         #     the format stays valid AND silent, and a legacy record (no `project`) only warns.
         build(root, V2_ENTRY)
         expect(mem_errors(root) == [], f"a v2 record must pass: {mem_errors(root)}")
-        expect(run_cli("--repo", td, "--memory-only") == 0, "a v2 record must exit 0")
+        expect(run_cli("--repo", str(root), "--memory-only") == 0, "a v2 record must exit 0")
 
         build(root, V2_NO_RUN_ID)
         expect(any("run_id" in e for e in mem_errors(root)), "a v2 record without run_id must fail")
-        expect(run_cli("--repo", td, "--memory-only") != 0,
+        expect(run_cli("--repo", str(root), "--memory-only") != 0,
                "a v2 record without run_id must exit != 0")
 
         build(root, V2_BAD_RUN_ID)
         expect(any("invalid run_id" in e for e in mem_errors(root)),
                "a malformed run_id must fail")
-        expect(run_cli("--repo", td, "--memory-only") != 0, "a malformed run_id must exit != 0")
+        expect(run_cli("--repo", str(root), "--memory-only") != 0, "a malformed run_id must exit != 0")
 
         build(root, V2_NO_MARKS)
         expect(any("provenance mark" in e for e in mem_errors(root)),
                "a v2 record without provenance marks must fail")
-        expect(run_cli("--repo", td, "--memory-only") != 0,
+        expect(run_cli("--repo", str(root), "--memory-only") != 0,
                "a v2 record without provenance marks must exit != 0")
 
         #     A record that already carries one v2 field is held to the whole format, even when its
@@ -536,7 +635,7 @@ def main() -> int:
         expect(any("run_id" in e for e in version_issues)
                and any("provenance mark" in e for e in version_issues),
                f"a 12.9.0 record without run_id/marks must fail the format: {version_issues}")
-        expect(run_cli("--repo", td, "--memory-only") != 0,
+        expect(run_cli("--repo", str(root), "--memory-only") != 0,
                "a 12.9.0 record without run_id/marks must exit != 0")
         #     Positive control: the same factory_version WITH run_id and marks passes.
         build(root, V2_BY_VERSION_ENTRY.replace(
@@ -547,15 +646,20 @@ def main() -> int:
             "results: integration=PASS [verified: .code-factory/logs/code-results.md]; "
             "regression=PASS; business=PASS; review=approve"))
         expect(mem_errors(root) == [], f"12.9.0 with run_id and marks must pass: {mem_errors(root)}")
-        expect(run_cli("--repo", td, "--memory-only") == 0,
+        expect(run_cli("--repo", str(root), "--memory-only") == 0,
                "12.9.0 with run_id and marks must exit 0")
 
-        #     Pre-v2 record: no error and no warning, so memories written before the format keep
-        #     passing untouched (the format is never retroactive).
+        #     Pre-v2 record: NO error and exit 0 — memories written before the format keep passing
+        #     untouched (the format is never retroactive) — and the one warning it carries is the
+        #     documented pre-v2 warning of the shared contract, which the model check used to
+        #     swallow silently while `memory_project.py check` reported it. The assertion pins the
+        #     whole list to those pre-v2 lines: any other warning still fails it.
         build(root, PRE_V2_ENTRY)
         expect(mem_errors(root) == [], f"a pre-v2 record must pass: {mem_errors(root)}")
-        expect(mem_warnings(root) == [], f"a pre-v2 record must not warn: {mem_warnings(root)}")
-        expect(run_cli("--repo", td, "--memory-only") == 0, "a pre-v2 record must exit 0")
+        pre_v2_warnings = mem_warnings(root)
+        expect(pre_v2_warnings and all("pre-v2 format" in w for w in pre_v2_warnings),
+               f"a pre-v2 record must warn only about the pre-v2 format: {pre_v2_warnings}")
+        expect(run_cli("--repo", str(root), "--memory-only") == 0, "a pre-v2 record must exit 0")
 
         #     Legacy record without `project`: -> warnings only, never an error.
         build(root, LEGACY_ENTRY_NO_PROJECT)
@@ -564,7 +668,7 @@ def main() -> int:
                "a legacy record must warn about the missing run_id")
         expect(any("provenance mark" in w for w in mem_warnings(root)),
                "a legacy record must warn about the missing provenance marks")
-        expect(run_cli("--repo", td, "--memory-only") == 0,
+        expect(run_cli("--repo", str(root), "--memory-only") == 0,
                "a legacy record must still exit 0 (warnings only)")
 
     # 20. Both fingerprints must be stable across committing the factory's own artifacts. The
@@ -574,16 +678,17 @@ def main() -> int:
     #     hashes embedded in AGENTS.md survive the commit — the "skip regeneration" branch stays
     #     reachable (regression guard).
     with tempfile.TemporaryDirectory() as gtd:
-        groot = pathlib.Path(gtd)
+        groot = fixture(gtd)
+        groot.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=groot, check=True)
         build(groot)
-        subprocess.run(["git", "-C", gtd, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(groot), "add", "-A"], check=True)
         stamp(groot)  # the index just appeared -> the content hash changed, restamp the model
         expect(check_factory_model.check_agents(groot) == [], "fixture should pass before commit")
         before = project_fingerprint.compute_fingerprint(groot)
         before_content = project_fingerprint.compute_content_fingerprint(groot)
         subprocess.run(
-            ["git", "-C", gtd, "-c", "user.email=a@b.c", "-c", "user.name=t",
+            ["git", "-C", str(groot), "-c", "user.email=a@b.c", "-c", "user.name=t",
              "commit", "-q", "-m", "commit AGENTS.md + memory"], check=True)
         after = project_fingerprint.compute_fingerprint(groot)
         after_content = project_fingerprint.compute_content_fingerprint(groot)
@@ -647,12 +752,12 @@ def main() -> int:
     #     has no checkpoint). The fixture carries a valid memory and AGENTS.md, so only the
     #     checkpoint decides the exit code of the CLI.
     with tempfile.TemporaryDirectory() as ptd:
-        proot = pathlib.Path(ptd)
+        proot = fixture(ptd)
         build(proot, V2_ENTRY)
 
         p_errors, p_skip = check_factory_model.check_pipeline_checkpoints(proot)
         expect(p_errors == [] and p_skip, "a missing checkpoint must be a SKIP, not an error")
-        res = run_cli_out("--repo", ptd, "--memory-only")
+        res = run_cli_out("--repo", str(proot), "--memory-only")
         expect(res.returncode == 0, f"a missing checkpoint must exit 0: {res.stderr!r}")
         expect("SKIP" in res.stderr, f"the check must report the skip: {res.stderr!r}")
         expect("no WIP checkpoint" in res.stdout,
@@ -661,7 +766,7 @@ def main() -> int:
         expect(pipeline_errors(proot, VALID_PIPELINE) == [], "a valid checkpoint must pass")
         p_errors, p_skip = check_factory_model.check_pipeline_checkpoints(proot)
         expect(p_errors == [] and not p_skip, f"a valid checkpoint must pass: {p_errors}")
-        res = run_cli_out("--repo", ptd, "--memory-only")
+        res = run_cli_out("--repo", str(proot), "--memory-only")
         expect(res.returncode == 0, f"a valid checkpoint must exit 0: {res.stderr!r}")
         expect("WIP checkpoint" in res.stdout and "is valid" in res.stdout,
                f"the valid checkpoint must be reported: {res.stdout!r}")
@@ -670,12 +775,12 @@ def main() -> int:
         missing_key = VALID_PIPELINE.replace("phase: implement-wave-2\n", "")
         expect(any("'phase'" in e for e in pipeline_errors(proot, missing_key)),
                "a missing required key must fail")
-        expect(run_cli("--repo", ptd, "--memory-only") != 0,
+        expect(run_cli("--repo", str(proot), "--memory-only") != 0,
                "a missing required key must exit != 0")
         unknown_status = VALID_PIPELINE.replace("status: in_progress", "status: finished")
         expect(any("invalid status" in e for e in pipeline_errors(proot, unknown_status)),
                "an unknown status must fail")
-        expect(run_cli("--repo", ptd, "--memory-only") != 0, "an unknown status must exit != 0")
+        expect(run_cli("--repo", str(proot), "--memory-only") != 0, "an unknown status must exit != 0")
         bad_run_id = VALID_PIPELINE.replace("run_id: 20260922-442cd2f8", "run_id: 2026-09-22")
         expect(any("invalid run_id" in e for e in pipeline_errors(proot, bad_run_id)),
                "a malformed run_id must fail")
@@ -700,7 +805,7 @@ def main() -> int:
             expect(pipeline_errors(proot, VALID_PIPELINE.replace("status: in_progress",
                                                                  f"status: {status}")) == [],
                    f"the status '{status}' must be accepted")
-        expect(run_cli("--repo", ptd, "--memory-only") == 0,
+        expect(run_cli("--repo", str(proot), "--memory-only") == 0,
                "the last valid checkpoint must exit 0")
 
     # 28. The factory's OWN root: a hand-authored AGENTS.md (line 1 = the factory's own version
@@ -712,7 +817,7 @@ def main() -> int:
     #     flow skill into — stays an error, a version-marked manual without the deployed skill is an
     #     error too, and a model whose fingerprint is present but stale stays an error.
     with tempfile.TemporaryDirectory() as atd:
-        aroot = pathlib.Path(atd)
+        aroot = fixture(atd)
 
         # 28a. Factory root -> SKIP with a reason, exit 0.
         build(aroot)
@@ -726,7 +831,7 @@ def main() -> int:
                "check_agents must stay error-free for the factory root")
         expect(check_factory_model._is_factory_own_root(aroot, HAND_AUTHORED_AGENTS.splitlines()[0]),
                "the factory-root detector must fire on a marker-less AGENTS.md + the flow skill")
-        res = run_cli_out("--repo", atd)
+        res = run_cli_out("--repo", str(aroot))
         expect(res.returncode == 0, f"the factory root must exit 0: {res.stderr!r}")
         expect("SKIP" in res.stderr and "hand-authored" in res.stderr,
                f"the factory root must print the skip with its reason: {res.stderr!r}")
@@ -736,12 +841,12 @@ def main() -> int:
         # 28b. Regression: a valid model passes, the SAME model with a stale fingerprint fails
         #      (exit 1) — the flow skill must never hide a model that exists but went stale.
         build(aroot)
-        expect(run_cli("--repo", atd) == 0, "the freshly stamped model must exit 0")
+        expect(run_cli("--repo", str(aroot)) == 0, "the freshly stamped model must exit 0")
         (aroot / "src" / "main.py").write_text("print('drift')\n", encoding="utf-8")
         a_errs, _, a_skip = check_factory_model.check_agents_model(aroot)
         expect(a_errs != [] and a_skip == "",
                f"a stale fingerprint must stay an error next to the flow skill: {a_errs}")
-        expect(run_cli("--repo", atd) == 1, "a stale fingerprint must exit 1")
+        expect(run_cli("--repo", str(aroot)) == 1, "a stale fingerprint must exit 1")
 
         # 28c. Ordinary target project AS DEPLOYED: `prepare_factory` copies the flow skill into
         #      EVERY target project, so a hand-authored AGENTS.md without the factory's version
@@ -761,7 +866,7 @@ def main() -> int:
         expect(a_skip == "" and any("line 1 must be" in e for e in a_errs),
                f"a deployed target project without the fingerprint must stay an error: "
                f"{a_errs} / {a_skip!r}")
-        res = run_cli_out("--repo", atd)
+        res = run_cli_out("--repo", str(aroot))
         expect(res.returncode == 1, f"an ordinary project must exit 1: {res.stderr!r}")
         expect("line 1 must be" in res.stderr,
                f"an ordinary project must report the missing fingerprint: {res.stderr!r}")
@@ -777,7 +882,7 @@ def main() -> int:
         a_errs, _, a_skip = check_factory_model.check_agents_model(aroot)
         expect(a_skip == "" and any("line 1 must be" in e for e in a_errs),
                f"the version marker alone must not buy a SKIP: {a_errs} / {a_skip!r}")
-        expect(run_cli("--repo", atd) == 1,
+        expect(run_cli("--repo", str(aroot)) == 1,
                "a version-marked manual without the flow skill must exit 1")
 
     # 29. The content fingerprint hashes the WORKING-TREE content of the TRACKED set (`git ls-files`,
@@ -790,11 +895,14 @@ def main() -> int:
     #     untracked files are not tracked content. The factory's own artifacts stay excluded, so
     #     dirtying AGENTS.md/memory never looks like drift.
     with tempfile.TemporaryDirectory() as wtd:
-        wroot = pathlib.Path(wtd)
+        wroot = fixture(wtd)
+        wroot.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=wroot, check=True)
-        build(wroot)
-        subprocess.run(["git", "-C", wtd, "add", "-A"], check=True)
-        subprocess.run(["git", "-C", wtd, "-c", "user.email=a@b.c", "-c", "user.name=t",
+        # The fixture memory is a v2 record (run_id + provenance marks, every optional key), so the
+        # ONLY warning the check can still print here is the untracked-file one this block is about.
+        build(wroot, V2_ENTRY)
+        subprocess.run(["git", "-C", str(wroot), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(wroot), "-c", "user.email=a@b.c", "-c", "user.name=t",
                         "commit", "-q", "-m", "fixture"], check=True)
         stamp(wroot)  # touches only AGENTS.md, which is excluded from both fingerprints
         expect(project_fingerprint.untracked_files(wroot) == [],
@@ -814,7 +922,7 @@ def main() -> int:
         expect(any("content fingerprint mismatch" in e
                    for e in check_factory_model.check_agents(wroot)),
                "an unstaged edit must make the embedded content hash stale")
-        stale = run_cli_out("--repo", wtd)
+        stale = run_cli_out("--repo", str(wroot))
         expect(stale.returncode == 1 and "content fingerprint mismatch" in stale.stderr,
                f"an unstaged edit must fail the model check, not warn: {stale.stderr!r}")
 
@@ -831,20 +939,20 @@ def main() -> int:
         untracked_warnings = [w for w in agents_warnings(wroot) if "untracked" in w]
         expect(len(untracked_warnings) == 1 and "1 untracked" in untracked_warnings[0],
                f"an untracked file must warn once, with the count: {agents_warnings(wroot)}")
-        res = run_cli_out("--repo", wtd)
+        res = run_cli_out("--repo", str(wroot))
         expect(res.returncode == 0,
                f"an untracked file is a warning, not a failure: {res.stderr!r}")
         expect("WARN" in res.stderr and "untracked" in res.stderr,
                f"the model check must report the untracked file: {res.stderr!r}")
 
-        note = run_fp("--repo", wtd, "--content")
+        note = run_fp("--repo", str(wroot), "--content")
         expect(note.stdout.split() == [content_tracked],
                f"--content must print the tracked-content hash: {note.stdout!r}")
         expect("note:" in note.stderr and "1 untracked" in note.stderr,
                f"--content must note the untracked file on stderr: {note.stderr!r}")
-        expect("note:" in run_fp("--repo", wtd, "--all").stderr,
+        expect("note:" in run_fp("--repo", str(wroot), "--all").stderr,
                "--all must note the untracked file as well")
-        expect("note:" not in run_fp("--repo", wtd).stderr,
+        expect("note:" not in run_fp("--repo", str(wroot)).stderr,
                "the structural-only default must stay silent (level 1 reads no worktree content)")
 
         # 29c. The factory's own artifacts are excluded from BOTH sides of the contract: editing
@@ -863,13 +971,13 @@ def main() -> int:
 
         # 29d. `git add` puts the new file INTO the tracked set, so the hash starts covering it and
         #      nothing is left untracked: no note, no warning once the model is restamped.
-        subprocess.run(["git", "-C", wtd, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(wroot), "add", "-A"], check=True)
         expect(project_fingerprint.untracked_files(wroot) == [],
                "staging the new file makes it tracked — nothing is untracked any more")
         expect(project_fingerprint.compute_content_fingerprint(wroot) != excluded_before,
                "a staged new file enters the tracked set and MUST move the content hash")
         stamp(wroot)
-        res = run_cli_out("--repo", wtd)
+        res = run_cli_out("--repo", str(wroot))
         expect(res.returncode == 0 and "WARN" not in res.stderr,
                f"a fully staged worktree must be warning-free: {res.stderr!r}")
 
@@ -879,18 +987,160 @@ def main() -> int:
         #      purpose — `write_text` would translate the `\n` of the LF variant to CRLF on Windows.
         run_cmd = wroot / "run.cmd"
         run_cmd.write_bytes(b"@echo off\r\necho hi\r\n")
-        subprocess.run(["git", "-C", wtd, "add", "run.cmd"], check=True)
+        subprocess.run(["git", "-C", str(wroot), "add", "run.cmd"], check=True)
         crlf = project_fingerprint.compute_content_fingerprint(wroot)
         run_cmd.write_bytes(b"@echo off\necho hi\n")
         expect(project_fingerprint.compute_content_fingerprint(wroot) == crlf,
                "CRLF and LF content of the same file must hash the same (CRLF→LF normalization)")
+
+    # 30. ONE memory contract, TWO entry points — the parity that used to be missing. The memory
+    #     contract was implemented TWICE by hand (`memory_project.py` and this checker) and the two
+    #     copies disagreed on six axes in both directions, so each one was blind exactly where the
+    #     other was strict. `check_factory_model.validate_memory` now DELEGATES, and every fixture
+    #     below is validated by BOTH functions and by BOTH CLIs over the SAME directory:
+    #       (a) owner mismatch            (b) `task_type: backlog` legal in both
+    #       (c) unknown `task_type`       (d) a missing required key
+    #       (e) a `results` sub-key       (f) an empty `project:` value
+    #       (g) `closed:` without `evidence:` (the vaccination: only ONE CLI rejected it before)
+    #       (h) a valid journal accepted by both
+    with tempfile.TemporaryDirectory() as mtd:
+        mroot = pathlib.Path(mtd)
+
+        def verdict(root: pathlib.Path) -> tuple[list[str], list[str]]:
+            """The SAME root through both entry points; asserts the two verdicts are IDENTICAL."""
+            (m_verdict, c_verdict) = both_validators(root)
+            expect(m_verdict == c_verdict,
+                   f"the two entry points must agree on {root.name}: {m_verdict} != {c_verdict}")
+            return m_verdict
+
+        def cli_verdict(root: pathlib.Path) -> int:
+            """Both CLIs on the same root must reach the same pass/fail verdict."""
+            m_exit = run_tool(MEMORY, "check", "--repo", str(root)).returncode
+            c_exit = run_tool(CHECKER, "--repo", str(root), "--memory-only").returncode
+            expect((m_exit == 0) == (c_exit == 0),
+                   f"the two CLIs must agree on {root.name}: memory_project={m_exit} "
+                   f"check_factory_model={c_exit}")
+            return m_exit
+
+        # (a) Owner mismatch: the memory declares `demo`, the directory is `wrong_owner`, and NO
+        #     `--expect`/`--no-owner-check` overrides the basename rule — an error in both.
+        wrong_owner = memory_fixture(mroot / "wrong_owner")
+        owner_errors, _ = verdict(wrong_owner)
+        expect(any("belongs to project 'demo'" in e and "expected 'wrong_owner'" in e
+                   for e in owner_errors),
+               f"an owner mismatch must be an error in both: {owner_errors}")
+        expect(cli_verdict(wrong_owner) == 1, "an owner mismatch must fail both CLIs")
+        #     ...and `--expect` on both sides clears exactly that axis.
+        expect(memory_project.validate_memory(wrong_owner, "demo")[0] == []
+               and check_factory_model.validate_memory(wrong_owner, "demo")[0] == [],
+               "--expect demo must clear the owner axis in both entry points")
+
+        # (b) `task_type: backlog` with `finding=`/`impact=` is a LEGAL record kind in both — the
+        #     factory writes such records itself, so rejecting it made the gate red on its own
+        #     memory.
+        backlog_root = memory_fixture(mroot / "backlog_ok" / PROJECT, BACKLOG_ENTRY)
+        expect(verdict(backlog_root) == ([], []),
+               f"a backlog record must pass unchanged in both: {verdict(backlog_root)}")
+        expect(cli_verdict(backlog_root) == 0, "a backlog record must exit 0 in both CLIs")
+
+        # (c)-(f) An UNKNOWN record kind, a missing required key, a missing `results` sub-key (of a
+        #     run record AND of a `backlog` record — the sub-keys belong to the kind) and an EMPTY
+        #     `project:` value are errors in both, in the same words: widening the enum for
+        #     `backlog` must not soften a single other axis.
+        for name, entry, needle in (
+            ("bad_kind", VALID_ENTRY.replace("task_type: implement", "task_type: patch"),
+             "invalid task_type 'patch'"),
+            ("missing_key", VALID_ENTRY.replace("commit: abc1234\n", ""), "missing key 'commit'"),
+            ("no_result_key", VALID_ENTRY.replace("business=PASS; ", ""),
+             "results missing 'business='"),
+            ("no_backlog_key", BACKLOG_NO_IMPACT, "results missing 'impact='"),
+            ("empty_project", VALID_ENTRY.replace("project: demo\n", "project:\n"),
+             "empty 'project' value"),
+        ):
+            root = memory_fixture(mroot / name / PROJECT, entry)
+            errors, _ = verdict(root)
+            expect(any(needle in e for e in errors),
+                   f"'{needle}' must be an error in both entry points: {errors}")
+            expect(cli_verdict(root) == 1, f"'{needle}' must fail both CLIs")
+
+        # (g) `closed:` without `evidence:` is invalid in BOTH — the vaccination for the axis that
+        #     only `memory_project.py backlog --check` used to reject.
+        no_evidence = memory_fixture(mroot / "no_evidence" / PROJECT, CLOSED_NO_EVIDENCE)
+        closed_errors, _ = verdict(no_evidence)
+        expect(any("evidence" in e and "closed" in e for e in closed_errors),
+               f"a closure without evidence must be an error in both: {closed_errors}")
+        expect(cli_verdict(no_evidence) == 1,
+               "a closure without evidence must fail both CLIs, not only `backlog --check`")
+
+        # A missing journal means two DIFFERENT things, and each CLI says which one it means:
+        # no `memory/` at all is a FRESH project for memory_project (note + exit 0) and a hard
+        # error for the checker (a modelled project must have its memory); a `memory/` WITHOUT
+        # `change-log.md` is broken for both.
+        fresh = mroot / "fresh_proj"
+        fresh.mkdir()
+        fresh_errors, _ = verdict(fresh)
+        expect(any("change-log.md not found" in e for e in fresh_errors),
+               f"the shared contract must report a missing journal: {fresh_errors}")
+        fresh_cli = run_tool(MEMORY, "check", "--repo", str(fresh))
+        expect(fresh_cli.returncode == 0 and "fresh project, memory/ absent" in fresh_cli.stdout,
+               f"memory_project must call an absent memory/ a FRESH project: {fresh_cli.stdout!r}")
+        expect(run_tool(CHECKER, "--repo", str(fresh), "--memory-only").returncode == 1,
+               "check_factory_model must keep a missing journal a hard error")
+        partial = mroot / "partial_proj" / "memory"
+        partial.mkdir(parents=True)
+        partial_cli = run_tool(MEMORY, "check", "--repo", str(mroot / "partial_proj"))
+        expect(partial_cli.returncode == 1
+               and "memory directory exists without change-log.md" in partial_cli.stderr,
+               f"a journal-less memory/ must be BROKEN: {partial_cli.stderr!r}")
+        expect(run_tool(MEMORY, "check", "--repo", str(mroot / "partial_proj"),
+                        "--allow-fresh").returncode == 0,
+               "--allow-fresh must still accept a deliberately journal-less memory")
+        expect(run_tool(CHECKER, "--repo", str(mroot / "partial_proj"),
+                        "--memory-only").returncode == 1,
+               "check_factory_model must fail on a journal-less memory too")
+
+        # (h) A valid journal is accepted by both, silently: a v2 record with every optional key.
+        valid_root = memory_fixture(mroot / "valid_run" / PROJECT, V2_ENTRY)
+        expect(verdict(valid_root) == ([], []),
+               f"a valid journal must pass in both entry points: {verdict(valid_root)}")
+        expect(cli_verdict(valid_root) == 0, "a valid journal must exit 0 in both CLIs")
+
+        # The flags are the SAME on both CLIs — the contract is one, so its switches are too.
+        for tool in (MEMORY, CHECKER):
+            res = run_tool(tool, "--help")
+            expect(res.returncode == 0, f"{tool.name} --help must exit 0: {res.stderr!r}")
+            for flag in ("--expect", "--no-owner-check", "--strict"):
+                expect(flag in res.stdout, f"{tool.name} must accept {flag}")
+        expect("--memory-only" in run_tool(CHECKER, "--help").stdout,
+               "check_factory_model must keep --memory-only")
+
+        # And the delegation itself: `_v2_record` still behaves as pinned (it is an alias of the
+        # memory-side predicate), while every hand-written copy of the per-entry logic is GONE —
+        # that last assertion is what stops the contract from being duplicated and diverging again.
+        expect(callable(check_factory_model._v2_record),
+               "_v2_record must stay a callable predicate (its name is pinned)")
+        for fields in ({"project": "demo", "factory_version": "12.9.0"},
+                       {"project": "demo", "factory_version": "13.0.0"},
+                       {"project": "demo", "factory_version": "12.8.0"},
+                       {"project": "demo", "run_id": "20260922-442cd2f8"},
+                       {"factory_version": "12.9.0"}):
+            expect(check_factory_model._v2_record(fields) == memory_project.is_v2_record(fields),
+                   f"_v2_record must delegate to memory_project.is_v2_record for {fields}")
+        for name in ("_validate_entry", "_record_format_issues", "_summary_declaration_area",
+                     "_parse_entry_body", "ENTRY_REQUIRED_KEYS", "ENTRY_OPTIONAL_KEYS",
+                     "RESULT_SUBKEYS", "TASK_TYPES"):
+            expect(not hasattr(check_factory_model, name),
+                   f"{name} must be GONE from check_factory_model.py (delegation, not a copy)")
 
     print("PASS - factory model scripts behave as expected (valid passes, corruptions fail, "
           "unfinished/factory_version/project validated, memory format v2 (run_id + provenance "
           "marks) enforced on current-generation records, WIP checkpoints validated, "
           "structural+content fingerprints distinguish depth>=2 content changes, the content hash "
           "sees UNSTAGED edits of tracked files and reports UNTRACKED files as a warning, the "
-          "factory's own hand-authored root auto-detected as SKIP).")
+          "factory's own hand-authored root auto-detected as SKIP, and the memory contract has ONE "
+          "implementation: both entry points agree on the owner, the `backlog` record kind, the "
+          "required keys, the `results` sub-keys, an empty `project:`, `closed:` without "
+          "`evidence:` and a valid journal).")
     return 0
 
 

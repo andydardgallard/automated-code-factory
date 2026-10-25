@@ -25,7 +25,8 @@ task.yaml `models.<role>` = <model alias>     ← authoritative role→model mat
         ▼
 sub-agent `.md` → `model_preference: primary|secondary`    ← FALLBACK only
         │  (used when the task's `models` matrix does not name that role;
-        │   resolved against default_model / [secondary_model].default_model)
+        │   the RESOLVER scripts/model_matrix.py picks that side's
+        │   default_model / [secondary_model] default_model for the role)
         ▼
 Kimi Code CLI sends the request to the vendor's API gateway
 ```
@@ -34,7 +35,8 @@ The factory never invents a vendor's endpoint; it relies on the documented `conf
 provider tables. When the `models` field names a Kimi or Qwen model, the factory must (a)
 recognize the vendor, (b) point the user to the exact `config.toml` snippet below, and (c) route
 any resulting errors per `references/error-routing.md` §1.1. The model named in the task's matrix
-is passed to the sub-agent explicitly (§5) — `model_preference` is only the fallback path.
+is passed to the sub-agent explicitly (§5) — `model_preference` is only the fallback path, and what it
+falls back to is decided by the resolver `scripts/model_matrix.py`, never by prose.
 
 ## 2. Vendor detection (deterministic)
 
@@ -42,12 +44,15 @@ Match the model alias (case-insensitive) against these prefixes/patterns:
 
 | Vendor | Provider `type` | Detection patterns |
 |--------|-----------------|--------------------|
-| Kimi / Moonshot | `kimi` | `kimi`, `k3`, `moonshot` |
-| Qwen | `openai` | `qwen`, `qwq`, `dashscope` |
+| Kimi / Moonshot | `kimi` | `kimi`, `moonshot`, `kimi-k3`, `kimi-code/k3`, `k3`, `kimi-k2` |
+| DeepSeek | `deepseek` | `deepseek`, `deepseek-flash`, `deepseek-chat` |
+| Qwen | `openai` | `qwen`, `qwq`, `dashscope`, `qwen-*`, `qwq-*`, `dashscope-*` |
 
-Any other alias (e.g. `deepseek-*`) is treated as an already-supported vendor and is untouched —
-backward compatibility is preserved because the new rules only ADD rows, never rewrite existing
-ones.
+Every alias the factory uses is claimed by one of these rows, so a family can be computed for every
+role: `scripts/model_matrix.py family --model <alias>` is the implementation, and it fails loud on an
+alias no row claims — there is no "other" bucket, because a bucket nobody can name would silently
+accept a same-family pair. Routing for an alias outside these rows is untouched and backward
+compatibility is preserved: the rows only ADD detection, they never rewrite an existing one.
 
 ## 3. Kimi (Kimi K3) — Moonshot AI
 
@@ -96,9 +101,10 @@ capabilities = [ "thinking", "tool_use" ]
 
 ## 5. Binding roles to vendors (explicit model per role)
 
-The task's `models` field IS the authoritative role → model matrix, and the main agent passes the
-chosen model to each sub-agent **explicitly** — the current CLI supports an explicit model
-parameter on the Agent tool:
+The task's `models` field is the TASK MATRIX, and the model precedence has exactly two cases and no
+third — `scripts/model_matrix.py` is the ONE implementation of it, pinned by
+`scripts/test_model_precedence.py`. The main agent passes the chosen model to each sub-agent
+**explicitly** — the current CLI supports an explicit model parameter on the Agent tool:
 
 ```yaml
 # task.yaml
@@ -114,25 +120,30 @@ Agent(subagent_type: "factory-coder",        model: "kimi-k3",        ...)
 Agent(subagent_type: "factory-code-reviewer", model: "deepseek-flash", ...)
 ```
 
-- The explicit `model:` parameter is the primary mechanism. Any instruction stating "do NOT pass a
-  concrete model name to the Agent tool (it is not supported)" is **outdated** and must be ignored:
-  the CLI accepts the parameter, and without it every role silently falls back to the session
-  defaults and the task's matrix is not honoured.
-- `model_preference: primary|secondary` in each sub-agent `.md` is the **fallback** only — for
-  roles the task's `models` matrix does not name. It resolves against `config.toml`
-  (`default_model` + `[secondary_model].default_model`, or the `[secondary_model].models` pool),
-  and it is never consulted for a role the matrix names.
-- So running a specific role on Kimi K3 or Qwen is either a matrix entry (`models.<role>`) or, when
-  the task has no matrix, an alias in `default_model` / `[secondary_model].default_model` (or the
-  `[secondary_model].models` pool).
+- **Case (a) — the task names the role**: that exact model is used, verbatim, and is NEVER
+  substituted. A generator/judge family collision is a WARNING naming both roles and both models:
+  the task is authoritative, so the run continues on the configured models.
+- **Case (b) — the task does not name the role**: the model comes from the factory's DEFAULT
+  MATRIX — `default_model` / `[secondary_model] default_model` in `config.toml`, selected by the
+  role's `model_preference: primary|secondary` in `.agents/agents/sub-agents/<role>.md`. That lookup
+  is performed by the RESOLVER (`scripts/model_matrix.py resolve`); `model_preference` selects a
+  side, it resolves nothing by itself. On this path the generator≠judge rule IS enforced: a
+  same-family coder/tester/gui_expert versus reviewer/diagnostician/advisor pair with either side
+  taken from the default matrix is an ERROR naming the fix (widen `[secondary_model]` so the two
+  families differ, or pin `models.<role>` in the task).
+- **No third path**: the main agent never picks a model on its own, so an unnamed role goes to the
+  default matrix and nowhere else. Omitting `model:` when launching a subagent is not a neutral
+  choice — the Agent tool then runs the CLI's own default model, not the factory's choice — which is
+  exactly why the resolver always passes an explicit model, for a task-matrix value AND for a
+  default-matrix one.
 - The factory records the actual model per role in `.code-factory/state/pipeline.yaml`
-  (`models_used`) for auditability.
+  (`models_used`) and confirms it from an ARTIFACT: `scripts/model_attribution.py` reads the CLI
+  session wire and cross-checks the claim — a mismatch FAILS the run, a missing wire is DEGRADED.
 - `models.gui_expert` (optional) names the model of the Web GUI specialist `factory-gui-expert`.
   Like `models.coder` it is GENERATOR-side (§5.1), so its family must differ from the
-  reviewer/diagnostician/advisor family; the model actually used is logged as
-  `models_used.gui_expert`. A secondary-class model is enough for routine MCP-driven implementation
-  when its MCP/media capabilities suffice, and the role's `model_preference: secondary` is the
-  fallback for a task whose matrix does not name it.
+  reviewer/diagnostician/advisor family (§5.1 states where that is enforced and where it is only a
+  warning); the model actually used is logged as `models_used.gui_expert`. A secondary-class model is
+  enough for routine MCP-driven implementation when its MCP/media capabilities suffice.
 
 ### 5.1 Model diversity — generator ≠ judge (P1.13)
 
@@ -142,40 +153,44 @@ independent verification. "Family" = the vendor row detected in §2 (Kimi/Moonsh
 DeepSeek, …); the `secondary_model` flag alone is not enough, since two aliases of one family are
 still the same judge.
 
-- Rule: `models.coder` family ≠ `models.reviewer` family; when the Diagnostician or the Advisor
-  (`references/error-routing.md` §4/§4.1) is used, its family must likewise differ from the family
-  that produced the code it diagnoses. A pairing verified on a real run: coder `kimi-k3` (Kimi),
-  reviewer/advisor `deepseek-flash` (DeepSeek).
+- Rule: `models.coder` family ≠ `models.reviewer` family — ENFORCED as an error on the default-matrix
+  path and reported as the warning above on the task-matrix path; when the Diagnostician or the
+  Advisor (`references/error-routing.md` §4/§4.1) is used, its family must likewise differ from the
+  family that produced the code it diagnoses. A pairing verified on a real run: coder `kimi-k3`
+  (Kimi), reviewer/advisor `deepseek-flash` (DeepSeek).
 - `models.gui_expert` is GENERATOR-side, exactly like `models.coder`: the Web GUI specialist
   implements and the tester/reviewer judge its work, so the gui_expert family must differ from the
   reviewer/diagnostician/advisor family too. It does NOT need to differ from the coder family — both
   are generators. The pre-flight family check below therefore treats `coder` and `gui_expert` as one
   generator side.
-- **Pre-flight check (deterministic, zero LLM)**: before Phase 1 the main agent resolves the matrix
-  (or the `model_preference` fallback when the task has no matrix) and compares the resolved
-  families of coder vs reviewer/diagnostician. On a collision it records
-  `models_warning: "coder and reviewer resolve to the same model family <family> (<aliases>)"` in
-  `.code-factory/state/pipeline.yaml` and mirrors it in `report.md`.
-- A collision is a **warning, not a blocker**: the run continues on the configured models, but the
-  warning stays visible in `pipeline.yaml`/`report.md` so the task owner can widen the matrix. It
-  is the same pre-flight slot that already reports a missing
-  `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`.
+- **The family check is one command (deterministic, zero LLM)**: `scripts/model_matrix.py` resolves
+  every role and runs its `check_families` check over the resolved families of
+  coder/tester/gui_expert versus reviewer/diagnostician/advisor. A same-family pair is a WARNING
+  when both models come from the task's matrix — the task is authoritative, so the run continues on
+  the configured models and the warning names both roles and both models — and an ERROR when either
+  side comes from the default matrix, the message naming the fix. Either result is written to
+  `.code-factory/state/pipeline.yaml` and mirrored in `report.md`; a missing
+  `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is reported in the same pre-flight slot.
+- **Who actually ran is proved by an artifact**: `scripts/model_attribution.py` reads the CLI session
+  wire and compares it with `models_used` — `match` / `mismatch` / `degraded` per role, where a
+  mismatch FAILS the run and a missing wire is DEGRADED (exit 3), never a silent green.
 
 ### 5.2 Plan committee — the ONE exception to the task's matrix
 
 The second planner of the plan committee (the `plan-committee` rule: hitl, double rejection of the
 plan) is the ONLY role where the task's `models` matrix is NOT applied — the committee rule
-OUTRANKS the matrix. Every other rule states "the role's model comes from the task's matrix" with
-no exceptions; this is the single documented one, and it is narrower than it looks: only the
-SECOND planner is affected, the first planner keeps its matrix value.
+OUTRANKS the matrix. Every other role follows the two cases of §5 (the task matrix when it names the
+role, the default matrix otherwise); this is the single documented exception, and it is narrower than
+it looks: only the SECOND planner is affected, the first planner keeps its matrix value.
 
 - The family is fixed by the rule, not by the matrix: the second planner always comes from a family
   CONTRASTING the first planner's (the same family test as §5.1), because the whole point of the
   committee is independent verification of a plan the user rejected twice. A matrix that puts both
   planners in one family is overridden — `models.planner: kimi-k3` (Kimi) ⇒ second planner
   `deepseek-flash` (DeepSeek), and vice versa.
-- `model_preference` is NOT the answer either: the exception is resolved deterministically from the
-  first planner's model alias (§2), never from `config.toml` defaults.
+- `model_preference` is NOT the answer either: the exception is resolved deterministically by
+  `scripts/model_matrix.py committee_second_planner` from the first planner's model alias (§2) and a
+  pool of candidates — never from `config.toml` defaults.
 - As for every role, the model actually used is logged to `.code-factory/state/pipeline.yaml`
   (`models_used`) and `report.md`; the override is visible there, not silent.
 

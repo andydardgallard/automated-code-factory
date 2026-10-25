@@ -251,8 +251,14 @@ disturbed and before the run is allowed to fail.
 
 - **Contrasting model family (P1.13).** The Advisor runs on a different model family from the one
   that produced the code/previous diagnosis (e.g. coder/diagnostician on Kimi K3 → advisor on
-  `deepseek-flash`, and vice versa; see `references/providers.md` §5.1). A second opinion from the
-  same family reproduces the same blind spots and is worth nothing.
+  `deepseek-flash`, and vice versa; see `references/providers.md` §5.1). The family is not prose to
+  be trusted: `scripts/model_matrix.py` is the ONE implementation of the model precedence — its
+  `family()` decides which family an alias belongs to, its task-matrix/default-matrix precedence
+  decides whether the Advisor's model comes from the task or from the default matrix (a same-family
+  pair on the default-matrix path is an error naming the fix), and its `committee_second_planner`
+  is the contrasting pick of the plan committee. `scripts/model_attribution.py` then proves from the
+  CLI session wire which model was actually served. A second opinion from the same family
+  reproduces the same blind spots and is worth nothing.
 - **No edits.** The Advisor is read-only: it never changes a file, never runs the fix and never
   re-runs the test suite. Its only output is an assessment.
 - **Self-contained briefing** — the main agent hands it everything, because the Advisor has no run

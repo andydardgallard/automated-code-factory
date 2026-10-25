@@ -3,61 +3,69 @@
 <!-- code-factory-memory: summary -->
 project: repo
 repo_path: .
+project_id: dd18352c83a5
 
-Сжатая сводка проекта. Сворачивается из старых записей `memory/change-log.md` при компакции
-(порог 50 записей) и читается в начале каждой задачи, чтобы не выводить историю проекта заново.
+Condensed summary of the project. It is folded out of older `memory/change-log.md` records at
+compaction (threshold 50 records) and is read at the start of every task, so the project's history
+does not have to be derived again.
 
 ## Current state
-Factory v12.14.3 — the three most recent runs were REPORT-ONLY REVIEWS and none touched the
-product tree.
-Latest run: review (run_id 20261025-634bc01b, task-review-memory.yaml, hitl), report-only,
-acceptance SUCCESS (7 verify criteria MET, 2 derived, regression pass, ledger FRESH): merged
-verdict request_changes, 20 findings (2 critical, 11 major, 7 minor), report in
-`.code-factory/report.md`, findings in `.code-factory/logs/code-review.md`. Its decision
-question — is the long-term memory real end to end — is answered: the journal format v2, the
-`closed:`/`evidence:` fold and the ownership validator work, while the per-run write guarantee,
-the 50/20 compaction, the `## Current state` actuality beyond one WARN, and the precedent index
-are prose or unwired; the two named validators diverge on six axes; `memory_project.py check`
-and `check_factory_model.py` are red on this repository as found. The run also exposed and
-recorded a model-precedence defect: the canonical generator≠judge rule was applied against the
-task's explicit `models.reviewer` (a kimi-k3 pass that produced no verdict), and the task is
-authoritative — the precedence must be written once and pinned.
-Previous run: review (run_id 20261025-d412a454, task-review-workflow.yaml): a `task_type:
-review` run is NOT report-only in the flow — the review verdict `CRV0 -->|request_changes| G`
-(SKILL.md:102) reaches the implement entry and the acceptance-failure edge `X -->|No| RR`
-(SKILL.md:164) reaches a coder for every task type; 18 findings.
-Run before that: review (run_id 20261025-a32464ec, an earlier task-review-memory.yaml), NOT
-ACCEPTED — its unrequested 18-file rework was stopped by the owner and rolled back (tree back at
-d87592a; the diff is kept only as `.code-factory/rework-review-memory.patch`).
-Latest delivered product: v12.14.3 at commit 692e518 (unchanged by all three reviews).
-Open backlog: 8 items (39 closed with evidence) — the flow's review-to-implement routing
-(critical), the model-precedence defect (critical, new), the self-reported model attribution
-(new), the memory owner mismatch, the half-accepted backlog record kind, the Finish-vs-actuality
-contradiction, the unwired compaction and precedent index, and the open version_manager.py
-Rust-workspace item (now with mechanism evidence: `validate` prints PASS on a divergent
-Cargo.toml).
-Rulebook: 25 rules, 100 carriers, byte-identical (`check_factory_rules.py` exit 0). Memory owner:
-repo (the rule pins the basename; the migration is a pending item). Self-tests: 31 files, all
-passing.
+Factory v12.15.0 — the "honest factory" patch is delivered on `feature/v12.15.0-honest-factory`
+(base `fb43f2a`).
+Latest run: implement (run_id 20261025-4e17a349, task-fix-v12.15.0.yaml, hitl). One patch closed
+all 46 items of its three sources — the 20 findings of review 20261025-634bc01b, the 8 open backlog
+items, and the 18 findings F1-F18 of the earlier report-only-review task — each dispositioned in
+`.code-factory/logs/findings-disposition.md` with the check that proves it
+(`.code-factory/logs/findings-disposition.md`, 46 fixed, 0 deferred). What is now true:
+a `task_type: review` run is REPORT-ONLY (canonical rule `review-report-only`, 5 carriers): both
+former write edges end at the delivery node `RD`, an unmet review/security_audit criterion goes to
+the stop-and-ask node `XR`, and the findings leave as a report plus a generated follow-up task file
+(`.code-factory/review/fix-tasks.yaml`); model precedence is stated once and implemented once
+(`scripts/model_matrix.py`: the task's matrix wins verbatim and a family collision is only a
+warning, an unnamed role takes the factory's default matrix where generator≠judge is enforced, the
+committee's second planner is the only override), and the models actually served are confirmed from
+the CLI session wire (`scripts/model_attribution.py`, match/mismatch/degraded); the memory has ONE
+contract (`memory_project.validate_memory`, `check_factory_model` delegates), an ownership identity
+from the repository root commit (`project_id`, so a rename or a copy keeps it valid), exactly one
+record per run (`check --run-id`), a real 50/20 `compact` that survives a second fold, carry-over
+with a reason that the finish gate accepts while a disappeared item still fails, and an actual
+`## Current state` (version, open/closed counts, test count — strict under `--run-id`); the
+precedent index is a build product of the flow (`build`/`status`/`query --fresh`); the English-only
+gate acts on new memory records (history frozen in `memory/.english-freeze`) and on this summary.
+Previous runs: review 20261025-634bc01b (report-only, 20 findings), review 20261025-d412a454
+(18 findings — a review run was NOT report-only then), review 20261025-a32464ec (not accepted; its
+unrequested 18-file rework was rolled back).
+Version type: the deterministic matrix proposed `patch`; the code reviewer overrode it to `minor`
+because a new canonical rule, two flow nodes, three scripts, a summary field and a record kind are
+additive, not breaking.
+Open backlog: 1 item (47 closed with evidence) — the `test_run_id.py` fixture digest depends on the
+checkout's line endings (a pre-existing brittleness exposed by this release; normalizing CRLF in
+`run_id` would change every historical run id, so it needs its own vaccination-first task).
+Rulebook: 26 rules, 105 carriers, byte-identical (`check_factory_rules.py` exit 0). Memory owner:
+repo, declared with `project_id` (the repository identity, not the folder name). Self-tests: 38
+files, all passing — including 24 registered vaccines that each fail on the pre-fix tree and pass
+here (`scripts/test_vaccination.py`).
 
 ## Key decisions
-- Долгосрочная память `memory/` принадлежит ОДНОМУ целевому проекту (`repo_path`); поле
-  `project:` обязательно для новых записей, разные его значения в одном журнале — ошибка,
-  legacy-записи без `project:` — предупреждение. История разработки самой фабрики в память
-  целевого проекта не попадает.
-- Память создаётся в КОРНЕ РАЗВЁРТЫВАНИЯ (каталог, переданный `prepare_factory.sh`), имя проекта
-  = basename разрешённого `repo_path`; когда `repo_path` указывает на подкаталог, агент передаёт
-  `--project` явно и имя фиксируется в объявлении сводки.
-- Существующий AGENTS.md перезаписывается целиком (ровно 8 секций); hand-written заметки — в
+- The long-term memory `memory/` belongs to ONE target project (`repo_path`); the field
+  `project:` is mandatory for new records, different values of it in one journal are an error,
+  legacy records without `project:` are a warning. The factory's own development history never
+  goes into the target project's memory.
+- The memory is created at the DEPLOYMENT ROOT (the directory passed to `prepare_factory.sh`), the
+  project name = the basename of the resolved `repo_path`; when `repo_path` points to a
+  subdirectory, the agent passes `--project` explicitly and the name is pinned in the summary
+  declaration.
+- An existing AGENTS.md is overwritten as a whole (exactly 8 sections); hand-written notes live in
   `memory/summary.md`.
-- Fingerprint НЕ включает git tree SHA (иначе встроенный fingerprint устаревает сразу после
-  коммита, который его коммитит).
-- Порог компакции журнала — 50 записей (остаются последние 20); при компакции элементы
-  unfinished с severity=critical или follow_up=true сохраняются обязательно.
-- Корневой AGENTS.md самой фабрики остаётся hand-authored инструкцией (не 8-секционной моделью).
-- `VERSION` — единый источник истины версии; тип версии определяет детерминированная матрица,
-  валидирует ревьюер (может переопределить с объяснением); review/security_audit версию не меняют.
-- Документер обновляет только doc-комментарии и `.md` (secondary-модель, валидатор, бюджет 1).
+- The fingerprint does NOT include the git tree SHA (otherwise the embedded fingerprint goes stale
+  immediately after the commit that commits it).
+- The journal's compaction threshold is 50 records (the last 20 are kept); at compaction the
+  `unfinished` items with severity=critical or follow_up=true are preserved without fail.
+- The factory's own root AGENTS.md stays a hand-authored instruction (not the 8-section model).
+- `VERSION` is the single source of truth of the version; the version type is decided by a
+  deterministic matrix and validated by the reviewer (which may override it with an explanation);
+  review/security_audit do not change the version.
+- The documenter updates only doc comments and `.md` files (secondary model, validator, budget 1).
 
 ## Recent history
 - 2026-10-25 — "Review of the long-term memory (20261025-634bc01b)" (main, d87592a, report-only):
@@ -92,32 +100,34 @@ passing.
   quality gates — glossary, check_english_only.py, check_translation_structure.py, 6-shard
   semantic audit (approve); test_run_id digest re-pinned; wave P outer-tree mistake reverted and
   redone. v12.11.0 → v12.12.0 (minor).
-- 2026-09-24 — «Фабрика v6 (v12.11.0)» (feature/factory-v6-backlog-20260923, 4b6652c):
-  полная очистка backlog по всей истории (32 follow_up → 0 открытых, все с evidence);
-  явная классификация git stash (мутирующие → CONFIRM, list/show → ALLOW, разбор -m/--message);
-  контентный fingerprint по рабочему дереву (unstaged виден); механизм актуальности памяти
-  (backlog --check + closed:+evidence: + 23-е правило memory-actuality, RCA 5 звеньев);
-  project-learned overlay §1.2; ps1 try/catch, sh короткая причина, .gitattributes *.sh LF;
-  providers.md §5.2. Комитет планов (3 rejection → merged + выбор пользователя). v12.10.2 → v12.11.0 (minor).
-- 2026-09-23 — «Фабрика v5 (v12.10.2)» (feature/factory-v5-backlog-20260923, ed62e88):
-  utf8-guard во всех argparse-скриптах (action_gate --help на cp1251, кейс 16), 22-е правило
-  no-shared-tree-git-mutations (6 носителей). v12.10.1 → v12.10.2 (patch).
-- 2026-09-23 — «Фабрика v3 (v12.10.0)» (feature/factory-v3-backlog-20260923, 3e1a1bb):
-  severity-калибровка ревьюера (precision 0.619→0.857, recall→1.000, accuracy 7/7), committee
-  при двойном rejection плана (plan-committee + plan_arbiter.py + factory-planner),
-  check_factory_model SKIP на корне фабрики (трёхсигнальный детектор), FTS5 precedent_index.py,
-  test_run_id перепинован на fixture. v12.9.1 → v12.10.0 (minor).
-- 2026-09-21 — «Развёртывание и запуск фабрики в Windows» (feature/windows-launch, 37a683e):
-  Windows-версии обеих операций (`prepare_factory.ps1` + `prepare_factory.cmd`, `start.cmd`),
-  паритет с bash-путём, жёсткий сбой развёртывания → exit 1 без баннера «Готово» (ожидаемые
-  деградации остались нефатальными), контракты UTF-8/BOM/CRLF, самотест
+- 2026-09-24 — "Factory v6 (v12.11.0)" (feature/factory-v6-backlog-20260923, 4b6652c):
+  full cleanup of the backlog across the whole history (32 follow_up → 0 open, all with evidence);
+  explicit classification of git stash (mutating → CONFIRM, list/show → ALLOW, parsing of
+  -m/--message); content fingerprint over the working tree (unstaged edits visible); the memory
+  actuality mechanism (backlog --check + closed:+evidence: + the 23rd rule memory-actuality, a
+  5-link RCA); project-learned overlay §1.2; ps1 try/catch, sh short reason, .gitattributes *.sh LF;
+  providers.md §5.2. Plan committee (3 rejections → merged + the user's choice). v12.10.2 → v12.11.0 (minor).
+- 2026-09-23 — "Factory v5 (v12.10.2)" (feature/factory-v5-backlog-20260923, ed62e88):
+  utf8-guard in every argparse script (action_gate --help on cp1251, case 16), the 22nd rule
+  no-shared-tree-git-mutations (6 carriers). v12.10.1 → v12.10.2 (patch).
+- 2026-09-23 — "Factory v3 (v12.10.0)" (feature/factory-v3-backlog-20260923, 3e1a1bb):
+  reviewer severity calibration (precision 0.619→0.857, recall→1.000, accuracy 7/7), committee
+  on a double plan rejection (plan-committee + plan_arbiter.py + factory-planner),
+  check_factory_model SKIP at the factory root (three-signal detector), FTS5 precedent_index.py,
+  test_run_id re-pinned to the fixture. v12.9.1 → v12.10.0 (minor).
+- 2026-09-21 — "Deploying and launching the factory on Windows" (feature/windows-launch, 37a683e):
+  the Windows versions of both operations (`prepare_factory.ps1` + `prepare_factory.cmd`, `start.cmd`),
+  parity with the bash path, a hard deployment failure → exit 1 without the "Done" banner (expected
+  degradations stayed non-fatal), UTF-8/BOM/CRLF contracts, the self-test
   `scripts/test_windows_scripts.py`. v12.6.0 → v12.7.0 (minor).
-- 2026-09-21 — «Память фабрики принадлежит целевому проекту» (feature/project-scoped-memory):
-  поле `project:` в записях и объявление проекта в сводке, детекция смешения проектов,
-  скрипт `memory_project.py`, инициализация памяти проекта при развёртывании, очистка памяти
-  проекта get_course_downloader от истории разработки фабрики. v12.5.1 → v12.6.0 (minor).
-- 2026-09-08 — «Фабрика v12.5.0» (feature/factory-v12.5.0, 123acf3): factory-documenter,
-  память unfinished, reference_docs/reference_skills + skill-base, сквозное версионирование.
-- 2026-09-01 — «AGENTS.md как единый источник правды + переносимая память» (main, a53ef72):
-  Scout без `/init`, fingerprint, `memory/`, скрипты проверки модели, сабагенты читают
-  AGENTS.md/память как источник правды.
+- 2026-09-21 — "The factory's memory belongs to the target project" (feature/project-scoped-memory):
+  the `project:` field in records and the project declaration in the summary, detection of mixed
+  projects, the `memory_project.py` script, initialization of the project's memory at deployment,
+  cleanup of the get_course_downloader project's memory from the factory's development history.
+  v12.5.1 → v12.6.0 (minor).
+- 2026-09-08 — "Factory v12.5.0" (feature/factory-v12.5.0, 123acf3): factory-documenter,
+  the unfinished memory section, reference_docs/reference_skills + skill-base, end-to-end
+  versioning.
+- 2026-09-01 — "AGENTS.md as the single source of truth + portable memory" (main, a53ef72):
+  Scout without `/init`, fingerprint, `memory/`, the model-check scripts, subagents read
+  AGENTS.md/memory as the source of truth.

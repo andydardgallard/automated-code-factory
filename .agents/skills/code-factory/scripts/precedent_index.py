@@ -8,13 +8,29 @@ that question — the project memory (`memory/change-log.md` and `memory/summary
 base — and answers free-text queries out of it.
 
 Usage:
-  python precedent_index.py build --repo <root> [--out <db>]
-  python precedent_index.py query --repo <root> "<text>" [--limit 10]
+  python precedent_index.py build --repo <root> [--db <path>] [--quiet]
+  python precedent_index.py status --repo <root> [--db <path>]
+  python precedent_index.py query --repo <root> [--fresh] <terms...> [--limit 10]
 
-`build` writes `<repo>/.code-factory/state/precedents.db` by default and is a DETERMINISTIC
-REBUILD: the previous database and its -wal/-shm sidecars are deleted, the records are collected
-in sorted `(source, path, title)` order and inserted in exactly that order, so the same working
-tree always yields the same table. A relative `--out` is resolved against the repo root.
+`build` writes `<repo>/.code-factory/state/precedents.db` by default (`--db` overrides it, the
+legacy alias `--out` still works, a relative path is resolved against the repo root) and is an
+IDEMPOTENT, DETERMINISTIC REBUILD: the previous database and its -wal/-shm sidecars are deleted,
+the records are collected in sorted `(source, path, title)` order and inserted in exactly that
+order, so the same working tree always yields the same table — the same row count and the same
+content hash (`status` prints it) — a second build over unchanged sources changes nothing, and a
+source that disappeared takes its rows with it. A factory-sized repository rebuilds in well under a
+second, so a run rebuilds instead of trusting an index somebody built once.
+
+Freshness is recorded, not assumed: the `meta` table of the index holds, per source, the sha256 of
+`memory/change-log.md`, the sha256 of `memory/summary.md`, the sha256 of the manifest of the
+indexed code tree (repo-relative path, size and `mtime_ns` of every indexed file) and the build
+time. `status` compares them with the sources as they are NOW and prints
+`FRESH - <n> records, <m> files (built <time>)` plus `hash: <sha256 of the rows>` with exit 0, or
+`STALE - <reason>` with exit 1, the reason naming the cause: the journal changed after the last
+build, the summary changed, the tracked tree changed, the meta record is missing, or the database
+is absent. `query --fresh` refuses to answer a stale index — `STALE - <reason> (run:
+precedent_index.py build --repo <root>)`, exit 3 — so a stale index can never quietly report
+`matches: 0`.
 
 Indexed sources (`source` column):
   change-log  `memory/change-log.md` — one record per `## ` heading; the text before the first
@@ -30,24 +46,31 @@ files larger than 200 KiB, and binaries (a NUL byte within the first 8 KiB). `pa
 repo-relative and posix; every record's content carries its heading, so a title-only match still
 shows readable context.
 
-Schema: one FTS5 virtual table `precedents(source TEXT, path TEXT, title TEXT, content TEXT)`.
-`query` runs an FTS5 MATCH over it — raw FTS5 syntax is accepted (`"a b"`, `a OR b`, `NEAR(a b)`)
-— and prints, per hit, the rank, the source, the path, the title and a `snippet()` of the content
-with the matched terms in brackets. Zero matches is not an error.
+Schema: the FTS5 virtual table `precedents(source TEXT, path TEXT, title TEXT, content TEXT)` plus
+the key/value table `meta(key TEXT, value TEXT)` that carries the freshness record described above.
+`query` runs an FTS5 MATCH over `precedents` — raw FTS5 syntax is accepted (`"a b"`, `a OR b`,
+`NEAR(a b)`); an expression FTS5 cannot parse is retried with every non-bareword token quoted, so a
+hyphenated term such as a `run_id` (`20261025-634bc01b`, which FTS5 would read as `20261025` MINUS
+a column named `634bc01b`) is searched as a phrase instead of failing. `query` prints, per hit, the
+rank, the source, the path, the title and a `snippet()` of the content with the matched terms in
+brackets, best rank first. Zero matches is not an error.
 
-Exit code 0 = success (build wrote the database, query printed its hits, possibly none);
-2 = usage or environment error — a missing subcommand/argument (argparse), `--repo` that is not a
-directory, `--limit < 1`, an empty or syntactically invalid MATCH expression, a missing/corrupt
-database, and a Python whose sqlite3 lacks FTS5 (`CREATE VIRTUAL TABLE ... USING fts5` fails:
-`FTS5 unavailable`). Every error is a message on stderr, never a traceback. stdlib only.
+Exit code 0 = success (build wrote the database, status reported FRESH, query printed its hits,
+possibly none); 1 = `status` found a STALE index; 2 = usage or environment error — a missing
+subcommand/argument (argparse), `--repo` that is not a directory, `--limit < 1`, an empty or
+unparseable MATCH expression, a missing/corrupt database, and a Python whose sqlite3 lacks FTS5
+(`CREATE VIRTUAL TABLE ... USING fts5` fails: `FTS5 unavailable`); 3 = `query --fresh` refused to
+answer a stale index. Every error is a message on stderr, never a traceback. stdlib only.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import pathlib
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 # Sibling script imported as a library: the code-base walk, the exclusion policy and the binary
 # heuristic must have exactly ONE implementation, shared with the shard protocol.
@@ -62,6 +85,10 @@ DEFAULT_DB = pathlib.Path(".code-factory") / "state" / "precedents.db"
 CHANGE_LOG = "memory/change-log.md"
 SUMMARY = "memory/summary.md"
 PREAMBLE_TITLE = "(preamble)"
+# The freshness record of a build, as a key/value table inside the same database.
+META_TABLE = "meta"
+SCHEMA_VERSION = "1"
+FRESH, STALE = "fresh", "stale"
 # Repo-relative prefixes never indexed as code.
 EXCLUDE_PREFIXES = (".code-factory/", "skill-base/golden-set/")
 # The two memory files are indexed as `change-log`/`summary` records, never as code.
@@ -179,6 +206,58 @@ def indexable_code_paths(root: pathlib.Path, paths: list[str]) -> list[str]:
                    and not (root / rel).is_symlink()})
 
 
+def code_paths(root: pathlib.Path) -> tuple[list[str], str]:
+    """(indexed code paths sorted, scan mode `git` or `walk`).
+
+    One listing feeds both the index and its manifest hash, so what is hashed is exactly what is
+    indexed — a source that is not in the index can never make it stale.
+    """
+    listed = git_files(root)
+    if listed is None:
+        return indexable_code_paths(root, walk_files(root)), "walk"
+    return indexable_code_paths(root, listed), "git"
+
+
+def file_sha(path: pathlib.Path) -> str:
+    """sha256 of a file's bytes, or "" when it is absent or unreadable — absence is a value too."""
+    data = repo_inventory.read_bytes(path)
+    return "" if data is None else hashlib.sha256(data).hexdigest()
+
+
+def tree_manifest(root: pathlib.Path, paths: list[str], skip: set[pathlib.Path]) -> str:
+    """sha256 over `path\\0size\\0mtime_ns` of the indexed files: the code base's signature.
+
+    Size and modification time keep the check cheap (no content is read) and sensitive to any edit;
+    `skip` drops the live database and its sidecars, so the index is never its own source.
+    """
+    hasher = hashlib.sha256()
+    for rel in sorted(paths):
+        full = root / rel
+        try:
+            if full.resolve() in skip:
+                continue
+            stat = full.stat()
+        except OSError:
+            continue  # a vanished or unreadable file is not part of the tree either
+        hasher.update(f"{rel}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode("utf-8"))
+    return hasher.hexdigest()
+
+
+def signature(root: pathlib.Path, db: pathlib.Path | None = None) -> dict[str, str]:
+    """The sha256 signature of every indexed source: both memory files and the code tree."""
+    paths, _ = code_paths(root)
+    skip: set[pathlib.Path] = set() if db is None else {
+        db.resolve(), pathlib.Path(f"{db}-wal").resolve(), pathlib.Path(f"{db}-shm").resolve()}
+    return {"journal_sha": file_sha(root / CHANGE_LOG),
+            "summary_sha": file_sha(root / SUMMARY),
+            "tree_sha": tree_manifest(root, paths, skip)}
+
+
+def utc_now() -> str:
+    """The build time as `YYYY-MM-DDTHH:MM:SSZ` (UTC, second resolution)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def collect_records(root: pathlib.Path) -> tuple[list[tuple[str, str, str, str]], str]:
     """(records sorted by source/path/title, mode of the code scan: `git` or `walk`).
 
@@ -191,11 +270,8 @@ def collect_records(root: pathlib.Path) -> tuple[list[tuple[str, str, str, str]]
         if text is not None:
             records.extend(section_records(rel, text, source))
 
-    listed = git_files(root)
-    mode = "git" if listed is not None else "walk"
-    if listed is None:
-        listed = walk_files(root)
-    for rel in indexable_code_paths(root, listed):
+    paths, mode = code_paths(root)
+    for rel in paths:
         text = read_text(root / rel)
         if text is not None:
             records.append(("code", rel, pathlib.PurePosixPath(rel).name, text))
@@ -204,8 +280,15 @@ def collect_records(root: pathlib.Path) -> tuple[list[tuple[str, str, str, str]]
     return records, mode
 
 
-def _create_and_fill(db: pathlib.Path, records: list[tuple[str, str, str, str]]) -> None:
-    """Create the FTS5 table and insert every record in the given (sorted) order."""
+def index_meta(root: pathlib.Path, db: pathlib.Path, mode: str) -> dict[str, str]:
+    """The `meta` record of a build: the per-source signatures, the scan mode and the build time."""
+    return {**signature(root, db), "schema_version": SCHEMA_VERSION, "scan_mode": mode,
+            "built_at": utc_now()}
+
+
+def _create_and_fill(db: pathlib.Path, records: list[tuple[str, str, str, str]],
+                     meta: dict[str, str]) -> None:
+    """Create the FTS5 and meta tables and insert every record in the given (sorted) order."""
     try:
         conn = sqlite3.connect(db)
     except sqlite3.Error as exc:
@@ -218,6 +301,9 @@ def _create_and_fill(db: pathlib.Path, records: list[tuple[str, str, str, str]])
             raise PrecedentError(f"FTS5 unavailable in this Python/sqlite3 build ({exc}); "
                                  f"the precedent index {db} cannot be built") from exc
         try:
+            conn.execute(f"CREATE TABLE {META_TABLE} (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.executemany(f"INSERT INTO {META_TABLE} (key, value) VALUES (?, ?)",
+                             sorted(meta.items()))
             conn.executemany(f"INSERT INTO {TABLE} ({', '.join(COLUMNS)}) VALUES (?, ?, ?, ?)",
                              records)
             conn.commit()
@@ -248,18 +334,22 @@ def build_index(root: pathlib.Path, db: pathlib.Path) -> dict:
         raise PrecedentError(f"FTS5 unavailable in this Python/sqlite3 build ({reason}); "
                              f"the precedent index needs FTS5")
     records, mode = collect_records(root)
+    # The signature is taken AFTER the records were read: a source edited in between makes the next
+    # `status` STALE (a false STALE costs one rebuild) instead of falsely FRESH (which would answer
+    # out of a stale index — the defect this record exists to prevent).
+    meta = index_meta(root, db, mode)
     try:
         db.parent.mkdir(parents=True, exist_ok=True)
         for stale in (db, pathlib.Path(f"{db}-wal"), pathlib.Path(f"{db}-shm")):
             stale.unlink(missing_ok=True)  # rebuild: the previous index never lingers
-        _create_and_fill(db, records)
+        _create_and_fill(db, records, meta)
     except PrecedentError:
         db.unlink(missing_ok=True)
         raise
     except OSError as exc:
         db.unlink(missing_ok=True)
         raise PrecedentError(f"cannot build the precedent index {db}: {exc}") from exc
-    return {"db": db, "records": records, "mode": mode}
+    return {"db": db, "records": records, "mode": mode, "meta": meta, "hash": index_hash(db)}
 
 
 def search(db: pathlib.Path, match: str, limit: int) -> list[dict]:
@@ -283,6 +373,127 @@ def search(db: pathlib.Path, match: str, limit: int) -> list[dict]:
             for rank, (source, path, title, snippet, score) in enumerate(rows, 1)]
 
 
+def is_bareword(token: str) -> bool:
+    """True when FTS5 reads `token` as a bareword (alphanumerics, `_`, non-ASCII only)."""
+    return bool(token) and all(char.isalnum() or char == "_" or ord(char) >= 0x80
+                               for char in token)
+
+
+def quote_nonbarewords(text: str) -> str:
+    """`text` with every token FTS5 cannot read as a bareword turned into a quoted phrase."""
+    tokens = []
+    for token in text.split():
+        if not is_bareword(token) and any(char.isalnum() or ord(char) >= 0x80 for char in token):
+            tokens.append('"' + token.replace('"', '""') + '"')
+        else:
+            tokens.append(token)
+    return " ".join(tokens)
+
+
+def search_any(db: pathlib.Path, text: str, limit: int) -> list[dict]:
+    """`search`, retrying an unparseable expression with its non-bareword tokens quoted.
+
+    FTS5 reads `20261025-634bc01b` as `20261025` MINUS a column named `634bc01b` and answers
+    "no such column" — and that hyphenated shape is a run_id, a file name or a path fragment, i.e.
+    the most likely thing a caller greps for. Quoting such a token searches it as a phrase and
+    finds the record; an expression that stays unparseable raises the original error unchanged.
+    """
+    try:
+        return search(db, text, limit)
+    except sqlite3.OperationalError as exc:
+        quoted = quote_nonbarewords(text)
+        if quoted == text:
+            raise
+        try:
+            return search(db, quoted, limit)
+        except sqlite3.OperationalError:
+            raise exc
+
+
+def read_meta(db: pathlib.Path) -> dict[str, str] | None:
+    """The meta record of the index at `db`, or None when it carries none (an older build).
+
+    A file that is not a precedent index at all — corrupt, foreign, unreadable — raises
+    PrecedentError, so a broken database is reported and never mistaken for a stale one.
+    """
+    conn = sqlite3.connect(db)
+    try:
+        names = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if TABLE not in names:
+            raise PrecedentError(f"{db} is not a precedent index (no `{TABLE}` table); "
+                                 f"rebuild it with `build`")
+        if META_TABLE not in names:
+            return None
+        return dict(conn.execute(f"SELECT key, value FROM {META_TABLE}"))
+    finally:
+        conn.close()
+
+
+def index_counts(db: pathlib.Path) -> tuple[int, int]:
+    """(records, files) of the index at `db`: every row, and the distinct indexed code paths."""
+    conn = sqlite3.connect(db)
+    try:
+        records = conn.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone()[0]
+        files = conn.execute(f"SELECT COUNT(DISTINCT path) FROM {TABLE} "
+                             f"WHERE source = 'code'").fetchone()[0]
+    finally:
+        conn.close()
+    return int(records), int(files)
+
+
+def record_hash(rows: list[tuple[str, str, str, str]]) -> str:
+    """sha256 over the rows as `len:field` pairs — the content hash two builds are compared by.
+
+    Length-prefixing keeps the encoding unambiguous: no separator can be forged from a record.
+    """
+    hasher = hashlib.sha256()
+    for row in rows:
+        for field in row:
+            hasher.update(f"{len(field)}:".encode("ascii") + field.encode("utf-8", "replace"))
+    return hasher.hexdigest()
+
+
+def index_hash(db: pathlib.Path) -> str:
+    """The content hash of the rows of `db`, ordered by content so it is rebuild-order free."""
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute(f"SELECT {', '.join(COLUMNS)} FROM {TABLE} "
+                            f"ORDER BY {', '.join(COLUMNS)}").fetchall()
+    finally:
+        conn.close()
+    return record_hash(rows)
+
+
+def freshness(root: pathlib.Path, db: pathlib.Path) -> tuple[str, dict]:
+    """(FRESH|STALE, details) of the index at `db` against the sources of `root` as they are NOW.
+
+    `details` always carries `reason` (None when fresh), `records`, `files`, `built_at` and `hash`
+    (None when they cannot be read). A missing database is STALE — an absent index is a fact, not a
+    crash; a corrupt one raises PrecedentError, because that is an environment error.
+    """
+    details: dict = {"reason": None, "records": None, "files": None, "built_at": None,
+                     "hash": None}
+    if not db.is_file():
+        return STALE, {**details, "reason": f"database absent: {db}"}
+    try:
+        meta = read_meta(db)
+        details["records"], details["files"] = index_counts(db)
+        details["hash"] = index_hash(db)
+    except sqlite3.Error as exc:
+        raise PrecedentError(f"cannot read the precedent index {db}: {exc}") from exc
+    if meta is None:
+        return STALE, {**details, "reason": "meta missing: the index carries no freshness record"}
+    details["built_at"] = meta.get("built_at")
+    current = signature(root, db)
+    for key, reason in (("journal_sha", f"journal changed after the last build ({CHANGE_LOG})"),
+                        ("summary_sha", f"summary changed after the last build ({SUMMARY})"),
+                        ("tree_sha", "tracked tree changed after the last build")):
+        if meta.get(key) != current[key]:
+            return STALE, {**details, "reason": reason}
+    return FRESH, details
+
+
 def clip(text: str, limit: int) -> str:
     """`text` shortened to `limit` characters (compact, deterministic one-line output)."""
     return text if len(text) <= limit else text[:limit - 3] + "..."
@@ -292,10 +503,24 @@ def render_build(result: dict) -> str:
     """Human-readable summary of a build: where the index is and what went into it."""
     counts = source_counts(result["records"])
     scan = "git ls-files" if result["mode"] == "git" else "directory walk"
+    meta = result["meta"]
     return (f"db: {result['db']}\n"
             f"records: {len(result['records'])} (change-log: {counts['change-log']}, "
             f"summary: {counts['summary']}, code: {counts['code']})\n"
-            f"code scan: {scan}\n")
+            f"code scan: {scan}\n"
+            f"meta: journal {meta['journal_sha'][:12] or '-'}, "
+            f"summary {meta['summary_sha'][:12] or '-'}, tree {meta['tree_sha'][:12]}\n"
+            f"built: {meta['built_at']}\n"
+            f"hash: {result['hash']}\n")
+
+
+def render_status(state: str, details: dict) -> str:
+    """The `FRESH` line with the content hash, or the one-line `STALE - <reason>` verdict."""
+    if state == FRESH:
+        return (f"FRESH - {details['records']} records, {details['files']} files "
+                f"(built {details['built_at']})\n"
+                f"hash: {details['hash']}\n")
+    return f"STALE - {details['reason']}\n"
 
 
 def render_hits(text: str, hits: list[dict], db: pathlib.Path) -> str:
@@ -311,15 +536,25 @@ def render_hits(text: str, hits: list[dict], db: pathlib.Path) -> str:
 
 
 def resolve_db(root: pathlib.Path, out: str | None) -> pathlib.Path:
-    """The database path: the default under the repo, a relative `--out` resolved against it."""
+    """The database path: the default under the repo, a relative `--db` resolved against it."""
     path = pathlib.Path(out) if out else DEFAULT_DB
     return path if path.is_absolute() else root / path
 
 
 def cmd_build(args: argparse.Namespace) -> int:
     result = build_index(pathlib.Path(args.repo), resolve_db(pathlib.Path(args.repo), args.out))
-    sys.stdout.write(render_build(result))
+    if not args.quiet:
+        sys.stdout.write(render_build(result))
     return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    root = pathlib.Path(args.repo)
+    if not root.is_dir():
+        raise PrecedentError(f"--repo is not a directory: {root}")
+    state, details = freshness(root, resolve_db(root, args.out))
+    sys.stdout.write(render_status(state, details))
+    return 0 if state == FRESH else 1
 
 
 def cmd_query(args: argparse.Namespace) -> int:
@@ -328,15 +563,22 @@ def cmd_query(args: argparse.Namespace) -> int:
         raise PrecedentError(f"--repo is not a directory: {root}")
     if args.limit < 1:
         raise PrecedentError(f"--limit must be >= 1, got {args.limit}")
-    text = args.text.strip()
+    text = " ".join(args.text).strip()
     if not text:
         raise PrecedentError("the query text is empty; pass an FTS5 MATCH expression")
     db = resolve_db(root, args.out)
-    if not db.is_file():
+    if args.fresh:
+        # A stale index must never answer "matches: 0" as if the history had nothing to say.
+        state, details = freshness(root, db)
+        if state == STALE:
+            sys.stdout.write(f"STALE - {details['reason']} "
+                             f"(run: precedent_index.py build --repo {args.repo})\n")
+            return 3
+    elif not db.is_file():
         raise PrecedentError(f"precedent index not found: {db} "
                              f"(run `build --repo {args.repo}` first)")
     try:
-        hits = search(db, text, args.limit)
+        hits = search_any(db, text, args.limit)
     except sqlite3.DatabaseError as exc:
         detail = str(exc)
         if "syntax error" in detail:
@@ -365,24 +607,40 @@ def use_utf8_output() -> None:
             pass
 
 
+def add_db_argument(parser: argparse.ArgumentParser, verb: str) -> None:
+    """`--db` plus its legacy alias `--out` — one destination, so both name the same file."""
+    parser.add_argument("--db", dest="out", default=None,
+                        help=f"{verb} (default: <repo>/{DEFAULT_DB.as_posix()})")
+    parser.add_argument("--out", dest="out", default=None, help="Legacy alias of --db")
+
+
 def main() -> int:
     use_utf8_output()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
 
-    p_build = sub.add_parser("build", help="rebuild the FTS5 index of memory/ and the code base")
+    p_build = sub.add_parser("build",
+                             help="(re)build the FTS5 index of memory/ and the code base")
     p_build.add_argument("--repo", required=True, help="Repository root")
-    p_build.add_argument("--out", default=None,
-                         help=f"Database to write (default: <repo>/{DEFAULT_DB.as_posix()})")
+    add_db_argument(p_build, "Database to write")
+    p_build.add_argument("--quiet", action="store_true", help="Report nothing on success")
     p_build.set_defaults(func=cmd_build)
+
+    p_status = sub.add_parser("status",
+                              help="FRESH/STALE verdict of the index against the sources")
+    p_status.add_argument("--repo", required=True, help="Repository root")
+    add_db_argument(p_status, "Database to read")
+    p_status.set_defaults(func=cmd_status)
 
     p_query = sub.add_parser("query", help="search the index with an FTS5 MATCH expression")
     p_query.add_argument("--repo", required=True, help="Repository root")
-    p_query.add_argument("text", help='FTS5 MATCH expression, e.g. "a b", a OR b, NEAR(a b)')
+    p_query.add_argument("text", nargs="+",
+                         help='FTS5 MATCH expression, e.g. "a b", a OR b, NEAR(a b)')
     p_query.add_argument("--limit", type=int, default=10, help="Maximum hits (default: 10)")
-    p_query.add_argument("--out", default=None,
-                         help=f"Database to read (default: <repo>/{DEFAULT_DB.as_posix()})")
+    p_query.add_argument("--fresh", action="store_true",
+                         help="Refuse to answer a stale index (exit 3) instead of guessing")
+    add_db_argument(p_query, "Database to read")
     p_query.set_defaults(func=cmd_query)
 
     args = ap.parse_args()

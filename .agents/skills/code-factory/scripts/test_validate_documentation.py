@@ -114,6 +114,76 @@ def main() -> int:
         expect(vd.check(root, base, ["src/dup.py"]) == [],
                "deleting the docstring copy of a duplicated line must pass")
 
+        # 13. Classifier unit: a bare `*` or `|` line OUTSIDE a block comment / docstring is code.
+        # Before the fix these two lines were classified as documentation, so `*ptr = 1;` in a .c
+        # file could be edited freely. A `/*` opener (not just `/**`) must turn the block state on
+        # so `*` continuation lines stay documentation inside the block.
+        expect(vd._doc_mask(["def f():", "*ptr = 1;", "| mask = 2;", "    return 3"])
+               == [False, False, False, False],
+               "bare '*'/'|' lines outside a block must be code")
+        expect(vd._doc_mask(["/*", " * doc", " */", "int x;"]) == [True, True, True, False],
+               "a plain /* block must open the block state")
+        expect(vd._doc_mask(["/**", " * doc", " */"]) == [True, True, True],
+               "a /** block must still be documentation")
+        expect(vd._doc_mask(["/*!", " * doc", " */"]) == [True, True, True],
+               "a /*! block must open the block state")
+        expect(vd._doc_mask(['"""', "x = 1", '"""', "| mask = 2;"]) == [True, True, True, False],
+               "a '|' line inside a docstring is doc, outside it is code")
+
+        # 14. A changed `*ptr = 2;` line in a .c file is a CODE change -> rejected.
+        (root / "src" / "ptr.c").write_text(
+            "int f(void)\n{\n/* pointer doc */\n*ptr = 1;\n| mask = 2;\n    return 3;\n}\n",
+            encoding="utf-8")
+        vd.snapshot(root, base, ["src/ptr.c"])
+        (root / "src" / "ptr.c").write_text(
+            "int f(void)\n{\n/* pointer doc */\n*ptr = 2;\n| mask = 2;\n    return 3;\n}\n",
+            encoding="utf-8")
+        errs = vd.check(root, base, ["src/ptr.c"])
+        expect(any(e.startswith("src/ptr.c: code line changed:") and "*ptr =" in e for e in errs),
+               "changing a '*ptr = 2;' code line in a .c file must fail")
+
+        # 15. A changed `| y = 3` line in a .py file is a CODE change -> rejected.
+        (root / "src" / "mask.py").write_text("x = 1\n| y = 2\n", encoding="utf-8")
+        vd.snapshot(root, base, ["src/mask.py"])
+        (root / "src" / "mask.py").write_text("x = 1\n| y = 3\n", encoding="utf-8")
+        errs = vd.check(root, base, ["src/mask.py"])
+        expect(any(e.startswith("src/mask.py: code line changed:") and "| y =" in e for e in errs),
+               "changing a '| y = 3' line in a .py file must fail")
+
+        # 16. A changed line INSIDE a `/* ... * ... */` block comment is documentation -> allowed.
+        (root / "src" / "blk.c").write_text(
+            "/*\n * old doc\n */\nint f(void) { return 1; }\n", encoding="utf-8")
+        vd.snapshot(root, base, ["src/blk.c"])
+        (root / "src" / "blk.c").write_text(
+            "/*\n * new doc\n */\nint f(void) { return 1; }\n", encoding="utf-8")
+        expect(vd.check(root, base, ["src/blk.c"]) == [],
+               "a changed '/* ... * ... */' block comment line must pass")
+
+        # 16b. Same for a `/*!` Doxygen block comment.
+        (root / "src" / "blk.c").write_text(
+            "/*!\n * old doc\n */\nint f(void) { return 1; }\n", encoding="utf-8")
+        vd.snapshot(root, base, ["src/blk.c"])
+        (root / "src" / "blk.c").write_text(
+            "/*!\n * new doc\n */\nint f(void) { return 1; }\n", encoding="utf-8")
+        expect(vd.check(root, base, ["src/blk.c"]) == [],
+               "a changed '/*! ... * ... */' block comment line must pass")
+
+        # 17. Protected set matches FILE NAMES, not only path segments: `scripts/test_x.py` sits
+        # in no `tests/` directory, yet it is a test file and must be rejected; `src/app.py` is
+        # normal source and must not be.
+        for rel in ("scripts/test_x.py", "src/foo_test.go", "web/app.test.ts", "src/conftest.py",
+                    "src/foo_spec.rb"):
+            expect(vd._is_protected(rel), f"{rel} must be protected (file-name marker)")
+        for rel in ("src/app.py", "docs/README.md", "src/lib.rs", "src/contest.py", "src/app.pyc"):
+            expect(not vd._is_protected(rel), f"{rel} must not be protected")
+        (root / "scripts").mkdir(exist_ok=True)
+        (root / "scripts" / "test_x.py").write_text("# module doc\n", encoding="utf-8")
+        expect(vd.check(root, base, ["scripts/test_x.py"]) != [],
+               "scripts/test_x.py must fail as a protected test file")
+        (root / "src" / "app.py").write_text("# app doc\n", encoding="utf-8")
+        expect(vd.check(root, base, ["src/app.py"]) == [],
+               "src/app.py (doc-only, not protected) must pass")
+
     print("PASS - documentation validator allows only documentation-only changes.")
     return 0
 

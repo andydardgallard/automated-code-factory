@@ -135,7 +135,7 @@ def check_rule(root: pathlib.Path, rule: Rule) -> list[str]:
 
 
 def check(root: pathlib.Path, rule_ids: list[str]) -> tuple[int, list[str], int]:
-    """Return (checked rules, problems, checked carriers) for `rule_ids` under `root`."""
+    """Return (how many rules were checked, problems, how many carrier blocks were compared)."""
     try:
         text = (root / RULEBOOK).read_text(encoding="utf-8")
     except OSError as exc:
@@ -186,16 +186,18 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     root = pathlib.Path(args.root).resolve() if args.root else ROOT
-    rules, problems, carriers = check(root, args.rule)
+    checked_rules, problems, carriers = check(root, args.rule)
     if problems:
         print(f"FAIL - {len(problems)} factory-rule discrepancy(ies) under {root}:")
         for problem in problems:
             print(f"  - {problem}")
         return 1
 
-    scope = ", ".join(args.rule) if args.rule else f"all {rules} rules"
-    print(f"PASS - {scope}: {rules} rule(s) byte-identical in {carriers} carrier block(s) "
-          f"({root}).")
+    # `checked_rules` is a COUNT, not a collection: the scope phrase and the count phrase both
+    # name it, so a reader cannot mistake the first number for a number of rule sets.
+    scope = ", ".join(args.rule) if args.rule else f"all {checked_rules} rules"
+    print(f"PASS - {scope}: {checked_rules} rule(s) checked, byte-identical in {carriers} "
+          f"carrier block(s) ({root}).")
     return 0
 
 

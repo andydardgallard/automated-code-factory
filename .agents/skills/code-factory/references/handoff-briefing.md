@@ -38,7 +38,7 @@ What instead of a paste:
 
 ## 2. The briefing template (mandatory for all roles)
 
-All eight sections are always present. A section with no content is marked "none" — a silent
+All nine sections are always present. A section with no content is marked "none" — a silent
 omission is forbidden: the subagent cannot tell "nothing to say" from "forgot to pass".
 
 Every briefing additionally carries this MANDATORY header line, before the sections:
@@ -74,6 +74,13 @@ re-ask what is already known.
 Mandatory for retries and escalations. A list of attempts: what was tried, how it ended, why it did
 not work. A role that repeats a rejected approach is a wasted budget. For the first attempt
 write "no attempts were made".
+
+### Memory facts
+Filled by the main agent from `memory/summary.md` and the journal before the subagent is launched:
+the open backlog items that touch this work (with their `follow_up`/`severity` state) and the past
+decisions the subagent must not re-derive or revisit. Point at the entries by path and heading
+instead of paraphrasing the journal (§1). "none" when the memory holds nothing relevant — the
+section is never omitted, and a subagent never re-derives the project's history on its own.
 
 ### Decisions
 Decisions already made that MUST NOT be revisited within this task (model choice, identifiers,
@@ -129,6 +136,7 @@ Context: run task_08 hardens the factory; the rule is already approved in the pl
 Relevant files: .agents/skills/code-factory/references/error-routing.md — the escalation ladder; .agents/agents/sub-agents/advisor.md — the role description.
 Current state: advisor.md is created; on the base commit all self-tests PASS (test_factory_model.py, test_prompt_structure.py).
 What was tried — why it failed: editing only §2 — the reviewer rejected it: §5 was left without Advisor, the document is inconsistent.
+Memory facts: memory/summary.md "Open backlog" item 3 (error-routing drift) touches this file; the v12.10.1 decision keeps the ladder at five rungs.
 Decisions: the role identifier is advisor; the model is secondary (the family contrasting diagnostician); the ladder itself does not change.
 Acceptance criteria: grep -n "Advisor" references/error-routing.md finds §2 and §5; python scripts/test_factory_model.py PASS.
 Constraints: only the two listed files; stdlib-only; python (no python3); in the answer — a summary ≤ 15 lines, no dumps.
@@ -136,7 +144,7 @@ Constraints: only the two listed files; stdlib-only; python (no python3); in the
 
 ## 6. The main agent's checklist before launching a subagent
 
-1. All eight sections are present; the empty ones are marked "none".
+1. All nine sections are present; the empty ones are marked "none".
 2. The briefing names the repository root (`Repository root: <absolute resolved repo_path>`) and
    every path in it is relative to that root (or absolute under it); the deployment-root-scoped
    `memory/` is aliased explicitly whenever the briefing points at it.

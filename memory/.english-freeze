@@ -1,0 +1,6 @@
+# Frozen memory records - history kept verbatim; `check_english_only.py --freeze` rewrites this list.
+## 2026-09-23T00:19:00+03:00 — Фабрика v2 (v12.9.0): rulebook + consistency-checker, run_id, provenance-память, калибровка ревьюера, WIP-checkpoints, error-patterns
+## 2026-09-23T02:00:00+03:00 — Фабрика v3 (v12.10.0): severity-калибровка ревьюера, committee при двойном rejection плана, FTS5-индекс, check_factory_model на корне фабрики
+## 2026-09-23T11:20:00+03:00 — Фабрика v4 (v12.10.1): P0-хвосты backlog v12.10.0 (argparse-контракт, fingerprint dirty-warning, action_gate exit 3, CRLF-пины, гигиена --memory-only) + nit-naming precision 1.000 + golden-set в git
+## 2026-09-23T12:56:13+03:00 — Фабрика v5 (v12.10.2): utf8-guard во всех argparse-скриптах (action_gate --help на cp1251) + 22-е правило no-shared-tree-git-mutations
+## 2026-09-24T00:47:29+03:00 — Фабрика v6 (v12.11.0): полная очистка backlog — stash в action_gate, механизм актуальности памяти (backlog/closed: + 23-е правило), fingerprint по рабочему дереву, project-learned overlay, гигиена деплойеров

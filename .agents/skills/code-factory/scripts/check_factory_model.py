@@ -18,9 +18,13 @@ Checks six invariants of the durable project model:
      definition (exit code stays 0). `git add` lifts a file out of that blind spot into
      `git ls-files`, so a staged-new file DOES move the content hash from then on.
   3. The portable long-term memory is well-formed: `memory/change-log.md` is an
-     append-only journal (each entry has the required keys, plus the optional
-     `unfinished`, `factory_version` and `project` keys) and `memory/summary.md` exists with
-     the canonical marker.
+     append-only journal (each record satisfies the record contract: its required keys, a
+     `task_type` from the record kinds, the `results` sub-keys of that kind) and
+     `memory/summary.md` exists with the canonical marker. This check is NOT implemented here:
+     `validate_memory` below is a thin delegation to `memory_project.validate_memory`, so the
+     memory contract exists exactly once and the two CLIs cannot diverge again (they used to
+     implement it twice by hand and disagreed on six axes — owner, `task_type: backlog`,
+     required keys, `results` sub-keys, an empty `project:` and `closed:` without `evidence:`).
   4. One memory belongs to exactly ONE project: `memory/` is the long-term memory of the
      project from the task's `repo_path` field, whose name every entry carries as
      `project: <name>`. Entries without `project` are legacy (warning only), while DIFFERENT
@@ -38,11 +42,25 @@ Checks six invariants of the durable project model:
      with `status` in ok/failed/in_progress and a well-formed `run_id`. A project without a
      checkpoint is a SKIP, never a failure.
 
+A MISSING journal is a hard error here: this checker validates a project that already has a
+modelled AGENTS.md, i.e. one the factory has worked in. `memory_project.py check` is the CLI that
+tells the two states apart — a `memory/` that does not exist at all is a FRESH project (a note,
+exit 0) while a `memory/` WITHOUT `change-log.md` is broken (exit 1, `--allow-fresh` overrides).
+The shared `validate_memory` reports a missing journal as an error, and each CLI decides only its
+own asymmetry; neither one hides it.
+
 Usage:
   python check_factory_model.py [--repo <path>] [--memory-only]
+                                [--expect <name>] [--no-owner-check] [--strict]
 
   --memory-only   skip the AGENTS.md checks (sections + fingerprints) and only validate
                   the memory files and the WIP checkpoint.
+  --expect        Expected memory owner; wins over the summary's `project_id:`, the declared
+                  `repo_path:` and the directory name (same flag as `memory_project.py check`).
+  --no-owner-check do not compare the memory owner at all (the rest of the memory contract, the
+                  journal/summary agreement included, still runs).
+  --strict        turn a `## Current state` divergence from the live state into an error instead
+                  of a warning (same flag as `memory_project.py check`).
 
 The factory's OWN root is auto-detected by THREE signals that must hold together: line 1 of
 `AGENTS.md` carries NO `code-factory-fingerprint` marker, it DOES carry the factory's own
@@ -59,9 +77,10 @@ everywhere (the model exists and must be regenerated).
 
 Exit code 0 = PASS, 1 = FAIL (each failure printed to stderr). Warnings are printed to
 stderr but do not fail (legacy memory missing the newer optional keys or the `project:`
-ownership declaration; legacy single-hash fingerprint line; UNTRACKED files, which the
-tracked-content fingerprint does not cover). A project without a WIP checkpoint prints
-`SKIP - …`, which is not a failure either. stdlib only.
+ownership declaration; a memory record written before the format v2 — warned, never rewritten;
+legacy single-hash fingerprint line; UNTRACKED files, which the tracked-content fingerprint does
+not cover). A project without a WIP checkpoint prints `SKIP - …`, which is not a failure either.
+stdlib only.
 """
 from __future__ import annotations
 
@@ -70,6 +89,7 @@ import pathlib
 import re
 import sys
 
+import memory_project
 from project_fingerprint import compute_content_fingerprint, compute_fingerprint, untracked_files
 
 CANONICAL_SECTIONS = [
@@ -102,50 +122,18 @@ VERSION_MARKER = "code-factory-version"
 # lacks the version marker, and that one must stay an error. The skill ALONE is useless as a signal
 # — `prepare_factory` deploys it into EVERY target project.
 FACTORY_SKILL_REL = ".agents/skills/code-factory/SKILL.md"
-CHANGE_LOG_MARKER = "<!-- code-factory-memory: change-log -->"
-SUMMARY_MARKER = "<!-- code-factory-memory: summary -->"
-ENTRY_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2}.*)$")
+# The flat-YAML subset of the WIP checkpoint (`_parse_flat_yaml`): a `key: value` line.
 KV_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
 TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-# Three CAPTURING groups on purpose: `_v2_record` compares the version tuple against
-# MEMORY_V2_AFTER, so a non-capturing pattern would silently disable the version trigger
-# (empty `groups()` -> never newer). Kept identical to `memory_project.py`.
-VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
-# Memory format v2: `run_id` (see scripts/run_id.py) and provenance marks. A record must carry
-# them once it comes from a factory NEWER than 12.8.0 (the release the format is introduced
-# after) — or as soon as it already carries a v2 field, so a half-migrated record is caught too
-# (see `_record_format_issues`).
+# `run_id` (see scripts/run_id.py): validated on the checkpoint below and on the memory records by
+# `memory_project.record_format_issues` (the memory contract lives there, not here).
 RUN_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{8}$")
-PROVENANCE_RE = re.compile(r"\[verified:[^\[\]]+\]|\[inferred\]")
-MEMORY_V2_AFTER = (12, 8, 0)
 # The optional WIP checkpoint of a run in flight (see scripts/run_id.py ARTIFACT_GLOBS). The
 # optional keys — `files_touched`, `pending_decision`, `resume_hint`, `retry_counters`,
 # `models_used` — are validated when present, but only the required ones are listed here.
 PIPELINE_REL = ".code-factory/state/pipeline.yaml"
 PIPELINE_REQUIRED = ("run_id", "phase", "status", "updated_at")
 PIPELINE_STATUSES = {"ok", "failed", "in_progress"}
-# `project: <name>` declaration of the owning project in memory/summary.md. It counts ONLY
-# inside the declaration area (right after the canonical marker, before the first `## ` section),
-# so a `project: <name>` example inside a fenced code block is never mistaken for a declaration.
-SUMMARY_PROJECT_RE = re.compile(r"^project:\s*(\S.*)$", re.MULTILINE)
-
-ENTRY_REQUIRED_KEYS = [
-    "title", "timestamp", "branch", "commit", "task_type", "goal",
-    "changed_files", "created_files", "results", "decisions", "assumptions",
-    "models_used",
-]
-# Newer keys. Missing in a legacy entry is a WARNING (never an error), so the project
-# history is not broken when the format evolves. `project` names the project that OWNS the
-# memory (basename of the task's resolved `repo_path`): its absence in an old entry is just a
-# legacy warning, but DIFFERENT `project` values inside the same journal are an error —
-# one memory belongs to exactly one project. `run_id` is NOT listed here on purpose: its
-# legacy warning is gated by the v2 rule (`_record_format_issues`), otherwise every record
-# written before the format would warn and canonical memories would stop being warning-free.
-ENTRY_OPTIONAL_KEYS = ["unfinished", "factory_version", "project"]
-TASK_TYPES = {"implement", "review", "refactor", "security_audit"}
-RESULT_SUBKEYS = ["integration", "regression", "business", "review"]
-UNFINISHED_SEVERITIES = {"critical", "warning", "info"}
-UNFINISHED_BOOLS = {"true", "false"}
 
 
 def _is_factory_own_root(root: pathlib.Path, first_line: str) -> bool:
@@ -233,194 +221,33 @@ def check_agents(root: pathlib.Path) -> list[str]:
     return check_agents_model(root)[0]
 
 
-def _parse_entry_body(body: list[str]) -> tuple[dict[str, str], list[dict[str, str]]]:
-    """Parse an entry body into flat KV fields plus the structured `unfinished` item list."""
-    fields: dict[str, str] = {}
-    items: list[dict[str, str]] = []
-    cur_item: dict[str, str] | None = None
-    in_unfinished = False
-    for raw in body:
-        line = raw.rstrip()
-        if not line.strip():
-            continue
-        m = KV_RE.match(line)
-        if m and not line.startswith((" ", "\t", "-")):
-            key, val = m.group(1), m.group(2).strip()
-            fields[key] = val
-            in_unfinished = (key == "unfinished" and val == "")
-            cur_item = None
-            continue
-        if in_unfinished:
-            item_m = re.match(r"^\s*-\s*item:\s*(.*)$", line)
-            if item_m:
-                cur_item = {"item": item_m.group(1).strip()}
-                items.append(cur_item)
-                continue
-            sub_m = re.match(r"^\s*(reason|severity|follow_up):\s*(.*)$", line)
-            if sub_m and cur_item is not None:
-                cur_item[sub_m.group(1)] = sub_m.group(2).strip()
-    return fields, items
-
-
 def _v2_record(fields: dict[str, str]) -> bool:
-    """True when an entry has to satisfy the memory format v2 (run_id + provenance marks).
+    """True when a record has to satisfy the memory format v2 (run_id + provenance marks).
 
-    That is the case once the entry comes from a factory version NEWER than the one that
-    introduced the format (MEMORY_V2_AFTER), or as soon as it already carries a v2 field —
-    `run_id` or a provenance mark — so a half-migrated record is not silently accepted.
-    Entries without `project` are legacy and are only ever warned about, like the other
-    newer keys; entries written before the format stay as they are (no error, no warning).
+    A THIN ALIAS of `memory_project.is_v2_record` — the predicate has exactly one implementation,
+    on the memory side, and this name is kept because the self-tests pin it (they prove the
+    version TRIGGER works: a record of a factory newer than 12.8.0 without a single v2 field is
+    still a v2 record). Do not grow a second copy of the rule here.
     """
-    if not fields.get("project", "").strip():
-        return False
-    version = VERSION_RE.match(fields.get("factory_version", "") or "")
-    newer = bool(version) and tuple(int(g) for g in version.groups()) > MEMORY_V2_AFTER
-    return newer or "run_id" in fields or any(
-        PROVENANCE_RE.search(fields.get(f, "")) for f in ("decisions", "results"))
+    return memory_project.is_v2_record(fields)
 
 
-def _record_format_issues(heading: str, fields: dict[str, str]) -> tuple[list[str], list[str]]:
-    """Return (errors, warnings) of the memory format v2 for one entry (see `_v2_record`).
+def validate_memory(root: pathlib.Path, expect: str = "", no_owner_check: bool = False,
+                    strict: bool = False, run_id: str = "") -> tuple[list[str], list[str]]:
+    """Return (errors, warnings) of the memory contract — a THIN DELEGATION, not a copy.
 
-    A v2 entry must carry a well-formed `run_id` and at least one provenance mark in
-    `decisions` AND in `results`; a miss is an error there, a warning in a legacy entry.
+    The contract itself (required keys, the record kinds, the `results` sub-keys of a kind, the
+    owner chain, the format v2, one run — one record, the `closed:`/`evidence:` protocol and the
+    `## Current state` actuality) lives in `memory_project.validate_memory`, which is the ONE
+    implementation both CLIs print. This wrapper keeps the historical entry point and the flags
+    identical between the two scripts (`--expect`, `--no-owner-check`, `--strict`), so the model
+    check can never disagree with `memory_project.py check` again.
+
+    A missing journal is an error here (see the module docstring): this checker validates a
+    project that already has a modelled AGENTS.md, so its memory must exist — the fresh-project
+    case is `memory_project.py check`'s alone.
     """
-    problems: list[str] = []
-    run_id = fields.get("run_id", "").strip()
-    if not run_id:
-        problems.append("missing or empty key 'run_id'")
-    elif not RUN_ID_RE.match(run_id):
-        problems.append(f"invalid run_id '{run_id}' (expected YYYYMMDD-<8 hex>)")
-    for field in ("decisions", "results"):
-        if not PROVENANCE_RE.search(fields.get(field, "")):
-            problems.append(f"no provenance mark '[verified: <evidence>]' or '[inferred]' "
-                            f"in '{field}'")
-    if not problems:
-        return [], []
-    if _v2_record(fields):
-        return [f"entry '{heading}': {p}" for p in problems], []
-    if not fields.get("project", "").strip():
-        return [], [f"entry '{heading}': {p} (legacy format)" for p in problems]
-    return [], []
-
-
-def _validate_entry(heading: str, fields: dict[str, str],
-                    items: list[dict[str, str]]) -> tuple[list[str], list[str]]:
-    errors: list[str] = []
-    warnings: list[str] = []
-    for key in ENTRY_REQUIRED_KEYS:
-        if key not in fields:
-            errors.append(f"entry '{heading}': missing key '{key}'")
-    for key in ENTRY_OPTIONAL_KEYS:
-        if key not in fields:
-            warnings.append(f"entry '{heading}': missing key '{key}' (legacy format)")
-    if "project" in fields and not fields["project"].strip():
-        errors.append(f"entry '{heading}': empty 'project' value")
-    if "task_type" in fields and fields["task_type"] not in TASK_TYPES:
-        errors.append(f"entry '{heading}': invalid task_type '{fields['task_type']}'")
-    if "timestamp" in fields and not TIMESTAMP_RE.search(fields["timestamp"]):
-        errors.append(f"entry '{heading}': timestamp not ISO-date-like '{fields['timestamp']}'")
-    if "results" in fields:
-        for sub in RESULT_SUBKEYS:
-            if f"{sub}=" not in fields["results"]:
-                errors.append(f"entry '{heading}': results missing '{sub}='")
-    if "factory_version" in fields and not VERSION_RE.match(fields["factory_version"]):
-        errors.append(f"entry '{heading}': invalid factory_version '{fields['factory_version']}'")
-    fmt_errors, fmt_warnings = _record_format_issues(heading, fields)
-    errors.extend(fmt_errors)
-    warnings.extend(fmt_warnings)
-
-    if "unfinished" in fields and fields["unfinished"] == "" and not items:
-        errors.append(f"entry '{heading}': 'unfinished' is empty without items or a no-debt marker")
-    for it in items:
-        for sub in ("item", "reason", "severity", "follow_up"):
-            if sub not in it:
-                errors.append(f"entry '{heading}': unfinished item missing '{sub}'")
-        if "severity" in it and it["severity"] not in UNFINISHED_SEVERITIES:
-            errors.append(f"entry '{heading}': invalid unfinished severity '{it['severity']}'")
-        if "follow_up" in it and it["follow_up"] not in UNFINISHED_BOOLS:
-            errors.append(f"entry '{heading}': invalid unfinished follow_up '{it['follow_up']}'")
-    return errors, warnings
-
-
-def _summary_declaration_area(text: str) -> str:
-    """Return the part of memory/summary.md that may declare the owning project.
-
-    It spans from the canonical summary marker to the first `## ` section (or EOF); anything
-    below — e.g. a `project: <name>` example inside a fenced code block — is ignored.
-    """
-    lines = text.splitlines()
-    start = next((i + 1 for i, ln in enumerate(lines) if SUMMARY_MARKER in ln), None)
-    if start is None:
-        return ""
-    area: list[str] = []
-    for ln in lines[start:]:
-        if ln.startswith("## "):
-            break
-        area.append(ln)
-    return "\n".join(area)
-
-
-def validate_memory(root: pathlib.Path) -> tuple[list[str], list[str]]:
-    """Return (errors, warnings) for the memory files (empty lists = OK)."""
-    errors: list[str] = []
-    warnings: list[str] = []
-    memdir = root / "memory"
-    change_log = memdir / "change-log.md"
-    summary = memdir / "summary.md"
-    # Projects declared by the journal entries (empty = legacy memory without `project`).
-    journal_projects: set[str] = set()
-
-    if not change_log.is_file():
-        errors.append("memory/change-log.md not found")
-    else:
-        text = change_log.read_text(encoding="utf-8")
-        if CHANGE_LOG_MARKER not in text:
-            errors.append("memory/change-log.md missing canonical marker")
-        # Parse entries: each `## ` line starts an entry; body = lines until the next.
-        lines = text.splitlines()
-        entries: list[tuple[str, list[str]]] = []
-        cur_head: str | None = None
-        cur_body: list[str] = []
-        for ln in lines:
-            m = ENTRY_RE.match(ln.strip())
-            if m:
-                if cur_head is not None:
-                    entries.append((cur_head, cur_body))
-                cur_head = m.group(1)
-                cur_body = []
-            elif cur_head is not None:
-                cur_body.append(ln)
-        if cur_head is not None:
-            entries.append((cur_head, cur_body))
-        for head, body in entries:
-            fields, items = _parse_entry_body(body)
-            project = fields.get("project", "").strip()
-            if project:
-                journal_projects.add(project)
-            e, w = _validate_entry(head, fields, items)
-            errors.extend(e)
-            warnings.extend(w)
-        if len(journal_projects) > 1:
-            errors.append("memory/change-log.md mixes projects: "
-                          + ", ".join(sorted(journal_projects))
-                          + " (one memory belongs to exactly one project)")
-
-    if not summary.is_file():
-        errors.append("memory/summary.md not found")
-    else:
-        summary_text = summary.read_text(encoding="utf-8")
-        if SUMMARY_MARKER not in summary_text:
-            errors.append("memory/summary.md missing canonical marker")
-        declared = SUMMARY_PROJECT_RE.search(_summary_declaration_area(summary_text))
-        declared_project = declared.group(1).strip() if declared else ""
-        if not declared_project:
-            warnings.append("memory/summary.md does not declare 'project: <name>' (legacy format)")
-        elif len(journal_projects) == 1 and declared_project not in journal_projects:
-            errors.append(f"memory/summary.md declares project '{declared_project}' but "
-                          f"memory/change-log.md belongs to "
-                          f"'{next(iter(journal_projects))}'")
-    return errors, warnings
+    return memory_project.validate_memory(root, expect, no_owner_check, strict, run_id)
 
 
 def _scalar_or_none(value: str) -> object:
@@ -542,17 +369,29 @@ def main() -> int:
     ap.add_argument("--repo", default=".", help="Path to the project (default: cwd)")
     ap.add_argument("--memory-only", action="store_true",
                     help="Only validate memory files + the WIP checkpoint, skip AGENTS.md checks")
+    # The same flags as `memory_project.py check`: the memory contract is ONE implementation, so
+    # a project must not have to remember which of the two CLIs accepts which switch.
+    ap.add_argument("--expect", default="",
+                    help="Expected memory owner; wins over the summary's project_id:, the declared "
+                         "repo_path: and the directory name")
+    ap.add_argument("--no-owner-check", action="store_true",
+                    help="Do not compare the memory owner (the rest of the memory contract, the "
+                         "journal/summary agreement included, still runs)")
+    ap.add_argument("--strict", action="store_true",
+                    help="Turn every '## Current state' divergence from the live state into an "
+                         "error instead of a warning")
     args = ap.parse_args()
 
     root = pathlib.Path(args.repo).resolve()
     errors: list[str] = []
     warnings: list[str] = []
     a_skip = ""
+    mem_args = (args.expect, args.no_owner_check, args.strict)
     if args.memory_only:
-        errors, warnings = validate_memory(root)
+        errors, warnings = validate_memory(root, *mem_args)
     else:
         a_errs, a_warns, a_skip = check_agents_model(root)
-        m_errs, m_warns = validate_memory(root)
+        m_errs, m_warns = validate_memory(root, *mem_args)
         errors += a_errs
         errors += m_errs
         warnings += a_warns

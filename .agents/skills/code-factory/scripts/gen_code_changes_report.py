@@ -15,6 +15,9 @@ Defaults:
 
 The report is deterministic (parses `git show --unified=0`), costs zero LLM tokens,
 and is written next to report.md so the factory run is fully auditable.
+
+Exit codes: 0 = the report was written, 1 = git could not resolve `--commit` (stderr carries one
+line `error: <git's first stderr line>`, no traceback and no partial output file).
 """
 from __future__ import annotations
 
@@ -31,13 +34,19 @@ PATH_TOKEN_RE = re.compile(r'"(?:[^"\\]|\\.)*"|\S+')
 
 
 def git_show_diff(repo: pathlib.Path, commit: str) -> str:
-    """Return the diff of a commit with zero context (only changed lines)."""
+    """Return the diff of a commit with zero context (only changed lines).
+
+    A failed `git show` (an unknown revision, a stale clone, no such path) raises RuntimeError
+    carrying git's FIRST stderr line: git explains a bad revision in several lines, and the CLI
+    prints exactly one of them (`error: <reason>`) instead of a multi-line dump.
+    """
     proc = subprocess.run(
         ["git", "show", commit, "--unified=0", "--format="],
         cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"git show {commit} failed: {proc.stderr.strip()}")
+        stderr = proc.stderr.strip()
+        raise RuntimeError(stderr.splitlines()[0] if stderr else f"git show {commit} failed")
     return proc.stdout
 
 
@@ -184,7 +193,8 @@ def use_utf8_output() -> None:
             pass
 
 
-def main() -> None:
+def main() -> int:
+    """Write the report (exit 0) or one `error: <reason>` line and exit 1 — never a traceback."""
     use_utf8_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", default=".", help="Path to the git repository (default: cwd)")
@@ -203,7 +213,11 @@ def main() -> None:
         cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
     ).stdout.strip() or "(detached)"
 
-    diff = git_show_diff(repo, args.commit)
+    try:
+        diff = git_show_diff(repo, args.commit)
+    except RuntimeError as exc:      # a bad --commit: one line naming git's own reason
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     files = parse_diff(diff)
     report = build_report(files, args.commit, branch, args.run_id)
 
@@ -211,7 +225,8 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(report, encoding="utf-8")
     print(f"Written: {out} ({len(files)} files, {out.stat().st_size} bytes)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

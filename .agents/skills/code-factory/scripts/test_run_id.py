@@ -40,7 +40,7 @@ TASK = REPO / ".agents" / "skills" / "code-factory" / "assets" / "task-template.
 # `gui_expert` line to the models example): the fixture stays a real committed task file and the
 # digest half of the id proves the algorithm against it.
 # Its DATE is today's by construction, so only the digest half is compared literally.
-KNOWN_TASK_RUN_ID = "20260929-b784b39f"
+KNOWN_TASK_RUN_ID = "20260929-f6a6e8c8"
 HEX = set("0123456789abcdef")
 
 

@@ -24,7 +24,7 @@ project (the one named by `repo_path`), not to the factory — use the entries w
 matches it (entries without `project:` are legacy).
 
 <!-- factory-rule: english-only begin -->
-**English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and history (CHANGELOG and old memory entries) is never rewritten.
+**English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and HISTORY is never rewritten — `CHANGELOG.md` and memory records written before this rule are frozen by `memory/.english-freeze` (one record heading per line) and are never edited; every NEW memory record is gated by `scripts/check_english_only.py`, whose memory pass runs by default over v2 records that are not frozen (`--no-memory` is the one documented escape).
 <!-- factory-rule: english-only end -->
 
 Responsibilities in order:

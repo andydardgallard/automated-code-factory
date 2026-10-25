@@ -5,8 +5,14 @@
 # `my-task.yaml`) and fill in the fields with your own values. Do not edit
 # `.example.task.yaml` itself.
 #
-# Required fields:  `title`, `description`.
-# All other fields are optional (the factory has sensible defaults).
+# Required fields:  `title`, `repo_path`, `description`.
+# `repo_path` is REQUIRED for every task except a green-field one (a brand-new
+# project created in place); a missing required field is a task parsing error,
+# not a reason to guess the value mid-run.
+#
+# Optional fields: `user_story`, `mode`, `task_type`, `acceptance_criteria`,
+# `business_tests`, `reference_docs`, `reference_skills`, `commit_exclude`,
+# `models` (all documented below; the factory has sensible defaults).
 #
 # Important: the task file MUST NOT contain secrets or personal data.
 #
@@ -19,8 +25,10 @@
 title: "Short goal, e.g.: The strategy does not generate signals for CNY"
 
 # --- Path to an existing repository (for projects that already exist) --------
-# Optional. For a new project (green-field) — delete it or leave it empty.
-# The path may be relative (to the folder where the factory is launched) or absolute.
+# Required, EXCEPT for a green-field task (a brand-new project created in place):
+# only then may it be deleted or left empty.
+# The path may be relative (to the folder where the factory is launched) or absolute;
+# it is resolved once to an absolute path at the start of the run.
 repo_path: ./repo
 
 # --- Task description (business language, no technical details) --------------
@@ -67,9 +75,17 @@ mode: hitl
 # --- Task type ----------------------------------------------------------------
 # Optional. Allowed:
 #   implement (default) — write/change code to solve the business task.
-#   review              — the deliverable is a code review of the existing code.
-#                         The factory runs the reviewer over ALL the code first,
-#                         and its findings become the work plan.
+#   review              — REPORT-ONLY. The deliverable is a code review of the
+#                         existing code: the factory runs the reviewer over ALL
+#                         the code and stops there — it delivers the report plus a
+#                         generated follow-up task file
+#                         (.code-factory/review/fix-tasks.yaml, produced by
+#                         scripts/review_followup_task.py) that YOU run later as a
+#                         separate implement task. A review never edits the tree,
+#                         so a review task's `verify:` criteria must be
+#                         satisfiable on the UNMODIFIED tree — a criterion that
+#                         needs a code change is an authoring error, not work for
+#                         the run (the same guarantee security_audit has).
 #   refactor            — tech-debt/duplication reduction / architecture simplification
 #                         WITHOUT changing behavior: 100% of the existing tests
 #                         must pass unchanged, otherwise — automatic rollback.
@@ -80,10 +96,25 @@ task_type: implement
 
 # --- Acceptance criteria (what counts as success) ----------------------------
 # Optional. A list of business criteria the user will be able to check
-# personally after completion. The factory confirms every criterion with evidence.
+# personally after completion. A criterion is either a plain string or an object
+# with `criterion` plus an optional machine check:
+#   verify  — a one-line command the factory executes FOR REAL; its exit code and
+#             an output excerpt land in .code-factory/state/acceptance.md.
+#   derived — true marks a criterion derived from other artifacts (no `verify`):
+#             it is labeled derived/unverified and is NOT acceptance evidence.
+# The factory confirms every criterion with evidence, i.e. every criterion that
+# carries `verify`; a criterion without `verify` is only derived/unverified.
+# For `task_type: review` the criteria must hold on the UNMODIFIED tree (the run is
+# report-only and may not change code to satisfy itself) — a review criterion that
+# requires a code change is an authoring error.
 acceptance_criteria:
   - "Criterion 1, e.g.: The strategy generates at least 5 LONG/SHORT signals for CNY."
-  - "Criterion 2, e.g.: Behavior for the Si instrument did not change."
+  # With `verify`: executed for real, exit code in state/acceptance.md → evidence.
+  - criterion: "Criterion 2, e.g.: Behavior for the Si instrument did not change."
+    verify: "python -m pytest -q tests/test_si_regression.py"
+  # Without `verify` it is `derived`/`unverified` and is not evidence.
+  - criterion: "Criterion 3, e.g.: The report lists the CNY instrument."
+    derived: true
 
 # --- Business tests (verification scenarios) ---------------------------------
 # Optional. If not filled in — the factory will ask the user for them at the
@@ -122,6 +153,14 @@ acceptance_criteria:
 
 # --- Model overrides per role -------------------------------------------------
 # Optional. Lets you override the role models for a specific task.
+# Precedence: this matrix wins for every role it names — that exact model is used and
+# never substituted, and a generator/judge family collision is only a WARNING
+# (`models_warning` in .code-factory/state/pipeline.yaml and report.md, the run
+# continues). A role the matrix does NOT name takes its model from the factory's
+# default matrix (the CLI config's `default_model` / `[secondary_model]`, selected by
+# the role's `model_preference: primary|secondary`), where the generator≠judge rule IS
+# enforced: a same-family coder/tester/gui_expert vs reviewer/diagnostician/advisor
+# pair is an ERROR naming the fix (widen `[secondary_model]` or pin `models.<role>`).
 # Any provider families are supported: deepseek, qwen, kimi/moonshot and others.
 # When a Kimi model (e.g. kimi-k3) or Qwen is specified, the factory automatically
 # routes requests to the corresponding API endpoint with the correct

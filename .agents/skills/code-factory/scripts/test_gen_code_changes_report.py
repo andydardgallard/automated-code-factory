@@ -9,10 +9,13 @@ environment (`PYTHONIOENCODING=cp1251`) and asserts:
   - `--help` exits 0, prints the whole help (the `→` included — the text must not have been stripped
     down to ASCII) and never a traceback,
   - an unknown flag still answers with a usage error on stderr and exit 2, never a traceback,
+  - an unresolvable `--commit` answers with ONE `error: <git's first stderr line>` line on stderr
+    and exit 1, never a traceback and never a (partial) output file,
   - a real run in a throwaway git repository (two commits: a modified line and an added file) writes
     the report to `--out`, exiting 0.
 
-Without git on PATH the third check is skipped with a note; the encoding contract is still covered.
+Without git on PATH the last two checks are skipped with a note; the encoding contract is still
+covered.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -106,13 +109,43 @@ def check_report() -> None:
                f"the report must keep its non-ASCII was → became header: {content!r}")
 
 
+def check_bad_commit() -> None:
+    """An unresolvable --commit: one `error:` line, exit 1, no traceback, no output file."""
+    if shutil.which("git") is None:
+        print("SKIP - bad --commit (git is not on PATH)")
+        return
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        tmp = pathlib.Path(raw_tmp)
+        repo, out = tmp / "src", tmp / "out" / "report_code_changes.md"
+        repo.mkdir()
+        expect(git(repo, "init", "-q"), "git init must succeed")
+        (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+        expect(git(repo, "add", "-A") and git(repo, "commit", "-q", "-m", "start", commit=True),
+               "the commit of the bad-commit fixture must succeed")
+
+        res = run("--repo", str(repo), "--commit", "deadbeefdeadbeef",
+                  "--out", str(out), env=LEGACY_ENV)
+        text = decoded(res)
+        expect(res.returncode == 1,
+               f"an unresolvable --commit must exit 1: {res.returncode} {text!r}")
+        stderr = res.stderr.decode("utf-8", "replace").splitlines()
+        # git explains a bad revision in three lines; only its first line may reach the user.
+        expect(len(stderr) == 1 and stderr[0].startswith("error: "),
+               f"stderr must be exactly one `error: ...` line: {text!r}")
+        expect("Traceback" not in text, f"a bad --commit must not raise a traceback: {text!r}")
+        expect(res.stdout == b"", f"a failed run must print nothing to stdout: {text!r}")
+        expect(not out.exists(), f"a failed run must not write a (partial) report: {out}")
+
+
 def main() -> int:
     check_help()
     check_unknown_flag()
+    check_bad_commit()
     check_report()
     print("PASS - gen_code_changes_report.py keeps its CLI contract on a cp1251 stdout: --help "
-          "prints the full (non-ASCII) help and exits 0, an unknown flag exits 2, and a real run "
-          "in a git repo writes the report - never a traceback.")
+          "prints the full (non-ASCII) help and exits 0, an unknown flag exits 2, an unresolvable "
+          "--commit prints one `error:` line and exits 1 without a traceback or an output "
+          "file, and a real run in a git repo writes the report.")
     return 0
 
 

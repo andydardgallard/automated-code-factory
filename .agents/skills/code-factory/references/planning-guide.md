@@ -25,7 +25,7 @@ via `AskUserQuestion`. Example good questions:
 
 Never ask: "Should I change type i64 to f64?" — the factory decides technical details.
 <!-- factory-rule: english-only begin -->
-**English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and history (CHANGELOG and old memory entries) is never rewritten.
+**English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and HISTORY is never rewritten — `CHANGELOG.md` and memory records written before this rule are frozen by `memory/.english-freeze` (one record heading per line) and are never edited; every NEW memory record is gated by `scripts/check_english_only.py`, whose memory pass runs by default over v2 records that are not frozen (`--no-memory` is the one documented escape).
 <!-- factory-rule: english-only end -->
 
 ## 2. Analyze the project
@@ -45,7 +45,7 @@ backlog --repo <deployment root>` — every open `follow_up=true`/`severity=crit
 re-checked against the code, so an item fixed earlier is closed with evidence instead of being
 re-declared open.
 <!-- factory-rule: memory-actuality begin -->
-**Memory actuality (canonical wording):** at the start of a run the open backlog is reconciled with the tree (`memory_project.py backlog --repo <root>` — a fold of all follow_up=true/severity=critical over the journal history); at the end of a run every item is either closed with a `closed:` block with a mandatory `evidence:` in the run entry, or stays in `unfinished` with a reason — an item cannot disappear without evidence of closing: `backlog --check` gives exit 1 for open items, closing without `evidence:` and closing a nonexistent item. The `summary.md` summary (`## Current state`) is actualized by EVERY run, not only at compaction; a divergence between the version it declares and VERSION is a mechanism warning.
+**Memory actuality (canonical wording):** at the start of a run the open backlog is reconciled with the tree (`memory_project.py backlog --repo <root>`, a fold of every follow_up=true/severity=critical item over the journal history); at the end of a run each item is either closed with a `closed:` block carrying a mandatory `evidence:` in the run entry, or carried in `unfinished` with a `reason:` — a carried item is legal and the finish gate accepts it, while an item mentioned in no current record is a fatal silent disappearance, so `backlog --check` exits 1 for a disappeared item, a carried item without a reason, a closing without `evidence:` and a closing that names no existing item, and exits 0 when nothing disappeared. `memory_project.py check --run-id <run_id>` is the finish command: it requires exactly one record for the run. The summary's `## Current state` is actualized by EVERY run, not only at compaction — its version, open-backlog and closed counts and test-file count are compared with reality (`--strict`, implied by `--run-id`, turns a divergence into an error; a plain check reports it as a warning).
 <!-- factory-rule: memory-actuality end -->
 
 Delegate heavy exploration to `factory-analyzer` subagents (parallel, isolated contexts). Each
@@ -78,8 +78,10 @@ Never silently skip missing inputs — the factory must not guess that the task 
 ## 2.6 Task-type specific planning
 
 - **implement** (default) — normal plan as described in §4.
-- **review** — the plan is produced by the code reviewer first (see `code-review.md`); its
-  rework list becomes the DAG tasks.
+- **review** — the "plan" is the review workflow of `code-review.md` (sharded reviewer pass →
+  deterministic merge → report): a report-only run, whose deliverable is the report plus the
+  generated follow-up task file the owner runs later. The findings never become this run's DAG
+  tasks, and the run's own `verify:` criteria must be satisfiable on the unmodified tree.
 - **refactor** — see `refactoring.md`. The plan is structured around structural improvements
   with a hard "freeze functionality" invariant: every task must be verified by running the
   EXISTING test suite unchanged, and ANY behavior change is a critical failure → rollback.

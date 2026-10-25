@@ -9,7 +9,10 @@ follows the rules (SUCCESS only with all verify criteria MET + regression pass; 
 regression proof or without any verify criterion; FAILURE on any failure), and the optional
 evidence ledger gate (--ledger/--evidence-files) downgrades SUCCESS to DEGRADED on STALE, failed,
 missing or unparsable evidence, while a FRESH regression=pass ledger keeps SUCCESS. The optional
-`--run-id` only adds the `run_id: <id>` provenance line to the acceptance header.
+`--run-id` only adds the `run_id: <id>` provenance line to the acceptance header, and the optional
+`--task-type` only adds the `task_type: <value>` header line plus — in a `review`/`security_audit`
+context — the OWNER DECISION wording of a failure; neither the verdicts nor the exit codes move, and
+an implement-context run stays byte-identical to the task-type-blind output apart from that line.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -262,10 +265,102 @@ def main() -> int:
                f"the run id must be recorded in acceptance.md: {text_runid[:300]!r}")
         expect("Verdict: **SUCCESS**" in text_runid, "the verdict must stay unaffected by --run-id")
 
+        # 16. --task-type is part of the CLI contract: the executor can be told which task type
+        #     it is judging.
+        res = run("--help")
+        expect(res.returncode == 0, f"--help must exit 0: {res.stderr!r}")
+        expect("--task-type" in res.stdout,
+               f"the help must document --task-type: {res.stdout[:400]!r}")
+
+        # 17. An implement-context run is byte-identical to the task-type-blind output except the
+        #     new header line, and its failure wording stays the old one.
+        fail_criteria = write_criteria(tmp, [
+            {"criterion": "still failing", "verify":
+                f'{PY} -c "import sys; print(\'FAIL-OUT\'); sys.exit(3)"'},
+        ], name="fail_task_type.json")
+        md_plain = tmp / "acceptance_plain.md"
+        res = run("--input", str(fail_criteria), "--output", str(md_plain), "--repo", str(tmp),
+                  "--regression", "pass")
+        expect(res.returncode == 1, f"the failing criterion must exit 1: {res.stderr!r}")
+        md_implement = tmp / "acceptance_implement.md"
+        res = run("--input", str(fail_criteria), "--output", str(md_implement), "--repo", str(tmp),
+                  "--regression", "pass", "--task-type", "implement")
+        expect(res.returncode == 1, "an implement failure must keep exit 1")
+        plain = md_plain.read_text(encoding="utf-8")
+        implement = md_implement.read_text(encoding="utf-8")
+        expect("- task_type: implement" in implement,
+               f"the header must record the task type: {implement[:300]!r}")
+        expect(implement == plain,
+               "the implement context must be byte-identical to the default (flag has no effect)")
+        # Today's header, with the ONE new line inserted before the verdict reason and nothing
+        # else touched — the failure wording stays exactly the task-type-blind one.
+        expect(implement.split("\n")[:6] == [
+            "# Acceptance — verified criteria",
+            "",
+            "Verdict: **FAILURE**",
+            "",
+            "- task_type: implement",
+            "- Verdict reason: 1 verify criterion/criteria failed",
+        ], f"an implement run must differ from today's output only by the task_type line: "
+           f"{implement[:400]!r}")
+        expect(implement.count("- task_type:") == 1, "the task type must be recorded exactly once")
+        expect("OWNER DECISION" not in implement,
+               "an implement failure must stay a rework instruction, not an owner decision")
+        expect("1 verify criterion/criteria failed" in implement,
+               f"the implement failure wording must be unchanged: {implement[:400]!r}")
+
+        # 18. A review context reports a failing criterion as an OWNER DECISION on the unmodified
+        #     tree: the same non-zero exit, the same verdict, no rework instruction.
+        md_review = tmp / "acceptance_review.md"
+        res = run("--input", str(fail_criteria), "--output", str(md_review), "--repo", str(tmp),
+                  "--regression", "pass", "--task-type", "review")
+        expect(res.returncode == 1, "a review failure must keep the same non-zero exit")
+        review = md_review.read_text(encoding="utf-8")
+        expect("Verdict: **FAILURE**" in review,
+               f"the verdict set must not change in a review context: {review[:300]!r}")
+        expect("task_type: review" in review, "the review context must be recorded in the header")
+        expect("OWNER DECISION" in review, "a review failure must be an owner decision")
+        expect("UNMODIFIED tree" in review,
+               f"the wording must say which tree was judged: {review[:600]!r}")
+        expect("stops here for the owner" in review,
+               "the wording must say that the run stops for the owner")
+        expect("not a rework instruction" in review,
+               "the wording must say that the failure is not a rework instruction")
+        expect("SUCCESS, DEGRADED, FAILURE" in review,
+               "the existing verdicts must be named unchanged by the new wording")
+        expect("| 3 |" in review, "the criterion must still be executed and its exit code recorded")
+        expect("OWNER DECISION" in res.stdout,
+               f"the run summary must carry the owner decision too: {res.stdout!r}")
+
+        # 19. security_audit shares the review context (it never edits the project either).
+        md_audit = tmp / "acceptance_audit.md"
+        res = run("--input", str(fail_criteria), "--output", str(md_audit), "--repo", str(tmp),
+                  "--regression", "pass", "--task-type", "security_audit")
+        expect(res.returncode == 1, "a security_audit failure must keep the same non-zero exit")
+        audit = md_audit.read_text(encoding="utf-8")
+        expect("task_type: security_audit" in audit and "OWNER DECISION" in audit,
+               f"a security_audit failure must be an owner decision too: {audit[:400]!r}")
+        # A refactor context keeps the implement wording: only the verdict set is frozen.
+        md_refactor = tmp / "acceptance_refactor.md"
+        res = run("--input", str(fail_criteria), "--output", str(md_refactor), "--repo", str(tmp),
+                  "--regression", "pass", "--task-type", "refactor")
+        expect(res.returncode == 1
+               and "OWNER DECISION" not in md_refactor.read_text(encoding="utf-8"),
+               "a refactor run reworks in-run, so its failure stays a rework instruction")
+
+        # 20. An unsupported --task-type is an argparse usage error (exit 2, no traceback).
+        res = run("--input", str(fail_criteria), "--output", str(tmp / "x.md"), "--repo", str(tmp),
+                  "--task-type", "audit")
+        expect(res.returncode == 2,
+               f"an unsupported --task-type must exit 2: {res.returncode} {res.stderr!r}")
+        expect("Traceback" not in res.stderr, "a usage error must not raise a traceback")
+
     print("PASS - verify_acceptance.py behaves as expected (MET/FAILED/UNVERIFIED with "
           "derived/unverified labels, excerpts, SUCCESS/DEGRADED/FAILURE verdicts, the "
-          "evidence ledger gate: FRESH keeps SUCCESS, STALE/missing evidence degrades, and the "
-          "optional --run-id provenance line).")
+          "evidence ledger gate: FRESH keeps SUCCESS, STALE/missing evidence degrades, the "
+          "optional --run-id provenance line, and the optional --task-type context: implement is "
+          "unchanged apart from its header line while review/security_audit report a failure as "
+          "an OWNER DECISION on the unmodified tree).")
     return 0
 
 

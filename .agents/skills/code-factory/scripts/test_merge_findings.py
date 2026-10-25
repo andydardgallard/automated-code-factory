@@ -11,7 +11,9 @@ file/line/title with different spacing/case and different details), several seve
     (any shard request_changes OR any critical finding -> request_changes, else approve),
   - the CLI contract (JSON on stdout, --report/--md files, exit 0/1/2, broken input names the
     file and the problem),
-  - determinism: every permutation of the input order yields a byte-identical report.
+  - determinism: every permutation of the input order yields a byte-identical report,
+  - shard ids compare NUMERICALLY (`shard-2` before `shard-10`) wherever the merge orders them:
+    the winning duplicate, `occurrences` and the printed shard list.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -125,7 +127,7 @@ def main() -> int:
         expect(report["total_findings"] == len(EXPECTED_ORDER),
                f"total_findings: {report['total_findings']}")
 
-        # 5. Occurences: sorted, unique, and the deterministic record choice on duplicates.
+        # 5. Occurrences: sorted, unique, and the deterministic record choice on duplicates.
         by_key = {(f["file"], f["line"], mf.normalize_title(f["title"])): f
                   for f in report["findings"]}
         crit = by_key[("src/core.py", 42, "unbounded recursion in parser")]
@@ -138,6 +140,45 @@ def main() -> int:
                f"occurrences must be unique per shard: {typo['occurrences']}")
         expect(typo["title"] == "Typo in docstring",
                f"duplicates must keep one title: {typo['title']}")
+
+        # 5b. Ten or more shards: ids compare NUMERICALLY, so `shard-2` is lower than `shard-10`.
+        #     A plain string comparison would hand the duplicate to `shard-10` and print the shards
+        #     in the wrong order, quietly breaking the documented "lowest shard id wins" rule.
+        expect(mf.shard_key("shard-2") < mf.shard_key("shard-10"),
+               "shard_key must order shard-2 before shard-10")
+        expect(mf.shard_key("shard-9") < mf.shard_key("shard-10"),
+               "shard_key must order shard-9 before shard-10")
+        expect(mf.shard_key("shard-1") < mf.shard_key("shard-1a") < mf.shard_key("shard-2"),
+               f"shard_key must keep text suffixes in order: {mf.shard_key('shard-1a')}")
+        wide_two = write_findings(root, "wide-2.json", "shard-2", "approve", [
+            finding("major", "src/core.py", 99, "Shared title", "detail from shard-2")])
+        wide_ten = write_findings(root, "wide-10.json", "shard-10", "approve", [
+            finding("major", "src/core.py", 99, "shared   TITLE", "detail from shard-10")])
+        wide = mf.merge([mf.load_shard_file(wide_ten), mf.load_shard_file(wide_two)])
+        expect(len(wide["findings"]) == 1, f"the duplicate must collapse: {wide['findings']}")
+        merged = wide["findings"][0]
+        expect(merged["detail"] == "detail from shard-2",
+               f"the lowest shard id must win the duplicate: {merged}")
+        expect(merged["occurrences"] == ["shard-2", "shard-10"],
+               f"occurrences must be in numeric shard order: {merged['occurrences']}")
+        expect([s["shard"] for s in wide["shards"]] == ["shard-2", "shard-10"],
+               f"shards must be listed in numeric order: {wide['shards']}")
+        wide_md = mf.render_markdown(wide)
+        expect(wide_md.index("- shard-2: approve") < wide_md.index("- shard-10: approve"),
+               f"the markdown must list shard-2 before shard-10: {wide_md!r}")
+        # The wide fixture is order-independent too (the same contract as the three-shard case).
+        wide_inputs = [str(wide_ten), str(wide_two)]
+        wide_base = run("--inputs", *wide_inputs)
+        expect(wide_base.returncode == 0, f"an approve merge must exit 0: {wide_base.stderr!r}")
+        for order in itertools.permutations(wide_inputs):
+            again = run("--inputs", *order)
+            expect(again.stdout == wide_base.stdout and again.returncode == wide_base.returncode,
+                   f"the wide merge must not depend on the input order: {order}")
+        cli_wide = json.loads(wide_base.stdout)["findings"][0]
+        expect(cli_wide["occurrences"] == ["shard-2", "shard-10"],
+               f"the CLI must print the numeric shard order: {wide_base.stdout!r}")
+        expect(cli_wide["detail"] == "detail from shard-2",
+               f"the CLI must keep the lowest shard id's detail: {wide_base.stdout!r}")
 
         # 6. Verdict rules: any request_changes shard blocks; a critical finding blocks even when
         #    every shard said approve.

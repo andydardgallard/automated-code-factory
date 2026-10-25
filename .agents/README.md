@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.14.3 -->
+<!-- code-factory-version: 12.15.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -39,11 +39,11 @@ projects or creates projects from scratch.
 │       │   ├── project_fingerprint.py      # two-level fingerprint: structural + content
 │       │   ├── check_factory_model.py      # check: 8 sections + both fingerprints + memory format (factory root — SKIP)
 │       │   ├── test_factory_model.py       # self-test of the model scripts
-│       │   ├── memory_project.py           # project memory: init/name/check/rename/backlog/compact-check/validate-fix-tasks
+│       │   ├── memory_project.py           # project memory: init/name/check/compact/rename/backlog/compact-check/validate-fix-tasks
 │       │   ├── test_memory_project.py      # self-test of the project memory script
 │       │   ├── check_factory_rules.py      # reconciliation of rulebook and carriers: factory-rule blocks byte-for-byte
 │       │   ├── test_factory_rules.py       # self-test of the rule reconciliation
-│       │   ├── check_english_only.py       # English-only gate: no Cyrillic left in the tracked files outside the exceptions CHANGELOG.md/memory/task*.yaml/.code-factory
+│       │   ├── check_english_only.py       # English-only gate: no Cyrillic left in the tracked files outside the exceptions CHANGELOG.md/memory/task*.yaml/.code-factory — memory/ only as HISTORY (the memory pass scans the new v2 records + summary.md; --no-memory is the escape)
 │       │   ├── test_check_english_only.py  # English-only gate self-test
 │       │   ├── check_translation_structure.py # translation skeleton comparator: only the text may change, never the structure (--allow-added-rule)
 │       │   ├── test_check_translation_structure.py # translation skeleton self-test
@@ -53,8 +53,18 @@ projects or creates projects from scratch.
 │       │   ├── test_error_router.py        # error router self-test
 │       │   ├── calibrate_reviewer.py       # reviewer golden-set calibration: precision/recall/accuracy
 │       │   ├── test_calibrate_reviewer.py  # reviewer calibration self-test
-│       │   ├── precedent_index.py          # FTS5 precedent index: memory + codebase (build/query)
+│       │   ├── precedent_index.py          # FTS5 precedent index: memory + codebase (build/status/query --fresh)
 │       │   ├── test_precedent_index.py     # precedent index self-test
+│       │   ├── model_matrix.py             # the single model-precedence resolver: task matrix > default matrix, family check, committee second planner
+│       │   ├── test_model_precedence.py    # model precedence self-test
+│       │   ├── model_attribution.py        # artifact-backed model attribution from the CLI session wire (cross-checks models_used)
+│       │   ├── test_model_attribution.py   # model attribution self-test
+│       │   ├── review_followup_task.py     # deterministic review follow-up task generator (.code-factory/review/fix-tasks.yaml)
+│       │   ├── test_review_followup_task.py # review follow-up task generator self-test
+│       │   ├── test_review_report_only.py  # report-only review guard (the review verdict reaches no write node)
+│       │   ├── test_security_audit_guarantee.py # security_audit keeps its own guarantee, not duplicated
+│       │   ├── test_flow_contracts.py      # the wiring that lives in prose (Finish, index, briefing, templates)
+│       │   ├── test_vaccination.py         # every fix bites: fails on the pre-fix tree, passes here
 │       │   ├── test_prompt_structure.py    # self-test: append-only prompt structure
 │       │   ├── test_env_propagation.sh     # self-test: model env-flag propagation
 │       │   ├── validate_documentation.py   # documentation validator (documentation subagent)
@@ -118,10 +128,13 @@ The factory's runtime state lives in `.code-factory/` (not committed) at the ROO
 `repo_path`: the task's `repo_path` is resolved ONCE to an absolute path (relative to the launch
 directory) at the start of the run, and it is that resolved root — not the launch directory — which
 holds the artifact tree; every relative artifact path in this manual is relative to it:
-`state/` (task, plan, pipeline.yaml, acceptance.md, evidence ledger, task graph,
-FTS5 precedent index `precedents.db`),
+`state/` (task, plan, pipeline.yaml, acceptance.md, evidence ledger, task graph),
 `backups/` (backups of modified files), `manifest.json` (list of changed/created files),
 `logs/` (errors, test results, code review, shard findings).
+`state/precedents.db` is the FTS5 precedent index — a BUILD PRODUCT, not standing runtime state: the
+flow builds it at analysis time (`precedent_index.py build`), it is gitignored with the rest of
+`.code-factory/`, `precedent_index.py status` reports FRESH/STALE against the journal and the tree,
+and `query --fresh` refuses a stale index instead of answering from it.
 The deterministic scripts accept an OPTIONAL `--repo <root>` — `run_id.py`, `factory_preflight.py`
 and `task_graph.py` (`--root` is a synonym), `error_router.py`, and `verify_quotes.py` (`--base` is a
 synonym) — which resolves their RELATIVE paths (`--task`, `--dir`, `--out`, `--log`, the patterns
@@ -155,13 +168,13 @@ creates the memory explicitly: `memory_project.py init --repo <deployment root> 
 of the resolved repo_path>`. The only writer is the main agent at the end of each task; it is read
 by the main agent/planner/analyzer at the start and by other roles as needed.
 <!-- factory-rule: memory-ownership begin -->
-**Memory ownership (canonical wording):** one memory belongs to exactly one project — the one named in the task's `repo_path`; the `memory/` directory lives at the DEPLOYMENT ROOT, the base project name = basename of the resolved `repo_path` and is fixed in the summary's `project:` declaration. The only writer is the main agent: one entry in `memory/change-log.md` per run, compaction into `memory/summary.md` at the 50-entry threshold (the last 20 remain, severity=critical and follow_up=true items are always preserved). Entries from different projects in one journal are an error (`check_factory_model.py`, `memory_project.py check`), entries without `project:` are legacy (a warning, not an error). The development history of the factory itself never enters the target project's memory.
+**Memory ownership (canonical wording):** one memory belongs to exactly one project — the one named in the task's `repo_path`. The `memory/` directory lives at the DEPLOYMENT ROOT; the summary declares `project: <name>` (the project's name) and `project_id: <identity>`, where the identity is the first 12 hex characters of the sha256 of the repository's root commit, so renaming the folder or taking a versioned copy never invalidates the memory and a memory of a different repository is refused. A memory that declares no `project_id` falls back to the deployment-root basename, which is only a fallback and says so. The only writer is the main agent: exactly one entry in `memory/change-log.md` per run (`run_id`-addressed; a run with no record or with two records is an error), compaction into `memory/summary.md` at the 50-entry threshold (the last 20 remain, severity=critical and follow_up=true items always survive, and the flow invokes `memory_project.py compact`). Entries from different projects in one journal are an error (`check_factory_model.py`, `memory_project.py check`), entries without `project:` are legacy (a warning, not an error). The development history of the factory itself never enters the target project's memory.
 <!-- factory-rule: memory-ownership end -->
 <!-- factory-rule: memory-provenance begin -->
 **Memory entry provenance (canonical wording):** an entry counts as a v2-format entry if its `factory_version` is newer than 12.8.0 OR it already carries a v2 field (`run_id` or a provenance marker) — so a half-migrated entry is checked too; such an entry must carry a `run_id` in the format `YYYYMMDD-<8 hex>` (`scripts/run_id.py`) and provenance markers in the `decisions` and `results` fields: `[verified: <evidence>]` — the claim is confirmed by run evidence (log, acceptance, quote), `[inferred]` — an inference without direct evidence. A v2-format entry without a `run_id` or without markers in these fields is a format error (`memory_project.py check`, `check_factory_model.py`), whereas entries written by a factory no newer than 12.8.0 and carrying no v2 fields, and legacy entries without `project:`, yield only a warning. The `[verified: ...]` marker must reference concrete evidence (command/test/log); the validators check the marker's presence and form.
 <!-- factory-rule: memory-provenance end -->
 <!-- factory-rule: memory-actuality begin -->
-**Memory actuality (canonical wording):** at the start of a run the open backlog is reconciled with the tree (`memory_project.py backlog --repo <root>` — a fold of all follow_up=true/severity=critical over the journal history); at the end of a run every item is either closed with a `closed:` block with a mandatory `evidence:` in the run entry, or stays in `unfinished` with a reason — an item cannot disappear without evidence of closing: `backlog --check` gives exit 1 for open items, closing without `evidence:` and closing a nonexistent item. The `summary.md` summary (`## Current state`) is actualized by EVERY run, not only at compaction; a divergence between the version it declares and VERSION is a mechanism warning.
+**Memory actuality (canonical wording):** at the start of a run the open backlog is reconciled with the tree (`memory_project.py backlog --repo <root>`, a fold of every follow_up=true/severity=critical item over the journal history); at the end of a run each item is either closed with a `closed:` block carrying a mandatory `evidence:` in the run entry, or carried in `unfinished` with a `reason:` — a carried item is legal and the finish gate accepts it, while an item mentioned in no current record is a fatal silent disappearance, so `backlog --check` exits 1 for a disappeared item, a carried item without a reason, a closing without `evidence:` and a closing that names no existing item, and exits 0 when nothing disappeared. `memory_project.py check --run-id <run_id>` is the finish command: it requires exactly one record for the run. The summary's `## Current state` is actualized by EVERY run, not only at compaction — its version, open-backlog and closed counts and test-file count are compared with reality (`--strict`, implied by `--run-id`, turns a divergence into an error; a plain check reports it as a warning).
 <!-- factory-rule: memory-actuality end -->
 A v2-format entry carries `run_id: <YYYYMMDD-8hex>` and provenance markers `[verified: <evidence>]` /
 `[inferred]` in the `decisions` and `results` fields. An entry counts as v2 if its
@@ -291,20 +304,24 @@ of the deployment root, the project name = basename of the
 resolved `repo_path`. Files: `change-log.md` (run journal, one entry per task,
 with the `project: <project name>` marker mandatory for new entries) and `summary.md` (summary with the
 `project:`/`repo_path:` declaration right after the canonical marker; journal compaction at the
-50-entry threshold).
+50-entry threshold, keeping the last 20 entries — `memory_project.py compact`, which the flow invokes
+instead of compacting by prose).
 
 The journal is read together with a reconciliation against the tree: `memory_project.py backlog --repo <deployment
 root>` folds the open items (`follow_up=true`/`severity=critical`) across the ENTIRE journal
 history, and at the end of a run each item is either closed with a `closed:` block with a mandatory
 `evidence:`, or remains in `unfinished` with a reason — an item cannot disappear without proof of
-closure. `memory_project.py backlog --check` exits 0 only with `open: 0`; the
+closure. `memory_project.py backlog --check` therefore exits 0 when nothing disappeared and every
+`closed:` element is valid — NOT only with `open: 0`, because an item carried over in `unfinished`
+with a `reason:` is a legitimate state (`--run-id <id>` names the current record); the
 `## Current state` section of the summary is actualized by EVERY run, not only at compaction. On first
 access to a project, if `memory/` is missing, it is created with the command
 `python .agents/skills/code-factory/scripts/memory_project.py init --repo <deployment root>
 --project <basename of the resolved repo_path>` (the name is fixed in the summary's `project:` declaration).
 Model check — the `scripts/check_factory_model.py` script (8 sections + fingerprint + journal format);
 self-test — `scripts/test_factory_model.py`; memory ownership — `memory_project.py
-check`. On the FACTORY'S OWN ROOT the script works without the `--memory-only` flag: it auto-detects a
+check`, and the script's own memory validation is a thin delegation to
+`memory_project.validate_memory`, so there is ONE memory contract rather than two. On the FACTORY'S OWN ROOT the script works without the `--memory-only` flag: it auto-detects a
 hand-authored `AGENTS.md` by THREE signals — the first line has NO `code-factory-fingerprint` marker,
 but DOES have the factory's own `code-factory-version` marker, and
 `.agents/skills/code-factory/SKILL.md` is deployed alongside — and prints `SKIP` with an explanation: this is not an error, the memory and
@@ -346,7 +363,15 @@ configs, and expected business results with the user at the planning stage (hitl
 <!-- factory-rule: repo-scoping end -->
 
 `task_type: review` — a "do a code review of existing code" task: the factory runs the
-reviewer over **all** the code at the start, and its findings become the work plan.
+reviewer over **all** the code at the start and delivers a report, never an edit. The run is
+report-only: the deliverable is the report (`.code-factory/logs/code-review.md` +
+`.code-factory/report.md`) plus the generated follow-up task file
+`.code-factory/review/fix-tasks.yaml` (`scripts/review_followup_task.py`) that the owner runs later
+as a separate `implement` task, and the findings never become this run's plan. Because the run
+changes nothing, every `verify:` criterion of a review task must be satisfiable on the unmodified
+tree, and a review criterion that is not MET stops the run and asks the owner. `security_audit`
+keeps its own guarantee (reports + a fix-task file, no auto-fixing) — the normative statement is the
+canonical `review-report-only` block in *Code review (mandatory gate)* below.
 
 `task_type: refactor` — reducing technical debt/duplication/simplifying architecture **without changing
 behavior**: 100% of the existing tests must pass unchanged; any behavior change is a
@@ -388,8 +413,8 @@ Before acceptance, every task passes through the `factory-code-reviewer` subagen
 - **`task_type: review` / `security_audit`** — a review/audit of **all the TRACKED code** in SHARDS at
   the start: `scripts/repo_inventory.py shards --repo <resolved repo_path> --max-lines 20000
   --tracked` → one subagent per shard → a deterministic merged verdict by
-  `scripts/merge_findings.py` (each subagent sees only the files of its own shard); the findings of
-  a review task become the plan. `--tracked` takes the file set from a NUL-safe `git ls-files -z` at
+  `scripts/merge_findings.py` (each subagent sees only the files of its own shard); the merged
+  verdict is the run's review verdict. `--tracked` takes the file set from a NUL-safe `git ls-files -z` at
   `--repo`, so untracked and git-ignored paths (a machine-local config, a build output, a leftover
   artifact) can never enter the review or land in a shard, while a TRACKED file under `build/` or
   `node_modules/` is reviewed like any other. When `--tracked` is requested and git or the repository
@@ -398,8 +423,10 @@ Before acceptance, every task passes through the `factory-code-reviewer` subagen
   filesystem walk stays the default (the escape hatch for callers that must also see untracked
   files).
 
-A verdict of `approve` → the task proceeds to acceptance; `request_changes` → a rework list
-is produced for the coder, and after the fixes the tests and the review are run again. When the budget is exhausted, the
+For an `implement`/`refactor` run a verdict of `approve` → the task proceeds to acceptance;
+`request_changes` → the rework list goes to the coder, and after the fixes the tests and the review
+are run again. A `task_type: review` run has no rework leg (report-only, see *Business task format*
+above): its verdict on the reviewed code stays in `results.review=`. When the budget is exhausted, the
 auto-escape policy applies: in auto mode only a conditional pass is allowed, with the criterion marked
 `unverified_review` (see the canonical block below); in hitl mode the factory stops.
 
@@ -418,8 +445,11 @@ misleading (§3, "Reporting discipline"). A missed defect and severity inflation
 errors, and they are cured by editing the reviewer prompt, not the golden set.
 
 <!-- factory-rule: review-gate-policy begin -->
-**Review gate (canonical wording):** a task is NOT accepted while the reviewer has open severity=critical findings (verdict `request_changes` with open critical findings). The reviewer budget = 2 iterations. If the budget is exhausted and critical findings remain: in hitl mode the factory STOPS and asks the user; in auto mode only a conditional pass is allowed — the corresponding criterion is marked `unverified_review` in `.code-factory/state/acceptance.md`, and the unresolved findings go into `.code-factory/report.md` (unresolved findings section), never silently. A full SUCCESS with open critical findings is impossible.
+**Review gate (canonical wording):** a task is NOT accepted while the reviewer has open severity=critical findings (verdict `request_changes` with open critical findings). The reviewer budget = 2 iterations. If the budget is exhausted and critical findings remain: in hitl mode the factory STOPS and asks the user; in auto mode only a conditional pass is allowed — the corresponding criterion is marked `unverified_review` in `.code-factory/state/acceptance.md`, and the unresolved findings go into `.code-factory/report.md` (unresolved findings section), never silently. A full SUCCESS with open critical findings is impossible. For a `task_type: review` run the gate judges the delivered review, not the reviewed code: the verdict stays `request_changes` in `results.review=` while the run's own acceptance records whether the report and the follow-up task file were produced.
 <!-- factory-rule: review-gate-policy end -->
+<!-- factory-rule: review-report-only begin -->
+**Report-only review (canonical wording):** a `task_type: review` run never edits the project: no review verdict, in either mode, reaches a node that starts a coder, writes a backup or changes a tracked source, test, config, documentation or data file — the run's own `.code-factory/` artifacts and its single `memory/` record are the only writes. The deliverable is the report (`.code-factory/logs/code-review.md` + `.code-factory/report.md`) plus a generated follow-up task file (`.code-factory/review/fix-tasks.yaml`, produced by `scripts/review_followup_task.py`) that the owner runs later as a separate `implement` task; the findings never become this run's plan. A review criterion that is not MET stops the run and asks the owner — it is never routed into error routing's coder branch — and because the run changes nothing, every `verify:` criterion of a review task must be satisfiable on the unmodified tree: a criterion that needs a change is an authoring error the run reports. A review run's acceptance judges the delivered report, while the verdict on the reviewed code stays recorded as `results.review=`; the two facts are never conflated. `security_audit` keeps its own guarantee (reports plus a fix-task file, no auto-fixing) unchanged, and this rule does not restate it.
+<!-- factory-rule: review-report-only end -->
 
 Acceptance is additionally verified by machine: criteria with `verify` are executed for real
 (`scripts/verify_acceptance.py` → `.code-factory/state/acceptance.md`), and SUCCESS (exit 0)
@@ -612,7 +642,7 @@ the reviewer validates it (may override with an explanation), then `bump`/`sync`
 version into README/CHANGELOG/AGENTS.md/SKILL.md/the manual, and `validate` checks it (exit 0).
 `review`/`security_audit` do not change the version. The user does not need to update the version manually.
 <!-- factory-rule: english-only begin -->
-**English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and history (CHANGELOG and old memory entries) is never rewritten.
+**English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and HISTORY is never rewritten — `CHANGELOG.md` and memory records written before this rule are frozen by `memory/.english-freeze` (one record heading per line) and are never edited; every NEW memory record is gated by `scripts/check_english_only.py`, whose memory pass runs by default over v2 records that are not frozen (`--no-memory` is the one documented escape).
 <!-- factory-rule: english-only end -->
 
 ## Models
@@ -647,7 +677,7 @@ model, the models were not split. Splitting requires the flag
 `export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — without it, coder/tester fall back to primary.
 The factory checks this in pre-flight and writes `models_warning` to pipeline.yaml/report.md.
 <!-- factory-rule: models-generator-ne-judge begin -->
-**Models: generator ≠ judge (canonical wording):** the main agent passes the model explicitly in the Agent tool (`model:`) per the task's `models` matrix and the generator≠judge rule: coder/tester and reviewer/diagnostician/advisor are taken from different model families. `model_preference: primary|secondary` in a subagent's `.md` is only a FALLBACK for roles not named by the task. The actual role models are logged in `.code-factory/state/pipeline.yaml` (`models_used`) and in `report.md`; the secondary model works only with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`, otherwise the factory writes `models_warning` and continues on primary.
+**Models: task first, then the default matrix (canonical wording):** exactly two cases and no third. (a) When the task's `models:` matrix names a role, that exact model is used and is NEVER substituted: a generator/judge family collision is a WARNING naming both roles and both models, never a reason to swap. (b) When the task does not name the role, its model comes from the factory's DEFAULT MATRIX — the CLI config's `default_model` / `[secondary_model] default_model` selected by the role's `model_preference` — where the generator≠judge rule IS enforced: a same-family coder/tester/gui_expert versus reviewer/diagnostician/advisor pair with either side taken from the default matrix is an ERROR naming the fix (widen `[secondary_model]` or pin `models.<role>` in the task). (c) There is no third path: the main agent never picks a model on its own. The ONE exception is the plan committee's second planner, which always comes from a family contrasting the first planner. `scripts/model_matrix.py` is the single implementation of this precedence, `scripts/test_model_precedence.py` pins it, and the model actually served is confirmed by an ARTIFACT: `scripts/model_attribution.py` reads the CLI session wire and cross-checks `models_used`, a mismatch fails the run, and a missing wire is DEGRADED — never silently green. The secondary model works only with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`; otherwise the factory writes `models_warning` and continues on the primary. The actual role models are logged in `.code-factory/state/pipeline.yaml` (`models_used`) and in `report.md`.
 <!-- factory-rule: models-generator-ne-judge end -->
 
 Export the variable in the **same terminal** where `kimi` is launched, and **before** launching it.

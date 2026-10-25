@@ -3,7 +3,9 @@
 Deterministic documentation validator for the factory-documenter subagent (zero LLM tokens).
 
 Checks that the documenter touched ONLY documentation:
-  1. No protected file (tests, configs, build manifests, lockfiles) may be modified.
+  1. No protected file (tests, configs, build manifests, lockfiles) may be modified. A test/spec
+     file is recognized by a path SEGMENT (a `tests/`, `spec/` directory) AND by its file NAME/STEM,
+     so the `test_*.py` files that live next to the code they test are protected too.
   2. Markdown/plain-text files are documentation by definition and are allowed.
   3. Source files may change only doc-comment/docstring lines — any changed code line is a
      violation. Lines are classified by their POSITION in the two versions (the diff hunk maps
@@ -31,6 +33,12 @@ PROTECTED_SUFFIXES = {
     ".lock", ".csproj", ".sln", ".gradle", ".pom", ".xml", ".cargo",
 }
 TEST_PATH_PARTS = {"test", "tests", "spec", "specs", "__tests__", "conftest"}
+# File-NAME markers of a test/spec file. Directory segments alone missed every `test_*.py` living
+# next to the code it tests (e.g. `scripts/test_validate_documentation.py`), so a protected file is
+# recognized by its name/stem too: `test_x.py`, `conftest.py`, `conftest_extra.py` (stem prefix),
+# `x_test.go`, `x_spec.rb`, `x.test.ts`, `x.spec.js` (stem / name suffix).
+TEST_STEM_PREFIXES = ("test_", "spec_", "conftest")
+TEST_NAME_SUFFIXES = ("_test", "_spec", ".test", ".spec")
 
 MARKDOWN_SUFFIXES = {".md", ".markdown", ".rst", ".txt", ".adoc", ".textile"}
 
@@ -44,14 +52,23 @@ SOURCE_SUFFIXES = {
 _LINE_DOC_PREFIXES = ("#", "//", "///", "//!", "--", "<!--", "-->", ">", "%", ";")
 
 _DOCSTRING_DELIMS = ('"""', "'''")
-_BLOCK_START = "/**"
+_BLOCK_START = "/*"          # `/*`, `/**` and `/*!` all open a C-style comment block
 _BLOCK_END = "*/"
 
 
 def _is_protected(rel: str) -> bool:
+    """A file is out of scope for the documenter when a path SEGMENT marks a test/spec directory,
+    when its NAME/STEM marks a test/spec file, or when its suffix is a config/build kind."""
     p = pathlib.PurePosixPath(rel)
-    parts = {x.lower() for x in p.parts}
-    if parts & TEST_PATH_PARTS:
+    if {x.lower() for x in p.parts[:-1]} & TEST_PATH_PARTS:
+        return True
+    name = p.name.lower()
+    stem = p.stem.lower()
+    if stem in TEST_PATH_PARTS or stem.startswith(TEST_STEM_PREFIXES):
+        return True
+    # `x_test.go` / `x_spec.rb` / `x.test.ts` / `x.spec.js` end the STEM once the language suffix
+    # is dropped; a file literally named `x.test` / `x.spec` ends the name.
+    if name.endswith(TEST_NAME_SUFFIXES) or stem.endswith(TEST_NAME_SUFFIXES):
         return True
     return p.suffix.lower() in PROTECTED_SUFFIXES
 
@@ -76,7 +93,9 @@ def _doc_mask(lines: list[str]) -> list[bool]:
             mask.append(True)  # blank lines never count as a code change
             continue
         is_doc = False
-        # C-style block comment state
+        # C-style block comment state: `/*`, `/**`, `/*!` open it, `*/` closes it. A `*`
+        # continuation line is documentation ONLY while this state is on — outside a block it is
+        # code (`*ptr = 1;`), so there is no bare-`*` fallback any more.
         if in_block:
             is_doc = True
             if _BLOCK_END in s:
@@ -97,10 +116,9 @@ def _doc_mask(lines: list[str]) -> list[bool]:
                     in_triple = True
             elif s.startswith(_LINE_DOC_PREFIXES):
                 is_doc = True
-            elif s.startswith("*") and s.endswith("*/"):
-                is_doc = True
-            elif s.startswith("*") or s.startswith("|"):
-                is_doc = True  # continuation of a block doc / markdown table
+            # No fallback for a bare `*` or `|` line: outside a block/docstring/markdown file it
+            # is code (`*ptr = 1;`, `| mask = 2;`), and treating it as documentation let a code
+            # edit through.
         mask.append(is_doc)
     return mask
 

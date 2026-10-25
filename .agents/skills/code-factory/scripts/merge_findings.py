@@ -15,7 +15,7 @@ softened in prose:
 
   - deduplication by (file, line, normalized title), where the title is stripped, whitespace
     collapsed and lowercased; duplicates collapse into one finding carrying
-    `occurrences: [<shard ids>]` (sorted, unique);
+    `occurrences: [<shard ids>]` (sorted in shard-id order, unique);
   - sorting by severity (critical -> major -> minor -> nit), then file, then line (null last),
     then normalized title — so the merged order never depends on the input order;
   - summary: per-severity counts, shard count, and the merged verdict — request_changes when at
@@ -30,7 +30,8 @@ CLI:
 
 Determinism: the same shard files in any order produce a byte-identical merged report. Findings
 that differ only in severity or detail are collapsed picking the most severe record and, among
-equals, the lowest shard id, then the smallest detail.
+equals, the lowest shard id (shard ids compare numerically, so `shard-2` is lower than `shard-10`),
+then the smallest detail.
 """
 from __future__ import annotations
 
@@ -54,6 +55,18 @@ class InputError(Exception):
 def normalize_title(title: str) -> str:
     """Dedup/ordering part of the key: stripped, whitespace-collapsed, lowercased."""
     return re.sub(r"\s+", " ", title).strip().lower()
+
+
+def shard_key(shard_id: str) -> tuple:
+    """Natural sort key of a shard id: `shard-2` sorts before `shard-10`.
+
+    A plain string comparison puts `shard-10` first, which would silently break the documented
+    "lowest shard id wins" choice as soon as a review has ten or more shards. The id is split on
+    digit runs and every digit run compares as an integer; text parts keep comparing as text
+    (`(0, text)` / `(1, integer)` keeps the two kinds from ever being compared to each other).
+    """
+    return tuple((0, part) if not part.isdigit() else (1, int(part))
+                 for part in re.split(r"(\d+)", shard_id))
 
 
 def _validate_finding(raw: object, label: str, index: int) -> dict:
@@ -131,19 +144,19 @@ def merge(shards: list[dict]) -> dict:
 
     findings: list[dict] = []
     for (file, line, _), records in groups.items():
-        # Most severe first, then lowest shard id, then smallest detail: order-stable choice.
-        records.sort(key=lambda pair: (SEVERITY_RANK[pair[1]["severity"]], pair[0],
+        # Most severe first, then lowest shard id (numerically), then smallest detail: order-stable.
+        records.sort(key=lambda pair: (SEVERITY_RANK[pair[1]["severity"]], shard_key(pair[0]),
                                        pair[1]["detail"]))
         chosen = records[0][1]
         findings.append({"severity": chosen["severity"], "file": file, "line": line,
                          "title": chosen["title"], "detail": chosen["detail"],
-                         "occurrences": sorted({pair[0] for pair in records})})
+                         "occurrences": sorted({pair[0] for pair in records}, key=shard_key)})
     findings.sort(key=_sort_key)
 
     counts = {severity: 0 for severity in SEVERITIES}
     for finding in findings:
         counts[finding["severity"]] += 1
-    shard_ids = sorted(verdicts)
+    shard_ids = sorted(verdicts, key=shard_key)
     blocked = counts[BLOCKING_SEVERITY] > 0 or any(v == "request_changes" for v in verdicts.values())
     return {"verdict": "request_changes" if blocked else "approve",
             "total_shards": len(shard_ids),

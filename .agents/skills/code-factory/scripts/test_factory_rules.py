@@ -12,6 +12,8 @@ verifies both halves of the contract:
     rule still points at its five canonical documents;
   - the checker PASSES on the real repository for EVERY rule (the carrier migration is complete),
     and the review-gate rule still points at its five canonical documents;
+  - the PASS line names the count of checked rules as a COUNT (`all <n> rules: <n> rule(s)
+    checked, byte-identical in <m> carrier block(s) (<root>).`), never as a collection;
   - the mechanics are proven on throwaway copies (tempdir, `--root`): a clean tree passes, a
     carrier with one extra clause fails as "differs", a carrier without the block fails as
     "missing", a duplicated block is rejected too, watering the gate down in ALL carriers at once
@@ -49,6 +51,14 @@ REQUIRED_MARKERS = ("unverified_review", "conditional pass", "hitl", "auto")
 LEGACY_MARKER = "<!-- review-gate-policy:"
 RULE_HEADING_RE = re.compile(r"^##\s+(\S+)\s*$")
 CARRIERS_RE = re.compile(r"^carriers:\s*(.+?)\s*$")
+# The pass lines the checker prints. The count of rules must appear as a COUNT of rules
+# (`<n> rule(s) checked`), never as if the first number were a number of collections.
+RULE_PASS_RE = re.compile(
+    rf"^PASS - {re.escape(RULE)}: (\d+) rule\(s\) checked, byte-identical in "
+    rf"(\d+) carrier block\(s\) \(.+\)\.$", flags=re.M)
+FULL_PASS_RE = re.compile(
+    r"^PASS - all (\d+) rules: (\d+) rule\(s\) checked, byte-identical in "
+    r"(\d+) carrier block\(s\) \(.+\)\.$", flags=re.M)
 
 
 def expect(cond: bool, msg: str) -> None:
@@ -127,6 +137,18 @@ def main() -> int:
     expect(res.returncode == 0,
            f"check_factory_rules.py --rule {RULE} must exit 0: {res.stdout!r} {res.stderr!r}")
     expect("PASS" in res.stdout, f"the checker must report PASS: {res.stdout!r}")
+    # The pass line names the count ONCE as a count, never as if it were a collection of rules:
+    # `PASS - <id>: 1 rule(s) checked, byte-identical in <m> carrier block(s) (<root>).`
+    expect("rule(s) checked" in res.stdout,
+           f"the pass line must say what was checked: {res.stdout!r}")
+    single = RULE_PASS_RE.search(res.stdout)
+    expect(single is not None,
+           f"the --rule pass line must read `1 rule(s) checked, byte-identical in ...`: "
+           f"{res.stdout!r}")
+    expect(single.group(1) == "1",
+           f"a single --rule run checks exactly one rule: {res.stdout!r}")
+    expect(int(single.group(2)) >= len(GATE_CARRIERS),
+           f"the carrier block count must be printed: {res.stdout!r}")
     for carrier in GATE_CARRIERS:
         expect(LEGACY_MARKER not in (ROOT / carrier).read_text(encoding="utf-8"),
                f"{carrier}: the legacy review-gate marker must be migrated to factory-rule")
@@ -136,6 +158,20 @@ def main() -> int:
     full = run()
     expect(full.returncode == 0,
            f"a full run must exit 0 (all rules are consistent): {full.stdout!r} {full.stderr!r}")
+    # The count of checked rules is a COUNT of rules, not a number of collections: both numbers of
+    # the summary are the same integer, and the sentence says `rule(s) checked`.
+    expect("rule(s) checked" in full.stdout,
+           f"the pass line must say what was checked: {full.stdout!r}")
+    wide = FULL_PASS_RE.search(full.stdout)
+    expect(wide is not None,
+           f"the pass line must read `PASS - all <n> rules: <n> rule(s) checked, "
+           f"byte-identical in <m> carrier block(s) (<root>).`: {full.stdout!r}")
+    expect(wide.group(1) == wide.group(2) == str(len(registry)),
+           f"the checked count must be printed once as that count: {full.stdout!r}")
+    expect(int(wide.group(3)) >= len(registry),
+           f"the carrier block count must be printed: {full.stdout!r}")
+    expect(full.stdout.count("PASS - ") == 1,
+           f"a full run prints exactly one PASS line: {full.stdout!r}")
 
     # 4. positive on a throwaway root proves --root resolves the rulebook and the carriers.
     with tempfile.TemporaryDirectory() as tmp:

@@ -1018,3 +1018,42 @@ unfinished:
     reason: by design - a proof without the pre-fix tree would be a tautology - but a shallow clone therefore cannot run that self-test green
     severity: info
     follow_up: false
+
+## 2026-10-25T23:59:00+03:00 — pre-publication review (report-only): 35 findings, the two that will bite on a public clone, and a re-calibrated reviewer
+
+title: A full six-shard review of the tracked tree before the GitHub push — 0 critical, 10 major, 24 minor, 1 nit; nothing edited, the findings leave as a generated follow-up task; the reviewer itself re-calibrated at 7/7
+project: repo
+timestamp: 2026-10-25T23:59:00+03:00
+run_id: 20261025-4df00efd
+branch: feature/v12.15.0-honest-factory
+commit: none — a report-only review commits no product change (base af7cfae, tree still equal to HEAD)
+task_type: review
+goal: answer the owner's question "is this project ready to be published?" with evidence instead of opinion — a full read of every tracked file, the project's own gates executed on the unmodified tree, and a defect list the owner can act on
+changed_files: none — the report-only rule held; git diff --quiet HEAD exit 0 after the whole run
+created_files: .code-factory/ artifacts only (state/{task.yaml,plan.md,pipeline.yaml,review-shards.json,criteria.json,acceptance.md,evidence-20261025-4df00efd.json,review_checks.py}, logs/{baseline.md,e2e-gates.md,code-review.md,code-review-merged.json,code-review-shards/shard-1..6.json,reviewer-calibration.md,golden-results/*.json}, review/fix-tasks.yaml, report.md) plus this one record
+results: integration=SKIP (report-only run: no code change to integrate); regression=PASS (38 self-tests: 37 PASS, 1 documented SKIP, 0 FAIL) [verified: .code-factory/logs/baseline.md and baseline-raw.log]; business=PASS (12 end-to-end gates on the unmodified tree all exit 0: rulebook 26 rules/105 carriers, model+memory contract, backlog fold, precedent index FRESH, version single source, English-only, translation skeleton, mermaid, suite, shell parity, calibration, publication state) [verified: .code-factory/logs/e2e-gates.md]; review=request_changes with 0 critical, 10 major, 24 minor, 1 nit over 6 shards of the whole tracked tree (134 files, 43 866 lines), 46/46 quotes verbatim and 0 untrusted [verified: .code-factory/logs/code-review-merged.json produced by merge_findings.py from six shard files, .code-factory/logs/code-review.md, and verify_quotes.py --claims .code-factory/tmp/all-claims.json exit 0]; calibration=7/7 verdict accuracy, macro recall 1.000, macro precision 0.929 on the 7 golden cases re-reviewed blind in this run [verified: .code-factory/logs/reviewer-calibration.md with run_id 20261025-4df00efd]; acceptance=SUCCESS (9 criteria with a verify command MET, 1 derived, regression baseline proven, ledger FRESH) [verified: .code-factory/state/acceptance.md, verify_acceptance.py exit 0 --task-type review]
+decisions: the owner scoped the review to "everything at once" - code, docs, tests, configs, security and rule conformance - with the suite plus a live gate run as proof, and a report plus a follow-up task file as the outcome, so no fix was applied in this run [verified: the three answers recorded in .code-factory/state/plan.md]; the tree was cut into 6 shards of 8000 lines instead of the 20000 default, because a detailed per-file read does not fit 20k lines in one reviewer context [verified: .code-factory/state/review-shards.json, 6 shards covering every tracked file]; the §7 calibration obligation was found unmet (the reviewer prompt was edited in v12.15.0, the last record was run_id 20261017-8afa3aae) and was discharged by re-running the 7 golden cases blind inside this review rather than deferred [verified: .code-factory/logs/reviewer-calibration.md]; the findings were handed over as .code-factory/review/fix-tasks.yaml generated deterministically from the merged JSON, never re-ordered or softened in prose [verified: review_followup_task.py --check exit 0 and its --run-id 20261025-4df00efd header]
+assumptions: the launch directory is the deployment root and equals repo_path, so memory/ here is this project's memory; "before the push" means the TRACKED tree, so the 33 untracked local files (other task*.yaml, wheels, idea.md) were checked for non-publication only, not reviewed; security was covered as a review dimension (secrets, dangerous commands, injection) rather than as a separate security_audit run
+models_used: main=deepseek-flash; reviewer=deepseek-flash (6 shard packages + 7 golden-case packages, from the task's models matrix); analyzer, planner, coder, tester, documenter, diagnostician, advisor, gui_expert, security_auditor, skill_manager, refactorer=unused (a report-only review needs no generator, no coder and no documenter)
+factory_version: 12.15.0
+unfinished:
+  - item: the fixture digest pinned in test_run_id.py (KNOWN_TASK_RUN_ID) depends on the checkout's line endings, because run_id hashes the raw task bytes
+    reason: re-confirmed with a verified quote (f6a6e8c8 for the CRLF worktree vs eb367fe3 for the committed LF blob) and handed over as finding 1 of .code-factory/review/fix-tasks.yaml; not fixed because a report-only review edits nothing, and the fix itself changes historical run ids so it needs its own vaccination-first task
+    severity: warning
+    follow_up: true
+  - item: the reviewer calibration obligation (§7: re-calibrate after every reviewer-prompt edit and at least once per 5 reviewed runs) is enforced by prose only, so a prompt edit can ship without a fresh calibration — the state found at the start of this run
+    reason: discharge for this release was performed here (7/7), but nothing forces it after the next prompt edit; the follow-up task file carries the gap and no code fix was made in a report-only run
+    severity: warning
+    follow_up: true
+  - item: project_fingerprint.py excludes every dot-prefixed tracked path, so edits under .agents/** move neither the structural nor the content hash
+    reason: confirmed by the shard reviewer with identical hashes before and after an .agents/ edit, and handed over as a major finding; the fix belongs to an implement run
+    severity: warning
+    follow_up: false
+  - item: action_gate.py is advertised as classifying every destructive action before it runs, no flow node invokes it, and it classifies `git checkout .` as ALLOW with a false reason
+    reason: confirmed in two independent shards (flow and script) and handed over as major findings 3 and 4 of the follow-up task; a report-only review changes nothing
+    severity: warning
+    follow_up: false
+  - item: the vaccination proof (test_vaccination.py) degrades to SKIP after the release commit and its stale-constant guard is absent in a fresh clone
+    reason: reproduced (rc=3 on a clean tree) and handed over as a major finding; the harness itself was not touched
+    severity: info
+    follow_up: false

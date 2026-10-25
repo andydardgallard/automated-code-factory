@@ -12,7 +12,18 @@ does not have to be derived again.
 ## Current state
 Factory v12.15.0 — the "honest factory" patch is delivered on `feature/v12.15.0-honest-factory`
 (base `fb43f2a`).
-Latest run: implement (run_id 20261025-4e17a349, task-fix-v12.15.0.yaml, hitl). One patch closed
+Latest run: review (run_id 20261025-4df00efd, task.yaml "full pre-publication review", hitl) —
+report-only, nothing edited (`git diff --quiet HEAD` exit 0). Six shards over the whole TRACKED
+tree (134 files, 43 866 lines): 35 merged findings, 0 critical, 10 major, 24 minor, 1 nit, 46/46
+quotes verified verbatim, verdict `request_changes` recorded as `results.review=` and handed over
+as `.code-factory/review/fix-tasks.yaml` (35 items). Proof side: 38 self-tests 37 PASS / 1
+documented SKIP / 0 FAIL, 12 end-to-end gates green on the unmodified tree
+(`.code-factory/logs/e2e-gates.md`), and the reviewer re-calibrated blind on the 7 golden cases at
+7/7 verdict accuracy, recall 1.000, precision 0.929 (the §7 obligation the v12.15.0 prompt edit had
+left unmet). The two findings that bite on a public clone: `test_run_id.py` pins the CRLF digest
+while nothing pins the fixture's line endings (any LF clone is red), and `project_fingerprint.py`
+skips every dot-prefixed tracked path, so `.agents/**` edits move neither hash.
+Previous run: implement (run_id 20261025-4e17a349, task-fix-v12.15.0.yaml, hitl). One patch closed
 all 46 items of its three sources — the 20 findings of review 20261025-634bc01b, the 8 open backlog
 items, and the 18 findings F1-F18 of the earlier report-only-review task — each dispositioned in
 `.code-factory/logs/findings-disposition.md` with the check that proves it
@@ -38,13 +49,14 @@ unrequested 18-file rework was rolled back).
 Version type: the deterministic matrix proposed `patch`; the code reviewer overrode it to `minor`
 because a new canonical rule, two flow nodes, three scripts, a summary field and a record kind are
 additive, not breaking.
-Open backlog: 1 item (47 closed with evidence) — the `test_run_id.py` fixture digest depends on the
-checkout's line endings (a pre-existing brittleness exposed by this release; normalizing CRLF in
-`run_id` would change every historical run id, so it needs its own vaccination-first task).
+Open backlog: 2 items (47 closed with evidence) — the `test_run_id.py` fixture digest depends on the
+checkout's line endings (re-confirmed by the review with a verified quote: CRLF `f6a6e8c8` vs LF
+`eb367fe3`), and the §7 re-calibration obligation after a reviewer-prompt edit is enforced by prose
+only, so a prompt edit can ship without a fresh calibration. Both are carried in the follow-up task.
 Rulebook: 26 rules, 105 carriers, byte-identical (`check_factory_rules.py` exit 0). Memory owner:
 repo, declared with `project_id` (the repository identity, not the folder name). Self-tests: 38
-files, all passing — including 24 registered vaccines that each fail on the pre-fix tree and pass
-here (`scripts/test_vaccination.py`).
+files — 37 pass, 1 documented SKIP (`test_vaccination.py`, which needs the release base commit and
+reports exit 3 without it), 0 fail; the 24 registered vaccines each fail on the pre-fix tree.
 
 ## Key decisions
 - The long-term memory `memory/` belongs to ONE target project (`repo_path`); the field

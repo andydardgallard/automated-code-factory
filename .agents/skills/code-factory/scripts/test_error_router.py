@@ -16,7 +16,8 @@ of a built-in id wins), the silent default-only mode when no learned file exists
 broken AUTO-DISCOVERED learned file (warning on stderr + fallback to the defaults, exit 0) versus
 the hard error (exit 2) when the very same file is named with `--project-patterns`, deterministic
 and idempotent `merge` output, `export-defaults` as a byte-exact starter, the exit-code contract
-(2 for an unusable patterns JSON, 1 for an unreadable log), the OPTIONAL `--repo` anchor — a
+(2 for an unusable patterns JSON, 1 for an unreadable log, 2 with one `error: cannot write` line
+and no traceback when `merge`/`export-defaults` cannot write their `--out`), the OPTIONAL `--repo` anchor — a
 RELATIVE `--log` / patterns file / `--out` resolves against it, an absolute path never does —
 the EQUALITY OF PATH SPELLINGS (two spellings of one file — a non-ASCII/8.3 short-name base,
 simulated — compare as one path through `realpath`+`normcase`, never as raw strings), the two
@@ -717,6 +718,22 @@ def main() -> int:
         expect(run("classify").returncode == 2, "a missing --log must exit 2")
         expect(run("merge").returncode == 2, "a missing --project must exit 2")
         expect(run().returncode == 2, "a missing subcommand must exit 2")
+
+        # 10a. An unwritable --out (a directory stands in for one: write_text/write_bytes on a
+        #      directory raise OSError on every platform) is the documented contract error of
+        #      merge/export-defaults: one `error: cannot write ...` line on stderr, exit 2, never
+        #      an uncaught traceback.
+        for args in (("merge", "--project", str(project), "--out", str(tmp)),
+                     ("export-defaults", "--out", str(tmp))):
+            res = run(*args)
+            expect(res.returncode == 2,
+                   f"{args[0]} with a directory as --out must exit 2, got {res.returncode}: "
+                   f"{res.stderr!r}")
+            expect(res.stderr.startswith("error: cannot write ") and str(tmp) in res.stderr,
+                   f"{args[0]} must name the unwritable target: {res.stderr!r}")
+            expect(len(res.stderr.strip().splitlines()) == 1
+                   and "Traceback" not in res.stderr,
+                   f"{args[0]} must report exactly one line, not a traceback: {res.stderr!r}")
 
     # 11. stdlib-only contract (no third-party imports).
     src = pathlib.Path(er.__file__).read_text(encoding="utf-8")

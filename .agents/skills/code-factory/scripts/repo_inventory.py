@@ -10,7 +10,8 @@ Excluded while walking (directory names, at any depth): .git, .code-factory, __p
 node_modules, .venv, target, dist, build. Excluded files: *.pyc, binaries (a NUL byte within
 the first 8192 bytes), symbolic links (never followed: a cycle would make the walk endless) and
 files that cannot be read at all (OSError: an unreadable file is skipped and counted, it never
-fails the whole scan).
+fails the whole scan). Every skipped file is counted by category (see the payload keys below),
+so a file left out of the inventory or the shard plan always shows up in a counter.
 
 `--tracked` replaces the walk with the TRACKED set: `git ls-files -z` at the `--repo` root,
 parsed NUL-safely, so a review / audit whose contract is "the repository" can never see an
@@ -18,23 +19,27 @@ untracked or ignored path that happens to sit in the working tree (a machine-loc
 scratch directory, editor debris). It requires git and a git repository at `--repo`: when either
 is missing the command exits 1 with the reason on stderr and invents nothing — it never falls back
 to the walk, because that fallback would silently re-admit exactly the paths this mode excludes.
-The content filter is the walk's (*.pyc, binaries, unreadable and symlinked paths are skipped with
-the same counting), but the directory-name exclusions do NOT apply: a tracked file under `build/`
-or `node_modules/` is part of the tracked tree. Without the flag the filesystem walk stays the
+The content filter is the walk's: *.pyc, symlinked, binary and unreadable paths are skipped and
+counted by category in both modes, but the directory-name exclusions do NOT apply: a tracked file
+under `build/` or `node_modules/` is part of the tracked tree. Without the flag the filesystem
+walk stays the
 documented default — the escape hatch for callers that must also see untracked files
 (`repo_stats.py`, `precedent_index.py`).
 
 Commands:
   inventory --repo <path> [--tracked]
       JSON {"files": [{"path", "lines", "bytes"}, ...], "total_files", "total_lines",
-            "skipped_unreadable"}
-      `path` is repo-relative and posix; `files` is sorted by path; `skipped_unreadable` counts
-      the files the scan could not read (same skip policy as the unreadable directories).
+            "skipped_unreadable", "skipped_binary", "skipped_symlink", "skipped_pyc", "skipped"}
+      `path` is repo-relative and posix; `files` is sorted by path. Every skipped file is counted
+      by category (unreadable, binary, symlink, *.pyc) and `skipped` is their total, so a file
+      that never enters the list still leaves a trace (e.g. a committed keystore or archive).
   shards --repo <path> [--max-lines N] [--tracked]        (default: 20000)
-      JSON {"shards": [{"id", "files", "lines"}, ...], "total_shards"}
+      JSON {"shards": [{"id", "files", "lines"}, ...], "total_shards",
+            "skipped_unreadable", "skipped_binary", "skipped_symlink", "skipped_pyc", "skipped"}
       Greedy packing of the sorted list: a shard never exceeds N lines, and a single file
       longer than N lines becomes a shard of its own flagged with `oversized: true` (the flag
-      is present only on such shards). `files` holds repo-relative paths.
+      is present only on such shards). `files` holds repo-relative paths. The skip counters are
+      the inventory's: a file packed into no shard is always visible in a counter.
 
 Lines are counted as `\\n`-separated lines, so a trailing newline adds no empty line.
 Both commands are deterministic: the same working tree always yields identical JSON.
@@ -70,9 +75,14 @@ def is_binary(data: bytes) -> bool:
     return b"\x00" in data[:BINARY_SNIFF_BYTES]
 
 
-def iter_files(root: pathlib.Path) -> list[pathlib.Path]:
-    """Every inventoried file, sorted by repo-relative posix path (deterministic)."""
+def _walk(root: pathlib.Path) -> tuple[list[pathlib.Path], dict]:
+    """(inventoried files, walk-level skip counters) for the filesystem walk.
+
+    Symbolic links and *.pyc files are dropped here rather than in `scan_paths`, and counted under
+    the same keys, so the walk reports the same skip categories as the tracked set.
+    """
     found: list[pathlib.Path] = []
+    skipped = {"symlink": 0, "pyc": 0}
     stack = [root]
     while stack:
         directory = stack.pop()
@@ -82,13 +92,22 @@ def iter_files(root: pathlib.Path) -> list[pathlib.Path]:
             continue  # unreadable directory: skip it, never fail the whole scan
         for entry in entries:
             if entry.is_symlink():
+                skipped["symlink"] += 1
                 continue
             if entry.is_dir():
                 if entry.name not in EXCLUDE_DIRS:
                     stack.append(entry)
-            elif entry.is_file() and entry.suffix not in EXCLUDE_SUFFIXES:
-                found.append(entry)
-    return sorted(found, key=lambda p: p.relative_to(root).as_posix())
+            elif entry.is_file():
+                if entry.suffix in EXCLUDE_SUFFIXES:
+                    skipped["pyc"] += 1
+                else:
+                    found.append(entry)
+    return sorted(found, key=lambda p: p.relative_to(root).as_posix()), skipped
+
+
+def iter_files(root: pathlib.Path) -> list[pathlib.Path]:
+    """Every inventoried file, sorted by repo-relative posix path (deterministic)."""
+    return _walk(root)[0]
 
 
 def read_bytes(path: pathlib.Path) -> bytes | None:
@@ -151,38 +170,60 @@ def file_record(root: pathlib.Path, path: pathlib.Path, data: bytes) -> dict:
             "bytes": len(data)}
 
 
-def scan_paths(root: pathlib.Path, paths: list[pathlib.Path]) -> tuple[list[dict], int]:
-    """(records for the listed files, number of unreadable files skipped).
+def scan_paths(root: pathlib.Path, paths: list[pathlib.Path]) -> tuple[list[dict], dict]:
+    """(records for the listed files, skip counters by category).
 
     The filter is shared by both modes, so a file yields the same record whether it came from the
-    walk or from the tracked set: *.pyc and symbolic links are skipped, an unreadable file is
-    counted and skipped, a binary is skipped.
+    walk or from the tracked set: *.pyc files, symbolic links, binaries and unreadable files are
+    each skipped and counted under their own key ("pyc", "symlink", "binary", "unreadable").
     """
     records: list[dict] = []
-    skipped = 0
+    skipped = {"unreadable": 0, "binary": 0, "symlink": 0, "pyc": 0}
     for path in paths:
-        if path.suffix in EXCLUDE_SUFFIXES or path.is_symlink():
+        if path.suffix in EXCLUDE_SUFFIXES:
+            skipped["pyc"] += 1
+            continue
+        if path.is_symlink():
+            skipped["symlink"] += 1
             continue
         data = read_bytes(path)
         if data is None:
-            skipped += 1
-        elif not is_binary(data):
+            skipped["unreadable"] += 1
+        elif is_binary(data):
+            skipped["binary"] += 1
+        else:
             records.append(file_record(root, path, data))
     return records, skipped
 
 
-def scan_files(root: pathlib.Path, tracked: bool = False) -> tuple[list[dict], int]:
-    """(text-file records, number of unreadable files skipped).
+def scan_files(root: pathlib.Path, tracked: bool = False) -> tuple[list[dict], dict]:
+    """(text-file records, skip counters by category).
 
     The default walk is filesystem-based; `tracked=True` takes the file set from `git ls-files -z`
-    at `root` and raises TrackedUnavailable when that set cannot be read.
+    at `root` and raises TrackedUnavailable when that set cannot be read. The counters carry the
+    same four keys in both modes: the walk counts its own *.pyc/symlink drops as well.
     """
-    return scan_paths(root, tracked_paths(root) if tracked else iter_files(root))
+    if tracked:
+        return scan_paths(root, tracked_paths(root))
+    paths, walked = _walk(root)
+    records, skipped = scan_paths(root, paths)
+    skipped["symlink"] += walked["symlink"]
+    skipped["pyc"] += walked["pyc"]
+    return records, skipped
 
 
 def file_records(root: pathlib.Path) -> list[dict]:
     """Sorted text-file records: [{"path", "lines", "bytes"}, ...]; unreadable files are skipped."""
     return scan_files(root)[0]
+
+
+def _skip_payload(skipped: dict) -> dict:
+    """The skip counters as payload keys, with the total under `skipped`."""
+    return {"skipped_unreadable": skipped["unreadable"],
+            "skipped_binary": skipped["binary"],
+            "skipped_symlink": skipped["symlink"],
+            "skipped_pyc": skipped["pyc"],
+            "skipped": sum(skipped.values())}
 
 
 def inventory(root: pathlib.Path, tracked: bool = False) -> dict:
@@ -191,7 +232,28 @@ def inventory(root: pathlib.Path, tracked: bool = False) -> dict:
     return {"files": records,
             "total_files": len(records),
             "total_lines": sum(r["lines"] for r in records),
-            "skipped_unreadable": skipped}
+            **_skip_payload(skipped)}
+
+
+def binary_records(root: pathlib.Path) -> list[dict]:
+    """Binary files of the walk: [{"path", "bytes"}, ...], biggest first (path breaks ties).
+
+    Only the first BINARY_SNIFF_BYTES of each walked file are read — enough for the NUL
+    heuristic — so ranking the biggest blobs never means reading whole files. Unreadable files
+    are skipped (the inventory already counts them); *.pyc files and symlinks never appear,
+    exactly like in the inventory.
+    """
+    blobs: list[dict] = []
+    for path in iter_files(root):
+        try:
+            with path.open("rb") as handle:
+                head = handle.read(BINARY_SNIFF_BYTES)
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if is_binary(head):
+            blobs.append({"path": path.relative_to(root).as_posix(), "bytes": size})
+    return sorted(blobs, key=lambda b: (-b["bytes"], b["path"]))
 
 
 def _shard(index: int, records: list[dict], oversized: bool = False) -> dict:
@@ -229,8 +291,9 @@ def pack_shards(records: list[dict], max_lines: int) -> list[dict]:
 
 def shards(root: pathlib.Path, max_lines: int, tracked: bool = False) -> dict:
     """Shard plan for the repository: the walk, or the tracked set when `tracked` is set."""
-    plan = pack_shards(scan_files(root, tracked)[0], max_lines)
-    return {"shards": plan, "total_shards": len(plan)}
+    records, skipped = scan_files(root, tracked)
+    plan = pack_shards(records, max_lines)
+    return {"shards": plan, "total_shards": len(plan), **_skip_payload(skipped)}
 
 
 def _dump(payload: dict) -> None:

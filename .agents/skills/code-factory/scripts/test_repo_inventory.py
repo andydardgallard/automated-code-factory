@@ -8,16 +8,18 @@ a *.pyc, a binary file, a file without a trailing newline, a unicode name, a fil
   - the walk and its exclusions, line/byte counting and path sorting,
   - determinism (two runs -> byte-identical JSON),
   - greedy shard packing (no shard above the cap, oversized file alone, no file lost/duplicated),
-  - an UNREADABLE file is skipped like a binary instead of failing the whole scan, and the count
-    of such files is reported as `skipped_unreadable`,
+  - an UNREADABLE file is skipped like a binary instead of failing the whole scan, and every skip
+    category is counted (`skipped_unreadable`, `skipped_binary`, `skipped_symlink`, `skipped_pyc`,
+    `skipped`) in BOTH payloads,
   - the CLI contract (JSON on stdout, exit 0; exit 1 for a missing repo or a bad --max-lines),
   - the `--tracked` mode (inventory AND shards) against a REAL temp repository: the file set is the
     NUL-safe tracked set (`git ls-files -z`), so an untracked machine-local config, an untracked
     credentials file and an ignored directory never enter the inventory, while the flag-less walk
-    still sees them; counting/filtering are identical in both modes; the NUL-safety of the parsing is
-    proven on a stubbed git call with names a Windows fixture cannot hold; and `--tracked` fails with
-    an explicit non-zero exit (no silent fallback to the walk) when git is missing or the path is not
-    a repository.
+    still sees them; counting/filtering are identical in both modes; a tracked binary, a tracked
+    symlink and a tracked *.pyc enter no file list and no shard but are counted by category in BOTH
+    payloads; the NUL-safety of the parsing is proven on a stubbed git call with names a Windows
+    fixture cannot hold; and `--tracked` fails with an explicit non-zero exit (no silent fallback
+    to the walk) when git is missing or the path is not a repository.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -76,6 +78,13 @@ NUL_NAME_UNI = "src/\u00fcn\u00efcode.txt"
 # Present in the walk, never in a tracked inventory: filtered content, untracked and ignored paths.
 OUTSIDE_TRACKED = [TRACKED_BIN, TRACKED_PYC, UNTRACKED_SECRET, UNTRACKED_ENV, IGNORED_FILE]
 
+# The skip-counter fixture: one text file plus a tracked binary, a tracked symlink and a tracked
+# *.pyc, so `inventory --tracked` / `shards --tracked` must report every skip category.
+COUNTER_TEXT = "readme.md"
+COUNTER_BIN = "blob.bin"
+COUNTER_PYC = "stale.pyc"
+COUNTER_LINK = "docs/linked.md"
+
 
 def expect(cond: bool, msg: str) -> None:
     if not cond:
@@ -120,6 +129,27 @@ def run_without_git(cmd: str, repo: pathlib.Path, tracked: bool = True) -> subpr
             "    raise FileNotFoundError(2, 'No such file or directory', 'git')\n"
             "ri.subprocess.run = boom\n"
             f"sys.argv = {argv!r}\n"
+            "raise SystemExit(ri.main())\n")
+    return subprocess.run([sys.executable, "-c", code],
+                          capture_output=True, text=True, errors="replace")
+
+
+def run_with_fake_symlink(link_name: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """The CLI as if the fixture link were a real symlink — for hosts that cannot create one.
+
+    Windows grants SeCreateSymbolicLinkPrivilege only to elevated processes (or developer mode),
+    so there `pathlib.Path.is_symlink` is made to answer True for exactly the fixture link: the
+    policy under test (is_symlink -> skip + count) is exercised at the real CLI entry point either
+    way, exactly like `run_without_git` exercises the missing-git branch.
+    """
+    code = ("import pathlib, sys\n"
+            f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+            "import repo_inventory as ri\n"
+            "original = pathlib.Path.is_symlink\n"
+            "def fake(self):\n"
+            f"    return self.name == {link_name!r} or original(self)\n"
+            "pathlib.Path.is_symlink = fake\n"
+            f"sys.argv = {['repo_inventory.py', *args]!r}\n"
             "raise SystemExit(ri.main())\n")
     return subprocess.run([sys.executable, "-c", code],
                           capture_output=True, text=True, errors="replace")
@@ -203,6 +233,29 @@ def build_git_repo(root: pathlib.Path) -> None:
     git_ok(root, *GIT_IDENTITY, "commit", "-q", "-m", "tracked-mode fixture")
 
 
+def build_counter_repo(root: pathlib.Path) -> bool:
+    """A REAL repository with one tracked text file, binary, *.pyc and symlink each.
+
+    Returns whether the symlink could be created for real: a Windows host without the symlink
+    privilege gets a regular file instead, and `run_with_fake_symlink` fakes the flag at the CLI
+    entry point (the skip-and-count policy under test is the same either way).
+    """
+    write(root, COUNTER_TEXT, "hello\n")
+    (root / COUNTER_BIN).write_bytes(b"\x00blob\x00\n")
+    write(root, COUNTER_PYC, lines(2))
+    (root / "docs").mkdir()
+    try:
+        os.symlink(COUNTER_TEXT, root / COUNTER_LINK)
+        real_link = True
+    except OSError:
+        write(root, COUNTER_LINK, "see readme.md\n")
+        real_link = False
+    git_ok(root, "init", "-q")
+    git_ok(root, "add", "-A")
+    git_ok(root, *GIT_IDENTITY, "commit", "-q", "-m", "skip-counter fixture")
+    return real_link
+
+
 def pack(records: list[tuple[str, int]], max_lines: int) -> list[dict]:
     return ri.pack_shards([{"path": p, "lines": n, "bytes": n} for p, n in records], max_lines)
 
@@ -220,6 +273,10 @@ def main() -> int:
         expect(paths == sorted(paths), "files must be sorted by path")
         expect(inv["total_files"] == len(EXPECTED), f"total_files: {inv['total_files']}")
         expect(inv["total_lines"] == TOTAL_LINES, f"total_lines: {inv['total_lines']}")
+        # The walk drops cached.pyc and the two binaries: every skip category is counted.
+        expect((inv["skipped_pyc"], inv["skipped_binary"], inv["skipped_symlink"],
+                inv["skipped_unreadable"], inv["skipped"]) == (1, 2, 0, 0, 3),
+               f"the walk must count every skip category: {inv}")
 
         # 3-4. Line and byte counting (trailing newline does not add a line, no trailing newline
         #      does not lose one).
@@ -274,9 +331,13 @@ def main() -> int:
         except ValueError:
             pass
 
-        # 10. Shards of the synthetic repo (max-lines 15): oversized lone shard, then greedy.
+        # 10. Shards of the synthetic repo (max-lines 15): oversized lone shard, then greedy;
+        #     the plan carries the same skip counters as the inventory.
         plan = ri.shards(root, 15)
         expect(plan["total_shards"] == len(plan["shards"]), "total_shards must match the list")
+        expect((plan["skipped_pyc"], plan["skipped_binary"], plan["skipped_symlink"],
+                plan["skipped_unreadable"], plan["skipped"]) == (1, 2, 0, 0, 3),
+               f"the shard plan must carry the skip counters: {plan}")
         expect(plan["shards"] == [
             {"id": "shard-1", "files": [BIG], "lines": 25, "oversized": True},
             {"id": "shard-2", "files": [NOTES, A_PY], "lines": 13},
@@ -314,8 +375,11 @@ def main() -> int:
         empty.mkdir()
         try:
             expect(ri.inventory(empty)["total_files"] == 0, "an empty repo must have 0 files")
-            expect(ri.shards(empty, 20000) == {"shards": [], "total_shards": 0},
-                   "an empty repo must have 0 shards")
+            expect(ri.shards(empty, 20000) == {"shards": [], "total_shards": 0,
+                                               "skipped_unreadable": 0, "skipped_binary": 0,
+                                               "skipped_symlink": 0, "skipped_pyc": 0,
+                                               "skipped": 0},
+                   "an empty repo must have 0 shards and zeroed skip counters")
         finally:
             empty.rmdir()
 
@@ -419,6 +483,10 @@ def main() -> int:
                              and b"\x00" not in (root / rel).read_bytes()[:ri.BINARY_SNIFF_BYTES]]
         expect(paths == sorted(expected_from_git),
                f"--tracked must equal the NUL-safe tracked set: {paths} != {expected_from_git}")
+        # The tracked binary and *.pyc never enter the list but are counted by category.
+        expect((inv["skipped_binary"], inv["skipped_pyc"], inv["skipped_symlink"],
+                inv["skipped_unreadable"], inv["skipped"]) == (1, 1, 0, 0, 2),
+               f"the tracked skips must be counted by category: {inv}")
 
         # 17. Counting is IDENTICAL to the walk: the same file yields the same record in both modes,
         #     and the flag-less walk still sees the untracked and ignored paths (escape hatch).
@@ -444,8 +512,11 @@ def main() -> int:
         expect([s["files"] for s in plan["shards"]] == [TRACKED_TEXT],
                f"the default cap must give one tracked shard: {plan}")
         packed = ri.pack_shards(inv["files"], 4)
-        expect(ri.shards(root, 4, tracked=True) == {"shards": packed, "total_shards": len(packed)},
-               "tracked shards must pack exactly the tracked records")
+        expect(ri.shards(root, 4, tracked=True) == {"shards": packed, "total_shards": len(packed),
+                                                    "skipped_unreadable": 0, "skipped_binary": 1,
+                                                    "skipped_symlink": 0, "skipped_pyc": 1,
+                                                    "skipped": 2},
+               "tracked shards must pack exactly the tracked records and carry the counters")
         expect(sum(len(s["files"]) for s in packed) == len(TRACKED_TEXT),
                f"every tracked file must appear in exactly one shard: {packed}")
 
@@ -473,6 +544,8 @@ def main() -> int:
                f"CLI --tracked must list the tracked set: {res.stdout!r}")
         expect(payload["total_lines"] == TRACKED_TOTAL_LINES and payload["skipped_unreadable"] == 0,
                f"unexpected --tracked payload: {res.stdout!r}")
+        expect((payload["skipped_binary"], payload["skipped_pyc"], payload["skipped"]) == (1, 1, 2),
+               f"the CLI inventory must count the tracked skips: {res.stdout!r}")
         walk_paths = [f["path"]
                       for f in json.loads(run("inventory", "--repo", str(root)).stdout)["files"]]
         expect(UNTRACKED_SECRET in walk_paths
@@ -535,10 +608,39 @@ def main() -> int:
         expect(res.returncode == 0
                and [f["path"] for f in json.loads(res.stdout)["files"]] == sorted(walk_paths),
                f"the walk must not need git at all: {res.stdout!r} {res.stderr!r}")
+
+        # 23. The skip counters of the TRACKED set: a tracked binary, a tracked symlink and a
+        #     tracked *.pyc enter no file list and no shard, but BOTH payloads count them by
+        #     category — a committed keystore/archive/prebuilt artifact can never vanish silently
+        #     from the review plan. A Windows host without the symlink privilege cannot create a
+        #     real symlink, so there the fixture link is a regular file and is_symlink is faked
+        #     for exactly that path at the real CLI entry point (see run_with_fake_symlink).
+        counter = tmp / "counter"
+        counter.mkdir()
+        real_link = build_counter_repo(counter)
+        run_cli = run if real_link else lambda *a: run_with_fake_symlink("linked.md", *a)
+        for cmd in ("inventory", "shards"):
+            res = run_cli(cmd, "--repo", str(counter), "--tracked")
+            expect(res.returncode == 0, f"{cmd} --tracked must exit 0: {res.stderr!r}")
+            payload = json.loads(res.stdout)
+            expect((payload["skipped_binary"], payload["skipped_symlink"], payload["skipped_pyc"],
+                    payload["skipped_unreadable"], payload["skipped"]) == (1, 1, 1, 0, 3),
+                   f"{cmd} --tracked must count every skip category: {res.stdout!r}")
+            listed = ([f["path"] for f in payload["files"]] if cmd == "inventory"
+                      else [p for s in payload["shards"] for p in s["files"]])
+            expect(listed == [COUNTER_TEXT],
+                   f"{cmd} --tracked must list only the text file: {listed}")
+            for rel in (COUNTER_BIN, COUNTER_PYC, COUNTER_LINK):
+                expect(rel not in listed, f"{rel} must be skipped by {cmd}: {listed}")
+        if real_link:
+            inv = ri.inventory(counter, tracked=True)
+            expect((inv["skipped_binary"], inv["skipped_symlink"], inv["skipped_pyc"],
+                    inv["skipped"]) == (1, 1, 1, 3),
+                   f"the module must count the tracked symlink: {inv}")
     finally:
         remove_tree(tmp)
 
-    # 23. stdlib-only contract (no third-party imports).
+    # 24. stdlib-only contract (no third-party imports).
     src = pathlib.Path(ri.__file__).read_text(encoding="utf-8")
     imported = set(re.findall(r"^(?:import|from)\s+([A-Za-z0-9_]+)", src, flags=re.M))
     # `subprocess` (stdlib) carries the single `git ls-files -z` call of --tracked.
@@ -549,10 +651,10 @@ def main() -> int:
                f"every import must come from the stdlib: {imported - set(sys.stdlib_module_names)}")
 
     print("PASS - repo_inventory.py walks, counts, sorts, packs shards and stays deterministic "
-          "(exclusions, oversized shards, unreadable files skipped and counted, CLI contract, "
-          "stdlib only), and its --tracked mode inventories exactly the NUL-safe `git ls-files` "
-          "tracked set, never an untracked or ignored path, failing explicitly when git cannot "
-          "answer.")
+          "(exclusions, oversized shards, every skip category counted in both payloads, CLI "
+          "contract, stdlib only), and its --tracked mode inventories exactly the NUL-safe "
+          "`git ls-files` tracked set, never an untracked or ignored path, failing explicitly "
+          "when git cannot answer.")
     return 0
 
 

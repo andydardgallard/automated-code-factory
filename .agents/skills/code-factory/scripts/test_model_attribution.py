@@ -303,7 +303,7 @@ def case_3_unused_role_with_events(root: pathlib.Path) -> None:
            f"the unused sentinels must be listed: {artifact['claims']!r}")
     expect("tester: mismatch (claimed=unused wire=[kimi-k3:1])" in text,
            f"the flagged line must say what happened: {text!r}")
-    expect("marked the role unused" not in text or "wire served it" in text,
+    expect("the pipeline marks the role unused, but the wire served it" in text,
            f"the reason must be explicit: {text!r}")
 
 

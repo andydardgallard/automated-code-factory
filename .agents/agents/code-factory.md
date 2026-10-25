@@ -286,6 +286,17 @@ The `task_type` selects the planning mode:
 must be clean: auto-untrack build artifacts (`target/`, `node_modules/`, `__pycache__/` etc.)
 and commit factory artifacts (`AGENTS.md`). Record `git -C <resolved repo_path> rev-parse HEAD` and
 `git -C <resolved repo_path> status --porcelain` in `<resolved repo_path>/.code-factory/state/`.
+**Destructive-action gate**: classify every destructive command BEFORE it runs — `git push`,
+`git reset --hard`, `git clean`, a `git checkout`/`git restore` of paths, `rm -rf`, a branch deletion:
+`python .agents/skills/code-factory/scripts/action_gate.py check --action "<command>" --scope
+<resolved repo_path> --mode <hitl|auto>`. `ALLOW` proceeds; `CONFIRM` needs an explicit user decision
+(in `auto` mode the factory proceeds and records the assumption); `HARD_DENY` is never executed. The
+rollback procedure classifies its restoring commands the same way, and only the main agent runs them
+(subagents are bound by `no-shared-tree-git-mutations`). Every verdict is appended to the gate's
+journal, so the run report can show what was classified.
+<!-- factory-rule: destructive-action-gate begin -->
+**Destructive-action gate (canonical wording):** before the main agent runs a destructive shell action — `git push`, `git reset --hard`, `git clean`, a `git checkout`/`git restore` of paths, `rm -rf`, or a branch deletion — it classifies the command FIRST with `python .agents/skills/code-factory/scripts/action_gate.py check --action "<command>" --scope <resolved repo_path> --mode <hitl|auto>`: `ALLOW` proceeds, `CONFIRM` proceeds only on an explicit user decision (in `auto` mode the factory proceeds and records the assumption), and `HARD_DENY` is never executed. The classification is the MAIN agent's step because only the main agent mutates the shared working tree; a subagent never runs these commands at all (rule `no-shared-tree-git-mutations`). The rollback procedure classifies its own `git checkout`/`git reset`/`rm` the same way before restoring the tree, and a CONFIRM or HARD_DENY answer is not a reason to skip the classification of the next command.
+<!-- factory-rule: destructive-action-gate end -->
 **Commit policy**: read `commit_exclude` from the task (if present). These glob patterns are
 files the factory may modify (backups/tests/rollback) but must NEVER add to a git commit.
 **Models**: resolve the matrix DETERMINISTICALLY with the single implementation of the precedence
@@ -296,7 +307,12 @@ task NAMES gets that exact model and is never substituted — a generator/judge 
 TASK-named model is a `models_warning` naming both roles and both models, never a swap; a role the
 task does not name takes the default-matrix value (`default_model` / `[secondary_model]` via the
 role's `model_preference`). Record the resolved matrix in `.code-factory/state/pipeline.yaml` under
-`models_used`. If the task names a Kimi (K3) or Qwen
+`models_used`. If `model_matrix.py resolve` exits 1, the default matrix breaks its own
+generator != judge rule — do NOT start the run on it: widen `[secondary_model]` in the CLI config
+so the two sides differ in family, or pin `models.<role>` for the named role(s) in the task's
+`models:` block, then re-run the pre-flight; when the ERROR says both roles take the same side of
+the default matrix, only the pinning remedy can help. Exit 2 is a contract error (unreadable task
+file or unclassifiable alias) — fix the named input, not the matrix. If the task names a Kimi (K3) or Qwen
 model, apply the routing rules from `references/providers.md` (map alias → provider config) and
 route their errors per `references/error-routing.md` §1.1. If you are running with the new CLI,
 check during pre-flight that `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is exported (Bash:
@@ -473,7 +489,7 @@ Acceptance is machine-checked, not asserted: build the criteria input JSON from 
 `acceptance_criteria` (the main agent builds it — stdlib has no YAML parser) and run
 `python .agents/skills/code-factory/scripts/verify_acceptance.py --input <criteria.json>
 --output .code-factory/state/acceptance.md --repo <project> [--regression pass|fail|not-run]
-[--ledger --evidence-files <file...>] [--run-id <run_id>]`. Criteria that carry `verify` are
+[--ledger .code-factory/state/evidence.json --evidence-files <file...>] [--run-id <run_id>]`. Criteria that carry `verify` are
 executed for real: the
 command, its exit code and an output excerpt land in `acceptance.md`; criteria without `verify`
 are labeled `derived` (inferred from other artifacts) or `unverified` and never count as proof. A
@@ -484,7 +500,7 @@ accept `--run-id <run_id>` (`verify_acceptance.py`, `evidence_ledger.py`,
 `gen_code_changes_report.py`) — pass it so acceptance, the signed evidence and the report code
 changes are stamped with the same id as the checkpoint, the logs and the memory entry.
 <!-- factory-rule: verified-acceptance begin -->
-**Verified acceptance (canonical wording):** acceptance is machine-verifiable — `scripts/verify_acceptance.py` actually executes the criteria with `verify` and writes exit codes and output excerpts into `.code-factory/state/acceptance.md`. Exit 0 is possible only on SUCCESS: at least one criterion with `verify`, all criteria MET, baseline proven; criteria without `verify` are marked `derived`/`unverified` and are not evidence. STALE evidence or a degraded baseline lowers the verdict to DEGRADED; SUCCESS without regression evidence is impossible.
+**Verified acceptance (canonical wording):** acceptance is machine-verifiable — `scripts/verify_acceptance.py` actually executes the criteria with `verify` and writes exit codes and output excerpts into `.code-factory/state/acceptance.md`. Exit 0 is possible only on SUCCESS: at least one criterion with `verify`, all criteria that carry `verify` are MET, baseline proven; criteria without `verify` are marked `derived`/`unverified` and are not evidence. STALE evidence or a degraded baseline lowers the verdict to DEGRADED; SUCCESS without regression evidence is impossible.
 <!-- factory-rule: verified-acceptance end -->
 
 Remove backups. Produce the final business-language report: what changed, test results, business

@@ -18,11 +18,24 @@ Ledger JSON (created on demand by `stamp`, written atomically: same-directory te
 os.replace, so a crash can never leave a half-written ledger):
   {"version": 1,
    "entries": [{"name": "regression", "result": "pass", "fingerprint": "<64 hex>",
+                "files": ["src/a.py", "src/b.py"],
                 "timestamp": "2026-09-24T10:00:00+00:00", "log": "<path or null>",
                 "run_id": "20260922-442cd2f8"}]}
 Re-stamping a name refreshes that entry, so one evidence name has exactly one current entry.
 `run_id` (see `run_id.py`) attributes an entry to the run that produced it; it is written from
 `--run-id` and defaults to "", so entries written before the field existed still load unchanged.
+
+Every entry also records the exact `--files` scope it was stamped with (`files`: repo-relative,
+sorted, de-duplicated). `check` recomputes the fingerprint of EACH entry against its own recorded
+scope, so a ledger whose entries were stamped with different scopes is verified per entry. A caller
+`--files` that differs from an entry's recorded scope is a SCOPE MISMATCH, not a content change: the
+entry stays STALE (fail-closed — evidence is never FRESH on doubt), but the reason names the scope
+(`signed: ...; checked: ...`) instead of claiming the files changed, and the report carries a
+`scope_mismatch` list so the caller can tell a real edit from a different `--files` set. Calling
+`check` with NO `--files` verifies every entry against its own recorded scope — the way a
+mixed-scope ledger is checked. An entry written before the `files` field existed carries no
+recorded scope: it is measured against the caller's `--files` when one was given, and is reported
+`UNSCOPED` (fail-closed, with the reason naming the missing scope) when the caller gave none.
 
 Usage:
   python evidence_ledger.py sign  --files src/a.py src/b.py [--repo .] [--run-id <id>]
@@ -50,6 +63,7 @@ LEDGER_VERSION = 1
 RESULTS = ("pass", "fail")
 FRESH = "FRESH"
 STALE = "STALE"
+UNSCOPED = "UNSCOPED"   # no recorded scope AND no caller scope: unverifiable
 MISSING = "missing"
 UNREADABLE = "unreadable"
 # Evidence name the acceptance gate requires to be FRESH and passing (see acceptance_blocker).
@@ -104,6 +118,12 @@ def fingerprint_files(files, root) -> str:
     return hashlib.sha256("\n".join(sorted(records.values())).encode("utf-8")).hexdigest()
 
 
+def normalize_scope(files, root) -> list[str]:
+    """The canonical spelling of a scope: repo-relative posix paths, sorted and de-duplicated."""
+    root = pathlib.Path(root)
+    return sorted({_relative(_abs(item, root), root) for item in files})
+
+
 def load_ledger(path) -> list[dict]:
     """Read the ledger entries; raise ValueError with a human-readable cause.
 
@@ -135,9 +155,17 @@ def load_ledger(path) -> list[dict]:
         fingerprint = item.get("fingerprint", "")
         if not isinstance(fingerprint, str):
             raise ValueError(f"ledger entry #{idx} ({name}): 'fingerprint' must be a string")
+        files = item.get("files")
+        if files is not None and (not isinstance(files, list)
+                                  or not all(isinstance(f, str) for f in files)):
+            raise ValueError(f"ledger entry #{idx} ({name}): 'files' must be a list of strings")
         entries.append({"name": name.strip(),
                         "result": str(item.get("result", "")).strip().lower(),
                         "fingerprint": fingerprint.strip().lower(),
+                        # `files` (the stamped scope) was added later: an older entry has none
+                        # (None) and is checked against the caller's --files, as before.
+                        "files": (sorted({f.strip() for f in files if f.strip()})
+                                  if files is not None else None),
                         "timestamp": str(item.get("timestamp", "")),
                         "log": item.get("log"),
                         # `run_id` was added later: an older entry simply has no run and loads as "".
@@ -165,31 +193,70 @@ def save_ledger(path, entries: list[dict]) -> None:
 
 
 def evaluate(entries: list[dict], files, root) -> dict:
-    """Recompute the scope fingerprint and mark every entry FRESH/STALE.
+    """Recompute the fingerprint of every entry against ITS OWN scope and mark it FRESH/STALE.
 
-    Returns {"fingerprint", "ok", "reason", "rows", "stale", "fresh"}; `ok` follows the CLI rule
-    (all entries FRESH and all results `pass`), while the stricter acceptance rule lives in
-    `acceptance_blocker`.
+    Returns {"fingerprint", "ok", "reason", "rows", "stale", "fresh", "scope_mismatch"}; `ok`
+    follows the CLI rule (all entries FRESH and all results `pass`), while the stricter acceptance
+    rule lives in `acceptance_blocker`. Each row carries its `scope` and a `scope_mismatch` flag.
     """
-    current = fingerprint_files(files, root)
-    rows = [{**entry, "status": FRESH if entry.get("fingerprint") == current else STALE}
-            for entry in entries]
+    root = pathlib.Path(root)
+    caller_scope = normalize_scope(files, root)
+    rows: list[dict] = []
+    scope_mismatch: list[str] = []
+    for entry in entries:
+        recorded = entry.get("files")
+        scoped = True
+        if recorded is None:
+            # A legacy entry carries no scope of its own: the caller's --files is all we have, and
+            # with NO caller scope there is nothing to measure it against — that is UNSCOPED, not
+            # "the signed files changed".
+            scope, mismatch = caller_scope, False
+            scoped = bool(caller_scope)
+        else:
+            scope = normalize_scope(recorded, root)
+            mismatch = bool(caller_scope) and scope != caller_scope
+        current = fingerprint_files(scope, root)
+        if mismatch:
+            scope_mismatch.append(entry["name"])
+        if not scoped:
+            status = UNSCOPED
+        elif entry.get("fingerprint") == current and not mismatch:
+            status = FRESH
+        else:
+            status = STALE
+        rows.append({**entry, "scope": scope, "scope_mismatch": mismatch, "status": status})
     stale = [r["name"] for r in rows if r["status"] == STALE]
     fresh = [r["name"] for r in rows if r["status"] == FRESH]
+    unscoped = [r["name"] for r in rows if r["status"] == UNSCOPED]
+    changed = [r["name"] for r in rows if r["status"] == STALE and not r["scope_mismatch"]]
     failed = [r["name"] for r in rows if r["result"] != "pass"]
     if not rows:
         reason = "the evidence ledger has no entries: nothing was signed for this working tree"
-    elif stale and failed:
-        reason = (f"evidence is STALE: {', '.join(stale)}; and not pass: {', '.join(failed)}")
-    elif stale:
-        reason = (f"evidence is STALE, the signed files changed after it was recorded: "
-                  f"{', '.join(stale)}")
-    elif failed:
-        reason = f"evidence result is not pass: {', '.join(failed)}"
-    else:
+    elif not stale and not unscoped and not failed:
         reason = f"all {len(rows)} evidence entries are FRESH and passed"
-    return {"fingerprint": current, "ok": bool(rows) and not stale and not failed,
-            "reason": reason, "rows": rows, "stale": stale, "fresh": fresh}
+    else:
+        problems = []
+        if unscoped:
+            problems.append(
+                "no scope is recorded for it and none was given, so it cannot be verified "
+                "(pass --files to check it): " + ", ".join(unscoped))
+        if changed:
+            problems.append("the signed files changed after it was recorded: " + ", ".join(changed))
+        if scope_mismatch:
+            checked = ", ".join(caller_scope) or "(none)"
+            problems.append(
+                "the check scope differs from the stamped one (scope mismatch): "
+                + "; ".join(f"{r['name']} signed [{', '.join(r['scope']) or '(none)'}], "
+                            f"checked [{checked}]"
+                            for r in rows if r["scope_mismatch"]))
+        if failed:
+            problems.append("not pass: " + ", ".join(failed))
+        head = "evidence is STALE: " if (stale or unscoped) else "evidence result is "
+        reason = head + "; and ".join(problems)
+    return {"fingerprint": fingerprint_files(files, root),
+            "ok": bool(rows) and not stale and not unscoped and not failed,
+            "reason": reason, "rows": rows, "stale": stale, "fresh": fresh,
+            "unscoped": unscoped, "scope_mismatch": scope_mismatch}
 
 
 def acceptance_blocker(rows: list[dict]) -> str:
@@ -203,8 +270,15 @@ def acceptance_blocker(rows: list[dict]) -> str:
         return (f"the evidence ledger has no entries: no FRESH {REQUIRED_EVIDENCE}=pass evidence")
     stale = [r["name"] for r in rows if r["status"] == STALE]
     if stale:
-        return (f"STALE evidence, the working tree changed after it was signed: "
-                f"{', '.join(stale)}")
+        mismatched = [r["name"] for r in rows if r["status"] == STALE and r.get("scope_mismatch")]
+        changed = [name for name in stale if name not in mismatched]
+        parts = []
+        if changed:
+            parts.append(f"the working tree changed after it was signed: {', '.join(changed)}")
+        if mismatched:
+            parts.append("the verified scope differs from the stamped one (scope mismatch): "
+                         + ", ".join(mismatched))
+        return "STALE evidence, " + "; ".join(parts)
     failed = [r["name"] for r in rows if r["result"] != "pass"]
     if failed:
         return f"evidence result is not pass: {', '.join(failed)}"
@@ -228,6 +302,7 @@ def cmd_stamp(args: argparse.Namespace) -> int:
     entry = {"name": args.name,
              "result": args.result,
              "fingerprint": fingerprint_files(args.files, pathlib.Path(args.repo)),
+             "files": normalize_scope(args.files, args.repo),
              "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
              "log": args.log or None,
              "run_id": args.run_id or ""}

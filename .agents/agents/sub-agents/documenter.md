@@ -48,14 +48,14 @@ Work in two steps so the validator has a baseline to diff against:
 1. **Snapshot first** — before editing any documentation, snapshot the files you are going to
    touch:
    ```bash
-   python3 .agents/skills/code-factory/scripts/validate_documentation.py snapshot \
+   python .agents/skills/code-factory/scripts/validate_documentation.py snapshot \
      --repo <repository root from the briefing> \
      --baseline <repository root from the briefing>/.code-factory/docs_baseline \
      --files <rel-path> [<rel-path> ...]
    ```
 2. **Edit the docs only**, then **check** the same file list against that snapshot:
    ```bash
-   python3 .agents/skills/code-factory/scripts/validate_documentation.py check \
+   python .agents/skills/code-factory/scripts/validate_documentation.py check \
      --repo <repository root from the briefing> \
      --baseline <repository root from the briefing>/.code-factory/docs_baseline \
      --files <rel-path> [<rel-path> ...]
@@ -64,6 +64,10 @@ Work in two steps so the validator has a baseline to diff against:
 - If `check` PASSES → return the structured report below.
 - If `check` FAILS → fix exactly the reported violations (remove any non-documentation change) and
   run `check` once more. That is your single retry.
+- **`check --derive` is the scope guard**: it recomputes the changed set from `git status` and fails
+  when a changed file is missing from `--files`. Run it once after the plain `check` passes: your
+  own list is not the authority on what you touched — the repository is. A file you changed but did
+  not declare is a violation, not a footnote.
 - If it still fails after the retry → do NOT keep editing. Record a `documentation_debt` item in
   your report (with the validator's error) and return; the main agent will log it in the run
   report and the factory continues. The factory must never fail because of documentation.

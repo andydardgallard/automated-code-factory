@@ -98,7 +98,7 @@ HARD_DENY rules:
     (`main` / `master`, in any refspec form: `main`, `refs/heads/main`, `origin/main`, `HEAD:main`),
   * `git push --all` / `--mirror` (they publish every local branch, default branch included),
   * `git reset --hard` against a remote-tracking ref (`origin/...`, `upstream/...`, `@{u}`,
-    `refs/remotes/...`),
+    `refs/remotes/...`), and `git reset --hard` at a pathspec outside the declared scope,
   * deletion (`rm`, `rmdir`, `rd`, `del`, `erase`, `Remove-Item`, `git rm`) of a target that is NOT
     covered by the declared `--scope`: filesystem root / `/*` / `~` / a drive root, absolute paths
     outside scope, `..` escapes, and — deliberately — any delete when no `--scope` was given
@@ -108,7 +108,12 @@ HARD_DENY rules:
 
 CONFIRM rules (destructive but inside the declared scope, and anything the gate cannot read):
   * deletion of a path covered by `--scope`,
-  * `git checkout -- <path>` / `git restore` of paths inside scope,
+  * `git checkout -- <path>` / `git restore` of paths inside scope. Without the `--` separator an
+    operand that can only be a pathspec (`.`, `./...`, an absolute or home path, a wildcard)
+    takes the SAME scope route — `.` IS a pathspec that discards the whole tree, never an ALLOW —
+    and an operand with a path separator is ambiguous (a branch name or a path) and CONFIRMs;
+    only a plain branch/ref switch (`git checkout main`, `git checkout -b feature`) does not
+    discard file changes and stays ALLOW,
   * `git clean` (repo-wide by nature). `git clean -n` / `--dry-run` is a no-op → ALLOW,
   * `git stash` in its mutating forms: a bare `git stash` (which IS the default `push`), `push`,
     `pop`, `apply`, `drop`, `clear`. Stashing rewrites the SHARED working tree of the run, where
@@ -816,13 +821,57 @@ def classify_push(argv: list[str]) -> tuple[str, str]:
     return ALLOW, f"git push targets a non-default branch ({', '.join(operands[1:])})"
 
 
-def classify_reset(argv: list[str]) -> tuple[str, str]:
+def classify_reset(argv: list[str], scopes: list[str]) -> tuple[str, str]:
+    """`git reset --hard` by its TARGET: a remote ref denies, a pathspec discards the tree.
+
+    A pathspec form (`git reset --hard -- .`, `git reset --hard src/`) throws away every
+    uncommitted change it covers, exactly like `git checkout -- <path>` — the operand is a path,
+    not a ref, so it is routed through the same scope logic instead of being called a local-ref
+    reset. A plain ref reset (`HEAD~1`, `feature`) stays ALLOW: it is the rollback mechanism.
+    """
     if "--hard" not in flags_of(argv):
         return ALLOW, "git reset without --hard does not discard the working tree"
-    remote = [t for t in operands_of(argv, 2) if norm(t).startswith(REMOTE_REF_PREFIXES)]
+    operands = operands_of(argv, 2)
+    if not operands:
+        return CONFIRM, ("git reset --hard with no target resets to HEAD and discards the whole "
+                         "working tree")
+    remote = [t for t in operands if norm(t).startswith(REMOTE_REF_PREFIXES)]
     if remote:
         return HARD_DENY, f"git reset --hard rewinds to a remote ref ({', '.join(remote)})"
+    paths = [t for t in operands if is_pathspec_token(t)]
+    if paths:
+        outside = [t for t in paths if not in_scope(t, scopes)]
+        if outside:
+            return HARD_DENY, (f"git reset --hard discards changes outside the declared scope "
+                               f"({', '.join(outside)})")
+        return CONFIRM, (f"git reset --hard discards uncommitted changes at a pathspec "
+                         f"({', '.join(paths)})")
+    if any("/" in t or "\\" in t for t in operands):
+        return CONFIRM, (f"git reset --hard {' '.join(operands)} is ambiguous: an operand with a "
+                         f"path separator may be a pathspec that discards uncommitted changes — "
+                         f"use `git reset --hard -- <path>` or a plain ref to say so explicitly")
     return ALLOW, "git reset --hard on a local ref"
+
+
+CHECKOUT_REF_FLAGS = ("-b", "-B", "--orphan", "--detach")
+# A drive-letter path (`C:\x`, `C:/x`) can only be a pathspec, never a branch name.
+DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def is_pathspec_token(token: str) -> bool:
+    """True when a `git checkout` operand can ONLY be a pathspec, never a branch/ref name.
+
+    Branch names never look like these: `.` / `..` (the current/parent directory), a `./` /
+    `../` relative form, an absolute or home path, a drive-letter path, a trailing separator
+    (a directory spelling), or a glob wildcard. git itself rejects most of them as ref names,
+    so without a `--` separator such an operand is unambiguously a path the command discards.
+    """
+    raw = token.strip().strip('"').strip("'")
+    t = norm(raw)
+    return (t in (".", "..") or t.startswith("../")
+            or raw.startswith(("./", ".\\", "/", "~")) or raw.endswith(("/", "\\"))
+            or bool(DRIVE_PATH_RE.match(raw))
+            or any(mark in raw for mark in "*?["))
 
 
 def classify_checkout(argv: list[str], scopes: list[str]) -> tuple[str, str]:
@@ -830,9 +879,32 @@ def classify_checkout(argv: list[str], scopes: list[str]) -> tuple[str, str]:
     rest = argv[2:]
     paths: list[str] = []
     if sub == "checkout":
-        if "--" not in rest:
-            return ALLOW, "git checkout without a pathspec does not discard file changes"
-        paths = rest[rest.index("--") + 1:]
+        if "--" in rest:
+            paths = rest[rest.index("--") + 1:]
+        else:
+            operands = operands_of(rest, 0)
+            if any(f in CHECKOUT_REF_FLAGS for f in flags_of(rest)):
+                return ALLOW, ("git checkout -b/-B/--orphan/--detach creates or switches a "
+                               "branch; it does not discard file changes")
+            if not operands:
+                return ALLOW, "bare git checkout without a pathspec does not discard file changes"
+            if len(operands) >= 2:
+                # `git checkout <tree-ish> <path>...`: with two operands git reads the FIRST as a
+                # tree-ish and EVERYTHING after it as paths, so the command restores files from
+                # that tree over the uncommitted ones.
+                paths = operands[1:]
+            elif any(is_pathspec_token(t) for t in operands):
+                # One unambiguous pathspec makes git read EVERY operand as a path: the command
+                # discards file changes, so the operands take the same scope route as after `--`.
+                paths = operands
+            elif any("/" in t or "\\" in t for t in operands):
+                return CONFIRM, (f"git checkout {' '.join(operands)} without `--` is ambiguous: "
+                                 f"an operand with a path separator may be a pathspec that "
+                                 f"discards uncommitted changes — use `git checkout -- <path>` "
+                                 f"to say so explicitly")
+            else:
+                return ALLOW, (f"git checkout {' '.join(operands)} switches the branch/ref; "
+                               f"it does not discard file changes")
     else:  # git restore
         paths = operands_of(rest, 0)
     if not paths:
@@ -1178,7 +1250,7 @@ def classify_command(argv: list[str], scopes: list[str], depth: int = 0,
         if sub == "push":
             return classify_push(argv)
         if sub == "reset":
-            return classify_reset(argv)
+            return classify_reset(argv, scopes)
         if sub in ("checkout", "restore"):
             return classify_checkout(argv, scopes)
         if sub == "clean":

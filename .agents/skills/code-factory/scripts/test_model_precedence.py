@@ -31,7 +31,13 @@ Cases (fixtures live in a tempdir; nothing is written into the repository):
   9. `precedence()` names all three rules and the committee exception in one paragraph;
  10. the CLI contract: --help exits 0, the unknown-alias and unreadable-task errors exit 2 with a
      message and no traceback, a default-matrix collision in `resolve` exits 1, `default` on a
-     missing config exits 0, and the module imports stdlib only.
+     missing config exits 0, and the module imports stdlib only;
+ 11. an UNPINNED task (no `models:` block) passes `resolve` with exit 0 and no ERROR on the
+     shipped sub-agent frontmatter + a two-model config (and on this machine's real config):
+     the judge-side advisor sits on the primary side, opposite the secondary-side generators;
+ 12. a collision where both roles read the SAME side of the config names ONLY the achievable fix
+     (pin models.<role> — widening that one key cannot separate them), and a side that resolves
+     no model at all is a warning ("cannot be fully checked"), not a silent pass.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -401,6 +407,9 @@ def case_10_cli(root: pathlib.Path) -> None:
            f"a default-matrix collision must exit 1: {failing.returncode} {out(failing)!r}")
     expect("ERROR:" in out(failing), f"the error must be printed: {out(failing)!r}")
     expect(b"Traceback" not in failing.stderr, f"no traceback: {err(failing)!r}")
+    # The two roles sit on DIFFERENT sides here, so both remedies are achievable and named.
+    expect("[secondary_model]" in out(failing) and "pin" in out(failing),
+           f"the error must name the achievable fixes: {out(failing)!r}")
 
     as_json = run("resolve", "--task", str(task_file), "--config", str(no_defaults), "--json")
     expect(as_json.returncode == 0 and '"resolved"' in out(as_json),
@@ -431,6 +440,65 @@ def case_10_cli(root: pathlib.Path) -> None:
     expect(imported <= allowed, f"model_matrix must be stdlib-only, imports={imported}")
 
 
+def case_11_shipped_default_matrix_is_satisfiable(root: pathlib.Path) -> None:
+    """B3: an UNPINNED task (no `models:` block — a legal task) must pass the pre-flight.
+
+    The REAL sub-agent frontmatter of this repository plus an ordinary two-model config
+    (primary + [secondary_model]) must resolve with exit 0 and no ERROR: the judge-side advisor
+    reads the PRIMARY side, opposite the secondary-side generators. Before the advisor fix this
+    case failed with three default-matrix ERRORs that no config widening could ever fix.
+    """
+    no_models = write(root, "task-unpinned.yaml", FIXTURE_TASK_NO_MODELS)
+    config = write(root, "config-two-models.toml", FIXTURE_CONFIG)
+    res = run("resolve", "--task", str(no_models), "--config", str(config))
+    expect(res.returncode == 0,
+           f"the shipped default matrix must satisfy an unpinned task: {out(res)!r}")
+    expect("ERROR:" not in out(res), f"no family error expected here: {out(res)!r}")
+    default = mm.load_default_matrix(config)
+    for judge in mm.JUDGE_SIDE:
+        expect(judge in default, f"the shipped frontmatter must resolve {judge}: {default!r}")
+        for generator in mm.GENERATOR_SIDE:
+            expect(mm.family(default[generator]) != mm.family(default[judge]),
+                   f"{generator} and {judge} must sit on different families: {default!r}")
+
+    # The REAL config of this machine (when present) must pass the same pre-flight.
+    if mm.DEFAULT_CONFIG.is_file():
+        real = run("resolve", "--task", str(no_models))
+        expect(real.returncode == 0,
+               f"the real config must satisfy an unpinned task: {out(real)!r} {err(real)!r}")
+        expect("ERROR:" not in out(real), f"no family error on the real config: {out(real)!r}")
+
+
+def case_12_same_side_collision_and_empty_side() -> None:
+    """B3: achievable remedies only, and an empty side is a warning, not a silent pass."""
+    one_sided = mm.check_families(mm.resolve_all({"coder": "kimi-k3"}, {}))
+    expect(one_sided["errors"] == [], f"a missing judge side is not an error: {one_sided!r}")
+    expect(any("judge" in warning and "cannot be fully checked" in warning
+               for warning in one_sided["warnings"]),
+           f"a judge side with no model must be warned about, not silently pass: {one_sided!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        fixtures = pathlib.Path(tmp)
+        # A judge on the GENERATOR's side: both read [secondary_model], so widening it can
+        # never separate them — the error must name pinning and must NOT offer the widening.
+        write(fixtures, "coder.md", SUBAGENT_CODER)
+        write(fixtures, "code-reviewer.md",
+              "---\nname: factory-code-reviewer\nmodel_preference: secondary\n---\n\nbody\n")
+        config = write(fixtures, "config.toml", FIXTURE_CONFIG)
+        real_dir = mm.SUBAGENTS_DIR
+        try:
+            mm.SUBAGENTS_DIR = fixtures
+            check = mm.check_families(mm.resolve_all({}, mm.load_default_matrix(config)))
+        finally:
+            mm.SUBAGENTS_DIR = real_dir
+        expect(check["errors"], f"a same-side collision must be an error: {check!r}")
+        message = check["errors"][0]
+        expect("pin" in message and "models.coder" in message,
+               f"the same-side error must name the achievable fix (pinning): {message!r}")
+        expect("[secondary_model]" not in message,
+               f"widening the key both roles read is NOT an achievable fix: {message!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -444,6 +512,8 @@ def main() -> int:
         case_8_vaccination_probe(root)
         case_9_precedence_text()
         case_10_cli(root)
+        case_11_shipped_default_matrix_is_satisfiable(root)
+        case_12_same_side_collision_and_empty_side()
 
     print("PASS - model_matrix.py keeps the task's model verbatim on a collision (warning only), "
           "falls back to the default matrix for an unnamed role (error when the default matrix "

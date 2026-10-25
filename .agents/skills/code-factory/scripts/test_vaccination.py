@@ -45,14 +45,22 @@ first `AssertionError`/`Error` line, truncated), because "some non-zero exit" al
 A production module that did not exist at the base commit makes the pre-fix import fail by
 construction; that is still an honest bite, but it is named as an explicit exemption
 (`[exempt: module '<name>' did not exist at the base commit]`) instead of being passed off as a
-behavioural difference. A green pre-fix run, a red working-tree run, or a base commit git cannot
-answer for is reported as a failure of THIS harness; none of them can end in a false pass (a missing
-base commit is `SKIP` with exit 3, never `PASS`), and `BASE_SHA` disagreeing with the base commit the
-flow recorded in `.code-factory/state/git-head.txt` is a HARD failure (exit 3) naming both values —
-a stale constant would prove the wrong release.
+behavioural difference. A green pre-fix run or a red working-tree run is reported as a failure of
+THIS harness; none of them can end in a false pass.
 
-Exit code 0 = every vaccine bites and every cross-check holds, 1 = something did not, 3 = the base
-commit is unavailable (or contradicts the recorded release) so nothing could be proven.
+The base commit is resolved against git itself, never against the hand-maintained constant alone:
+without an explicit `--base` the release commit the flow recorded in
+`.code-factory/state/git-head.txt` leads and its PARENT is replayed as "before the change", so a
+`BASE_SHA` that drifted costs a printed note, not the proof; a fresh clone without the recorded
+file falls back to the constant and is still held to it. A base git cannot resolve, a recorded
+commit this repository does not know, and a base that is not an ancestor of HEAD are FAIL (exit 1)
+naming the reason — a wrong base proves the wrong release, which is a red, never a skip. The honest
+SKIP (exit 3) is kept for the single case where nothing can be answered at all: git is unavailable,
+or the history holds no previous release to replay.
+
+Exit code 0 = every vaccine bites and every cross-check holds, 1 = a vaccine did not bite, a
+cross-check failed, or the base commit contradicts the repository, 3 = the base commit cannot be
+answered for at all (no git, or no previous release) so nothing could be proven.
 """
 from __future__ import annotations
 
@@ -78,8 +86,10 @@ RULEBOOK = ".agents/skills/code-factory/references/factory-rules.md"
 STATE_HEAD = ".code-factory/state/git-head.txt"
 SCRIPTS_REL = pathlib.PurePosixPath(".agents/skills/code-factory/scripts")
 
-# The release's base commit: the tree `git archive` replays as "before the change". It is recorded
-# by the flow in `.code-factory/state/git-head.txt`; `--base` overrides it for a later release.
+# The release's base commit: the FALLBACK replayed as "before the change" when the flow's own
+# record is absent (`.code-factory/state/git-head.txt` is gitignored, so a fresh clone keeps no run
+# artifact). When the record IS there, the recorded release commit's parent leads and a drifted
+# constant only costs a note; `--base` overrides both for a later release.
 BASE_SHA = "fb43f2a400bfac6f1edcffafc5a09370425b4357"
 
 # A vaccine whose check is the local probe rather than a test module.
@@ -425,10 +435,6 @@ def pre_fix_hint(run: Run, pre_scripts: pathlib.Path) -> str:
     return hint
 
 
-def _shortened(text: str) -> str:
-    return text if len(text) <= HINT_WIDTH else text[:HINT_WIDTH - 1] + "\u2026"
-
-
 # --------------------------------------------------------------------------------------------
 # The two-run proof, one vaccine at a time
 # --------------------------------------------------------------------------------------------
@@ -438,9 +444,13 @@ def prove(root: pathlib.Path, base_sha: str, timeout: int, drift: list[str]) -> 
     known, message = commit_exists(root, base_sha)
     if not known:
         detail = f" ({message})" if message else ""
-        print(f"SKIP - vaccination cannot run without the base commit {base_sha}{detail}: the "
-              f"proof needs the release base commit, and nothing was proven")
-        return 3
+        if shutil.which("git") is None:
+            print(f"SKIP - vaccination cannot run without git{detail}: the proof needs the "
+                  "release base commit, and nothing was proven")
+            return 3
+        # resolve_base already accepted this commit: a disappearance under the harness is a red.
+        print(f"FAIL - the base commit {base_sha} cannot be replayed{detail}: nothing was proven")
+        return 1
 
     tools = sorted({tool for _vaccine, tool in REGISTRY if tool != LOCAL})
     with tempfile.TemporaryDirectory(prefix="vaccination-") as raw_tmp:
@@ -524,6 +534,74 @@ def prove(root: pathlib.Path, base_sha: str, timeout: int, drift: list[str]) -> 
 
 
 # --------------------------------------------------------------------------------------------
+# Resolving the base commit: the recorded release is one input, git is the arbiter
+# --------------------------------------------------------------------------------------------
+def git_stdout(repo: pathlib.Path, *args: str) -> tuple[bool, str]:
+    """(success, stdout-or-error) of one READ-ONLY git call."""
+    try:
+        res = subprocess.run(["git", "-C", str(repo), *args], capture_output=True)
+    except OSError as exc:
+        return False, str(exc)
+    if res.returncode != 0:
+        return False, res.stderr.decode("utf-8", "replace").strip()
+    return True, res.stdout.decode("utf-8", "replace").strip()
+
+
+def is_ancestor(repo: pathlib.Path, sha: str) -> bool:
+    """True when `sha` is an ancestor of HEAD — a base that is not replays the wrong release."""
+    try:
+        res = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, "HEAD"],
+                             capture_output=True)
+    except OSError:
+        return False
+    return res.returncode == 0
+
+
+def resolve_base(repo: pathlib.Path, base: str, explicit: bool) -> tuple[str, str, str]:
+    """The base commit to replay as the pre-fix tree: (sha, kind, message).
+
+    kind "ok"   — sha is the commit to replay;
+    kind "fail" — git answered and the answer contradicts the inputs (a base that is no commit,
+                  a recorded release this repository does not know, a base that is not an ancestor
+                  of HEAD): a wrong base proves the WRONG release, so this is red, never a skip;
+    kind "skip" — nothing can be answered at all: git is unavailable, or the history holds no
+                  previous release (the recorded commit is the root commit).
+
+    Without an explicit `--base` the commit recorded in `.code-factory/state/git-head.txt` leads:
+    the flow records the release commit there, so its PARENT is the base — a `BASE_SHA` constant
+    that drifted costs a printed note, not the proof. Without the recorded file (a fresh clone
+    keeps no run artifact) the constant is the only input and is held to the same git checks, so
+    the staleness guard is not inert there.
+    """
+    if shutil.which("git") is None:
+        return "", "skip", "git is not on PATH, so no base commit can be verified"
+    recorded_path = repo / STATE_HEAD
+    recorded = recorded_path.read_text(encoding="utf-8").strip() if recorded_path.is_file() else ""
+    if recorded and not explicit:
+        known, _message = git_stdout(repo, "rev-parse", "--verify", f"{recorded}^{{commit}}")
+        if not known:
+            return "", "fail", (f"{STATE_HEAD} records {recorded}, which this repository does not "
+                                "know — the recorded release cannot be replayed")
+        ok, parent = git_stdout(repo, "rev-parse", "--verify", f"{recorded}^")
+        if not ok:
+            return "", "skip", (f"{STATE_HEAD} records the root commit {recorded}: the history "
+                                "holds no previous release to replay as the pre-fix tree")
+        if parent != base:
+            print(f"note - BASE_SHA ({base[:7]}) disagrees with the recorded release: {STATE_HEAD} "
+                  f"names {recorded[:7]}, so the base is resolved from git as its parent "
+                  f"{parent[:7]} — a stale constant no longer vetoes the proof")
+        base = parent
+    known, message = commit_exists(repo, base)
+    if not known:
+        detail = f" ({message})" if message else ""
+        return "", "fail", f"the base commit {base} cannot be resolved{detail}"
+    if not is_ancestor(repo, base):
+        return "", "fail", (f"the base commit {base[:7]} is not an ancestor of HEAD — it would "
+                            "replay a tree that is not 'before the fix'")
+    return base, "ok", ""
+
+
+# --------------------------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------------------------
 def main(argv: list[str]) -> int:
@@ -533,8 +611,10 @@ def main(argv: list[str]) -> int:
                     "the working tree.")
     parser.add_argument("--registry-only", action="store_true",
                         help="run the fast disposition/registry cross-checks and skip the slow runs")
-    parser.add_argument("--base", default=BASE_SHA, metavar="SHA",
-                        help="base commit replayed as the pre-fix tree (default: the release base)")
+    parser.add_argument("--base", default=None, metavar="SHA",
+                        help="base commit replayed as the pre-fix tree (default: the parent of the "
+                             "release commit recorded in .code-factory/state/git-head.txt, or the "
+                             "pinned release base when no run artifact survives)")
     parser.add_argument("--timeout", type=int, default=900, metavar="SECONDS",
                         help="per-module budget; an overrun is a failure, never a green run")
     args = parser.parse_args(argv)
@@ -567,19 +647,17 @@ def main(argv: list[str]) -> int:
         print(f"PASS - cross-checks: {len(items)} item(s) disposed of, {vaccines} registered "
               f"vaccine(s), every id present ({groups}), REGISTRY and {DISPOSITION} name each other")
 
-    recorded = REPO_ROOT / STATE_HEAD
-    if recorded.is_file():
-        stated = recorded.read_text(encoding="utf-8").strip()
-        if stated and stated != args.base:
-            # A stale constant would replay the WRONG release as "before the fix": hard failure.
-            print(f"SKIP - the base commit is stale: {STATE_HEAD} records {stated}, but BASE_SHA "
-                  f"(--base) is {args.base} — a stale constant proves the wrong release, so "
-                  f"nothing can be proven")
-            return 3
-
     if args.registry_only:
         return 1 if drift else 0
-    return prove(REPO_ROOT, args.base, args.timeout, drift)
+
+    base, kind, message = resolve_base(REPO_ROOT, args.base or BASE_SHA, args.base is not None)
+    if kind == "skip":
+        print(f"SKIP - {message}: nothing could be proven")
+        return 3
+    if kind == "fail":
+        print(f"FAIL - the base commit cannot be established: {message}")
+        return 1
+    return prove(REPO_ROOT, base, args.timeout, drift)
 
 
 if __name__ == "__main__":

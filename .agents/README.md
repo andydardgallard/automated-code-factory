@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.15.0 -->
+<!-- code-factory-version: 12.16.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -66,7 +66,7 @@ projects or creates projects from scratch.
 │       │   ├── test_flow_contracts.py      # the wiring that lives in prose (Finish, index, briefing, templates)
 │       │   ├── test_vaccination.py         # every fix bites: fails on the pre-fix tree, passes here
 │       │   ├── test_prompt_structure.py    # self-test: append-only prompt structure
-│       │   ├── test_env_propagation.sh     # self-test: model env-flag propagation
+│       │   ├── test_env_propagation.sh     # self-test: the pre-flight probe reads the model env flag (set/unset)
 │       │   ├── validate_documentation.py   # documentation validator (documentation subagent)
 │       │   ├── test_validate_documentation.py  # documentation validator self-test
 │       │   ├── skill_base.py               # persistent skill base (reference_docs; local paths + public http(s) URLs)
@@ -458,7 +458,7 @@ regression baseline to be proven. A run without a single `verify` or with stale
 evidence gets DEGRADED, not SUCCESS: the FRESH/STALE evidence signatures are computed by
 `scripts/evidence_ledger.py`, so a green log from an old revision does not count as acceptance.
 <!-- factory-rule: verified-acceptance begin -->
-**Verified acceptance (canonical wording):** acceptance is machine-verifiable — `scripts/verify_acceptance.py` actually executes the criteria with `verify` and writes exit codes and output excerpts into `.code-factory/state/acceptance.md`. Exit 0 is possible only on SUCCESS: at least one criterion with `verify`, all criteria MET, baseline proven; criteria without `verify` are marked `derived`/`unverified` and are not evidence. STALE evidence or a degraded baseline lowers the verdict to DEGRADED; SUCCESS without regression evidence is impossible.
+**Verified acceptance (canonical wording):** acceptance is machine-verifiable — `scripts/verify_acceptance.py` actually executes the criteria with `verify` and writes exit codes and output excerpts into `.code-factory/state/acceptance.md`. Exit 0 is possible only on SUCCESS: at least one criterion with `verify`, all criteria that carry `verify` are MET, baseline proven; criteria without `verify` are marked `derived`/`unverified` and are not evidence. STALE evidence or a degraded baseline lowers the verdict to DEGRADED; SUCCESS without regression evidence is impossible.
 <!-- factory-rule: verified-acceptance end -->
 
 ## Change rollback and error routing
@@ -496,6 +496,9 @@ review rework is handed to `factory-gui-expert`/`factory-coder` under the EXISTI
 <!-- factory-rule: no-shared-tree-git-mutations begin -->
 **No shared-tree git mutations (canonical wording):** subagents do NOT run `git stash`, `git reset`, `git checkout` or `git clean` on the run's shared working tree — it is shared by the main agent and other parallel subagents, and such operations create a race risk and the loss of others' changes. To prove a bug pre-existed or to view a file's base version, `git show HEAD:<file>` or a separate temp clone is used; only the main agent performs working-tree git mutations.
 <!-- factory-rule: no-shared-tree-git-mutations end -->
+<!-- factory-rule: destructive-action-gate begin -->
+**Destructive-action gate (canonical wording):** before the main agent runs a destructive shell action — `git push`, `git reset --hard`, `git clean`, a `git checkout`/`git restore` of paths, `rm -rf`, or a branch deletion — it classifies the command FIRST with `python .agents/skills/code-factory/scripts/action_gate.py check --action "<command>" --scope <resolved repo_path> --mode <hitl|auto>`: `ALLOW` proceeds, `CONFIRM` proceeds only on an explicit user decision (in `auto` mode the factory proceeds and records the assumption), and `HARD_DENY` is never executed. The classification is the MAIN agent's step because only the main agent mutates the shared working tree; a subagent never runs these commands at all (rule `no-shared-tree-git-mutations`). The rollback procedure classifies its own `git checkout`/`git reset`/`rm` the same way before restoring the tree, and a CONFIRM or HARD_DENY answer is not a reason to skip the classification of the next command.
+<!-- factory-rule: destructive-action-gate end -->
 
 Checkpoint/resume: after each phase, `.code-factory/state/pipeline.yaml` is written — on
 restart the factory resumes from the same point.

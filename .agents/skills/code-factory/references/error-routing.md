@@ -148,6 +148,8 @@ learned patterns, so a new error family is added without touching the router.
   `error_router.py merge --project <json> [--out <path>]` folds a learned file over the defaults
   into one complete, byte-deterministic and idempotent document (default: written back to the file
   itself). `merge` never falls back — an unusable input exits 2 instead of writing a wrong union.
+  An unwritable `--out` (a directory, a read-only path, a full disk) is one
+  `error: cannot write <path>: ...` line with exit 2 — a failure is a message, never a traceback.
 
 Example — learned file, command, resulting route:
 

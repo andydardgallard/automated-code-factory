@@ -44,10 +44,11 @@ TASK_TEMPLATE = ".agents/skills/code-factory/assets/task-template.yaml"
 CHECK_MODEL = ".agents/skills/code-factory/scripts/check_factory_model.py"
 MEMORY = ".agents/skills/code-factory/scripts/memory_project.py"
 ENGLISH = ".agents/skills/code-factory/scripts/check_english_only.py"
+RULEBOOK = ".agents/skills/code-factory/references/factory-rules.md"
 
 # Every file a contract reads: a probe copies exactly these, then breaks one of them.
 FILES = (SKILL, CODE_FACTORY, AGENTS, README, BRIEFING, PROVIDERS, EXAMPLE_TASK, TASK_TEMPLATE,
-         CHECK_MODEL, MEMORY, ENGLISH)
+         CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK)
 
 FINISH_NODE = "Y"      # `Y[Finish: ...]` — the only place compaction/attribution are invoked
 CODER_NODE = "M"       # `M[Implement: ...]` — the coder delegation and its briefing
@@ -435,6 +436,58 @@ def check_single_memory_contract(root: pathlib.Path) -> list[str]:
     return problems
 
 
+# --------------------------------------------------------------------------------------------
+# G. The destructive-action gate is run by the flow, not only shipped
+# --------------------------------------------------------------------------------------------
+def check_destructive_action_gate(root: pathlib.Path) -> list[str]:
+    """A shipped safety control must be INVOKED by the governed flow, and the rule must be quoted.
+
+    The finding this pins: `action_gate.py` was advertised in the layout lists while no flow node,
+    no phase and no rule told the main agent to call it — a safety control that protected nothing.
+    """
+    problems: list[str] = []
+    skill = Doc.load(root, SKILL, problems)
+    first, nodes = flow_nodes(skill)
+    if not nodes:
+        problems.append(f"{SKILL}:1: no ```mermaid flow — the destructive-action gate cannot be "
+                        "wired into it")
+    else:
+        preflight = [(line, body) for line, ident, body in nodes if ident == PREFLIGHT_NODE]
+        if not preflight:
+            problems.append(f"{SKILL}:{first}: no pre-flight node `{PREFLIGHT_NODE}[...]` — the gate "
+                            "has no phase to run in")
+        elif not any("action_gate.py check" in body for _line, body in preflight):
+            problems.append(f"{SKILL}:{preflight[0][0]}: the pre-flight node must classify a "
+                            "destructive command with `action_gate.py check` before it runs — a "
+                            "shipped gate nobody runs protects nothing")
+        rollback = [(line, body) for line, _ident, body in nodes
+                    if body.startswith("Rollback")]
+        if not rollback:
+            problems.append(f"{SKILL}:{first}: no Rollback node — the rollback procedure must "
+                            "classify the commands it restores with")
+        elif not any("action_gate.py" in body for _line, body in rollback):
+            problems.append(f"{SKILL}:{rollback[0][0]}: the Rollback node must classify its "
+                            "restoring commands with `action_gate.py check` (rule "
+                            "`destructive-action-gate`)")
+
+    agent = Doc.load(root, CODE_FACTORY, problems)
+    if not any("action_gate.py check" in text for _line, text in agent.paragraphs()):
+        problems.append(f"{CODE_FACTORY}:1: no phase tells the main agent to run "
+                        "`action_gate.py check` before a destructive command")
+
+    book = Doc.load(root, RULEBOOK, problems)
+    if "## destructive-action-gate" not in book.text:
+        problems.append(f"{RULEBOOK}:1: the rulebook carries no `destructive-action-gate` rule")
+    for rel in (RULEBOOK, SKILL, CODE_FACTORY, AGENTS, README):
+        carrier = Doc.load(root, rel, problems)
+        for edge in ("begin", "end"):
+            marker = f"<!-- factory-rule: destructive-action-gate {edge} -->"
+            if carrier.text.count(marker) != 1:
+                problems.append(f"{rel}:1: the canonical block marker "
+                                f"`{marker}` must appear exactly once")
+    return problems
+
+
 SECTIONS = (
     ("A", "the Finish node wires the memory mechanisms", check_finish_node),
     ("B", "the precedent index is built by the flow", check_precedent_index),
@@ -442,6 +495,7 @@ SECTIONS = (
     ("D", "the templates agree with the rulebook", check_templates),
     ("E", "model precedence is not restated in three voices", check_model_precedence),
     ("F", "the memory contract is single", check_single_memory_contract),
+    ("G", "the destructive-action gate is run by the flow", check_destructive_action_gate),
 )
 
 
@@ -501,6 +555,9 @@ def probe(name: str, section, edits, expected: str) -> str:
 
 
 PROBES = (
+    ("G: the flow stops invoking the action gate", check_destructive_action_gate,
+     ((SKILL, "action_gate.py check --action", "action_gate.py classify --action"),),
+     "action_gate.py check"),
     ("A: the compaction command is deleted from the Finish node", check_finish_node,
      ((SKILL, "memory_project.py compact", "memory_project.py tighten"),),
      "memory_project.py compact"),

@@ -578,6 +578,47 @@ def bash_deployer_untouched() -> None:
            f"{SH_NAME}: the start.sh here-doc must still start with the bash shebang")
 
 
+def launcher_backup_guard() -> None:
+    """A pre-existing, DIFFERING `start.sh` is announced and backed up, never silently truncated.
+
+    Both deployers must (a) warn with the `differs from the template` sentence, (b) keep the old
+    file as `start.sh.bak`, and (c) do it BEFORE the launcher is written. The guard is proven to
+    bite: the SAME assertions run against the deployers of the base commit (`git show HEAD:<file>`)
+    and must FAIL there, so a revert of the fix cannot leave this check green.
+    """
+    for name, path, write_marker in ((SH_NAME, SH, '> "$LAUNCHER"'),
+                                    (PS1_NAME, PS1, "Write-FileStrict -Path $LauncherSh")):
+        text = read_text(path)
+        expect("start.sh.bak" in text,
+               f"{name}: a pre-existing start.sh must be kept as start.sh.bak")
+        expect("differs from the template" in text,
+               f"{name}: a differing start.sh must be announced, not silently overwritten")
+        guard_at = min((i for i, line in enumerate(text.splitlines())
+                        if "start.sh.bak" in line), default=-1)
+        write_at = text.find(write_marker)
+        expect(guard_at != -1 and write_at != -1 and
+               guard_at < text[:write_at].count(chr(10)),
+               f"{name}: the backup/warning must run BEFORE the launcher is written")
+
+    # Vaccination: the base commit's deployers have no guard, so the assertions above must fail.
+    for rel, name in (("prepare_factory.sh", SH_NAME), ("prepare_factory.ps1", PS1_NAME)):
+        try:
+            old = subprocess.run(["git", "-C", str(REPO), "show", f"HEAD:{rel}"],
+                                 capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace", timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"INFO - the base-commit guard probe was skipped: {exc!r}")
+            return
+        if old.returncode != 0:
+            print(f"INFO - the base-commit guard probe was skipped: git show {rel} failed")
+            return
+        text = old.stdout
+        has_guard = "start.sh.bak" in text and "differs from the template" in text
+        expect(not has_guard,
+               f"{name}: the base commit already carries the start.sh guard, so this check proves "
+               f"nothing about the fix")
+
+
 def ps1_gitignore_patterns() -> list[str]:
     """The `.gitignore` pattern list of `prepare_factory.ps1` (the one carrying `.agents/`)."""
     arrays = [array for array in ps_string_arrays(read_text(PS1)) if ".agents/" in array]
@@ -1940,6 +1981,12 @@ def main() -> int:
     # 6. The bash deployer must not grow a Windows launcher.
     checker.check("prepare_factory.sh: generates no start.cmd (only its .gitignore pattern may "
                   "be mentioned), here-doc intact", bash_deployer_untouched)
+
+    # 6b. A pre-existing, differing start.sh is announced and backed up (and the check is proven to
+    #     fail on the base commit's deployers).
+    checker.check("both deployers: a differing start.sh is warned about and kept as start.sh.bak "
+                  "BEFORE the launcher is written (probe: the base commit must fail this)",
+                  launcher_backup_guard)
 
     # 7. The checkout itself must hand these files over with the right line endings, on any machine.
     checker.check(".gitattributes: pins *.cmd/*.ps1 to CRLF at checkout (any core.autocrlf)",

@@ -50,8 +50,10 @@ own order, and it keeps every non-provider log classified as before (e.g. `expec
 stays WRONG_RESULTS instead of being caught by the provider pattern `5\\d\\d`).
 
 Exit codes: 0 = classified / merged / exported; 1 = the log cannot be read; 2 = the patterns JSON is
-unusable (broken JSON, missing keys, wrong types, invalid regex) or the CLI was called wrongly. An
-auto-discovered project-learned file never causes exit 2 — it warns and falls back to the defaults.
+unusable (broken JSON, missing keys, wrong types, invalid regex), the CLI was called wrongly, or the
+output of `merge` / `export-defaults` cannot be written — always a one-line `error:` message, never a
+traceback. An auto-discovered project-learned file never causes exit 2 — it warns and falls back to
+the defaults.
 """
 from __future__ import annotations
 
@@ -304,7 +306,11 @@ def cmd_merge(args: argparse.Namespace) -> int:
     project_path = anchored(args.project, args.repo)
     project = load_document(project_path, require_full=False)
     text = dumps(combine(project, default))
-    write_json(anchored(args.out, args.repo) if args.out else project_path, text)
+    out = anchored(args.out, args.repo) if args.out else project_path
+    try:
+        write_json(out, text)
+    except OSError as exc:
+        raise PatternError(f"cannot write {out}: {exc}") from exc
     sys.stdout.write(text)
     return 0
 
@@ -319,8 +325,11 @@ def cmd_export_defaults(args: argparse.Namespace) -> int:
     else:
         repo = pathlib.Path(args.repo) if args.repo else pathlib.Path.cwd()
         out = project_patterns_path(repo)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(payload)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(payload)
+    except OSError as exc:
+        raise PatternError(f"cannot write {out}: {exc}") from exc
     return 0
 
 

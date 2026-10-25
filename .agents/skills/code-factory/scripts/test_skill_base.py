@@ -5,8 +5,9 @@ Deterministic self-test for `skill_base.py` (zero LLM tokens).
 Verifies: content hashing (file and folder), the `--repo` anchor of local hashing (a relative path is
 resolved against the DECLARED repository root, never against the process working directory), manifest
 record/reuse/update (including recording a `--resolved-hash` materialization and rejecting a divergent
-one), the documented CLI of every subcommand, and the missing-skill error contract for
-`reference_skills`.
+one), the documented CLI of every subcommand, the missing-skill error contract for
+`reference_skills`, and the cache-failure contract of `resolve` (exit 1, a message naming the
+source and the reason, never a traceback).
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -141,8 +142,27 @@ def main() -> int:
         expect("[--repo <root>]" in usage and "--resolved-hash" in usage,
                f"the documented record command must carry --repo and --resolved-hash: {usage.strip()}")
 
-    print("PASS - skill_base hashing, repo anchoring, resolved-hash recording, manifest, reuse and "
-          "error contract behave as expected.")
+        # 10. An unusable cache directory is a message naming the source and the reason, never a
+        # traceback: a regular file occupies the cache path, so the first cache write must fail
+        # with exit 1 and `error: ... <source> ... cannot write the cache ...` on stderr.
+        cache_repo = root / "cache-repo"
+        blocker = cache_repo / sb.CACHE_SUBDIR
+        blocker.parent.mkdir(parents=True)
+        blocker.write_text("occupied\n", encoding="utf-8")
+        source = "https://example.invalid/doc.md"
+        res = subprocess.run([sys.executable, str(script), "--repo", str(cache_repo),
+                              "resolve", source], capture_output=True, text=True, errors="replace")
+        expect(res.returncode == 1,
+               f"resolve with an unusable cache must exit 1: {res.returncode} {res.stdout!r}")
+        expect("Traceback" not in res.stderr,
+               f"a failure is a message, never a traceback: {res.stderr!r}")
+        expect(source in res.stderr and "cannot write the cache" in res.stderr,
+               f"the message must name the source and the reason: {res.stderr!r}")
+        expect(res.stdout.strip() == "", f"a failed resolve must print no JSON: {res.stdout!r}")
+
+    print("PASS - skill_base hashing, repo anchoring, resolved-hash recording, manifest, reuse, "
+          "cache-failure reporting (a message, never a traceback) and error contract behave as "
+          "expected.")
     return 0
 
 

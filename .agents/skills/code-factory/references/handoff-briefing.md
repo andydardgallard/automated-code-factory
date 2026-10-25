@@ -122,10 +122,14 @@ The subagent's final answer is a handoff, not a process report:
 
 ## 4. The no-edits suffix
 
-Every analytical role (`analyzer`, `diagnostician`, `advisor`, `code-reviewer`) gets an explicit
-suffix line in the briefing: "You MUST NOT create, modify or delete any file". A role without edit
-rights cannot "fix along the way" what it finds — it reports it in the handoff, and the main agent
-decides. For `advisor` this is additionally pinned by `disallowedTools: Write, Edit`.
+Every read-only role gets an explicit suffix line in the briefing: "You MUST NOT create, modify or
+delete any file" — `analyzer`, `planner`, `code-reviewer`, `security-auditor`, `diagnostician` and
+`advisor` (the same list the canonical `handoff-briefing` rule names). A role without edit rights
+cannot "fix along the way" what it finds — it reports it in the handoff, and the main agent decides.
+For `advisor` this is additionally pinned by `disallowedTools: Write, Edit`.
+The editing roles (`coder`, `gui-expert`, `refactorer`, `tester`, `documenter`, `skill-manager`)
+receive the opposite: the exact file set they may touch, plus the `no-shared-tree-git-mutations`
+ban on this shared working tree.
 
 ## 5. A mini-example of a filled-in briefing
 

@@ -1,5 +1,5 @@
-# Autonomous Code Factory v12.15.0
-<!-- code-factory-version: 12.15.0 -->
+# Autonomous Code Factory v12.16.0
+<!-- code-factory-version: 12.16.0 -->
 
 An autonomous code-writing factory for the **Kimi Code CLI** (0.34+, Node).
 
@@ -56,7 +56,10 @@ green-field) — the stack is detected automatically.
 ├── prepare_factory.ps1              # Windows deployer: copies the factory, writes start.cmd and start.sh
 ├── start.cmd                        # launcher for Windows (created in the project by prepare_factory)
 ├── .example.task.yaml               # example/template of a business task
+├── skill-base/                      # persistent skill base from reference_docs/reference_skills
+├── VERSION                          # single source of truth for the version (synced by scripts/version_manager.py)
 ├── memory/                          # long-term memory of the target project (committed)
+├── .gitattributes                   # line-ending pins (LF for .sh, CRLF for .cmd/.ps1)
 └── .gitignore
 ```
 
@@ -69,7 +72,7 @@ basename of that directory: `change-log.md` (run journal, one entry per task wit
 project: entries from different projects in one journal are an error; entries without `project:` are legacy. When the
 task's `repo_path` points to a SUBDIRECTORY of the deployment root, the project name = basename of the resolved
 `repo_path`, and the main agent creates the memory explicitly:
-`python3 .agents/skills/code-factory/scripts/memory_project.py init --repo <deployment root>
+`python .agents/skills/code-factory/scripts/memory_project.py init --repo <deployment root>
 --project <basename of the resolved repo_path>` — the name is fixed in the summary's `project:` declaration. On
 first access to a project, if `memory/` is missing, the factory creates it with the same command.
 The factory's own development history does not enter the target project's memory.
@@ -116,12 +119,13 @@ kimi --agent-file .agents/agents/code-factory.md "Read task.yaml and solve the t
 
 ## Business task format (task.yaml)
 
-Copy `.example.task.yaml` to `task.yaml` and fill in the fields (only
-`title` and `description` are required):
+Copy `.example.task.yaml` to `task.yaml` and fill in the fields (`title`,
+`description` and `repo_path` are required; `repo_path` may be omitted only
+for a green-field task — a brand-new project created in place):
 
 ```yaml
 title: "The strategy does not generate signals for CNY"
-repo_path: ./repo            # only for existing projects
+repo_path: ./repo            # required, except for a green-field task
 description: |
   Describe the problem in business terms, without technical details.
 user_story: |                # optional, but recommended
@@ -213,5 +217,7 @@ change to the beginning or middle of a prompt invalidates the cache.
 
 ## Version
 
-Versioning follows [Semantic Versioning](https://semver.org/). Change history is in
-[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.15.0**.
+Versioning follows [Semantic Versioning](https://semver.org/). The [`VERSION`](./VERSION)
+file is the single source of truth — all other version mentions are synced from it by
+`scripts/version_manager.py`. Change history is in
+[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.16.0**.

@@ -112,7 +112,7 @@ carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; 
 ## verified-acceptance
 carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; AGENTS.md; .agents/README.md
 <!-- factory-rule: verified-acceptance begin -->
-**Verified acceptance (canonical wording):** acceptance is machine-verifiable — `scripts/verify_acceptance.py` actually executes the criteria with `verify` and writes exit codes and output excerpts into `.code-factory/state/acceptance.md`. Exit 0 is possible only on SUCCESS: at least one criterion with `verify`, all criteria MET, baseline proven; criteria without `verify` are marked `derived`/`unverified` and are not evidence. STALE evidence or a degraded baseline lowers the verdict to DEGRADED; SUCCESS without regression evidence is impossible.
+**Verified acceptance (canonical wording):** acceptance is machine-verifiable — `scripts/verify_acceptance.py` actually executes the criteria with `verify` and writes exit codes and output excerpts into `.code-factory/state/acceptance.md`. Exit 0 is possible only on SUCCESS: at least one criterion with `verify`, all criteria that carry `verify` are MET, baseline proven; criteria without `verify` are marked `derived`/`unverified` and are not evidence. STALE evidence or a degraded baseline lowers the verdict to DEGRADED; SUCCESS without regression evidence is impossible.
 <!-- factory-rule: verified-acceptance end -->
 
 ## evidence-ledger
@@ -176,7 +176,7 @@ carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; 
 <!-- factory-rule: plan-committee end -->
 
 ## no-shared-tree-git-mutations
-carriers: AGENTS.md; .agents/README.md; .agents/agents/code-factory.md; .agents/skills/code-factory/SKILL.md; .agents/skills/code-factory/references/handoff-briefing.md; .agents/agents/sub-agents/coder.md; .agents/agents/sub-agents/gui-expert.md
+carriers: AGENTS.md; .agents/README.md; .agents/agents/code-factory.md; .agents/skills/code-factory/SKILL.md; .agents/skills/code-factory/references/handoff-briefing.md; .agents/agents/sub-agents/coder.md; .agents/agents/sub-agents/gui-expert.md; .agents/agents/sub-agents/refactorer.md
 <!-- factory-rule: no-shared-tree-git-mutations begin -->
 **No shared-tree git mutations (canonical wording):** subagents do NOT run `git stash`, `git reset`, `git checkout` or `git clean` on the run's shared working tree — it is shared by the main agent and other parallel subagents, and such operations create a race risk and the loss of others' changes. To prove a bug pre-existed or to view a file's base version, `git show HEAD:<file>` or a separate temp clone is used; only the main agent performs working-tree git mutations.
 <!-- factory-rule: no-shared-tree-git-mutations end -->
@@ -186,3 +186,9 @@ carriers: AGENTS.md; .agents/README.md; .agents/agents/code-factory.md; .agents/
 <!-- factory-rule: english-only begin -->
 **English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and HISTORY is never rewritten — `CHANGELOG.md` and memory records written before this rule are frozen by `memory/.english-freeze` (one record heading per line) and are never edited; every NEW memory record is gated by `scripts/check_english_only.py`, whose memory pass runs by default over v2 records that are not frozen (`--no-memory` is the one documented escape).
 <!-- factory-rule: english-only end -->
+
+## destructive-action-gate
+carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; AGENTS.md; .agents/README.md
+<!-- factory-rule: destructive-action-gate begin -->
+**Destructive-action gate (canonical wording):** before the main agent runs a destructive shell action — `git push`, `git reset --hard`, `git clean`, a `git checkout`/`git restore` of paths, `rm -rf`, or a branch deletion — it classifies the command FIRST with `python .agents/skills/code-factory/scripts/action_gate.py check --action "<command>" --scope <resolved repo_path> --mode <hitl|auto>`: `ALLOW` proceeds, `CONFIRM` proceeds only on an explicit user decision (in `auto` mode the factory proceeds and records the assumption), and `HARD_DENY` is never executed. The classification is the MAIN agent's step because only the main agent mutates the shared working tree; a subagent never runs these commands at all (rule `no-shared-tree-git-mutations`). The rollback procedure classifies its own `git checkout`/`git reset`/`rm` the same way before restoring the tree, and a CONFIRM or HARD_DENY answer is not a reason to skip the classification of the next command.
+<!-- factory-rule: destructive-action-gate end -->

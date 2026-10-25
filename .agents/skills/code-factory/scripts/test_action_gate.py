@@ -10,6 +10,11 @@ Covers the User Sovereignty contract:
     declared `--scope` (including "no scope declared" — the gate never guesses),
   - CONFIRM: destructive actions inside scope — `rm` of a scoped file, `git checkout --`,
     `git clean` — exit 2 in `--mode hitl`, exit 0 as `ALLOW_WITH_ASSUMPTION` in `--mode auto`;
+    `git checkout <path>` WITHOUT the `--` separator is never a blind ALLOW either: an operand
+    that can only be a pathspec (`.`, `./`, a wildcard) takes the same scope route as its `--`
+    form (`git checkout .` is a whole-tree discard → HARD_DENY outside scope), and an ambiguous
+    operand with a path separator (`git checkout src/a.py`, `git checkout feature/x`) CONFIRMs,
+    while a plain branch switch (`git checkout main`, `git checkout -b feature`) stays ALLOW;
     also any git invocation the gate cannot parse (unknown global option, missing option value,
     no subcommand) or does not know as read-only (`git frobnicate`, `git branch -D main`):
     fail-safe, never ALLOW,
@@ -159,6 +164,20 @@ def main() -> int:
         for action in ("git reset --hard HEAD~1", "git reset --soft HEAD~1"):
             res = gate("--action", action)
             expect(res.returncode == 0, f"{action!r} must be allowed: {res.stdout!r}")
+        # 5b. A PATHSPEC form is not a ref: `git reset --hard .` discards the working tree, so it
+        #     is CONFIRM (in scope) or HARD_DENY (outside) — never the local-ref ALLOW.
+        for action, scope in (("git reset --hard .", "."), ("git reset --hard -- .", "."),
+                              ("git reset --hard src/", "src")):
+            res = gate("--action", action, "--scope", scope)
+            expect(res.returncode == 2,
+                   f"{action!r} (scope {scope}) discards a pathspec and must be CONFIRM in "
+                   f"scope: {res.stdout!r}")
+        res = gate("--action", "git reset --hard /var/lib/data", "--scope", "src")
+        expect(res.returncode == 1,
+               f"a pathspec reset outside the scope must be HARD_DENY: {res.stdout!r}")
+        res = gate("--action", "git reset --hard feature/x", "--scope", "src")
+        expect(res.returncode == 2,
+               f"a slash-bearing operand is ambiguous and must be CONFIRM: {res.stdout!r}")
 
         # 6. HARD_DENY: deletion of a filesystem root (independent of scope and mode).
         for action in ("rm -rf /", "rm -rf /*", "rm -rf ~", "rm -rf *", "rm -rf C:\\"):
@@ -199,10 +218,59 @@ def main() -> int:
             res = gate("--action", action, "--scope", "src")
             expect(res.returncode == 1, f"{action!r} outside scope must be HARD_DENY: {res.stdout!r}")
 
-        # 11. `git clean -n` is a dry run -> ALLOW; `git checkout <branch>` does not discard work.
-        for action in ("git clean -n", "git clean --dry-run -fd", "git checkout feature/x"):
+        # 11. `git clean -n` is a dry run -> ALLOW; a plain branch/ref switch does not discard work.
+        for action in ("git clean -n", "git clean --dry-run -fd", "git checkout main",
+                       "git checkout -b feature", "git checkout --detach main"):
             res = gate("--action", action, "--scope", "src")
             expect(res.returncode == 0, f"{action!r} must be allowed: {res.stdout!r}")
+
+        # 11b. B1: `git checkout .` — `.` IS a pathspec and discards the whole tree, so the
+        #      missing `--` must not make it an ALLOW: it takes the same scope route as
+        #      `git checkout -- .` (HARD_DENY outside scope, CONFIRM inside). An operand with a
+        #      path separator is ambiguous (branch OR path) and CONFIRMs, never ALLOWs.
+        for action in ("git checkout .", "git checkout ./", "git checkout ..", "git checkout *"):
+            res = gate("--action", action, "--scope", "src")
+            expect(res.returncode == 1, f"{action!r} must be HARD_DENY: {res.stdout!r}")
+            expect("decision: HARD_DENY" in res.stdout,
+                   f"{action!r} must report HARD_DENY: {res.stdout!r}")
+            expect("decision: ALLOW\n" not in res.stdout,
+                   f"{action!r} must never be ALLOW: {res.stdout!r}")
+        res = gate("--action", "git checkout .")
+        expect(res.returncode == 1, "git checkout . without scope must be HARD_DENY: " + res.stdout)
+        for action in ("git checkout src/a.py", "git checkout feature/x", "git checkout ./src/a.py"):
+            res = gate("--action", action, "--scope", "src")
+            expect(res.returncode == 2,
+                   f"{action!r} without `--` must require confirmation: {res.returncode} "
+                   f"{res.stdout!r}")
+            expect("decision: CONFIRM_REQUIRED" in res.stdout,
+                   f"{action!r} must report CONFIRM_REQUIRED: {res.stdout!r}")
+            expect("decision: ALLOW\n" not in res.stdout,
+                   f"{action!r} must never be ALLOW: {res.stdout!r}")
+
+        # 11c. A tree-ish + path form (`git checkout <tree-ish> <path>`) restores files from that
+        #      tree over the working copy: two operands mean the rest are PATHS, never an ALLOW.
+        for action, want in (("git checkout HEAD~1 src/a.py", 2),
+                             ("git checkout main src/a.py", 2),
+                             ("git checkout HEAD~1 other/a.py", 1)):
+            res = gate("--action", action, "--scope", "src")
+            expect(res.returncode == want,
+                   f"{action!r} must exit {want}: {res.returncode} {res.stdout!r}")
+            expect("decision: ALLOW\n" not in res.stdout,
+                   f"{action!r} must never be ALLOW: {res.stdout!r}")
+
+        # 11d. A bare `git reset --hard` resets to HEAD and discards the whole working tree: it is
+        #      CONFIRM like any other whole-tree discard, while a plain ref reset stays ALLOW.
+        for scope in (None, "src", "."):
+            args = ("--action", "git reset --hard")
+            res = gate(*args, *(() if scope is None else ("--scope", scope)))
+            expect(res.returncode == 2,
+                   f"bare git reset --hard (scope {scope}) must be CONFIRM: {res.returncode} "
+                   f"{res.stdout!r}")
+            expect("decision: ALLOW\n" not in res.stdout,
+                   f"bare git reset --hard (scope {scope}) must never be ALLOW: {res.stdout!r}")
+        res = gate("--action", "git reset --hard HEAD~1", "--scope", "src")
+        expect(res.returncode == 0,
+               f"a ref reset stays ALLOW: {res.returncode} {res.stdout!r}")
 
         # 12. A destructive command hidden behind `&&` is still found.
         res = gate("--action", "echo start && git push origin main", "--scope", "src")

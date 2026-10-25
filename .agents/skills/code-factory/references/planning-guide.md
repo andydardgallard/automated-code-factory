@@ -37,7 +37,7 @@ one named by the task's `repo_path`, not of the factory (if the task targets the
 repository, the factory is that project). Read the entries whose `project:` matches it; entries
 without `project:` are legacy, entries of another project mean the journal is wrong. On first
 contact with a project, create the memory with
-`python3 .agents/skills/code-factory/scripts/memory_project.py init --repo <deployment root>
+`python .agents/skills/code-factory/scripts/memory_project.py init --repo <deployment root>
 --project <basename of the resolved repo_path>`. Pass the relevant AGENTS.md sections and memory
 entries to the analyzer. Reconciling the memory with the tree is part of reading it: fold the OPEN
 backlog over the WHOLE journal with `python .agents/skills/code-factory/scripts/memory_project.py

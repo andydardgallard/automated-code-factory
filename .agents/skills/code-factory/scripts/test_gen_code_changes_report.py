@@ -2,8 +2,9 @@
 """
 Deterministic self-test for `gen_code_changes_report.py` (zero LLM tokens, stdlib only).
 
-The report generator's `--help` text is Russian and carries `→`, which a Windows console whose
-code page is a legacy one (cp866/cp1251) cannot encode: argparse used to die with UnicodeEncodeError
+The report generator's `--help` text carries non-ASCII characters (the arrow `→` and the em dash
+`—`) that a Windows console whose code page is a legacy one (cp866/cp1251) cannot encode: argparse
+used to die with UnicodeEncodeError
 and a traceback instead of printing help. Every check below runs the tool in that torture
 environment (`PYTHONIOENCODING=cp1251`) and asserts:
   - `--help` exits 0, prints the whole help (the `→` included — the text must not have been stripped
@@ -140,12 +141,17 @@ def check_bad_commit() -> None:
 def main() -> int:
     check_help()
     check_unknown_flag()
+    gitless = shutil.which("git") is None
     check_bad_commit()
     check_report()
-    print("PASS - gen_code_changes_report.py keeps its CLI contract on a cp1251 stdout: --help "
-          "prints the full (non-ASCII) help and exits 0, an unknown flag exits 2, an unresolvable "
-          "--commit prints one `error:` line and exits 1 without a traceback or an output "
-          "file, and a real run in a git repo writes the report.")
+    summary = ("PASS - gen_code_changes_report.py keeps its CLI contract on a cp1251 stdout: "
+               "--help prints the full (non-ASCII) help and exits 0, an unknown flag exits 2")
+    if gitless:
+        # Never claim coverage that did not run: the git-over-CLI checks printed SKIP above.
+        print(summary + " - Git-over-CLI cases SKIPPED (no git)")
+    else:
+        print(summary + ", an unresolvable --commit prints one `error:` line and exits 1 without "
+              "a traceback or an output file, and a real run in a git repo writes the report.")
     return 0
 
 

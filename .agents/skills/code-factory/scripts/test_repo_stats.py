@@ -4,7 +4,8 @@ Deterministic self-test for `repo_stats.py` (zero LLM tokens, stdlib only).
 
 Builds a small mixed-language repository (Python, JavaScript, package.json, Cargo.toml, an
 excluded .git dir) and verifies `sizes`, `entry-points` and `imports` — including the ordering
-rules, the ignored directories and the MAX_TEXT_BYTES skip — plus the CLI contract.
+rules, the ignored directories, the MAX_TEXT_BYTES skip and the separate binary listing of
+`sizes` — plus the CLI contract.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -150,8 +151,36 @@ def main() -> int:
         expect(rs.entry_points(root)["total_entry_points"] == 0,
                "huge file must not be reported as an entry point")
 
+    # 14. `sizes` lists the binaries under `binaries`, ranked by byte size — a committed blob must
+    #     show up in the biggest-files report — while *.pyc files (and symlinks) are never listed
+    #     anywhere, and the docstring says exactly that.
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        write(root, "small.py", "print(1)\n")
+        (root / "huge.bin").write_bytes(b"\x00" + b"b" * 5000)
+        (root / "bigger.bin").write_bytes(b"\x00" + b"z" * 9000)
+        write(root, "stale.pyc", "x\n")
+        result = rs.sizes(root, 20)
+        expect([f["path"] for f in result["files"]] == ["small.py"],
+               f"the text ranking must hold no binary: {result['files']}")
+        expect(result["binaries"] == [{"path": "bigger.bin", "bytes": 9001},
+                                      {"path": "huge.bin", "bytes": 5001}],
+               f"binaries must be listed and ranked by byte size: {result['binaries']}")
+        expect(rs.sizes(root, 1)["binaries"] == [{"path": "bigger.bin", "bytes": 9001}],
+               "--top must truncate the binary list too")
+        expect(result["total_files"] == 1, f"a binary is not a text file: {result}")
+        res = run("sizes", "--repo", str(root))
+        expect(res.returncode == 0, f"sizes must exit 0: {res.stderr!r}")
+        payload = json.loads(res.stdout)
+        expect([b["path"] for b in payload["binaries"]] == ["bigger.bin", "huge.bin"],
+               f"the CLI must list the binaries: {res.stdout!r}")
+        expect("stale.pyc" not in res.stdout, "a *.pyc must never be listed")
+        doc = rs.__doc__ or ""
+        expect("never listed" in doc and "binaries" in doc,
+               "the docstring must state the binary listing and the *.pyc/symlink exclusion")
+
     print("PASS - repo_stats.py reports sizes, entry points and imports deterministically "
-          "(ordering, exclusions, MAX_TEXT_BYTES skip, CLI contract).")
+          "(ordering, exclusions, MAX_TEXT_BYTES skip, binaries listed by byte size, CLI contract).")
     return 0
 
 

@@ -30,7 +30,7 @@ Read `.agents/skills/code-factory/references/reference-docs.md` first and follow
 
 1. For each `reference_docs` entry, classify and materialize its `path` — a local path, an http(s)
    document URL or an http(s) Git URL (a URL ending in `.git`) — with:
-   `python3 .agents/skills/code-factory/scripts/skill_base.py --repo <resolved repo root> resolve <path-or-url>`
+   `python .agents/skills/code-factory/scripts/skill_base.py --repo <resolved repo root> resolve <path-or-url>`
    The JSON it prints is your input: `source`, `source_type`, `local_path`, `sha256`,
    `resolved_revision`, `offline`, `stale`.
    - `local` → a file or folder: behavior is exactly as before and `local_path` is the path itself.
@@ -60,7 +60,7 @@ Read `.agents/skills/code-factory/references/reference-docs.md` first and follow
    fabricate anything — report an error: "missing: skill '<name>' not found in the base;
    specify the path to the document in reference_docs".
 5. Update `skill-base/manifest.json` through the script
-   (`python3 .agents/skills/code-factory/scripts/skill_base.py record <name> <source> <hash>
+   (`python .agents/skills/code-factory/scripts/skill_base.py record <name> <source> <hash>
    --repo <root>`; add `--resolved-hash <hex>` to record the digest `resolve` already printed —
    the materialization is reused instead of fetched twice, and a divergent digest is refused) —
    never hand-edit the manifest. Pass the source EXACTLY as the task gave it: for a URL that is the

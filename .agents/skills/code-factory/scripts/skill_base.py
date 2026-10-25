@@ -28,7 +28,8 @@ reason and removes the partial content.
 
 `resolve` materializes a source (fetching/caching it when remote) and prints its metadata as JSON on
 stdout: `source`, `source_type`, `local_path`, `sha256`, `resolved_revision`, `offline`, `stale`. A
-fetch failure is reported on stderr with the source and the reason and exits 1. A cached copy is
+fetch or cache failure is reported on stderr with the source and the reason and exits 1 — a failure
+is a message, never a traceback. A cached copy is
 reused ONLY when explicitly asked for with `--offline` (no network access at all) or `--allow-stale`
 (fetch attempted, failed, cached copy used); it is then marked `stale: true`, because a cached copy
 is never fresh remote content. `--repo <root>` (a synonym: `--root`) is the resolved repo_path of
@@ -245,9 +246,12 @@ def _load_meta(cache: pathlib.Path, key: str) -> dict:
 
 def _save_meta(cache: pathlib.Path, key: str, data: dict) -> None:
     folder = cache / "_meta"
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{key}.json").write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                                        encoding="utf-8")
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{key}.json").write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                                            encoding="utf-8")
+    except OSError as exc:
+        raise SourceError(f"cannot write the cache: {exc}") from exc
 
 
 def _doc_filename(url: str, content_type: str | None) -> str:
@@ -266,7 +270,10 @@ def _doc_filename(url: str, content_type: str | None) -> str:
 
 def _download_doc(url: str, folder: pathlib.Path, *, max_bytes: int, timeout: float) -> tuple[pathlib.Path, str | None]:
     """Download one document into `folder` (atomic: `body.part` is renamed only when complete)."""
-    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SourceError(f"cannot write the cache: {exc}") from exc
     part = folder / "body.part"
     opener = urllib.request.build_opener(_ValidatingRedirectHandler())
     request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
@@ -298,10 +305,13 @@ def _download_doc(url: str, folder: pathlib.Path, *, max_bytes: int, timeout: fl
         part.unlink(missing_ok=True)
         raise SourceError(str(getattr(exc, "reason", None) or exc)) from exc
     filename = _doc_filename(url, content_type)
-    part.replace(folder / filename)
-    for other in folder.iterdir():                      # exactly one document per cache key
-        if other.name != filename and other.is_file():
-            other.unlink()
+    try:
+        part.replace(folder / filename)
+        for other in folder.iterdir():                  # exactly one document per cache key
+            if other.name != filename and other.is_file():
+                other.unlink()
+    except OSError as exc:
+        raise SourceError(f"cannot write the cache: {exc}") from exc
     return folder / filename, content_type
 
 
@@ -417,14 +427,20 @@ def _replace_tree(src: pathlib.Path, dst: pathlib.Path) -> None:
     remove_tree(dst)
     if dst.exists():
         raise SourceError(f"cannot replace the cache folder {dst}: it cannot be removed")
-    os.replace(src, dst)
+    try:
+        os.replace(src, dst)
+    except OSError as exc:
+        raise SourceError(f"cannot write the cache: {exc}") from exc
 
 
 def _export_clean_tree(clone: pathlib.Path, tree: pathlib.Path) -> None:
     """Copy the clone's working tree WITHOUT `.git`: the hash and the skill hold content only."""
     tmp = tree.with_name(tree.name + ".part")
     remove_tree(tmp)
-    shutil.copytree(clone, tmp, ignore=shutil.ignore_patterns(".git"))
+    try:
+        shutil.copytree(clone, tmp, ignore=shutil.ignore_patterns(".git"))
+    except OSError as exc:
+        raise SourceError(f"cannot write the cache: {exc}") from exc
     _replace_tree(tmp, tree)
 
 
@@ -491,7 +507,10 @@ def _clone_git(source: str, clone: pathlib.Path, *, max_bytes: int, timeout: flo
     """Shallow, single-branch clone without submodules/tags; returns the resolved commit sha."""
     tmp = clone.with_name(clone.name + ".part")
     remove_tree(tmp)
-    tmp.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SourceError(f"cannot write the cache: {exc}") from exc
     returncode, stderr = _supervised_clone(source, tmp, max_bytes=max_bytes, timeout=timeout)
     if returncode != 0:
         remove_tree(tmp)
@@ -814,6 +833,11 @@ def main() -> int:
         return handlers[args.cmd]()
     except SourceError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        # Backstop: a failure is a message naming the source and the reason, never a traceback.
+        source = getattr(args, "source", None) or getattr(args, "path", None)
+        print(f"error: {f'{source}: ' if source else ''}{exc}", file=sys.stderr)
         return 1
 
 

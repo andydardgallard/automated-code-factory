@@ -104,7 +104,8 @@ def main() -> int:
         expect("truncated" in text, "a truncated excerpt must say so")
 
         # 4. Criteria without verify -> UNVERIFIED, labeled derived / unverified, and the report
-        #    still lists them next to the verified ones.
+        #    still lists them next to the verified ones. The SUCCESS reason NAMES the unverified
+        #    count, so the verdict line cannot be read as "every criterion was checked".
         criteria = write_criteria(tmp, [
             {"criterion": "verified", "verify": f'{PY} -c "pass"'},
             {"criterion": "inferred from artifacts", "derived": True},
@@ -121,6 +122,11 @@ def main() -> int:
         expect("UNVERIFIED (unverified)" in text, "a criterion without verify/derived is unverified")
         expect("Criteria: 3 (verified: 1, unverified: 2)" in text,
                f"the counts must be reported: {text[:400]!r}")
+        expect("- Verdict reason: all 1 verify criterion MET (2 criteria derived/unverified) and "
+               "the regression baseline passed" in text,
+               f"the SUCCESS reason must name the unverified count: {text[:500]!r}")
+        expect("all 1 verify criterion MET (2 criteria derived/unverified)" in res.stdout,
+               f"the run summary must carry the same wording: {res.stdout!r}")
 
         # 5. Degraded baseline: all MET but regression not-run -> DEGRADED, exit 1.
         criteria = write_criteria(tmp, [{"criterion": "ok", "verify": f'{PY} -c "pass"'}],

@@ -16,6 +16,9 @@ Checks (deterministic, zero LLM):
      (G --auto--> L --> ... --> K). Pre-flight probes the real environment (python command, git,
      bash, secondary-model flag), so a branch that reaches backup without it is a capability
      probe that never ran. Every edge entering `K` therefore has to come from `PF`.
+  5. NEGATIVE PROBE: the same guard runs over a throwaway copy of SKILL.md whose auto branch is
+     re-pointed to reach `K` directly; check_flow MUST report an error naming `PF` there while the
+     unmodified file stays silent — a guard that accepts the broken copy is a tautology.
 
 Exit code 0 = all files OK, 1 = violation (printed to stderr).
 """
@@ -25,6 +28,7 @@ import collections
 import pathlib
 import re
 import sys
+import tempfile
 
 FACTORY_ROOT = pathlib.Path(__file__).resolve().parents[3]  # .agents/
 
@@ -162,6 +166,35 @@ def check_flow(path: pathlib.Path) -> list[str]:
     return errors
 
 
+def negative_probe() -> None:
+    """NEGATIVE PROBE: the flow guard must be able to fail.
+
+    A throwaway copy of SKILL.md gets its auto branch re-pointed so it reaches the backup node
+    WITHOUT the pre-flight node — the exact regression the guard exists to catch. check_flow MUST
+    report an error naming the pre-flight node for the broken copy and stay silent for the
+    unmodified file; a guard that accepts the broken copy is a tautology, and that fails HERE.
+    """
+    text = SKILL_FILE.read_text(encoding="utf-8")
+    old, new = "L --> PF[", "L --> K["
+    if old not in text:
+        raise AssertionError(f"probe setup: {SKILL_FILE} carries no {old!r} edge — the probe "
+                             "would be a no-op, not a vaccination")
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        broken = pathlib.Path(raw_tmp) / "SKILL.md"
+        broken.write_text(text.replace(old, new), encoding="utf-8")
+        errors = check_flow(broken)
+    if not errors:
+        raise AssertionError("probe: check_flow ACCEPTED a SKILL.md whose auto branch reaches "
+                             f"{BACKUP_NODE} without {PREFLIGHT_NODE} — the assertion is a "
+                             "tautology")
+    if not any(f"without {PREFLIGHT_NODE}" in error for error in errors):
+        raise AssertionError(f"probe: check_flow failed for the wrong reason (expected an error "
+                             f"naming {PREFLIGHT_NODE}): {errors}")
+    if check_flow(SKILL_FILE):
+        raise AssertionError(f"probe: the UNMODIFIED {SKILL_FILE} must stay silent: "
+                             f"{check_flow(SKILL_FILE)}")
+
+
 def main() -> int:
     all_errors: list[str] = []
     for f in PROMPT_FILES:
@@ -171,6 +204,7 @@ def main() -> int:
         all_errors.extend(check_file(f))
 
     flow_errors = check_flow(SKILL_FILE)
+    negative_probe()
 
     if all_errors:
         print("FAIL - prompt structure is NOT append-only safe:", file=sys.stderr)
@@ -185,7 +219,8 @@ def main() -> int:
 
     print(f"PASS - {len(PROMPT_FILES)} prompt files have a static frontmatter prefix "
           "(static prefix -> dynamic suffix); both branches of the orchestration flow reach the "
-          f"backup node through {PREFLIGHT_NODE}.")
+          f"backup node through {PREFLIGHT_NODE}, and the negative probe proves the guard can "
+          "fail.")
     return 0
 
 

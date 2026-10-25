@@ -51,7 +51,8 @@ Run under `.code-factory/audit/` (and a human-readable summary at the repo root 
 1. `report.md` — findings grouped by artifact type, each with severity (critical/high/medium/low),
    the affected file:line, and a one-line explanation.
 2. `fix-tasks.yaml` (or `fix-tasks.md`) — a generated file in the **factory task format**
-   (`title`, `description`, `task_type: implement`, `acceptance_criteria`, optional `models`,
+   (`title`, `repo_path` (the resolved repo_path the audit ran against), `description`,
+   `task_type: implement`, `acceptance_criteria`, optional `models`,
    `commit_exclude`). Each finding (or a grouped cluster of related findings) becomes one
    acceptance criterion / task so the user can run it as a separate `implement` flow.
 

@@ -10,7 +10,7 @@ tools:
 disallowedTools:
   - Write
   - Edit
-model_preference: secondary
+model_preference: primary
 ---
 
 You MUST NOT create, modify or delete any file.
@@ -25,7 +25,10 @@ Your budget is **1** call per root cause (one escalation; counted in
 `retry_counters.advisor` in `.code-factory/state/pipeline.yaml`). You run on a model from a family
 CONTRASTING to the Diagnostician's on purpose: a different model (and a fresh, zero-context view)
 catches what a same-family reviewer would echo back. Do not assume the Diagnostician was right —
-or wrong.
+or wrong. Your `model_preference` is `primary` — the side opposite the generators
+(coder/tester/gui_expert, all `secondary`) — because you are a judge-side role: with only two
+models configured, a judge on the generator side would make the enforced generator != judge
+family rule unsatisfiable for every task that does not pin its own models.
 
 ## Input you receive from the main agent
 

@@ -17,8 +17,9 @@ A second fixture pins the FRESHNESS contract, i.e. that the index is living stat
 somebody built once: a build is idempotent (same rows, same content hash, no duplicates), prunes a
 source that disappeared, finds the newest journal record by its hyphenated `run_id`, reports
 `STALE - <reason>` naming the cause when the journal or the tracked tree changed (or the meta record
-or the database is gone), and `query --fresh` refuses a stale index with exit 3 instead of
-answering `matches: 0`.
+or the database is gone) — a same-size edit hidden behind an mtime restored with os.utime included,
+because the manifest hashes the file CONTENT, not only size+mtime — and `query --fresh` refuses a
+stale index with exit 3 instead of answering `matches: 0`.
 
 Creating a symbolic link needs privileges on Windows (Administrator or Developer Mode): when the OS
 refuses, the test prints a note and skips only that sub-check instead of failing.
@@ -30,6 +31,7 @@ Exit code 0 = all assertions pass (or SKIP), 1 = a check did not behave as expec
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import shutil
@@ -441,6 +443,34 @@ def check_freshness() -> None:
         expect(res.stdout == "", f"--quiet must print nothing on success: {res.stdout!r}")
         expect(custom.is_file(), f"--db must write {custom}")
         fresh_status(root, "--db", "custom/idx.db")
+
+        # (k) A same-size edit with the mtime restored via os.utime — the change a size+mtime
+        #     signature cannot see: the content digest in the manifest must catch it, so `status`
+        #     says STALE (naming the tracked tree) and `query --fresh` refuses with exit 3.
+        res = run("build", "--repo", str(root))
+        expect(res.returncode == 0, f"rebuild for the content probe: {res.stderr!r}")
+        fresh_status(root)
+        target = root / "pkg" / "one.py"
+        original = target.read_bytes()
+        before = target.stat()
+        mutated = original.replace(b"EDITED", b"XDITED", 1)   # same length, other content
+        expect(mutated != original and len(mutated) == len(original),
+               "the probe must be a same-size edit")
+        target.write_bytes(mutated)
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+        expect(target.stat().st_mtime_ns == before.st_mtime_ns
+               and target.stat().st_size == before.st_size,
+               "the probe must preserve size and mtime, or it tests nothing")
+        res = run("status", "--repo", str(root))
+        expect(res.returncode == 1 and res.stdout.startswith("STALE - ") and "tree" in res.stdout,
+               f"a same-size edit behind a restored mtime must be STALE: {res.stdout!r}")
+        res = run("query", "--repo", str(root), RUN_ID, "--fresh")
+        expect(res.returncode == 3 and BUILD_HINT in res.stdout,
+               f"query --fresh must refuse an index stale by content: {res.returncode} "
+               f"{res.stdout!r}")
+        target.write_bytes(original)
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+        fresh_status(root)   # restoring the content restores FRESH — no false positive
 
 
 def main() -> int:

@@ -102,9 +102,16 @@ python .agents/skills/code-factory/scripts/evidence_ledger.py check \
   file contributes `:missing` and an unreadable one `:unreadable`, so a deletion counts as a change
   instead of an error. Re-stamping a name refreshes that entry (one current entry per name).
 - **FRESH** = every signed file is byte-identical to the moment the evidence was produced;
-  **STALE** = at least one signed file changed afterwards. `check` exits 0 only when every entry is
-  FRESH and every result is `pass`; STALE evidence, a failed result or an empty/unreadable ledger is
-  exit 1.
+  **STALE** = at least one signed file changed afterwards. Each entry records the exact `--files`
+  scope it was stamped with and is re-measured against THAT scope: a caller `--files` that differs
+  is a scope mismatch (STALE, fail-closed, with the reason naming the scope instead of a file
+  change), and `check` with no `--files` verifies every entry against its own recorded scope, so a
+  mixed-scope ledger can be verified. An entry written before the `files` field existed has no
+  recorded scope: it is measured against the caller's `--files` when one is given, and is reported
+  **UNSCOPED** (fail-closed, the reason naming the missing scope) when the caller gave none.
+  `check` exits 0 only when every entry is
+  FRESH and every result is `pass`; STALE or UNSCOPED evidence, a failed result or an
+  empty/unreadable ledger is exit 1.
 - **The reviewer and the acceptance step accept evidence only while it is FRESH.** A green test log
   whose files changed since (the very common "tests passed, then the coder touched the code again")
   proves nothing about the current tree. Implementation: after any change to signed files, re-run
@@ -223,11 +230,18 @@ Update it after every file operation by the factory.
 
 ### 4.3 Rollback steps (on failure)
 
-Run every step with the cwd at `<resolved repo_path>`, or prefix each path with it.
+Run every step with the cwd at `<resolved repo_path>`, or prefix each path with it. Every
+destructive restoring command below (`rm -f`, `git reset --hard`, `git checkout --`, the branch
+deletion) is classified FIRST with
+`python .agents/skills/code-factory/scripts/action_gate.py check --action "<command>" --scope
+<resolved repo_path> --mode <hitl|auto>` and its verdict is respected (canonical rule
+`destructive-action-gate`): ALLOW proceeds, CONFIRM needs an explicit user decision (in `auto`
+mode the factory proceeds and records the assumption), HARD_DENY is never executed — and a
+CONFIRM or HARD_DENY answer is not a reason to skip the classification of the next command.
 
 ```bash
 # 1. Remove files created by the factory (manifest paths are relative to the resolved repo)
-while read -r f; do rm -f "$f"; done < <(python3 -c "import json;print('\n'.join(json.load(open('.code-factory/manifest.json'))['created_files']))")
+while read -r f; do rm -f "$f"; done < <(python -c "import json;print('\n'.join(json.load(open('.code-factory/manifest.json'))['created_files']))")
 
 # 2. If the run moved HEAD (it made commits on the feature branch — the normal implement case),
 #    git restores the base state FIRST; restoring file backups before this step is wasted work,
@@ -326,7 +340,7 @@ was-became diff of the commit (only changed lines, no context). Generate it with
 script (zero LLM tokens):
 
 ```bash
-python3 .agents/skills/code-factory/scripts/gen_code_changes_report.py \
+python .agents/skills/code-factory/scripts/gen_code_changes_report.py \
   --repo <project-root> --commit <sha>
 ```
 

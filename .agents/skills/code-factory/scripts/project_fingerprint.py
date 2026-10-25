@@ -96,7 +96,10 @@ IGNORE_PARTS = {".git", ".code-factory", ".venv", "venv", "__pycache__",
 
 # Path parts excluded from BOTH fingerprint levels: build/VCS/editor noise plus the factory's
 # own artifacts (AGENTS.md, memory/, task.yaml, .code-factory/, the deployer/launcher scripts).
-# Dot-prefixed parts are skipped too, mirroring the structural top-level listing rule.
+# The exclusion is EXPLICIT, not "any dot-prefixed part": tracked dot-directories that hold
+# project content (.agents/, .github/, .kimi-code/) must stay in the hash, or an edit under
+# them would move neither level and the "skip regeneration" branch could fire on a changed
+# project. Only the noise above is meant to be invisible.
 EXCLUDED_PARTS = IGNORE_TOP_LEVEL | IGNORE_PARTS
 
 
@@ -185,8 +188,14 @@ def compute_fingerprint(root: pathlib.Path) -> str:
 
 
 def _is_excluded(rel: str) -> bool:
-    """True if any part of a repo-relative path is excluded from the fingerprint signals."""
-    return any(part in EXCLUDED_PARTS or part.startswith(".") for part in rel.split("/"))
+    """True if any part of a repo-relative path is in the explicit EXCLUDED_PARTS set.
+
+    Dot-prefixed parts as such are NOT excluded: a tracked file below a dot-directory that
+    holds project content (.agents/, .kimi-code/) is covered by the content fingerprint, as
+    AGENTS.md and .agents/README.md promise; only the explicit noise set (.git, .code-factory,
+    editor/VCS drop-ins, the factory's own artifacts) is invisible.
+    """
+    return any(part in EXCLUDED_PARTS for part in rel.split("/"))
 
 
 def _git_index_records(root: pathlib.Path) -> list[str] | None:

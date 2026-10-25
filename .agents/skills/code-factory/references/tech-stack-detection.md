@@ -184,7 +184,7 @@ verified with `memory_project.py check`.
 Verify the model with the deterministic checker:
 
 ```bash
-python3 .agents/skills/code-factory/scripts/check_factory_model.py --repo <project-root>
+python .agents/skills/code-factory/scripts/check_factory_model.py --repo <project-root>
 ```
 
 It asserts: exactly 8 sections, BOTH fingerprints (structural + content) matching, memory format

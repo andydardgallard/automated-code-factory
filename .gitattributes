@@ -7,3 +7,6 @@
 # bash scripts (*.sh) — the opposite: LF at checkout on any machine, a bash script with CRLF breaks,
 # and the deployer itself writes start.sh with LF (byte-level check in test_windows_scripts.py).
 *.sh text eol=lf
+# The run-id fixture's bytes are hashed (pinned digest in test_run_id.py): a fixture whose bytes are
+# hashed must not vary by checkout, so pin it to LF (run_id.py also CRLF→LF-normalizes the hash).
+.agents/skills/code-factory/assets/task-template.yaml text eol=lf

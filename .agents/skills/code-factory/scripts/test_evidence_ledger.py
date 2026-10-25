@@ -4,9 +4,11 @@ Deterministic self-test for `evidence_ledger.py` (zero LLM tokens).
 
 Checks through the CLI that (a) `sign` is a deterministic, order-independent SHA-256 over path +
 content, (b) `stamp` creates/refreshes one ledger entry and writes it atomically, (c) `check`
-marks entries FRESH/STALE by recomputing the fingerprint — a file edited after signing turns the
-evidence STALE and exits 1, a fresh ledger exits 0, (d) a broken ledger is refused, never
-overwritten, and never leaves a temp file behind.
+marks entries FRESH/STALE by recomputing each entry's fingerprint against its OWN recorded scope —
+a file edited after signing turns the evidence STALE and exits 1, a fresh ledger exits 0, a
+mixed-scope ledger verifies with no `--files` at all, and a caller scope that differs from the
+stamped one is a fail-closed STALE whose reason names the scope mismatch instead of a file change,
+(d) a broken ledger is refused, never overwritten, and never leaves a temp file behind.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -189,6 +191,66 @@ def main() -> int:
         res = run("sign", "--repo", str(tmp), "--files", "a.py", "--run-id", "20260922-442cd2f8")
         expect(res.returncode == 0 and res.stdout.strip() == sign(tmp, "a.py")[0],
                f"sign must accept --run-id and stay unchanged: {res.stdout!r}")
+
+        # 11. Per-entry scope: every entry records the --files set it was stamped with, and `check`
+        #     verifies each entry against ITS OWN scope — a mixed-scope ledger verifies with no
+        #     --files at all. A caller scope that differs from the stamped one is a SCOPE MISMATCH
+        #     (STALE, fail-closed, but the reason names the scope instead of claiming the files
+        #     changed); a real edit of a signed file stays STALE for the change reason. An entry
+        #     written before the field existed (no `files`) is measured against the caller's
+        #     --files, exactly as before.
+        mixed = tmp / "mixed" / "evidence.json"
+        stamp(tmp, mixed, "regression", "pass", "a.py")
+        stamp(tmp, mixed, "unit", "pass", "sub/c.py")
+        res = check(tmp, mixed)                      # no --files: each entry against its own scope
+        expect(res.returncode == 0,
+               f"a mixed-scope ledger must verify per entry: {res.stdout!r}{res.stderr!r}")
+        expect("FRESH" in res.stdout.split("regression")[1][:40],
+               f"the regression row must be FRESH for its own scope: {res.stdout!r}")
+        expect("FRESH" in res.stdout.split("unit")[1][:40],
+               f"the unit row must be FRESH for its own scope: {res.stdout!r}")
+        res = check(tmp, mixed, "a.py", "sub/c.py")  # a wider scope than each entry signed
+        expect(res.returncode == 1,
+               f"a scope mismatch must stay STALE (fail-closed): {res.stdout!r}")
+        expect("scope mismatch" in res.stdout and "signed [a.py]" in res.stdout,
+               f"the reason must name the scope: {res.stdout!r}")
+        expect("the signed files changed after it was recorded" not in res.stdout,
+               f"no file changed — the reason must not claim one did: {res.stdout!r}")
+        (tmp / "a.py").write_text("A-v2\n", encoding="utf-8")
+        res = check(tmp, mixed)
+        expect(res.returncode == 1 and "the signed files changed" in res.stdout,
+               f"a real edit must be STALE for the change reason: {res.stdout!r}")
+        expect("STALE" in res.stdout.split("regression")[1][:40],
+               f"the regression row itself must be STALE: {res.stdout!r}")
+        expect("FRESH" in res.stdout.split("unit")[1][:40],
+               f"the untouched entry must stay FRESH: {res.stdout!r}")
+        (tmp / "a.py").write_text("A-v1\n", encoding="utf-8")
+        expect(check(tmp, mixed).returncode == 0,
+               "restoring the file must make the mixed ledger FRESH again")
+        legacy_scope = tmp / "legacy-scope" / "evidence.json"
+        legacy_scope.parent.mkdir(parents=True, exist_ok=True)
+        legacy_entries = json.loads(mixed.read_text(encoding="utf-8"))["entries"]
+        for entry in legacy_entries:
+            entry.pop("files", None)                 # as written before the field existed
+        legacy_scope.write_text(json.dumps({"version": 1, "entries": legacy_entries}),
+                                encoding="utf-8")
+        res = check(tmp, legacy_scope, "a.py")
+        expect(res.returncode == 1 and "scope mismatch" not in res.stdout,
+               f"a legacy entry falls back to the caller's scope without a mismatch: {res.stdout!r}")
+        expect("FRESH" in res.stdout.split("regression")[1][:40],
+               f"the legacy regression entry must be FRESH against the caller's scope: "
+               f"{res.stdout!r}")
+        # 12. A legacy entry (no recorded scope) with NO caller scope either is UNSCOPED: there is
+        #     nothing to measure it against, so the gate must say so instead of claiming "the
+        #     signed files changed" (the empty scope is not a change).
+        res = check(tmp, legacy_scope)               # no --files at all
+        expect(res.returncode == 1, f"an unscoped legacy entry must not pass: {res.stdout!r}")
+        expect("UNSCOPED" in res.stdout,
+               f"the row must be labelled UNSCOPED: {res.stdout!r}")
+        expect("no scope is recorded" in res.stdout,
+               f"the reason must name the missing scope: {res.stdout!r}")
+        expect("the signed files changed" not in res.stdout,
+               f"an empty scope is not a file change: {res.stdout!r}")
 
     print("PASS - evidence_ledger.py behaves as expected (deterministic sign, atomic stamp, "
           "FRESH/STALE check with stale evidence rejected, run id attributed per entry).")

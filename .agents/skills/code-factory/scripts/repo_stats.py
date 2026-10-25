@@ -5,11 +5,11 @@ Typical repository analyzers — "Think in Code" instead of reading files into t
 
 Counting lines, spotting entry points or grouping imports needs no judgment, so the factory asks
 this script and reads the answer instead of pulling whole files into the LLM context. The file
-walk itself comes from `repo_inventory.py` (same exclusions: VCS/factory/build dirs, *.pyc,
-binaries).
+walk itself comes from `repo_inventory.py` (same exclusions: VCS/factory/build dirs, *.pyc and
+symlinks; binaries are skipped only by the text analyzers).
 
 Commands (all print JSON, all deterministic — sorted by path / by count):
-  sizes --repo <path> [--top 20]      biggest files by line count
+  sizes --repo <path> [--top 20]      biggest text files by line count, binaries by byte size
   entry-points --repo <path>          entry-point heuristics, language-agnostic
   imports --repo <path> [--top 20]    most frequent imported modules, best-effort regexes
 
@@ -21,7 +21,10 @@ entry-point heuristics (a file is listed when at least one reason applies):
   Cargo [[bin]]  a `[[bin]]` table
 imports regexes: `^import X`, `^from X import`, `require('X')`, `#include <X>`, `^using X`.
 This is a language-agnostic approximation, never a parser: it is deliberately best-effort.
-Text analyzers skip files larger than MAX_TEXT_BYTES (1 MiB); `sizes` covers every file.
+Text analyzers skip files larger than MAX_TEXT_BYTES (1 MiB). `sizes` ranks every text file by
+line count under `files` and lists the binaries separately under `binaries` (ranked by byte size,
+so a committed blob shows up in the review; only the binary sniff bytes are ever read, never the
+whole file). *.pyc files and symlinks are never listed.
 Exit code 0 = success, 1 = error (the `--repo` path is not a directory).
 """
 from __future__ import annotations
@@ -64,10 +67,17 @@ def _text(root: pathlib.Path, record: dict) -> str | None:
 
 
 def sizes(root: pathlib.Path, top: int) -> dict:
-    """Biggest files by line count (ties broken by path)."""
+    """Biggest text files by line count (ties broken by path), plus the binaries by byte size.
+
+    A binary has no meaningful line count and is never read whole, so it is ranked separately
+    under `binaries` ({"path", "bytes"}, biggest first) instead of being silently dropped —
+    the biggest-files report is exactly where a committed blob must show up.
+    """
     records = _records(root)
     ranked = sorted(records, key=lambda r: (-r["lines"], r["path"]))
-    return {"files": ranked[:max(top, 0)],
+    limit = max(top, 0)
+    return {"files": ranked[:limit],
+            "binaries": repo_inventory.binary_records(root)[:limit],
             "total_files": len(records),
             "total_lines": sum(r["lines"] for r in records)}
 
@@ -140,7 +150,7 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    ps = sub.add_parser("sizes", help="biggest files by lines")
+    ps = sub.add_parser("sizes", help="biggest text files by lines, binaries by byte size")
     ps.add_argument("--repo", default=".", help="Repository root (default: cwd)")
     ps.add_argument("--top", type=int, default=20, help="How many files to list (default: 20)")
 

@@ -43,7 +43,9 @@
 #   start.cmd            # interactive (in the chat: /skill:code-factory)
 #   start.cmd --auto     # fully autonomous
 #
-# The script does NOT commit anything. All steps are safe and idempotent.
+# The script does NOT commit anything. All steps are safe and idempotent, with one
+# documented exception: an existing launcher that differs from the template is replaced
+# with a warning (an existing differing start.sh is first backed up to start.sh.bak).
 # =============================================================================
 
 # Non-ASCII text must remain readable when output is redirected (pipe/file).
@@ -340,6 +342,17 @@ $shLines = @(
     'exec kimi "$@"'
 )
 $shText = ($shLines -join "`n") + "`n"
+# We do not silently lose an existing user start.sh: if it differs from the template —
+# warn and keep the old file as start.sh.bak (one backup, not a chain); a byte-identical
+# file is overwritten silently.
+if (Test-Path -LiteralPath $LauncherSh -PathType Leaf) {
+    $existingSh = $null
+    try { $existingSh = [System.IO.File]::ReadAllText($LauncherSh) } catch { $existingSh = $null }
+    if ($null -ne $existingSh -and $existingSh -ne $shText) {
+        Warn "    Launcher: $LauncherSh already exists and differs from the template — overwriting (the old file is kept as $LauncherSh.bak)"
+        try { [System.IO.File]::Copy($LauncherSh, "$LauncherSh.bak", $true) } catch { }
+    }
+}
 $ShWritten = Write-FileStrict -Path $LauncherSh -Text $shText -Encoding $EncNoBom
 
 $cmdLines = @(

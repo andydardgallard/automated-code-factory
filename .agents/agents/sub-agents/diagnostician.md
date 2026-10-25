@@ -28,8 +28,10 @@ factory — use the entries whose `project:` matches that project.
 
 **Precedents before re-reading.** Before re-reading code or past runs, search the precedent index,
 always passing the repository root from your briefing as `--repo`:
-`python .agents/skills/code-factory/scripts/precedent_index.py query --repo <repository root from the briefing> "<topic>"`
-— it holds the memory and the code base, so a recurrence is diagnosed from what was already tried.
+`python .agents/skills/code-factory/scripts/precedent_index.py query --repo <repository root from the briefing> --fresh "<topic>"`
+— it holds the memory and the code base, so a recurrence is diagnosed from what was already
+tried. `--fresh` refuses a stale index (exit 3) instead of answering from it; that refusal means
+falling back to the files.
 The main agent builds it the same way (`… build --repo <repository root from the briefing>`); a missing
 index just means falling back to the files.
 

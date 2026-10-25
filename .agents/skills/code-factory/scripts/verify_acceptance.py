@@ -208,7 +208,12 @@ def decide_verdict(results: list[dict], regression: str,
     if regression != "pass":
         return "DEGRADED", ("regression not proven (--regression not-run): SUCCESS is impossible "
                             "without regression evidence")
-    return "SUCCESS", "all verify criteria MET and the regression baseline passed"
+    verified = sum(1 for r in results if r["command"])
+    unverified = sum(1 for r in results if r["status"] == "UNVERIFIED")
+    reason = f"all {verified} verify {'criterion' if verified == 1 else 'criteria'} MET"
+    if unverified:  # name what SUCCESS does NOT cover: the derived/unverified rest was not checked
+        reason += f" ({unverified} {'criterion' if unverified == 1 else 'criteria'} derived/unverified)"
+    return "SUCCESS", f"{reason} and the regression baseline passed"
 
 
 def check_ledger(ledger_path: pathlib.Path, evidence_files: list[str], repo: pathlib.Path) -> dict:

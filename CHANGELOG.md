@@ -5,6 +5,69 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.16.0] — 2026-10-26
+
+### Added
+- **The destructive-action gate is wired into the governed flow** (new canonical rule
+  `destructive-action-gate`, 5 carriers): the pre-flight node (SKILL.md `PF`) and Phase 4 classify
+  every destructive command with `scripts/action_gate.py check` before it runs, the rollback node
+  classifies the commands that restore the tree, and `test_flow_contracts.py` pins both edges with
+  a negative probe — a shipped safety control that no flow step invokes protects nothing.
+- `validate_documentation.py check --derive`: the changed set is computed from `git status` and
+  compared with the declared `--files`, so the policed role no longer declares the scope of its
+  own police.
+- `repo_inventory.py` counts every skip category (`skipped_binary`, `skipped_symlink`,
+  `skipped_pyc` next to `skipped_unreadable`, plus `skipped`) in BOTH the inventory and the shard
+  plan, and `repo_stats.py sizes` ranks binaries instead of silently dropping them.
+- `evidence_ledger.py` records each entry's `files` scope; `check` verifies every entry against its
+  own scope, reports a scope mismatch as its own reason, and labels a legacy entry with no scope
+  and no caller scope `UNSCOPED` instead of claiming that the files changed.
+
+### Changed
+- **The advisor resolves from the primary (judge) side**, so the shipped two-model default matrix
+  can satisfy the enforced generator != judge rule again: `model_matrix.py resolve` on a task
+  without a `models:` block now exits 0 (it exited 1 with three collisions). The resolver's ERROR
+  names only remedies that can work (a same-side collision can only be fixed by pinning
+  `models.<role>`), a whole side resolving no model is a warning rather than a silent pass, and
+  `assets/task-template.yaml` shows how to pin a judge role.
+- The canonical `verified-acceptance` wording now promises what the implementation does: "all
+  criteria that carry `verify` are MET" — a `derived` criterion was never required to be MET.
+- `action_gate.py`: a `git checkout` operand can no longer hide a working-tree discard — `.`, `./`,
+  `..`, absolute/drive paths, wildcards and a trailing separator route through the scope logic,
+  a slash-bearing operand CONFIRMs, `git checkout <tree-ish> <path>` is treated as a pathspec, and
+  a bare `git reset --hard` / a pathspec reset is CONFIRM (an out-of-scope one is HARD_DENY) while
+  a plain ref reset stays ALLOW.
+- `run_id.py` hashes CRLF→LF-normalized bytes, so the id is platform-neutral; the hashed task
+  fixture's line endings are pinned in `.gitattributes` and the pinned digest is the LF one.
+- `project_fingerprint.py` excludes only the explicit artifact set, not every dot-prefixed path, so
+  an edit under `.agents/` or `.kimi-code/` moves the content hash again.
+- `verify_quotes.py`: an empty claims set is `UNVERIFIED` with exit 2, never `VERIFIED`.
+- Both deployers warn about a pre-existing `start.sh` that differs from the template and keep it as
+  `start.sh.bak` before replacing it; the header documents the one non-idempotent step.
+- `README.md`: `repo_path` is stated as required, the structure tree names `VERSION`,
+  `skill-base/` and `.gitattributes`, and the memory-init example uses `python`, not `python3`.
+- `security-auditor.md`'s fix-task template carries `repo_path`; `analyzer.md` and
+  `diagnostician.md` query the precedent index with `--fresh`; `refactorer.md` carries the
+  shared-tree git-mutation ban and its sanctioned alternative; the no-edits suffix list in
+  `handoff-briefing.md` matches the canonical read-only roles.
+
+### Fixed
+- `error_router.py`: an unwritable `--out` is a one-line message with exit 2, not a traceback.
+- `skill_base.py`: a cache-write failure is a message naming the source, never a traceback.
+- `precedent_index.py`: the tree signature hashes content too, so a same-size edit that keeps the
+  mtime can no longer leave a stale index reporting FRESH.
+- `test_vaccination.py`: the base commit is resolved against git (the recorded release's parent),
+  the stale-constant guard sits below the `--registry-only` early return, an unresolvable base is a
+  FAIL rather than a SKIP, and the duplicated `_shortened` helper is gone — the 24 vaccines bite
+  again on the maintainer's own tree.
+- `test_env_propagation.sh` drives `factory_preflight.py` with the flag set and unset instead of
+  asserting bash's own export behaviour.
+- Self-tests that could not fail now can: the model-attribution assertion pins the sentence the
+  tool emits, the prompt-structure guard carries a negative probe, the report-generator summary
+  states when the git cases were skipped, and its docstring pins the non-ASCII characters instead
+  of a Russian claim.
+
+
 ## [12.15.0] — 2026-10-25
 
 ### Changed

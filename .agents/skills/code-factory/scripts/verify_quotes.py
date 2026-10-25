@@ -30,7 +30,10 @@ from `.code-factory/` of the target repository are checked against that reposito
 flag nothing changes: every relative path stays relative to the caller's working directory.
 
 Output: the JSON report goes to `--report` when given, otherwise to stdout; the human-readable
-summary always goes to stderr. Exit code 0 only if EVERY quote is verified. stdlib only.
+summary always goes to stderr. Exit code 0 only if EVERY quote is verified. An EMPTY claims file
+is not "vacuously verified": the verdict is UNVERIFIED ("the claims file holds no claim: nothing
+was checked") and the exit code is 2 (a contract error — an evidence set that collapsed to nothing
+must not be indistinguishable from a fully verified one). stdlib only.
 """
 from __future__ import annotations
 
@@ -166,7 +169,7 @@ def main() -> int:
         "total": len(claims),
         "verified_count": len(verified),
         "untrusted_count": len(untrusted),
-        "all_verified": not untrusted,
+        "all_verified": bool(claims) and not untrusted,
         "verified": verified,
         "untrusted": untrusted,
     }
@@ -187,6 +190,10 @@ def main() -> int:
           f"{len(untrusted)} untrusted", file=sys.stderr)
     for entry in untrusted:
         print(f"  UNTRUSTED {entry['source']}: {entry['reason']}", file=sys.stderr)
+    if not claims:
+        print("verify_quotes: verdict UNVERIFIED - the claims file holds no claim: "
+              "nothing was checked", file=sys.stderr)
+        return 2
     if untrusted:
         print(f"verify_quotes: verdict UNTRUSTED - {FAIL_SAFE}", file=sys.stderr)
         return 1

@@ -3,13 +3,16 @@
 Deterministic self-test for `run_id.py` (zero LLM tokens).
 
 Checks through the CLI that (a) `gen` is deterministic and follows the documented contract —
-`<YYYYMMDD local date>-<first 8 hex of the SHA-256 of the task file bytes>`, recomputed
-independently here, (b) the digest of the committed, static fixture
-`assets/task-template.yaml` equals the pinned `b784b39f` — the algorithm proven against a real
-committed task file, not only against a temp fixture; the date part is TODAY by construction, so
-only its FORMAT `YYYYMMDD-` is pinned (a pinned date would rot overnight), and the ephemeral
-runtime task file `.code-factory/state/task.yaml` is never read (its bytes change with every task,
-so pinning them would rot at the next run) — and
+`<YYYYMMDD local date>-<first 8 hex of the SHA-256 of the CRLF→LF-normalized task file bytes>`,
+recomputed independently here; the normalization makes the digest platform-neutral, so the SAME
+text written with LF and with CRLF must yield the SAME id (the old raw-bytes hash did not, which
+is exactly why the normalization exists) — (b) the digest of the committed, static fixture
+`assets/task-template.yaml` equals the pinned `dfc96d9f` — the algorithm proven against a real
+committed task file, not only against a temp fixture; the fixture is pinned to `eol=lf` by
+.gitattributes and the hash normalizes anyway, so the pin holds on any checkout; the date part is
+TODAY by construction, so only its FORMAT `YYYYMMDD-` is pinned (a pinned date would rot
+overnight), and the ephemeral runtime task file `.code-factory/state/task.yaml` is never read
+(its bytes change with every task, so pinning them would rot at the next run) — and
 (c) `check` scans exactly the artifacts a run carries (`state/pipeline.yaml`, `state/acceptance.md`,
 `logs/*.md`, `report.md`): an existing artifact without a `run_id: <id>` / `run_id=<id>` line is
 listed and exits 1, a fully marked (or empty / absent) directory exits 0, and any id — not only the
@@ -38,9 +41,12 @@ TASK = REPO / ".agents" / "skills" / "code-factory" / "assets" / "task-template.
 # unlike the ephemeral `.code-factory/state/task.yaml`.
 # The digest is re-pinned whenever the fixture's CONTENT changes (the last change appended the
 # `gui_expert` line to the models example): the fixture stays a real committed task file and the
-# digest half of the id proves the algorithm against it.
+# digest half of the id proves the algorithm against it. The pin is the digest of the
+# CRLF→LF-NORMALIZED bytes (what the committed blob hashes to), so it holds on an LF checkout and
+# on a CRLF one alike — .gitattributes pins the fixture to `eol=lf` as well, because a fixture
+# whose bytes are hashed must not vary by checkout.
 # Its DATE is today's by construction, so only the digest half is compared literally.
-KNOWN_TASK_RUN_ID = "20260929-f6a6e8c8"
+KNOWN_TASK_RUN_ID = "20260929-dfc96d9f"
 HEX = set("0123456789abcdef")
 
 
@@ -56,7 +62,7 @@ def expect(cond: bool, msg: str) -> None:
 
 def expected_run_id(task: pathlib.Path) -> str:
     """Independent restatement of the contract, so a wrong algorithm cannot agree with itself."""
-    digest = hashlib.sha256(task.read_bytes()).hexdigest()
+    digest = hashlib.sha256(task.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     return f"{date.today():%Y%m%d}-{digest[:8]}"
 
 
@@ -94,6 +100,24 @@ def main() -> int:
         other.write_text("title: another task\n", encoding="utf-8")
         expect(run("gen", "--task", str(other)).stdout.strip() != run_id,
                "two different task files must not share a run id")
+
+        # 1b. Platform neutrality: the digest is CRLF→LF normalized, so the SAME text hashed as LF
+        #     and as CRLF must yield the SAME id — and it must be the LF digest. The old raw-bytes
+        #     hash failed both: the id (and the pinned fixture digest below) depended on the
+        #     checkout's line endings, so the self-test was red on any LF clone. Written as BYTES
+        #     on purpose: `write_text` would translate the `\n` to the platform's line ending.
+        same_text = b"title: eol probe\nrepo_path: .\n"
+        lf_task = tmp / "task-lf.yaml"
+        crlf_task = tmp / "task-crlf.yaml"
+        lf_task.write_bytes(same_text)
+        crlf_task.write_bytes(same_text.replace(b"\n", b"\r\n"))
+        lf_id = run("gen", "--task", str(lf_task)).stdout.strip()
+        crlf_id = run("gen", "--task", str(crlf_task)).stdout.strip()
+        expect(lf_id == crlf_id,
+               f"LF and CRLF bytes of the same task must yield the same id: {lf_id!r} != "
+               f"{crlf_id!r} (the digest must be CRLF→LF normalized)")
+        expect(lf_id == f"{date.today():%Y%m%d}-{hashlib.sha256(same_text).hexdigest()[:8]}",
+               f"the normalized id must be the LF digest: {lf_id!r}")
 
         # 2. The committed fixture task file (`assets/task-template.yaml`) keeps the pinned DIGEST; a
         #    missing task file is an error, never a fabricated id. Only the digest is compared: `gen`

@@ -37,14 +37,19 @@ because `--baseline` is resolved against the cwd and only the absolute form keep
 resolved repo. `--files` are repo-relative:
 
 ```bash
-python3 .agents/skills/code-factory/scripts/validate_documentation.py snapshot \
+python .agents/skills/code-factory/scripts/validate_documentation.py snapshot \
   --repo <resolved repo_path> --baseline <resolved repo_path>/.code-factory/docs_baseline \
   --files <rel-path> ...
 # ... edit the docs only ...
-python3 .agents/skills/code-factory/scripts/validate_documentation.py check \
+python .agents/skills/code-factory/scripts/validate_documentation.py check \
   --repo <resolved repo_path> --baseline <resolved repo_path>/.code-factory/docs_baseline \
   --files <rel-path> ...
 ```
+
+After the plain `check` passes, run it once more with `--derive`: the validator then recomputes
+the changed TRACKED file set itself from `git -C <repo> status --porcelain` and FAILS when a
+changed file is missing from `--files` — the declared list is not the authority on what was
+touched (when git cannot answer, the mode degrades with a message and exit 2, never a traceback).
 
 The validator checks, deterministically (stdlib only):
 

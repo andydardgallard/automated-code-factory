@@ -3,10 +3,13 @@
 Deterministic run id of a Code Factory run, plus the artifact-provenance check.
 
 The run id is `<YYYYMMDD>-<first 8 hex of the SHA-256 of the task file bytes>`: the local date the
-run started plus a content-derived suffix. It is reproducible from the artifacts alone (no clock
-state is stored) and two different tasks never share an id, so every artifact of a run can be
-traced back to the exact task it came from. Scripts that write artifacts embed it as
-`run_id: <id>` in the header of the file they produce.
+run started plus a content-derived suffix. The bytes are CRLF→LF normalized before hashing, so the
+id is platform-neutral: the same task file yields the same id on a CRLF checkout (Windows with
+core.autocrlf=true) as on an LF one — a raw-bytes hash would make the id, and every artifact
+attributed through it, depend on the checkout's line endings. The id is reproducible from the
+artifacts alone (no clock state is stored) and two different tasks never share an id, so every
+artifact of a run can be traced back to the exact task it came from. Scripts that write artifacts
+embed it as `run_id: <id>` in the header of the file they produce.
 
 Usage:
   python run_id.py gen --task .code-factory/state/task.yaml [--repo <root>]
@@ -66,14 +69,16 @@ def add_repo(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
 
 def compute_run_id(task: pathlib.Path, today: date | None = None) -> str:
-    """Run id of the task file: local date + first 8 hex of the SHA-256 of its bytes.
+    """Run id of the task file: local date + first 8 hex of the SHA-256 of its LF-normalized bytes.
 
+    The bytes are CRLF→LF normalized before hashing, so the digest is platform-neutral: a CRLF
+    checkout (core.autocrlf=true) and an LF checkout of the same task file yield the same id.
     Raises ValueError with a human-readable cause when the task file cannot be read — an id
     derived from a missing file would be a silently wrong provenance, exactly what this module
     exists to prevent.
     """
     try:
-        digest = hashlib.sha256(task.read_bytes()).hexdigest()
+        digest = hashlib.sha256(task.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     except OSError as exc:
         raise ValueError(f"cannot read task file {task}: {exc}") from exc
     return f"{(today or date.today()):%Y%m%d}-{digest[:8]}"

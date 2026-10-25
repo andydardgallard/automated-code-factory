@@ -27,8 +27,10 @@ documents — report only what the model is missing or what the task specificall
 
 **Precedents before re-reading.** Before re-reading history or code, ask the precedent index, always
 passing the repository root from your briefing as `--repo`:
-`python .agents/skills/code-factory/scripts/precedent_index.py query --repo <repository root from the briefing> "<topic>"`
-returns the memory and code hits that already answer the question. The main agent builds the index
+`python .agents/skills/code-factory/scripts/precedent_index.py query --repo <repository root from the briefing> --fresh "<topic>"`
+returns the memory and code hits that already answer the question. `--fresh` is not optional: it refuses
+an index built against an older tree (exit 3) instead of answering from it, and that refusal is the
+signal to fall back to reading the files. The main agent builds the index
 the same way (`… build --repo <repository root from the briefing>`); if it is not there yet, fall back
 to reading the files.
 

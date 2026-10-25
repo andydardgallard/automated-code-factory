@@ -78,6 +78,7 @@ findings:
       <verbatim fragment of src/auth.py proving the issue (checked by verify_quotes.py)>
 fix_tasks: |
   title: "Fix the found security vulnerabilities"
+  repo_path: "<the resolved repo_path the audit ran against>"
   task_type: implement
   description: |
     <grouped findings as business-language acceptance criteria>

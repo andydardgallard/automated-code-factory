@@ -993,6 +993,33 @@ def main() -> int:
         expect(project_fingerprint.compute_content_fingerprint(wroot) == crlf,
                "CRLF and LF content of the same file must hash the same (CRLF→LF normalization)")
 
+        # 29f. A TRACKED file below a dot-directory that holds project content (.agents/,
+        #      .kimi-code/) MUST move the content hash when edited: the old blanket rule
+        #      "exclude any dot-prefixed path part" dropped it from BOTH levels, so the edit
+        #      moved neither hash and the "skip regeneration" branch could fire on a changed
+        #      project — contradicting AGENTS.md ("changes deeper than the first level are seen
+        #      by the content hash") and .agents/README.md ("only untracked files stay outside
+        #      the hash"). Only the explicit noise set (.git, .code-factory, editor drop-ins,
+        #      the factory's own artifacts) is excluded now.
+        dot_tool = wroot / ".agents" / "sub" / "tool.py"
+        dot_tool.parent.mkdir(parents=True)
+        dot_tool.write_bytes(b"# dot tool v1\n")
+        subprocess.run(["git", "-C", str(wroot), "add", ".agents/sub/tool.py"], check=True)
+        dot_before = project_fingerprint.compute_content_fingerprint(wroot)
+        dot_tool.write_bytes(b"# dot tool v2\n")
+        expect(project_fingerprint.compute_content_fingerprint(wroot) != dot_before,
+               "an edit of a tracked file below a dot-directory MUST move the content hash")
+        #     The explicit factory-artifact exclusion still holds for a dot-path: the factory's
+        #      own .code-factory/ stays invisible even as a tracked file below it.
+        cf_file = wroot / ".code-factory" / "state" / "note.md"
+        cf_file.parent.mkdir(parents=True)
+        cf_file.write_bytes(b"note v1\n")
+        subprocess.run(["git", "-C", str(wroot), "add", ".code-factory/state/note.md"], check=True)
+        cf_before = project_fingerprint.compute_content_fingerprint(wroot)
+        cf_file.write_bytes(b"note v2\n")
+        expect(project_fingerprint.compute_content_fingerprint(wroot) == cf_before,
+               ".code-factory/ must stay excluded: the factory's own artifacts never move the hash")
+
     # 30. ONE memory contract, TWO entry points — the parity that used to be missing. The memory
     #     contract was implemented TWICE by hand (`memory_project.py` and this checker) and the two
     #     copies disagreed on six axes in both directions, so each one was blind exactly where the

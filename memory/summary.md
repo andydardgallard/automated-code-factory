@@ -10,9 +10,24 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.15.0 — the "honest factory" patch is delivered on `feature/v12.15.0-honest-factory`
+Factory v12.16.0 — the 35-finding fix delivery on `feature/v12.15.0-honest-factory`
 (base `fb43f2a`).
-Latest run: review (run_id 20261025-4df00efd, task.yaml "full pre-publication review", hitl) —
+Latest run: implement (run_id 20261025-90bdaf48, `.code-factory/review/fix-tasks.yaml`, hitl) — the
+owner ran the review's follow-up task and every one of its 35 findings (10 major, 24 minor, 1 nit)
+is closed with a test that fails on the pre-fix code, verified by one executed check per finding
+(`check_findings.py ALL` 35/35 MET). Two findings forced a rulebook change: a NEW canonical rule
+`destructive-action-gate` (the gate was shipped but no flow node invoked it) and the corrected
+`verified-acceptance` sentence. The advisor moved to the judge (primary) side, so the two-model
+default matrix satisfies generator != judge again and `model_matrix.py resolve` exits 0 on an
+unpinned task. `run_id` hashes CRLF→LF-normalized bytes, the hashed task fixture's line endings are
+pinned, and `project_fingerprint.py` no longer hides tracked dot-directories. The self-test suite is
+green END TO END for the first time: 38 files, 38 PASS, 0 SKIP, 0 FAIL — `test_vaccination.py` now
+resolves its base commit from git and proves its 24 vaccines instead of skipping. Review gate:
+request_changes on iteration 1 (2 major + 4 minor + 1 nit, all reworked and re-proved) then
+approve; acceptance SUCCESS with 40/40 criteria MET, ledger FRESH; models match the session wire
+(main/reviewer deepseek-flash, coder/documenter kimi-code/k3). Version 12.15.0 -> 12.16.0 (minor,
+validated by the reviewer).
+Previous run: review (run_id 20261025-4df00efd, task.yaml "full pre-publication review", hitl) —
 report-only, nothing edited (`git diff --quiet HEAD` exit 0). Six shards over the whole TRACKED
 tree (134 files, 43 866 lines): 35 merged findings, 0 critical, 10 major, 24 minor, 1 nit, 46/46
 quotes verified verbatim, verdict `request_changes` recorded as `results.review=` and handed over
@@ -49,14 +64,16 @@ unrequested 18-file rework was rolled back).
 Version type: the deterministic matrix proposed `patch`; the code reviewer overrode it to `minor`
 because a new canonical rule, two flow nodes, three scripts, a summary field and a record kind are
 additive, not breaking.
-Open backlog: 2 items (47 closed with evidence) — the `test_run_id.py` fixture digest depends on the
-checkout's line endings (re-confirmed by the review with a verified quote: CRLF `f6a6e8c8` vs LF
-`eb367fe3`), and the §7 re-calibration obligation after a reviewer-prompt edit is enforced by prose
-only, so a prompt edit can ship without a fresh calibration. Both are carried in the follow-up task.
-Rulebook: 26 rules, 105 carriers, byte-identical (`check_factory_rules.py` exit 0). Memory owner:
+Open backlog: 1 item (48 closed with evidence) — the §7 reviewer-calibration obligation is still
+enforced by prose only (this run edited no reviewer prompt, so no fresh calibration arose); two
+info-level debts are recorded alongside it: the deployer `start.sh` guard is proven by a static + base-commit
+probe rather than a behavioural deploy (which needs the network), and a generated `fix-tasks.yaml`
+is not matched by the `commit_exclude` patterns (the run stages explicitly). The `test_run_id.py`
+line-ending debt is CLOSED: the id is platform-neutral now.
+Rulebook: 27 rules, 110 carriers, byte-identical (`check_factory_rules.py` exit 0). Memory owner:
 repo, declared with `project_id` (the repository identity, not the folder name). Self-tests: 38
-files — 37 pass, 1 documented SKIP (`test_vaccination.py`, which needs the release base commit and
-reports exit 3 without it), 0 fail; the 24 registered vaccines each fail on the pre-fix tree.
+files — 38 pass, 0 SKIP, 0 fail; `test_vaccination.py` resolves the release base commit from git and
+proves that the 24 registered vaccines each fail on the pre-fix tree.
 
 ## Key decisions
 - The long-term memory `memory/` belongs to ONE target project (`repo_path`); the field

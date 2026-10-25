@@ -12,13 +12,25 @@ Checks that the documenter touched ONLY documentation:
      old↔new), so duplicated text (a code line repeated inside a docstring) cannot mask a change.
 
 Usage:
-  python3 validate_documentation.py check --repo <root> --baseline <dir> --files f1 f2 ...
+  python3 validate_documentation.py check --repo <root> --baseline <dir> --files f1 f2 ... [--derive]
   python3 validate_documentation.py snapshot --repo <root> --baseline <dir> --files f1 f2 ...
 
 `snapshot` copies the listed files into <dir> preserving relative paths (the documenter runs it
 BEFORE editing). `check` compares the current files against that snapshot.
 
-Exit code 0 = PASS, 1 = FAIL (each violation printed to stderr). stdlib only.
+The doc-line classifier is LANGUAGE-AWARE: a leading `#` counts as a comment only in the languages
+where it is one (shell/python/ruby/...), never in the C family (a changed `#define`/`#include` is a
+code change); `;` counts only where it is a comment (Clojure), `%` only in MATLAB-style `.m`, `--`
+only in SQL/Lua/Haskell, and `//` only in the C/Java/JS family.
+
+With `check --derive` the validator does not take the declared file list on faith: it computes the
+changed TRACKED files itself from `git -C <repo> status --porcelain` and FAILS when a changed file
+is missing from `--files` (an edit to an unlisted source/test/config file cannot hide). When git
+is unavailable or <repo> is not a git repository the mode degrades with a message and exit code 2
+(never a traceback).
+
+Exit code 0 = PASS, 1 = FAIL (each violation printed to stderr), 2 = the deriving mode could not
+run (git unavailable / not a repository). stdlib only.
 """
 from __future__ import annotations
 
@@ -26,6 +38,7 @@ import argparse
 import difflib
 import pathlib
 import shutil
+import subprocess
 import sys
 
 PROTECTED_SUFFIXES = {
@@ -48,8 +61,35 @@ SOURCE_SUFFIXES = {
     ".sql", ".lua", ".ex", ".exs", ".hs", ".clj", ".r", ".m", ".zig", ".nim",
 }
 
-# Line-comment / doc markers recognized for "this changed line is documentation".
-_LINE_DOC_PREFIXES = ("#", "//", "///", "//!", "--", "<!--", "-->", ">", "%", ";")
+# Line-comment / doc markers recognized for "this changed line is documentation", PER LANGUAGE:
+# a `#define`/`#include` in a C file is a preprocessor (code) line, not a comment, so `#` counts
+# only where it is one; the same holds for `;` (Clojure), `%` (MATLAB-style .m) and `--`
+# (SQL/Lua/Haskell). Markup tags are language-neutral (no source code line starts with one).
+_MARKUP_DOC_PREFIXES = ("<!--", "-->")
+_HASH_COMMENT_SUFFIXES = {".py", ".sh", ".bash", ".rb", ".r", ".nim", ".ex", ".exs", ".php"}
+_SLASH_COMMENT_SUFFIXES = {".rs", ".js", ".ts", ".tsx", ".jsx", ".go", ".java", ".c", ".h",
+                           ".cpp", ".hpp", ".cc", ".cs", ".swift", ".kt", ".scala", ".php",
+                           ".zig", ".m"}
+_DASHDASH_COMMENT_SUFFIXES = {".sql", ".lua", ".hs"}
+_SEMI_COMMENT_SUFFIXES = {".clj"}
+_PERCENT_COMMENT_SUFFIXES = {".m"}  # MATLAB flavour of .m; Objective-C is covered by `//`
+
+
+def _doc_prefixes(rel: str) -> tuple[str, ...]:
+    """Line-comment prefixes valid for the language `rel` is written in (by suffix)."""
+    suffix = pathlib.PurePosixPath(rel).suffix.lower()
+    prefixes = list(_MARKUP_DOC_PREFIXES)
+    if suffix in _HASH_COMMENT_SUFFIXES:
+        prefixes.append("#")
+    if suffix in _SLASH_COMMENT_SUFFIXES:
+        prefixes += ["//", "///", "//!"]
+    if suffix in _DASHDASH_COMMENT_SUFFIXES:
+        prefixes.append("--")
+    if suffix in _SEMI_COMMENT_SUFFIXES:
+        prefixes.append(";")
+    if suffix in _PERCENT_COMMENT_SUFFIXES:
+        prefixes.append("%")
+    return tuple(prefixes)
 
 _DOCSTRING_DELIMS = ('"""', "'''")
 _BLOCK_START = "/*"          # `/*`, `/**` and `/*!` all open a C-style comment block
@@ -81,10 +121,12 @@ def _is_source(rel: str) -> bool:
     return pathlib.PurePosixPath(rel).suffix.lower() in SOURCE_SUFFIXES
 
 
-def _doc_mask(lines: list[str]) -> list[bool]:
+def _doc_mask(lines: list[str], rel: str = "") -> list[bool]:
     """Return, per line, whether that line is inside a doc comment/docstring (or is a line
-    comment). Heuristic but conservative: a changed non-doc, non-blank line is treated as code."""
+    comment). Heuristic but conservative: a changed non-doc, non-blank line is treated as code.
+    `rel` selects the language: a `#`/`;`/`%`/`--` prefix only counts as a comment where it is one."""
     mask: list[bool] = []
+    prefixes = _doc_prefixes(rel)
     in_triple = False
     in_block = False
     for raw in lines:
@@ -114,7 +156,7 @@ def _doc_mask(lines: list[str]) -> list[bool]:
                 is_doc = True
                 if s.count('"""') + s.count("'''") < 2:
                     in_triple = True
-            elif s.startswith(_LINE_DOC_PREFIXES):
+            elif s.startswith(prefixes):
                 is_doc = True
             # No fallback for a bare `*` or `|` line: outside a block/docstring/markdown file it
             # is code (`*ptr = 1;`, `| mask = 2;`), and treating it as documentation let a code
@@ -169,7 +211,7 @@ def check(root: pathlib.Path, baseline: pathlib.Path, files: list[str]) -> list[
             continue
         if not base.is_file():
             # Untracked/new source file: allow only if every non-blank line is a doc line.
-            mask = _doc_mask(cur.read_text(encoding="utf-8", errors="replace").splitlines())
+            mask = _doc_mask(cur.read_text(encoding="utf-8", errors="replace").splitlines(), rel)
             bad = [i + 1 for i, d in enumerate(mask) if not d]
             if bad:
                 errors.append(f"{rel}: new source file contains non-doc lines {bad[:5]}")
@@ -180,8 +222,8 @@ def check(root: pathlib.Path, baseline: pathlib.Path, files: list[str]) -> list[
         if not changed:
             continue
         # A changed line is a code change if it is non-blank and not a doc line in BOTH versions.
-        old_mask = _doc_mask(old)
-        new_mask = _doc_mask(new)
+        old_mask = _doc_mask(old, rel)
+        new_mask = _doc_mask(new, rel)
         for ln, oi, ni in changed:
             if not ln.strip():
                 continue
@@ -194,6 +236,41 @@ def check(root: pathlib.Path, baseline: pathlib.Path, files: list[str]) -> list[
                 errors.append(f"{rel}: code line changed: {ln.strip()[:80]}")
                 break
     return errors
+
+
+def derive_changed_files(root: pathlib.Path) -> tuple[list[str], str]:
+    """Return the changed TRACKED files of `root` from `git status --porcelain`.
+
+    The second tuple element is "" on success, otherwise a human-readable reason (git missing,
+    `root` not a repository) — the caller degrades with a message, never a traceback. Untracked
+    (`??`) and ignored (`!!`) entries are out of scope: the mode polices edits to tracked files.
+    """
+    try:
+        # `-z` + an explicit UTF-8 decode: NUL-separated and never C-quoted, so a non-ASCII path
+        # arrives as the real name. `text=True` would decode git's output with the LOCALE code page
+        # (cp1251 on a Russian Windows), so a name with a diacritic would come back as mojibake
+        # that no declared path can match.
+        proc = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "-z"],
+                              capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [], f"git status could not run: {exc}"
+    if proc.returncode != 0:
+        stderr = (proc.stderr or b"").decode("utf-8", "replace").strip()
+        return [], f"git status failed (rc={proc.returncode}): {stderr}"
+    changed: list[str] = []
+    entries = (proc.stdout or b"").decode("utf-8", "replace").split("\0")
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if len(entry) < 4 or entry[:2] in ("??", "!!"):
+            continue
+        path = entry[3:]
+        if entry[0] in "RC" and index < len(entries):
+            index += 1          # `-z` puts the ORIGINAL path in the next record
+        if path:
+            changed.append(path)
+    return changed, ""
 
 
 def use_utf8_output() -> None:
@@ -222,6 +299,11 @@ def main() -> int:
         sp.add_argument("--repo", default=".", help="Project root (default: cwd)")
         sp.add_argument("--baseline", required=True, help="Baseline snapshot directory")
         sp.add_argument("--files", nargs="+", required=True, help="Files touched by the documenter")
+        if name == "check":
+            sp.add_argument("--derive", action="store_true",
+                            help="Do not take --files on faith: compute the changed TRACKED files "
+                                 "from `git -C <repo> status --porcelain` and FAIL when a changed "
+                                 "file is missing from --files (exit 2 when git cannot answer)")
 
     args = ap.parse_args()
     root = pathlib.Path(args.repo).resolve()
@@ -233,6 +315,14 @@ def main() -> int:
         return 0
 
     errors = check(root, baseline, args.files)
+    if args.derive:
+        changed, reason = derive_changed_files(root)
+        if reason:
+            print(f"error: --derive cannot compute the changed set: {reason}", file=sys.stderr)
+            return 2
+        declared = {pathlib.PurePath(f).as_posix() for f in args.files}
+        for rel in sorted(set(changed) - declared):
+            errors.append(f"{rel}: changed in the repository but not declared via --files")
     if errors:
         print("FAIL - documentation validation:", file=sys.stderr)
         for e in errors:

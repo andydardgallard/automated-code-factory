@@ -23,8 +23,11 @@ second, so a run rebuilds instead of trusting an index somebody built once.
 
 Freshness is recorded, not assumed: the `meta` table of the index holds, per source, the sha256 of
 `memory/change-log.md`, the sha256 of `memory/summary.md`, the sha256 of the manifest of the
-indexed code tree (repo-relative path, size and `mtime_ns` of every indexed file) and the build
-time. `status` compares them with the sources as they are NOW and prints
+indexed code tree (repo-relative path, size, `mtime_ns` and content sha256 of every indexed file)
+and the build time. The content digest is part of the manifest on purpose: a same-size edit that
+preserves the mtime (os.utime, a filesystem with a coarse mtime) is invisible to a size+mtime
+signature, and it must still be STALE. `status` compares them with the sources as they are NOW and
+prints
 `FRESH - <n> records, <m> files (built <time>)` plus `hash: <sha256 of the rows>` with exit 0, or
 `STALE - <reason>` with exit 1, the reason naming the cause: the journal changed after the last
 build, the summary changed, the tracked tree changed, the meta record is missing, or the database
@@ -224,11 +227,25 @@ def file_sha(path: pathlib.Path) -> str:
     return "" if data is None else hashlib.sha256(data).hexdigest()
 
 
-def tree_manifest(root: pathlib.Path, paths: list[str], skip: set[pathlib.Path]) -> str:
-    """sha256 over `path\\0size\\0mtime_ns` of the indexed files: the code base's signature.
+def content_sha(path: pathlib.Path) -> str:
+    """Streamed sha256 of a file's content, or "" when it is unreadable — never raises."""
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 16), b""):
+                digest.update(chunk)
+    except OSError:
+        return ""
+    return digest.hexdigest()
 
-    Size and modification time keep the check cheap (no content is read) and sensitive to any edit;
-    `skip` drops the live database and its sidecars, so the index is never its own source.
+
+def tree_manifest(root: pathlib.Path, paths: list[str], skip: set[pathlib.Path]) -> str:
+    """sha256 over `path\\0size\\0mtime_ns\\0content sha256` of the indexed files: the tree signature.
+
+    Size and modification time keep a plain edit visible at a glance; the content digest is what
+    closes the hole a same-size edit with a preserved mtime (os.utime, a coarse-mtime filesystem)
+    would otherwise slip through — such an edit is STALE too. `skip` drops the live database and
+    its sidecars, so the index is never its own source.
     """
     hasher = hashlib.sha256()
     for rel in sorted(paths):
@@ -239,7 +256,8 @@ def tree_manifest(root: pathlib.Path, paths: list[str], skip: set[pathlib.Path])
             stat = full.stat()
         except OSError:
             continue  # a vanished or unreadable file is not part of the tree either
-        hasher.update(f"{rel}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode("utf-8"))
+        hasher.update(f"{rel}\0{stat.st_size}\0{stat.st_mtime_ns}\0{content_sha(full)}\n"
+                      .encode("utf-8"))
     return hasher.hexdigest()
 
 

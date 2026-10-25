@@ -28,13 +28,16 @@
 #   ./prepare_factory.sh <path-to-project>
 #
 # Example:
-#   ./prepare_factory.sh /home/adar/ai-factories/my-test-project
+#   ./prepare_factory.sh /path/to/your-project
 #
 # After preparation a single action is enough:
 #   cd <path-to-project> && ./start.sh          # interactive (in the chat: /skill:code-factory)
 #   cd <path-to-project> && ./start.sh --auto   # fully autonomous
 #
-# The script does NOT commit anything. All steps are safe and idempotent.
+# The script does NOT commit anything. All steps are safe and idempotent, with one
+# documented exception: an existing start.sh that differs from the template is first
+# backed up to start.sh.bak and then replaced (a byte-identical file is overwritten
+# silently).
 # =============================================================================
 set -euo pipefail
 
@@ -191,7 +194,7 @@ fi
 
 # --- 4. Launcher --------------------------------------------------------------------
 LAUNCHER="$PROJECT_DIR/start.sh"
-cat > "$LAUNCHER" <<'EOF'
+LAUNCHER_TEMPLATE="$(cat <<'EOF'
 #!/usr/bin/env bash
 # Code Factory launcher — created by prepare_factory.sh. Run it with no extra commands:
 #   ./start.sh          — interactive (in the chat: /skill:code-factory)
@@ -204,6 +207,15 @@ export KIMI_FACTORY_LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1
 exec kimi "$@"
 EOF
+)"
+# We do not silently lose an existing user start.sh: if it differs from the template —
+# warn and keep the old file as start.sh.bak (one backup, not a chain); a byte-identical
+# file is overwritten silently.
+if [[ -f "$LAUNCHER" ]] && ! cmp -s "$LAUNCHER" <(printf '%s\n' "$LAUNCHER_TEMPLATE"); then
+    warn "    Launcher: $LAUNCHER already exists and differs from the template — overwriting (the old file is kept as $LAUNCHER.bak)"
+    cp "$LAUNCHER" "$LAUNCHER.bak"
+fi
+printf '%s\n' "$LAUNCHER_TEMPLATE" > "$LAUNCHER"
 chmod +x "$LAUNCHER"
 info "    Launcher: created $LAUNCHER"
 

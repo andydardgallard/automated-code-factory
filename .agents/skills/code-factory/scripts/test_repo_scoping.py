@@ -102,8 +102,13 @@ def field(output: str, name: str) -> str:
 
 
 def expected_run_id(task: pathlib.Path) -> str:
-    """Independent restatement of the documented id, so a wrong algorithm cannot agree with itself."""
-    return f"{date.today():%Y%m%d}-{hashlib.sha256(task.read_bytes()).hexdigest()[:8]}"
+    """Independent restatement of the documented id, so a wrong algorithm cannot agree with itself.
+
+    The documented algorithm hashes the task bytes with CRLF normalized to LF (a platform-neutral
+    id), so the restatement normalizes too.
+    """
+    text = task.read_bytes().replace(bytes([13, 10]), bytes([10]))
+    return f"{date.today():%Y%m%d}-{hashlib.sha256(text).hexdigest()[:8]}"
 
 
 def tree(root: pathlib.Path) -> set[str]:

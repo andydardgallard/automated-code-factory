@@ -4,7 +4,8 @@ Deterministic self-test for `verify_quotes.py` (zero LLM tokens).
 
 Verifies the Evidence-Preserving Reducer check through its CLI: an exact quote is verified (exit
 0), an invented quote is UNTRUSTED (exit 1) with the fail-safe `fallback to full log` note, a
-missing source is UNTRUSTED instead of a crash, a CRLF source matches a quote written with LF, and
+missing source is UNTRUSTED instead of a crash, an EMPTY claims file is UNVERIFIED (exit 2 —
+nothing was checked, a contract error), a CRLF source matches a quote written with LF, and
 the OPTIONAL `--repo`/`--base` anchor resolves a RELATIVE source (and a relative
 `--claims`/`--report`) against the run's resolved repo_path instead of the launch directory —
 without the flag the cwd stays the base and an absolute path is never re-anchored.
@@ -127,11 +128,20 @@ def main() -> int:
         expect(res.returncode == 1 and "error:" in res.stderr,
                f"a missing claims file must exit 1 cleanly: {res.stderr!r}")
 
-        # 7. An empty claims list is vacuously verified (nothing was claimed).
+        # 7. An empty claims list is NOT verified: nothing was checked, so the verdict is
+        #    UNVERIFIED with exit 2 (a contract error), never the vacuous "VERIFIED" of old.
         claims = write_claims(tmp, [], name="none.json")
         res = run("--claims", str(claims), cwd=tmp)
-        expect(res.returncode == 0 and json.loads(res.stdout)["total"] == 0,
-               f"an empty claims list must exit 0: {res.stderr!r}")
+        report = json.loads(res.stdout)
+        expect(res.returncode == 2 and report["total"] == 0,
+               f"an empty claims list must exit 2: {res.returncode} {res.stderr!r}")
+        expect(report["all_verified"] is False,
+               f"an empty claims list must not report all_verified: {report!r}")
+        expect("UNVERIFIED" in res.stderr and "nothing was checked" in res.stderr,
+               f"the empty-set verdict must say nothing was checked: {res.stderr!r}")
+        expect("every quote matches" not in res.stderr,
+               f"the empty set must not claim every quote matches: {res.stderr!r}")
+        expect("Traceback" not in res.stderr, "an empty claims list must not raise a traceback")
 
         # 8. The OPTIONAL `--repo`/`--base` anchor: a run whose repo_path is not its launch directory
         #    resolves a RELATIVE source — and a relative --claims/--report — against the resolved
@@ -179,8 +189,8 @@ def main() -> int:
                f"an absolute source must never be re-anchored: {res.stdout!r} {res.stderr!r}")
 
     print("PASS - verify_quotes.py behaves as expected (exact quote verified, invented/missing/"
-          "empty sources UNTRUSTED with fail-safe, CRLF normalized to LF only, relative sources "
-          "anchored at --repo/--base).")
+          "empty sources UNTRUSTED with fail-safe, an empty claims file UNVERIFIED with exit 2, "
+          "CRLF normalized to LF only, relative sources anchored at --repo/--base).")
     return 0
 
 

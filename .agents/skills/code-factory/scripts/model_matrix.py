@@ -257,14 +257,27 @@ def resolve_all(task_matrix, default_matrix) -> dict[str, dict]:
     return {role: resolve(task, default, role) for role in order}
 
 
+def _default_side(role: str, source: str) -> str:
+    """The side of the CLI config a role resolves from ("primary"|"secondary"), or "" when the
+    role does not come from the default matrix (or its sub-agent file declares no preference).
+    """
+    if source != "default":
+        return ""
+    return _model_preference(SUBAGENTS_DIR / ROLE_FILES.get(role, f"{role}.md"))
+
+
 def check_families(resolved) -> dict[str, list[str]]:
     """Generator != judge over the resolved roles: {"errors": [...], "warnings": [...]}.
 
     A same-family pair is a WARNING when BOTH models came from the task (the task is
     authoritative — the collision is reported, never "fixed" by substitution) and an ERROR when
     either side came from the default matrix (the default matrix breaks its own rule; the message
-    names the fix). A role whose alias no family claims yields a warning, not a crash: the pair
-    cannot be checked, and saying so is the only honest answer.
+    names only an ACHIEVABLE fix: when both roles read the SAME side of the config, no widening
+    of that one key can separate them, so only pinning models.<role> in the task is named). A
+    role whose alias no family claims yields a warning, not a crash: the pair cannot be checked,
+    and saying so is the only honest answer. Likewise, when one whole SIDE (every generator or
+    every judge) resolved no model at all, the rule cannot be fully checked — a warning says so
+    instead of silently passing.
     """
     entries = list(resolved.values()) if isinstance(resolved, dict) else list(resolved)
     by_role: dict[str, tuple[str, str]] = {}
@@ -286,6 +299,14 @@ def check_families(resolved) -> dict[str, list[str]]:
             warnings.append(f"{role}: {exc} — the generator != judge family rule cannot be "
                             f"checked for this role")
 
+    generator_present = any(role in by_role for role in GENERATOR_SIDE)
+    judge_present = any(role in by_role for role in JUDGE_SIDE)
+    if generator_present != judge_present:
+        missing = "judge" if generator_present else "generator"
+        side = JUDGE_SIDE if generator_present else GENERATOR_SIDE
+        warnings.append(f"no {missing}-side role ({', '.join(side)}) resolved a model — the "
+                        f"generator != judge family rule cannot be fully checked")
+
     for generator in GENERATOR_SIDE:
         for judge in JUDGE_SIDE:
             if generator not in families or judge not in families:
@@ -304,11 +325,21 @@ def check_families(resolved) -> dict[str, list[str]]:
             else:
                 origins = ", ".join(f"{role} from the {by_role[role][1]} matrix"
                                     for role in (generator, judge))
+                gen_side = _default_side(generator, gen_source)
+                judge_side = _default_side(judge, judge_source)
+                if gen_side and gen_side == judge_side:
+                    # Both roles read the SAME config key: widening that key moves both models
+                    # together, so it can never separate them — only a task-side pin can.
+                    remedy = (f"both roles take the {gen_side} side of the default matrix, so "
+                              f"no widening of that one key can separate them — pin "
+                              f"models.{generator} or models.{judge} in the task")
+                else:
+                    remedy = (f"fix the default matrix by widening [secondary_model] so the two "
+                              f"families differ, or pin models.{generator} / models.{judge} in "
+                              f"the task")
                 errors.append(
                     f"{pair} while {origins}, so the default matrix breaks its own "
-                    f"generator != judge rule; fix the default matrix by widening "
-                    f"[secondary_model] so the two families differ, or pin models.{generator} / "
-                    f"models.{judge} in the task")
+                    f"generator != judge rule; {remedy}")
     return {"errors": errors, "warnings": warnings}
 
 

@@ -99,6 +99,9 @@ acceptance_criteria:
 # provider works, including Kimi (e.g. kimi-k3 / moonshot) and Qwen models.
 # The factory maps the provider from the model name and routes requests to the
 # correct endpoint with the right authentication (see references/providers.md).
+# A judge-side role (reviewer / diagnostician / advisor) should resolve to a model
+# family DIFFERENT from the generator side (coder / tester / gui_expert); if the
+# default matrix cannot guarantee that, pin the judge role here (e.g. `advisor`).
 # models:
 #   analyzer: deepseek-v4-flash
 #   planner: deepseek-v4-pro
@@ -107,6 +110,7 @@ acceptance_criteria:
 #   tester: qwen-max
 #   diagnostician: deepseek-v4-pro
 #   reviewer: deepseek-v4-pro
+#   advisor: kimi-k3                # judge-side pin: a family contrasting the generator side
 
 # Optional: files that must NOT be committed to git (e.g. personal strategy code).
 # Glob patterns relative to the repo root. The factory will make changes to these files

@@ -74,7 +74,27 @@ Verified here:
      mutation case proves that (dropping one such switch from a copy of the asset fails the
      assertion). Nothing here reads the machine-local `.kimi-code/mcp.json`: it is per installation
      and gitignored, so the check is exercised against a clean-clone fixture in which that file does
-     not exist.
+     not exist,
+  15. the start.sh guard is FATAL when it cannot keep its promise: a backup to `start.sh.bak` that
+     fails used to be swallowed by an empty `catch { }` and the overwrite went ahead anyway,
+     destroying the user's original launcher. The copy must be guarded, a failed backup must mark a
+     hard deployment error, and the launcher write must sit inside that decision — pinned
+     statically AND behaviourally (a `start.sh.bak` that is a DIRECTORY makes the copy throw: the
+     deployment then exits 1 and leaves the user's launcher untouched),
+  16. the memory CHECK line stays ONE line: `memory_project.py check` prints one WARN line per
+     legacy-format entry and the verdict last, and the deployer used to interpolate the whole blob
+     into the "Project memory: CHECK" warning and the readiness `memory/` line (~50 wrapped lines,
+     burying the verdict — owner evidence: warnings.md). Only the trailing `ok -`/`FAIL -` verdict
+     plus a WARN count may be printed; the full text stays available for PARSING. Pinned statically
+     and, on Windows, against a real deployment into a fixture whose memory has a legacy record (the
+     line after the `memory/` bullet must already be the next bullet),
+  17. the pre-fix negation probe does not rot: the base commit is resolved with `git log -S
+     start.sh.bak` (the OLDEST commit that introduced the guard, minus one) instead of `HEAD`, so
+     the very guard assertions are proven to FAIL on the tree before the fix.
+  18. the start.sh guard runs FOR REAL where the network is available (a network-gated behavioural
+     deployment of a project with a hand-written launcher: it is announced, kept as `start.sh.bak`
+     and only then replaced, and a re-run adds no second backup). Offline the case SKIPs with the
+     reason instead of failing.
 
 A project deployed by the factory contains only `.agents/` (plus the generated launchers), so
 there this test SKIPs cleanly instead of failing on a missing factory repo root.
@@ -89,6 +109,7 @@ import os
 import pathlib
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -142,6 +163,40 @@ PS1_GIT_ATTEMPT = "init -b main"
 PS1_GIT_FALLBACK = "symbolic-ref HEAD refs/heads/main"
 PS1_GIT_HARD_ERROR = "failed to create the repository"
 PS1_HARD_EXIT = re.compile(r"\bexit\s+1\b")
+
+# --- the start.sh guard: the user's original launcher is preserved -----------------------------
+# A pre-existing `start.sh` that differs from the template is announced, copied to `start.sh.bak`
+# and only then replaced. The promise is "the user's original launcher is preserved", so a backup
+# that CANNOT be created must abort the overwrite: an empty `catch { }` around the copy destroyed
+# the very file the step promises to keep.
+SH_BACKUP_SUFFIX = "start.sh.bak"
+SH_DIFFERS_MARKER = "differs from the template"
+# Where each deployer writes the launcher (the line the backup has to come BEFORE).
+SH_WRITE_MARKERS = {SH_NAME: '> "$LAUNCHER"', PS1_NAME: "Write-FileStrict -Path $LauncherSh"}
+PS1_SH_BACKUP_COPY = '[System.IO.File]::Copy($LauncherSh, "$LauncherSh.bak", $true)'
+PS1_SH_BACKUP_FLAG = "$ShBackupOk"
+PS1_SH_BACKUP_GUARD = f"if ({PS1_SH_BACKUP_FLAG}) {{"
+# The words a failed backup must be REPORTED with, and the file the deployment must then abort.
+PS1_SH_BACKUP_ABORT = "could not be created"
+PS1_HARD_ERROR_FILE = "$script:HardError = $true"
+PS1_HARD_ERROR_BANNER = "Deployment incomplete"
+
+# --- the memory CHECK line ----------------------------------------------------------------------
+# `memory_project.py check` prints ONE WARN line per legacy-format entry and the verdict last, so a
+# deployer may print only the verdict line plus a WARN count - never the whole blob (owner evidence:
+# warnings.md, ~50 wrapped lines with the verdict buried in them).
+MEM_LINES_VAR = "$MemCheckLines"
+MEM_CHECK_OUT_VAR = "$MemCheckOut"
+MEM_VERDICT_VAR = "$MemVerdict"
+MEM_WARN_COUNT_VAR = "$MemWarnCount"
+MEM_REPORT_VAR = "$MemReport"
+# The verdict is the LAST line the helper prefixes with `ok - ` / `FAIL - `.
+MEM_VERDICT_SPLIT = r"'^(ok|FAIL)\s*-'"
+MEM_WARN_FILTER = "'WARN -*'"
+MEM_WARNINGS_HINT = "legacy warnings — run memory_project.py check for details"
+MEM_CHECK_MARKER = "Project memory: CHECK"
+MEM_READINESS_LABEL = "• memory/:"
+MEM_READINESS_CHECK = "CHECK ✗"
 
 # The deployers must produce exactly these files in a fresh project (without a working Python
 # the two memory files are the only expected gap - see MEMORY_RELS).
@@ -578,45 +633,131 @@ def bash_deployer_untouched() -> None:
            f"{SH_NAME}: the start.sh here-doc must still start with the bash shebang")
 
 
+def git_show(rev_path: str) -> str | None:
+    """`git show <rev>:<path>` of this repository, or `None` when git cannot serve it."""
+    try:
+        proc = subprocess.run(["git", "-C", str(REPO), "show", rev_path],
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"INFO - git show {rev_path} was skipped: {exc!r}")
+        return None
+    if proc.returncode != 0:
+        print(f"INFO - git show {rev_path} failed")
+        return None
+    return proc.stdout
+
+
+def pre_guard_base(rel: str) -> str | None:
+    """The commit that PREDATES the start.sh guard in `rel`, resolved deterministically.
+
+    `git log -S` names exactly the commits whose diff changed the number of `start.sh.bak`
+    occurrences; the OLDEST of them introduced the guard, so its parent is the pre-fix tree. Probing
+    `HEAD` rots by construction: once the guard is committed, HEAD and the probe compare the same
+    text, the negation can never fire again and the vaccine is dead.
+    """
+    try:
+        proc = subprocess.run(["git", "-C", str(REPO), "log", "--format=%H", "--reverse",
+                               "-S", SH_BACKUP_SUFFIX, "--", rel],
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"INFO - the pre-fix base resolution was skipped: {exc!r}")
+        return None
+    if proc.returncode != 0:
+        print("INFO - the pre-fix base resolution was skipped: git log failed")
+        return None
+    commits = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    if not commits:
+        print(f"INFO - the pre-fix base resolution was skipped: no commit ever touched "
+              f"{SH_BACKUP_SUFFIX} in {rel}")
+        return None
+    return f"{commits[0]}^"
+
+
+def assert_start_sh_guard(name: str, text: str, write_marker: str) -> None:
+    """(a) announce a differing launcher, (b) keep it as `start.sh.bak`, (c) both BEFORE the write."""
+    expect(SH_BACKUP_SUFFIX in text,
+           f"{name}: a pre-existing start.sh must be kept as {SH_BACKUP_SUFFIX}")
+    expect(SH_DIFFERS_MARKER in text,
+           f"{name}: a differing start.sh must be announced, not silently overwritten")
+    guard_at = min((i for i, line in enumerate(text.splitlines())
+                    if SH_BACKUP_SUFFIX in line), default=-1)
+    write_at = text.find(write_marker)
+    expect(guard_at != -1 and write_at != -1 and
+           guard_at < text[:write_at].count(chr(10)),
+           f"{name}: the backup/warning must run BEFORE the launcher is written")
+
+
 def launcher_backup_guard() -> None:
     """A pre-existing, DIFFERING `start.sh` is announced and backed up, never silently truncated.
 
     Both deployers must (a) warn with the `differs from the template` sentence, (b) keep the old
     file as `start.sh.bak`, and (c) do it BEFORE the launcher is written. The guard is proven to
-    bite: the SAME assertions run against the deployers of the base commit (`git show HEAD:<file>`)
-    and must FAIL there, so a revert of the fix cannot leave this check green.
+    bite: the SAME assertions run against the deployer of the PRE-FIX base commit (`pre_guard_base`,
+    resolved from the history rather than from `HEAD`) and must FAIL there, so a revert of the fix
+    cannot leave this check green.
     """
-    for name, path, write_marker in ((SH_NAME, SH, '> "$LAUNCHER"'),
-                                    (PS1_NAME, PS1, "Write-FileStrict -Path $LauncherSh")):
-        text = read_text(path)
-        expect("start.sh.bak" in text,
-               f"{name}: a pre-existing start.sh must be kept as start.sh.bak")
-        expect("differs from the template" in text,
-               f"{name}: a differing start.sh must be announced, not silently overwritten")
-        guard_at = min((i for i, line in enumerate(text.splitlines())
-                        if "start.sh.bak" in line), default=-1)
-        write_at = text.find(write_marker)
-        expect(guard_at != -1 and write_at != -1 and
-               guard_at < text[:write_at].count(chr(10)),
-               f"{name}: the backup/warning must run BEFORE the launcher is written")
+    for name, path in ((SH_NAME, SH), (PS1_NAME, PS1)):
+        assert_start_sh_guard(name, read_text(path), SH_WRITE_MARKERS[name])
 
-    # Vaccination: the base commit's deployers have no guard, so the assertions above must fail.
-    for rel, name in (("prepare_factory.sh", SH_NAME), ("prepare_factory.ps1", PS1_NAME)):
-        try:
-            old = subprocess.run(["git", "-C", str(REPO), "show", f"HEAD:{rel}"],
-                                 capture_output=True, text=True, encoding="utf-8",
-                                 errors="replace", timeout=60)
-        except (OSError, subprocess.SubprocessError) as exc:
-            print(f"INFO - the base-commit guard probe was skipped: {exc!r}")
+    # Vaccination: the pre-fix tree has no guard, so the assertions above must fail on it.
+    for rel in (SH_NAME, PS1_NAME):
+        base = pre_guard_base(rel)
+        if base is None:
             return
-        if old.returncode != 0:
-            print(f"INFO - the base-commit guard probe was skipped: git show {rel} failed")
+        old = git_show(f"{base}:{rel}")
+        if old is None:
             return
-        text = old.stdout
-        has_guard = "start.sh.bak" in text and "differs from the template" in text
-        expect(not has_guard,
-               f"{name}: the base commit already carries the start.sh guard, so this check proves "
-               f"nothing about the fix")
+        failure = assertion_error(
+            lambda: assert_start_sh_guard(rel, old, SH_WRITE_MARKERS[rel]))
+        expect(failure is not None,
+               f"{rel}: the pre-fix tree {base} PASSES the start.sh guard assertions "
+               f"({SH_BACKUP_SUFFIX} / {SH_DIFFERS_MARKER!r}): the negation probe proves nothing "
+               "about the fix; got {failure}")
+
+
+def ps1_start_sh_backup_failure_is_fatal() -> None:
+    """A backup that cannot be created must abort the overwrite, not precede it.
+
+    The copy used to sit in `catch { }`: any failure (permissions, a directory named
+    `start.sh.bak`) vanished and `Write-FileStrict` replaced the user's launcher anyway - destroying
+    exactly the file this step promises to preserve. So: a real try/catch, a hard deployment error
+    plus a report inside it, and the launcher write INSIDE the flag that the failure clears.
+    """
+    code = ps1_code_lines()
+    copy_at = next((i for i, line in enumerate(code) if PS1_SH_BACKUP_COPY in line), None)
+    expect(copy_at is not None,
+           f"{PS1_NAME}: the start.sh backup is gone ({PS1_SH_BACKUP_COPY})")
+    write_at = next((i for i, line in enumerate(code)
+                     if SH_WRITE_MARKERS[PS1_NAME] in line), None)
+    expect(write_at is not None and write_at > copy_at,
+           f"{PS1_NAME}: the launcher write must follow the backup")
+    between = "\n".join(code[copy_at:write_at])
+    expect("catch { }" not in between,
+           f"{PS1_NAME}: the backup sits in an empty `catch {{ }}` - a failed copy is swallowed and "
+           "the overwrite proceeds, destroying the user's original launcher; the failed backup has "
+           "to abort the overwrite and mark a hard deployment error")
+    catch_at = between.find("catch {")
+    expect(catch_at != -1, f"{PS1_NAME}: the backup copy must be guarded by a try/catch")
+    catch_body = between[catch_at:]
+    expect(PS1_HARD_ERROR_FILE in catch_body,
+           f"{PS1_NAME}: a failed backup must mark a HARD deployment error "
+           f"({PS1_HARD_ERROR_FILE}) - an incomplete deployment must not end with exit 0")
+    expect(PS1_SH_BACKUP_ABORT in catch_body,
+           f"{PS1_NAME}: a failed backup must be REPORTED ({PS1_SH_BACKUP_ABORT!r})")
+    expect(re.search(r"\bErr\s+\"", catch_body) is not None,
+           f"{PS1_NAME}: the failed backup needs an `Err` line (a business message, not a silent "
+           "skip and not a raw engine record)")
+    expect(f"{PS1_SH_BACKUP_FLAG} = $false" in catch_body,
+           f"{PS1_NAME}: the failed backup must clear {PS1_SH_BACKUP_FLAG} so the overwrite is "
+           "skipped")
+    expect(PS1_SH_BACKUP_GUARD in between,
+           f"{PS1_NAME}: the launcher write must be conditional on {PS1_SH_BACKUP_FLAG} "
+           f"(`{PS1_SH_BACKUP_GUARD}`)")
+    expect(code[write_at - 1].strip() == PS1_SH_BACKUP_GUARD,
+           f"{PS1_NAME}: the launcher write must sit INSIDE `{PS1_SH_BACKUP_GUARD}` - otherwise a "
+           f"failed backup still overwrites the original; got {code[write_at - 1].strip()!r}")
 
 
 def ps1_gitignore_patterns() -> list[str]:
@@ -893,6 +1034,73 @@ def ps1_memory_failure_is_short() -> None:
         expect(any(name.group(1) in fail for fail in fail_lines),
                f"{PS1_NAME}: the failure warning must show the short reason ({name.group(1)}), "
                f"got {fail_lines[0].strip()!r}")
+
+
+def ps1_memory_check_line_is_single_line() -> None:
+    """The memory CHECK line shows the VERDICT plus a warnings count, never the whole `check` output.
+
+    `memory_project.py check` prints one WARN line per legacy-format entry and the verdict last. The
+    deployer interpolated the whole blob into the "Project memory: CHECK" warning and the readiness
+    `memory/` line, so ~50 wrapped lines buried the verdict (owner evidence: warnings.md). The full
+    text stays available for PARSING (`$MemCheckOut`); every PRINTED line is built from
+    `$MemReport` = the trailing `ok -`/`FAIL -` verdict + a WARN count.
+    """
+    code = ps1_code_lines()
+    # (a) no line that reaches the console may interpolate the whole check output.
+    offenders = [line.strip() for line in code
+                 if MEM_CHECK_OUT_VAR in line
+                 and (re.search(r"\b(Warn|Info|Err|Write-Host|Out-Host)\b", line)
+                      or re.search(re.escape("$MemLine") + r"\s*=", line))]
+    expect(not offenders,
+           f"{PS1_NAME}: the memory CHECK line(s) interpolate the whole `check` output "
+           f"({MEM_CHECK_OUT_VAR}) - one WARN line per legacy entry floods the console and buries "
+           f"the verdict; got {offenders}")
+    # (b) the output is split into lines first.
+    expect(any(MEM_LINES_VAR in line and "ForEach-Object" in line for line in code),
+           f"{PS1_NAME}: the check output must be split into lines ({MEM_LINES_VAR}) so the verdict "
+           "and the WARN count can be derived from it")
+    # (c) the verdict is the LAST `ok -`/`FAIL -` line.
+    verdict_line = next((line for line in code
+                         if MEM_VERDICT_SPLIT in line and PS1_REASON_TAIL in line), None)
+    expect(verdict_line is not None,
+           f"{PS1_NAME}: the verdict must be derived as the last line matching {MEM_VERDICT_SPLIT} "
+           f"({PS1_REASON_TAIL}) - the trailing verdict line, not the whole dump")
+    verdict_name = re.match(r"\s*(\$\w+)\s*=", verdict_line)
+    expect(verdict_name is not None and verdict_name.group(1).startswith(MEM_VERDICT_VAR),
+           f"{PS1_NAME}: the verdict must be stored in {MEM_VERDICT_VAR}*, "
+           f"got {verdict_line.strip()!r}")
+    # (d) the warning count comes from the WARN lines of the same output.
+    count_line = next((line for line in code
+                       if MEM_WARN_COUNT_VAR in line and MEM_WARN_FILTER in line
+                       and ".Count" in line), None)
+    expect(count_line is not None,
+           f"{PS1_NAME}: the number of legacy warnings must be counted "
+           f"({MEM_WARN_COUNT_VAR} from the {MEM_WARN_FILTER} lines)")
+    # (e) the printed text is verdict + count + the documented hint, built once.
+    report_line = next((line for line in code
+                        if re.match(r"\s*" + re.escape(MEM_REPORT_VAR) + r"\s*=", line)), None)
+    expect(report_line is not None, f"{PS1_NAME}: {MEM_REPORT_VAR} must be built once")
+    missing = [token for token in (MEM_VERDICT_VAR, MEM_WARN_COUNT_VAR, MEM_WARNINGS_HINT)
+               if token not in report_line]
+    expect(not missing,
+           f"{PS1_NAME}: {MEM_REPORT_VAR} must be the verdict plus a warnings count plus the hint "
+           f"(missing {missing}); got {report_line.strip()!r}")
+    # (f) all THREE report sites use it: the CHECK warning and the readiness `memory/` line.
+    check_lines = [line for line in code if MEM_CHECK_MARKER in line]
+    expect(check_lines, f"{PS1_NAME}: the memory CHECK warning is gone")
+    for line in check_lines:
+        expect(MEM_REPORT_VAR in line,
+               f"{PS1_NAME}: the CHECK warning must show {MEM_REPORT_VAR}, got {line.strip()!r}")
+    readiness_lines = [line for line in code if MEM_READINESS_CHECK in line]
+    expect(readiness_lines,
+           f"{PS1_NAME}: the readiness report must still distinguish the CHECK state")
+    for line in readiness_lines:
+        expect(MEM_REPORT_VAR in line,
+               f"{PS1_NAME}: the readiness `memory/` CHECK line must show {MEM_REPORT_VAR}, "
+               f"got {line.strip()!r}")
+    expect(sum(1 for line in code if MEM_REPORT_VAR in line) >= 3,
+           f"{PS1_NAME}: {MEM_REPORT_VAR} must feed the mixed warning, the CHECK warning AND the "
+           "readiness line (all three used to dump the whole check output)")
 
 
 def gitattributes_rules() -> set[str]:
@@ -1856,10 +2064,260 @@ def deploy_case(checker: "Checker", cmd_exe: str, spec: dict) -> None:
     check(mcp_label, lambda: mcp_check(facts))
 
 
+# --- behavioural proof of the two console/lifecycle contracts (Windows only) ---------------------
+# The checks above pin the deployer's TEXT; these deploy for real, because both defects are about
+# what the user actually sees on the console and what survives on disk.
+
+# A launcher the user wrote by hand before running prepare_factory — it must survive as start.sh.bak.
+USER_START_SH = (b"#!/usr/bin/env bash\n"
+                 b"# My own launcher, written before Code Factory was prepared.\n"
+                 b"exec my-own-tool \"$@\"\n")
+
+# A memory that belongs to ANOTHER project and carries one legacy (pre-v2) record: `check` then
+# prints four WARN lines plus the verdict, which is the flood of warnings.md.
+MEM_FOREIGN_PROJECT = "another-install"
+MEM_LEGACY_RECORD = """
+## 2020-01-01T00:00:00+0000 — legacy record of another install
+
+title: legacy record
+timestamp: 2020-01-01T00:00:00+0000
+branch: main
+commit: 0000000
+task_type: implement
+goal: legacy entry kept verbatim
+changed_files: none
+created_files: none
+results: integration=pass regression=pass business=pass review=pass
+decisions: legacy decision (pre-v2 format)
+assumptions: none
+models_used: unknown
+unfinished: none
+factory_version: 12.0.0
+status: ok
+"""
+
+NETWORK_PROBES = (("1.1.1.1", 53), ("8.8.8.8", 53), ("registry.npmjs.org", 443))
+
+
+def network_available(timeout: float = 3.0) -> bool:
+    """True when a TCP connection to a public host succeeds.
+
+    A REAL deployment installs the pinned MCP package with npm, so it needs the network; where
+    there is none the behavioural case below SKIPs with that reason instead of failing.
+    """
+    for host, port in NETWORK_PROBES:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def deploy_into(seed: Callable[[pathlib.Path], None], prefix: str, cmd_exe: str,
+                env: dict | None, runs: int = 1, timeout: int = 300) -> dict:
+    """Deploy into a fresh, seeded temp dir and keep plain values only (nothing left open).
+
+    The temp tree is removed BEFORE any assertion runs, so the checks below work on captured bytes:
+    a failure report can never leak a path that no longer exists.
+    """
+    root = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
+    facts: dict = {}
+    try:
+        seed(root)
+        facts["seed_start_sh"] = read_bytes_or_none(root / "start.sh")
+        started = time.monotonic()
+        first = deploy(cmd_exe, root, timeout=timeout, env=env)
+        facts["seconds"] = time.monotonic() - started
+        facts["rc"] = first.returncode
+        facts["output"] = (first.stdout or "") + (first.stderr or "")
+        facts["start_sh"] = read_bytes_or_none(root / "start.sh")
+        facts["start_sh_bak"] = read_bytes_or_none(root / "start.sh.bak")
+        if runs > 1:
+            second = deploy(cmd_exe, root, timeout=timeout, env=env)
+            facts["rc2"] = second.returncode
+            facts["output2"] = (second.stdout or "") + (second.stderr or "")
+            facts["start_sh2"] = read_bytes_or_none(root / "start.sh")
+            facts["start_sh_bak2"] = read_bytes_or_none(root / "start.sh.bak")
+    except Exception as exc:                     # timeout, missing binary, permission, ...
+        facts["error"] = exc
+    finally:
+        remove_tree(root)
+    return facts
+
+
+def completed(facts: dict) -> None:
+    """Fail the check when the deployment itself never ran (a check may not pass on nothing)."""
+    if "error" in facts:
+        raise AssertionError(f"the deployment run never completed: {facts['error']!r}")
+
+
+def seed_foreign_memory(root: pathlib.Path) -> None:
+    """A `memory/` of ANOTHER project with one legacy record, created the documented way.
+
+    `init --project <other>` writes the declaration area (and, because the fixture has a root
+    commit, its `project_id`), so `check` reports the identity basis, the verdict `ok - ...` and one
+    WARN block per legacy invariant the record does not satisfy.
+    """
+    helper = REPO / ".agents/skills/code-factory/scripts/memory_project.py"
+    expect(helper.is_file(), f"{helper} must exist")
+
+    def git(*args: str) -> None:
+        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
+                              timeout=120)
+        expect(proc.returncode == 0,
+               f"fixture git {' '.join(args)} failed: {(proc.stderr or '').strip()}")
+
+    git("init", "-b", "main")
+    (root / "seed.txt").write_text("seed\n", encoding="utf-8")
+    git("add", "seed.txt")
+    git("-c", "user.email=deployer-test@example.com", "-c", "user.name=deployer-test",
+        "commit", "-m", "seed")
+    init = subprocess.run([sys.executable, str(helper), "init", "--repo", str(root),
+                           "--project", MEM_FOREIGN_PROJECT],
+                          capture_output=True, text=True, timeout=120)
+    expect(init.returncode == 0,
+           f"fixture memory init failed: {(init.stderr or '').strip()}")
+    journal = root / "memory" / "change-log.md"
+    journal.write_text(journal.read_text(encoding="utf-8") + MEM_LEGACY_RECORD, encoding="utf-8")
+
+
+def memory_check_line_behaviour(checker: "Checker", cmd_exe: str) -> None:
+    """A real deployment whose memory floods `check` with WARN lines: the CHECK line stays ONE line.
+
+    The fixture's memory belongs to another project and holds a legacy record, so `check` prints its
+    WARN block plus the verdict - exactly the state captured in warnings.md. Before the fix the whole
+    blob was interpolated into the warning AND the readiness line (~50 wrapped lines).
+    """
+    label = ("end-to-end [memory]: the CHECK line stays ONE line (verdict + a warnings count, not "
+             "the whole check output)")
+    facts = deploy_into(seed_foreign_memory, "cf memory flood ", cmd_exe, deploy_env(), runs=1)
+
+    def one_line() -> None:
+        completed(facts)
+        output = facts["output"]
+        expect(facts["rc"] == 0,
+               f"a memory of another project is a WARNING, not a deployment failure (exit code "
+               f"{facts['rc']}); output tail:\n{tail(output)}")
+        check_lines = [line for line in output.splitlines() if MEM_CHECK_MARKER in line]
+        expect(check_lines,
+               f"the deployment must report {MEM_CHECK_MARKER!r}; output tail:\n{tail(output)}")
+        readiness = [line for line in output.splitlines() if MEM_READINESS_LABEL in line]
+        expect(len(readiness) == 1,
+               f"the readiness report must carry exactly one {MEM_READINESS_LABEL!r} line, "
+               f"got {readiness}")
+        for line in check_lines + readiness:
+            expect(MEM_WARNINGS_HINT in line,
+                   f"the CHECK line must name the verdict and a warnings count "
+                   f"({MEM_WARNINGS_HINT!r}); got {line!r}")
+            expect("WARN - " not in line,
+                   f"the CHECK line must not carry the check output itself; got {line!r}")
+        # The actual single-line proof: the line AFTER the memory bullet is already the next bullet.
+        lines = output.splitlines()
+        index = lines.index(readiness[0])
+        following = lines[index + 1] if index + 1 < len(lines) else ""
+        expect(following.lstrip().startswith("• "),
+               "the memory/ readiness line must be ONE line - the whole `check` output was appended "
+               f"to it; the next line is {following!r}")
+        expect("WARN - entry" not in output,
+               "the raw WARN lines of `memory_project.py check` leaked into the console report; "
+               f"output tail:\n{tail(output)}")
+
+    checker.check(label, one_line)
+
+
+def start_sh_backup_failure_behaviour(checker: "Checker", cmd_exe: str) -> None:
+    """A backup that cannot be created is a HARD error and the original launcher survives.
+
+    A DIRECTORY named `start.sh.bak` makes `[System.IO.File]::Copy` throw, which is the one way to
+    reach the failure branch on a healthy machine. The deployer must then exit 1 (an incomplete
+    deployment, no "Done" banner) and must NOT have replaced the user's start.sh.
+    """
+    label = ("end-to-end [start.sh guard]: an impossible start.sh.bak aborts the overwrite with a "
+             "hard error and the user's launcher survives")
+
+    def seed(root: pathlib.Path) -> None:
+        (root / "start.sh").write_bytes(USER_START_SH)
+        (root / "start.sh.bak").mkdir()      # a directory: the backup copy cannot be written
+
+    facts = deploy_into(seed, "cf start sh backup blocked ", cmd_exe, deploy_env(), runs=1)
+
+    def aborted() -> None:
+        completed(facts)
+        output = facts["output"]
+        expect(facts["start_sh"] == USER_START_SH,
+               "the user's original start.sh must be left untouched when it could not be backed up "
+               f"- it was overwritten by {facts['start_sh']!r}")
+        expect(facts["rc"] == 1,
+               f"a failed backup is a HARD deployment error (exit 1), got {facts['rc']}; output "
+               f"tail:\n{tail(output)}")
+        expect(PS1_SH_BACKUP_ABORT in output,
+               f"the deployment must report the failed backup ({PS1_SH_BACKUP_ABORT!r}); output "
+               f"tail:\n{tail(output)}")
+        expect(PS1_HARD_ERROR_BANNER in output,
+               f"the run must end with the hard-error banner ({PS1_HARD_ERROR_BANNER!r}), not with "
+               f"a cheerful Done; output tail:\n{tail(output)}")
+
+    checker.check(label, aborted)
+
+
+def start_sh_guard_behaviour(checker: "Checker", cmd_exe: str) -> None:
+    """A REAL deployment keeps the user's hand-written launcher — where the network is available.
+
+    The static guard check and the pre-fix probe above only read text; this one runs the actual
+    deployer against a project that already has a `start.sh`, which is the file the promise "the
+    user's original launcher is preserved" is about. A real deployment installs the pinned MCP
+    package with npm, so the case is gated: offline it SKIPs with the reason instead of failing.
+    """
+    label = ("end-to-end [start.sh guard]: a pre-existing launcher is announced, kept as "
+             "start.sh.bak and only then replaced")
+    if not network_available():
+        checker.skip(label, "no network access (the real deployment installs the pinned MCP package "
+                            "with npm) - this behavioural check runs where the network is available")
+        return
+    facts = deploy_into(lambda root: (root / "start.sh").write_bytes(USER_START_SH),
+                        "cf start sh guard ", cmd_exe, None, runs=2)
+
+    def backed_up() -> None:
+        completed(facts)
+        output = facts["output"]
+        expect(facts["rc"] == 0,
+               f"the deployment must finish (exit code {facts['rc']}); output tail:\n{tail(output)}")
+        expect(facts["start_sh_bak"] == USER_START_SH,
+               "the user's original start.sh must be preserved byte-for-byte as start.sh.bak; got\n"
+               + tail((facts["start_sh_bak"] or b"").decode("utf-8", "replace")))
+        expect(SH_DIFFERS_MARKER in output,
+               f"the replacement must be announced ({SH_DIFFERS_MARKER!r}), never silent; output "
+               f"tail:\n{tail(output)}")
+        expect(facts["start_sh"] is not None
+               and facts["start_sh"].startswith(b"#!/usr/bin/env bash")
+               and facts["start_sh"] != USER_START_SH,
+               "the launcher must be replaced by the factory template (bash shebang), got\n"
+               + tail((facts["start_sh"] or b"").decode("utf-8", "replace")))
+
+    checker.check(label, backed_up)
+
+    def one_backup_only() -> None:
+        completed(facts)
+        expect(facts.get("rc2") == 0,
+               f"the second run must exit 0, got {facts.get('rc2')}; output tail:\n"
+               f"{tail(facts.get('output2'))}")
+        expect(facts["start_sh2"] == facts["start_sh"],
+               "the second run must leave the launcher as it is (it already equals the template)")
+        expect(facts["start_sh_bak2"] == facts["start_sh_bak"],
+               "the second run must not chain a new backup: start.sh.bak is one backup, not a "
+               "growing chain")
+
+    checker.check("end-to-end [start.sh guard]: a re-run reuses the single start.sh.bak "
+                  "(no backup chain)", one_backup_only)
+
+
 def end_to_end(checker: "Checker") -> None:
     label = "end-to-end deployment (Windows only: cmd.exe + PowerShell + git)"
     if os.name != "nt":
         checker.skip(label, f"os.name={os.name!r} - the .cmd/.ps1 deployer only runs on Windows")
+        checker.skip("behavioural checks of the start.sh guard and the memory CHECK line",
+                     "os.name is not 'nt' - they deploy for real through cmd.exe + PowerShell")
         return
     cmd_exe = find_cmd_exe()
     missing = [name for name, found in (("cmd.exe", cmd_exe),
@@ -1871,6 +2329,11 @@ def end_to_end(checker: "Checker") -> None:
 
     for spec in DEPLOY_CASES:
         deploy_case(checker, cmd_exe, spec)
+
+    # The two contracts that are about the CONSOLE and about what survives on disk, proven for real.
+    memory_check_line_behaviour(checker, cmd_exe)
+    start_sh_backup_failure_behaviour(checker, cmd_exe)
+    start_sh_guard_behaviour(checker, cmd_exe)
 
 
 # --- runner -----------------------------------------------------------------------------------
@@ -1923,7 +2386,11 @@ class Checker:
               "directory before the managed MCP entry is merged, existing settings preserved and "
               "the step degrading safely (and writing nothing broken) without python or package "
               "install, the merged shape of the committed asset checked against constants "
-              "independent of it and mutation-proven, without any machine-local config).")
+              "independent of it and mutation-proven, without any machine-local config; a pre-existing "
+              "start.sh kept as start.sh.bak before it is replaced and the overwrite ABORTED with a "
+              "hard error when that backup cannot be created (proven against the pre-fix base commit "
+              "and by a real deployment); the memory CHECK line reduced to the verdict plus a WARN "
+              "count and proven to stay ONE line).")
         return 0
 
 
@@ -1983,10 +2450,13 @@ def main() -> int:
                   "be mentioned), here-doc intact", bash_deployer_untouched)
 
     # 6b. A pre-existing, differing start.sh is announced and backed up (and the check is proven to
-    #     fail on the base commit's deployers).
+    #     fail on the pre-fix tree, resolved from the history rather than from HEAD).
     checker.check("both deployers: a differing start.sh is warned about and kept as start.sh.bak "
-                  "BEFORE the launcher is written (probe: the base commit must fail this)",
+                  "BEFORE the launcher is written (probe: the PRE-FIX base commit must fail this)",
                   launcher_backup_guard)
+    checker.check("prepare_factory.ps1: a start.sh.bak that cannot be created aborts the overwrite "
+                  "and marks a hard deployment error (never an empty catch before the write)",
+                  ps1_start_sh_backup_failure_is_fatal)
 
     # 7. The checkout itself must hand these files over with the right line endings, on any machine.
     checker.check(".gitattributes: pins *.cmd/*.ps1 to CRLF at checkout (any core.autocrlf)",
@@ -2004,6 +2474,9 @@ def main() -> int:
                   "(last non-empty line, no raw output)", ps1_memory_failure_is_short)
     checker.check("prepare_factory.sh: a failed memory init is reported as a short reason "
                   "(last non-empty line, no raw output)", bash_memory_failure_is_short)
+    checker.check("prepare_factory.ps1: the memory CHECK line is ONE line - the trailing verdict "
+                  "plus a WARN count, never the whole `check` output",
+                  ps1_memory_check_line_is_single_line)
 
     # 9. Repo-path scoping hazards: both deployers ignore their own task.yaml/launchers (or a
     # leftover one in a TARGET project is handed over as a new task / committed), and both launcher

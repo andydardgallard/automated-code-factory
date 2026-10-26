@@ -5,10 +5,11 @@ Deterministic self-test for `verify_acceptance.py` (zero LLM tokens).
 Verifies the anti-tautology acceptance gate end to end through its CLI: a passing verify command
 is MET, a failing one is FAILED, criteria without `verify` are UNVERIFIED and labeled
 derived/unverified, commands really run inside `--repo`, long output is excerpted, and the verdict
-follows the rules (SUCCESS only with all verify criteria MET + regression pass; DEGRADED without a
-regression proof or without any verify criterion; FAILURE on any failure), and the optional
-evidence ledger gate (--ledger/--evidence-files) downgrades SUCCESS to DEGRADED on STALE, failed,
-missing or unparsable evidence, while a FRESH regression=pass ledger keeps SUCCESS. The optional
+follows the rules (SUCCESS only with all verify criteria MET + regression pass + a usable FRESH
+`regression=pass` ledger entry; DEGRADED without a regression proof, without any verify criterion,
+or without a ledger at all; FAILURE on any failure), and the evidence ledger gate
+(--ledger/--evidence-files) downgrades SUCCESS to DEGRADED on STALE, failed, missing or unparsable
+evidence, while a FRESH regression=pass ledger keeps SUCCESS. The optional
 `--run-id` only adds the `run_id: <id>` provenance line to the acceptance header, and the optional
 `--task-type` only adds the `task_type: <value>` header line plus — in a `review`/`security_audit`
 context — the OWNER DECISION wording of a failure; neither the verdicts nor the exit codes move, and
@@ -55,7 +56,18 @@ def main() -> int:
         tmp = pathlib.Path(raw_tmp)
         (tmp / "marker.txt").write_text("MARKER-CONTENT\n", encoding="utf-8")
 
-        # 1. All verify criteria MET + regression pass -> SUCCESS, exit 0, acceptance.md evidence.
+        # SUCCESS is impossible without a usable FRESH regression=pass ledger entry (case 21), so
+        # the SUCCESS cases below all pass this one, stamped over a file they never edit again.
+        gate_src = tmp / "gate.py"
+        gate_src.write_text("gate = 1\n", encoding="utf-8")
+        gate_ledger = tmp / "state" / "gate-evidence.json"   # NOT case 11's state/evidence.json
+        gate_stamp = run_ledger("stamp", "--repo", str(tmp), "--ledger", str(gate_ledger),
+                                "--name", "regression", "--result", "pass", "--files", "gate.py")
+        expect(gate_stamp.returncode == 0,
+               f"stamping the base ledger must work: {gate_stamp.stderr!r}")
+        SUCCESS_ARGS = ("--ledger", str(gate_ledger), "--evidence-files", "gate.py")
+
+        # 1. All verify criteria MET + regression pass + FRESH ledger -> SUCCESS, exit 0.
         criteria = write_criteria(tmp, [
             {"criterion": "exit code zero is proof", "verify": f'{PY} -c "print(\'OK-MARKER\')"'},
             {"criterion": "runs inside --repo", "verify":
@@ -63,7 +75,7 @@ def main() -> int:
         ])
         md = tmp / "acceptance.md"
         res = run("--input", str(criteria), "--output", str(md), "--repo", str(tmp),
-                  "--regression", "pass")
+                  "--regression", "pass", *SUCCESS_ARGS)
         expect(res.returncode == 0, f"all MET + regression pass must exit 0: {res.stderr!r}")
         text = md.read_text(encoding="utf-8")
         expect("Verdict: **SUCCESS**" in text, f"SUCCESS verdict must be reported: {text[:200]!r}")
@@ -96,7 +108,7 @@ def main() -> int:
         ], name="long.json")
         md_long = tmp / "acceptance_long.md"
         res = run("--input", str(criteria), "--output", str(md_long), "--repo", str(tmp),
-                  "--regression", "pass")
+                  "--regression", "pass", *SUCCESS_ARGS)
         expect(res.returncode == 0, f"the noisy command exits 0: {res.stderr!r}")
         text = md_long.read_text(encoding="utf-8")
         expect("L30" in text, "the tail of a long output must be kept")
@@ -113,7 +125,7 @@ def main() -> int:
         ], name="mixed.json")
         md_mixed = tmp / "acceptance_mixed.md"
         res = run("--input", str(criteria), "--output", str(md_mixed), "--repo", str(tmp),
-                  "--regression", "pass")
+                  "--regression", "pass", *SUCCESS_ARGS)
         expect(res.returncode == 0,
                f"verified criterion MET + regression pass = SUCCESS: {res.stderr!r}")
         text = md_mixed.read_text(encoding="utf-8")
@@ -212,7 +224,7 @@ def main() -> int:
         expect("Verdict: **SUCCESS**" in text, f"a FRESH ledger keeps SUCCESS: {text[:300]!r}")
         expect("## Evidence ledger" in text and "all entries FRESH" in text,
                f"the ledger must be reported when --ledger is given: {text!r}")
-        expect("Evidence ledger" not in (tmp / "acceptance.md").read_text(encoding="utf-8"),
+        expect("Evidence ledger" not in (tmp / "acceptance_degraded.md").read_text(encoding="utf-8"),
                "without --ledger the report must be unchanged (no ledger section)")
 
         # 12. STALE evidence (the signed file changed after stamping) downgrades SUCCESS to
@@ -264,12 +276,50 @@ def main() -> int:
                                         name="runid.json")
         md_runid = tmp / "acceptance_runid.md"
         res = run("--input", str(runid_criteria), "--output", str(md_runid), "--repo", str(tmp),
-                  "--regression", "pass", "--run-id", "20260922-442cd2f8")
+                  "--regression", "pass", "--run-id", "20260922-442cd2f8", *SUCCESS_ARGS)
         expect(res.returncode == 0, f"a run id must not change the verdict: {res.stderr!r}")
         text_runid = md_runid.read_text(encoding="utf-8")
         expect("run_id: 20260922-442cd2f8" in text_runid,
                f"the run id must be recorded in acceptance.md: {text_runid[:300]!r}")
         expect("Verdict: **SUCCESS**" in text_runid, "the verdict must stay unaffected by --run-id")
+
+        # 21. No ledger at all. `--regression pass` plus green verify criteria used to be SUCCESS
+        #     with no freshness check whatsoever: the regression claim was unsigned evidence. A
+        #     SUCCESS verdict now requires a usable FRESH regression=pass ledger entry, so a run
+        #     that brings no ledger is DEGRADED (exit 1) — never SUCCESS.
+        md_noledger = tmp / "acceptance_no_ledger.md"
+        res = run("--input", str(runid_criteria), "--output", str(md_noledger), "--repo", str(tmp),
+                  "--regression", "pass")
+        expect(res.returncode == 1,
+               f"SUCCESS without a ledger must be impossible: {res.stdout!r}")
+        text = md_noledger.read_text(encoding="utf-8")
+        expect("Verdict: **DEGRADED**" in text,
+               f"a missing ledger must degrade the verdict, never pass silently: {text[:400]!r}")
+        expect("no evidence ledger given" in text and "regression=pass" in text,
+               f"the reason must name the missing ledger evidence: {text[:600]!r}")
+        expect("## Evidence ledger" not in text,
+               "a run without --ledger must not invent a ledger section")
+
+        # 22. A ledger entry stamped over an EMPTY scope (`files: []`) signs no file at all, so its
+        #     fingerprint is the hash of nothing and matches any working tree. Such an entry must
+        #     not certify acceptance: DEGRADED even with --regression pass and a green criterion.
+        empty_ledger = tmp / "empty-scope" / "evidence.json"
+        empty_ledger.parent.mkdir(parents=True, exist_ok=True)
+        nothing = run_ledger("sign", "--repo", str(tmp), "--files").stdout.strip()
+        empty_ledger.write_text(json.dumps({"version": 1, "entries": [
+            {"name": "regression", "result": "pass", "fingerprint": nothing, "files": [],
+             "timestamp": "2026-09-24T10:00:00+00:00", "log": None, "run_id": ""}]}),
+            encoding="utf-8")
+        md_empty = tmp / "acceptance_empty_scope.md"
+        res = run("--input", str(runid_criteria), "--output", str(md_empty), "--repo", str(tmp),
+                  "--regression", "pass", "--ledger", str(empty_ledger))
+        expect(res.returncode == 1,
+               f"an empty signed scope must not certify acceptance: {res.stdout!r}")
+        text = md_empty.read_text(encoding="utf-8")
+        expect("Verdict: **DEGRADED**" in text and "empty scope" in text,
+               f"the empty scope must be named as the rejection cause: {text[:600]!r}")
+        expect("| regression | pass | UNSCOPED |" in text,
+               f"an empty signed scope must never be reported FRESH: {text!r}")
 
         # 16. --task-type is part of the CLI contract: the executor can be told which task type
         #     it is judging.
@@ -363,7 +413,8 @@ def main() -> int:
 
     print("PASS - verify_acceptance.py behaves as expected (MET/FAILED/UNVERIFIED with "
           "derived/unverified labels, excerpts, SUCCESS/DEGRADED/FAILURE verdicts, the "
-          "evidence ledger gate: FRESH keeps SUCCESS, STALE/missing evidence degrades, the "
+          "evidence ledger gate: a FRESH regression=pass entry is required for SUCCESS (no ledger "
+          "or an empty signed scope degrades), STALE/missing evidence degrades, the "
           "optional --run-id provenance line, and the optional --task-type context: implement is "
           "unchanged apart from its header line while review/security_audit report a failure as "
           "an OWNER DECISION on the unmodified tree).")

@@ -78,29 +78,33 @@ severity=critical или follow_up=true сохраняются обязател�
 title: AGENTS.md как единый источник правды + переносимая долгосрочная память
 project: repo
 timestamp: 2026-09-01T01:01:45+0300
+run_id: 20260901-e9c0219e (synthetic, backfilled 2026-10-26)
 branch: main
 commit: a53ef72ac36825fb3a6a1a34fc63781d1c2de7f6
 task_type: implement
 goal: AGENTS.md — единый источник правды (8 секций + fingerprint, без /init) + коммитимая память memory/
 changed_files: .agents/skills/code-factory/references/tech-stack-detection.md; .agents/skills/code-factory/references/planning-guide.md; .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; .agents/agents/sub-agents/analyzer.md; .agents/agents/sub-agents/coder.md; .agents/agents/sub-agents/tester.md; .agents/agents/sub-agents/code-reviewer.md; .agents/agents/sub-agents/diagnostician.md; .agents/README.md; AGENTS.md; CHANGELOG.md
 created_files: .agents/skills/code-factory/scripts/project_fingerprint.py; .agents/skills/code-factory/scripts/check_factory_model.py; .agents/skills/code-factory/scripts/test_factory_model.py; memory/change-log.md; memory/summary.md
-results: integration=PASS; regression=PASS; business=PASS; review=approve
-decisions: существующий AGENTS.md перезаписывается целиком (ровно 8 секций); fingerprint без git tree SHA (иначе stale после коммита); порог компакции 50 записей (хвост 20); корневой AGENTS.md фабрики остаётся hand-authored
+results: integration=PASS; regression=PASS; business=PASS; review=approve [inferred]
+decisions: существующий AGENTS.md перезаписывается целиком (ровно 8 секций); fingerprint без git tree SHA (иначе stale после коммита); порог компакции 50 записей (хвост 20); корневой AGENTS.md фабрики остаётся hand-authored [inferred]
 assumptions: repo/ и task_files/ — посторонние untracked, в коммит не входят; роли выполнены главным агентом (первичная модель), reviewer — сабагент factory-code-reviewer
 models_used: analyzer=primary; planner=primary; coder=primary; tester=primary; reviewer=primary; diagnostician=unused
 
+factory_version: 12.8.0 (synthetic, backfilled 2026-10-26)
+unfinished: no unfinished items
 ## 2026-09-08T14:07:38+0300 — Фабрика v12.5.0: documenter + память долга + база навыков + версионирование
 title: Фабрика v12.5.0: documenter + память долга + база навыков + версионирование
 project: repo
 timestamp: 2026-09-08T14:07:38+0300
+run_id: 20260908-9a27ade7 (synthetic, backfilled 2026-10-26)
 branch: feature/factory-v12.5.0
 commit: 123acf33561298379a2c374fcb2fed27967a9df6
 task_type: implement
 goal: 4 задачи — автодокументирование (factory-documenter), память незавершённого (unfinished), справочники-навыки (reference_docs/reference_skills), сквозное версионирование (VERSION + version_manager)
 changed_files: .agents/README.md; .agents/agents/code-factory.md; .agents/agents/sub-agents/code-reviewer.md; .agents/skills/code-factory/SKILL.md; .agents/skills/code-factory/assets/task-template.yaml; .agents/skills/code-factory/references/code-review.md; .agents/skills/code-factory/scripts/check_factory_model.py; .agents/skills/code-factory/scripts/test_factory_model.py; .example.task.yaml; AGENTS.md; CHANGELOG.md; README.md; memory/change-log.md
 created_files: .agents/agents/sub-agents/documenter.md; .agents/agents/sub-agents/skill-manager.md; .agents/skills/code-factory/references/documentation.md; .agents/skills/code-factory/references/reference-docs.md; .agents/skills/code-factory/scripts/skill_base.py; .agents/skills/code-factory/scripts/test_skill_base.py; .agents/skills/code-factory/scripts/test_validate_documentation.py; .agents/skills/code-factory/scripts/test_validate_mermaid.py; .agents/skills/code-factory/scripts/test_version_manager.py; .agents/skills/code-factory/scripts/validate_documentation.py; .agents/skills/code-factory/scripts/validate_mermaid.py; .agents/skills/code-factory/scripts/version_manager.py; VERSION
-results: integration=PASS; regression=PASS; business=PASS; review=approve
-decisions: версия 12.1.0 → 12.5.0 (4 minor); documenter на secondary; skill-manager на primary; skill-base/ коммитится; mermaid-валидатор детерминированный (stdlib)
+results: integration=PASS; regression=PASS; business=PASS; review=approve [inferred]
+decisions: версия 12.1.0 → 12.5.0 (4 minor); documenter на secondary; skill-manager на primary; skill-base/ коммитится; mermaid-валидатор детерминированный (stdlib) [inferred]
 assumptions: mode hitl без вопросов (критерии машинно-проверяемы); все 4 задачи в одном прогоне/коммите
 models_used: analyzer=primary; planner=primary; coder=primary; tester=primary; reviewer=primary; diagnostician=unused; documenter=secondary
 factory_version: 12.5.0
@@ -110,14 +114,15 @@ unfinished: нет незавершённых элементов
 title: Аудит системы безопасности
 project: repo
 timestamp: 2026-09-08T21:09:33+03:00
+run_id: 20260908-b7b01cb0 (synthetic, backfilled 2026-10-26)
 branch: main
 commit: (none)
 task_type: security_audit
 goal: полный адаптивный аудит репозитория код-фабрики v12.5.0; особое внимание — утечке API-ключей
 changed_files: (none — аудит read-only, изменения кода не вносились)
 created_files: .code-factory/audit/report.md; .code-factory/audit/fix-tasks.yaml
-results: integration=SKIP; regression=SKIP; business=SKIP; review=SKIP
-decisions: реальных секретов и опасных вызовов не найдено; единственный пробел — .gitignore не защищает .env/.pem/.key; сгенерирована fix-задача на implement
+results: integration=SKIP; regression=SKIP; business=SKIP; review=SKIP [inferred]
+decisions: реальных секретов и опасных вызовов не найдено; единственный пробел — .gitignore не защищает .env/.pem/.key; сгенерирована fix-задача на implement [inferred]
 assumptions: целевой репозиторий — сама фабрика (AGENTS.md hand-authored, проверка модели в режиме --memory-only); SAST-сканеры отсутствуют — детерминированные grep-эвристики; совпадения паттернов в git-истории — только плейсхолдеры sk-xxxxx
 models_used: analyzer=primary; planner=primary; coder=unused; tester=unused; reviewer=unused; diagnostician=unused; documenter=unused; security_auditor=primary
 factory_version: 12.5.0
@@ -127,14 +132,15 @@ unfinished: нет незавершённых элементов
 title: Закрыть возможность утечки API-ключей через git
 project: repo
 timestamp: 2026-09-08T21:28:42+03:00
+run_id: 20260908-43c83e0f (synthetic, backfilled 2026-10-26)
 branch: main
 commit: 5a966be
 task_type: implement
 goal: добавить защиту .env/приватных ключей в .gitignore и в автодобавляемый блок prepare_factory.sh
 changed_files: .gitignore; prepare_factory.sh; VERSION; README.md; CHANGELOG.md; AGENTS.md; .agents/README.md; .agents/skills/code-factory/SKILL.md
 created_files: (none)
-results: integration=PASS; regression=PASS; business=PASS; review=approve
-decisions: версия 12.5.0 → 12.5.1 (patch, безопасность); код+версия одним коммитом v12.5.1, память — отдельным docs(memory)
+results: integration=PASS; regression=PASS; business=PASS; review=approve [inferred]
+decisions: версия 12.5.0 → 12.5.1 (patch, безопасность); код+версия одним коммитом v12.5.1, память — отдельным docs(memory) [inferred]
 assumptions: target = repo/ (подтверждено пользователем); documenter без изменений (правка не затрагивает doc-комментарии/.md); secondary-модель не выбиралась через Agent-инструмент
 models_used: analyzer=primary; planner=primary; coder=primary; tester=primary; reviewer=primary; diagnostician=unused; documenter=primary; security_auditor=unused
 factory_version: 12.5.1
@@ -144,14 +150,15 @@ unfinished: нет незавершённых элементов
 title: Память фабрики принадлежит целевому проекту, а не самой фабрике
 project: repo
 timestamp: 2026-09-21T19:40:00+03:00
+run_id: 20260921-dc1aebae (synthetic, backfilled 2026-10-26)
 branch: feature/project-scoped-memory
 commit: (none)
 task_type: implement
 goal: устранить смешение в memory/ истории разработки фабрики и целевого проекта; ввести признак проекта, детекцию смешения, инициализацию памяти при развёртывании и очистить память проекта get_course_downloader
 changed_files: .agents/README.md; .agents/agents/code-factory.md; .agents/agents/sub-agents/analyzer.md; .agents/agents/sub-agents/code-reviewer.md; .agents/agents/sub-agents/coder.md; .agents/agents/sub-agents/diagnostician.md; .agents/agents/sub-agents/tester.md; .agents/skills/code-factory/SKILL.md; .agents/skills/code-factory/references/planning-guide.md; .agents/skills/code-factory/references/tech-stack-detection.md; .agents/skills/code-factory/scripts/check_factory_model.py; .agents/skills/code-factory/scripts/test_factory_model.py; AGENTS.md; README.md; CHANGELOG.md; VERSION; memory/change-log.md; memory/summary.md; prepare_factory.sh
 created_files: .agents/skills/code-factory/scripts/memory_project.py; .agents/skills/code-factory/scripts/test_memory_project.py
-results: integration=PASS; regression=PASS; business=PASS; review=approve
-decisions: memory/ принадлежит целевому проекту (repo_path); поле project: обязательно для новых записей (basename разрешённого repo_path), разные значения в одном журнале — ошибка, отсутствие — legacy-предупреждение; объявление project:/repo_path: в сводке читается только из области после маркера до первой секции ##; prepare_factory.sh заводит память проекта и никогда не перезаписывает существующую, различая состояния ok/mixed/other; память создаётся в корне развёртывания, при repo_path-подкаталоге агент передаёт --project явно; правки в ../get_course_downloader ограничены memory/*.md и не коммитились (там идёт собственный прогон)
+results: integration=PASS; regression=PASS; business=PASS; review=approve [inferred]
+decisions: memory/ принадлежит целевому проекту (repo_path); поле project: обязательно для новых записей (basename разрешённого repo_path), разные значения в одном журнале — ошибка, отсутствие — legacy-предупреждение; объявление project:/repo_path: в сводке читается только из области после маркера до первой секции ##; prepare_factory.sh заводит память проекта и никогда не перезаписывает существующую, различая состояния ok/mixed/other; память создаётся в корне развёртывания, при repo_path-подкаталоге агент передаёт --project явно; правки в ../get_course_downloader ограничены memory/*.md и не коммитились (там идёт собственный прогон) [inferred]
 assumptions: целевой репозиторий этого прогона — сама фабрика (repo_path: .), поэтому project: = automated_vode_factory_v_12.15.1; запись памяти коммитится вместе с изменением, поэтому её собственный SHA не может быть записан — commit: (none); код-ревью прошло за 2 попытки (первая — request_changes с 8 замечаниями, все устранены); subagents запускались с явным model: primary из-за дефекта глобального конфига [secondary_model]
 models_used: main=primary; analyzer=primary; planner=primary; coder=primary; tester=primary; reviewer=primary; diagnostician=unused; documenter=primary
 factory_version: 12.6.0
@@ -182,14 +189,15 @@ unfinished:
 title: Развёртывание и запуск фабрики в Windows (скрипты prepare_factory и start)
 project: repo
 timestamp: 2026-09-21T20:55:17+03:00
+run_id: 20260921-f8a4c44d (synthetic, backfilled 2026-10-26)
 branch: feature/windows-launch
 commit: 37a683e
 task_type: implement
 goal: добавить Windows-варианты развёртывания проекта и запуска фабрики (prepare_factory, start), чтобы на Windows не требовался Git Bash — двойной клик / cmd / PowerShell; bash-путь не меняется; развёртывание работает и без установленного Python
 changed_files: README.md; AGENTS.md; CHANGELOG.md; VERSION; .agents/README.md; .agents/agents/code-factory.md; .agents/skills/code-factory/SKILL.md; .agents/skills/code-factory/references/tech-stack-detection.md; .agents/skills/code-factory/scripts/project_fingerprint.py; memory/change-log.md; memory/summary.md
 created_files: prepare_factory.ps1; prepare_factory.cmd; start.cmd; .agents/skills/code-factory/scripts/test_windows_scripts.py
-results: integration=PASS; regression=PASS; business=PASS; review=approve
-decisions: PowerShell-деплойер повторяет шаги bash-версии 1:1 (поиск рабочего Python с пробным запуском, git init -b main, копирование .agents/, память проекта без перезаписи, start.sh LF + start.cmd CRLF, те же 9 правил .gitignore, тот же отчёт готовности); жёсткий сбой копирования или записи → exit 1 и «Развёртывание не завершено» без баннера «Готово», а ожидаемые деградации (нет Python → «не проверено (нет python)») остались нефатальными (exit 0); PYTHONUTF8=1 для вызовов python, иначе кириллица в пути давала мусор и ложное «память не создана»; предупреждение перед заменой существующего пользовательского start.cmd; новые launcher-файлы исключены из fingerprint-сигналов; версия 12.6.0 → 12.7.0 (minor, подтверждён ревьюером)
+results: integration=PASS; regression=PASS; business=PASS; review=approve [inferred]
+decisions: PowerShell-деплойер повторяет шаги bash-версии 1:1 (поиск рабочего Python с пробным запуском, git init -b main, копирование .agents/, память проекта без перезаписи, start.sh LF + start.cmd CRLF, те же 9 правил .gitignore, тот же отчёт готовности); жёсткий сбой копирования или записи → exit 1 и «Развёртывание не завершено» без баннера «Готово», а ожидаемые деградации (нет Python → «не проверено (нет python)») остались нефатальными (exit 0); PYTHONUTF8=1 для вызовов python, иначе кириллица в пути давала мусор и ложное «память не создана»; предупреждение перед заменой существующего пользовательского start.cmd; новые launcher-файлы исключены из fingerprint-сигналов; версия 12.6.0 → 12.7.0 (minor, подтверждён ревьюером) [inferred]
 assumptions: целевой проект прогона — копия фабрики в ./repo (та же фабрика, repo_path указывает на подкаталог), поэтому память пишется под уже закреплённым именем проекта automated_vode_factory_v_12.15.1, а не под новым именем repo — иначе один журнал смешал бы два проекта; запись сделана в память целевого репозитория (feature-ветка), журнал корня развёртывания не менялся, так как правки в исходный репозиторий фабрики в задачу не входят; .ps1 хранится как UTF-8 с BOM, .cmd — UTF-8 без BOM, обе — CRLF (проверено побайтово); строка task.yaml про «устранение ошибок ручного запуска» устарела (подтверждено пользователем); прогон был прерван на старте бизнес-тестов и продолжен с чекпоинта pipeline.yaml
 models_used: main=primary; analyzer=primary; planner=main (session model); coder=primary; tester=primary; reviewer=primary; diagnostician=unused; documenter=primary; security_auditor=unused
 factory_version: 12.7.0
@@ -239,14 +247,15 @@ unfinished:
 title: Проверка фабрики на соблюдение философии и план её усиления по материалам
 project: repo
 timestamp: 2026-09-22T20:27:04+03:00
+run_id: 20260922-631f7c90 (synthetic, backfilled 2026-10-26)
 branch: feature/philosophy-review
 commit: (none)
 task_type: review
 goal: независимое code review устройства фабрики по 4 принципам философии + сравнение с SoL-Pi/context-mode/gstack/opencode/learn-claude-code/paseo/Kaggle-курсом; результат — готовая implement-задача task-improvements.yaml
 changed_files: memory/change-log.md
 created_files: task-improvements.yaml (не закоммичен по решению пользователя); .code-factory/{state/task.yaml,state/pipeline.yaml,state/acceptance.md,logs/baseline.md,logs/analysis-factory.md,logs/research-solpi-contextmode-gstack.md,logs/research-opencode-lcc-paseo.md,logs/research-kaggle.md,logs/code-review.md,report.md,report_code_changes.md}
-results: integration=SKIP; regression=PASS (8/8 self-тестов baseline); business=PASS (план и состав приоритетов утверждены пользователем); review=request_changes (verdict ревьюера по всему репо; rework-лист перенесён в task-improvements.yaml P1.15 — специфика review-задачи)
-decisions: цель ревью — ./repo (уточнено у пользователя, две слипшиеся формулировки task.yaml слиты); skill-base в этом прогоне не создавалась — проекты изучены онлайн по README/докам, ./materials как тексты; критические находки аудита верифицированы независимым ревьюером (2a противоречие review-гейта в 5 документах; 2b слепота fingerprint глубже 1 уровня — доказано эмпирически); LSP/MCP/демоны/своя компакция/worktree сознательно отклонены (даже opencode отключил LSP); матрица моделей K3+deepseek-flash подтверждена с поправкой generator≠judge (advisor=deepseek-flash); версия не меняется (review → none); task-improvements.yaml и materials/ не коммитятся по решению пользователя
+results: integration=SKIP; regression=PASS (8/8 self-тестов baseline); business=PASS (план и состав приоритетов утверждены пользователем); review=request_changes (verdict ревьюера по всему репо; rework-лист перенесён в task-improvements.yaml P1.15 — специфика review-задачи) [inferred]
+decisions: цель ревью — ./repo (уточнено у пользователя, две слипшиеся формулировки task.yaml слиты); skill-base в этом прогоне не создавалась — проекты изучены онлайн по README/докам, ./materials как тексты; критические находки аудита верифицированы независимым ревьюером (2a противоречие review-гейта в 5 документах; 2b слепота fingerprint глубже 1 уровня — доказано эмпирически); LSP/MCP/демоны/своя компакция/worktree сознательно отклонены (даже opencode отключил LSP); матрица моделей K3+deepseek-flash подтверждена с поправкой generator≠judge (advisor=deepseek-flash); версия не меняется (review → none); task-improvements.yaml и materials/ не коммитятся по решению пользователя [inferred]
 assumptions: opencode-ai/opencode заархивирован (переехал в charmbracelet/crush) — изучены README архива и доки нового anomalyco/opencode; PDF в materials не читались (есть транскрипты); имя проекта в памяти оставлено automated_vode_factory_v_12.15.1 несмотря на выявленную ложность (исправление — P1.14 будущего прогона, чтобы не смешивать конвенции вне задачи)
 models_used: main=primary; analyzer=primary; planner=main; coder=unused; tester=unused; reviewer=primary; diagnostician=unused; documenter=unused; research explore×3=primary
 factory_version: 12.7.0
@@ -272,14 +281,15 @@ unfinished:
 title: Усиление фабрики: шардирование whole-repo операций, двухуровневый fingerprint, Think in Code, верифицируемая приёмка и антигаллюцинационные гейты
 project: repo
 timestamp: 2026-09-24T00:00:00+03:00
+run_id: 20260924-32a3776e (synthetic, backfilled 2026-10-26)
 branch: feature/factory-hardening-2026-09-24
 commit: cf0f4e1
 task_type: implement
 goal: реализовать план усиления из task-improvements.yaml: P0×7 (шарды, двухуровневый fingerprint, Think in Code, единый review-гейт, верифицируемая приёмка, verify_quotes, handoff-шаблон), P1×8, P2 — backlog
 changed_files: 29 файлов (scripts: project_fingerprint, check_factory_model, memory_project, gen_code_changes_report, version_manager, validate_documentation + тесты; references: code-review, security-audit, providers, verification-strategy, error-routing, tech-stack-detection, reference-docs; sub-agents: analyzer, tester, diagnostician, code-reviewer, security-auditor; code-factory.md, SKILL.md, AGENTS.md, .agents/README.md, task-template.yaml, prepare_factory.sh/.ps1, CHANGELOG, VERSION, memory/*)
 created_files: scripts/{repo_inventory,merge_findings,log_tail,repo_stats,verify_acceptance,verify_quotes,evidence_ledger,factory_preflight,action_gate,task_graph}.py + 11 test_*.py; sub-agents/advisor.md; references/handoff-briefing.md; skill-base/skills/kaggle-agents-course/ (из ../materials, 68 файлов)
-results: integration=PASS (19/19 test_*.py); regression=PASS (8/8 существующих без ослабления + 11 новых; check_factory_model --memory-only PASS); business=PASS (шарды: 45k строк → 3 шарда, merge с дедупликацией; fingerprint: повтор эксперимента 2026-09-23 — structural неизменен, content сдвинут; приёмка SUCCESS 11 MET + 1 derived); review=approve (итерация 2/2: 2 major закрыты и проверены эмпирически, цитаты ревьюера verify_quotes 4/4 VERIFIED)
-decisions: владелец памяти мигрирован automated_vode_factory_v_12.15.1 → repo (rename, подтверждено пользователем); строгий вариант верифицируемой приёмки; skill kaggle-agents-course создан на k3 и оставлен (валиден, rerun на flash без выгоды — решение пользователя); устаревшее правило «не передавать model в Agent tool» исправлено — CLI поддерживает явный model:, secondary-роли запускались на deepseek-flash по матрице; nit fingerprint (index-based) оставлен задокументированным решением; start.cmd pause-finding отклонён как неточный; версия 12.7.0 → 12.8.0 (minor, новый сабагент advisor, валидировано ревьюером)
+results: integration=PASS (19/19 test_*.py); regression=PASS (8/8 существующих без ослабления + 11 новых; check_factory_model --memory-only PASS); business=PASS (шарды: 45k строк → 3 шарда, merge с дедупликацией; fingerprint: повтор эксперимента 2026-09-23 — structural неизменен, content сдвинут; приёмка SUCCESS 11 MET + 1 derived); review=approve (итерация 2/2: 2 major закрыты и проверены эмпирически, цитаты ревьюера verify_quotes 4/4 VERIFIED) [inferred]
+decisions: владелец памяти мигрирован automated_vode_factory_v_12.15.1 → repo (rename, подтверждено пользователем); строгий вариант верифицируемой приёмки; skill kaggle-agents-course создан на k3 и оставлен (валиден, rerun на flash без выгоды — решение пользователя); устаревшее правило «не передавать model в Agent tool» исправлено — CLI поддерживает явный model:, secondary-роли запускались на deepseek-flash по матрице; nit fingerprint (index-based) оставлен задокументированным решением; start.cmd pause-finding отклонён как неточный; версия 12.7.0 → 12.8.0 (minor, новый сабагент advisor, валидировано ревьюером) [inferred]
 assumptions: канонический блок review-гейта вставлен русским текстом во все 5 документов включая англоязычные (тест требует байт-идентичности); advisor из P0.7 покрывается его созданием в P1.8
 models_used: main=primary; analyzer=primary; planner=main; coder=deepseek-flash ×12; tester=unused (тесты писали кодеры); reviewer=primary; diagnostician=unused; advisor=unused; documenter=deepseek-flash; skill_manager=primary (расход с матрицей, зафиксирован)
 factory_version: 12.8.0
@@ -1091,3 +1101,59 @@ unfinished:
     reason: `test_windows_scripts.py`'s end-to-end deployment needs the network for the MCP vendor-install step, so the suite cannot host that witness offline; the check does fail on the pre-fix deployers, which is what the vaccination rule demands
     severity: info
     follow_up: false
+
+## 2026-10-26T17:50:30+03:00 — second pre-publication review (report-only): 12 findings (7 critical), and the self-test suite is red again
+
+title: Full pre-publication review of v12.16.0 — 3 reviewer shards over 134 tracked files (45 409 lines), merged verdict request_changes with 7 critical + 5 major findings, and a baseline that contradicts the previous record: 35 PASS / 3 FAIL of 38 self-tests
+project: repo
+timestamp: 2026-10-26T17:50:30+03:00
+run_id: 20261026-1c588b16
+branch: main
+commit: no commit — report-only review, the tracked tree is unmodified
+task_type: review
+goal: verify the project works as designed before the owner pushes it to GitHub
+changed_files: none — the tracked tree is untouched (`git status --porcelain` at finish shows only the pre-existing `.gitignore` edit and untracked `task_review_farukon_300.yaml`, `warnings.txt`, `task.yaml`) [verified: .code-factory/state/git-status-start.txt matches the finish status]
+created_files: `.code-factory/` artifacts only — state/{task.yaml,pipeline.yaml,preflight.json,shards.json,shard-shard-1..3-files.txt,claims.json,criteria.json,acceptance.md,evidence.json,precedents.db}, logs/{baseline.md,code-review.md,code-review-merged.json,code-review-shards/shard-1..3.json}, review/fix-tasks.yaml, report.md
+results: integration=SKIP (report-only run: no code change to integrate); business=PASS (end-to-end gates on the unmodified tree all exit 0: rulebook 27 rules/110 carriers byte-identical, English-only over 129 shipped files, backlog fold exit 0, precedent index FRESH with 153 records, 12/12 finding quotes verified verbatim) [verified: check_factory_rules.py --root ., check_english_only.py --root ., memory_project.py backlog --check --run-id 20261026-1c588b16, precedent_index.py status, verify_quotes.py exit 0]; review=request_changes — 12 merged findings, 7 critical / 5 major / 0 minor / 0 nit, deduplicated and sorted by merge_findings.py, every finding quote re-verified verbatim 12/12 [verified: .code-factory/logs/code-review-merged.json and verify_quotes.py --claims .code-factory/state/claims.json exit 0]; regression=FAIL — the baseline re-run gives 35 PASS / 3 FAIL of 38 (test_model_precedence.py: the owner's reconfigured CLI config no longer carries a contrasting [secondary_model], so the real-config assertion fails; test_vaccination.py: 1 of 24 vaccines no longer bites; test_windows_scripts.py: the base-commit negation probe fails because the base already carries the guard) [verified: .code-factory/logs/baseline.md, run 20261026-1c588b16]; acceptance=FAILURE — 3 verify-criteria MET (merged report, fix-tasks.yaml, 12/12 quotes), regression=fail downgrades the verdict [verified: .code-factory/state/acceptance.md, verify_acceptance.py exit 1]; models=recorded (main kimi-code/k3, reviewer kimi-code/k3.1-pro for all 3 shards — available again after the owner's CLI reconfiguration) [verified: .code-factory/state/pipeline.yaml models_used]
+decisions: the run stayed report-only — the 12 findings left as `.code-factory/review/fix-tasks.yaml` (generated by review_followup_task.py) and no coder was started [verified: git diff --quiet HEAD over the tracked tree]; the red baseline is reported as a finding of the review, not fixed in this run [verified: .code-factory/logs/baseline.md]; the 7 critical findings cluster on the factory's own safety gates: the reviewer-budget loop (SKILL.md RCR -> M), the git-push HEAD bypass in action_gate.py, empty-scope FRESH evidence in evidence_ledger.py, any-pre-fix-failure counting in test_vaccination.py, same-line code after a block comment in validate_documentation.py, SUCCESS without a ledger in verify_acceptance.py, and the swallowed backup failure in prepare_factory.ps1 [verified: .code-factory/logs/code-review-merged.json findings 1-7 with verified quotes]
+assumptions: `repo_path: "."` is the deployment root, so memory/ here is this project's memory; the three baseline FAILs reproduce identically to the halted run 20261026-19327223, so they are treated as real regressions of the v12.16.0 state, not environment flakes
+models_used: main=kimi-code/k3; reviewer=kimi-code/k3.1-pro (shards 1-3); analyzer, planner, coder, tester, gui_expert, diagnostician, advisor, documenter, security_auditor, skill_manager, refactorer=unused
+factory_version: 12.16.0
+unfinished:
+  - item: the reviewer calibration obligation (§7: re-calibrate after every reviewer-prompt edit and at least once per 5 reviewed runs) is enforced by prose only, so a prompt edit can ship without a fresh calibration — the state found at the start of this run
+    reason: carried again — this run edited no reviewer prompt and is the first review run since the calibration of 20261025-4df00efd, so no fresh obligation arose, but nothing in the code forces the next calibration; it stays a prose duty of the main agent
+    severity: warning
+    follow_up: true
+  - item: the self-test suite is red on the current tree — 35 PASS / 3 FAIL of 38 (test_model_precedence.py, test_vaccination.py, test_windows_scripts.py), contradicting the previous record's "38 PASS end to end"
+    reason: NEW — found by this run's baseline; a review run is report-only and does not fix code, so the three failures go to the follow-up task file and the next implement run
+    severity: critical
+    follow_up: true
+  - item: 12 review findings (7 critical, 5 major) against the factory's safety gates are open
+    reason: NEW — the deliverable of this report-only review; handed over as .code-factory/review/fix-tasks.yaml for a separate implement run
+    severity: critical
+    follow_up: true
+## 2026-10-26T23:59:00+03:00 — closing the 12 findings of the second pre-publication review + the owner items: v12.17.0
+
+title: Review follow-up 20261026-1c588b16 executed — all 12 findings (7 critical, 5 major) and 6 owner-requested/backlog items closed, each fix vaccinated; the suite is green end to end again (38/38), the memory gates run with zero warnings, and the backlog is empty
+project: repo
+timestamp: 2026-10-26T23:59:00+03:00
+run_id: 20261026-2ea2eb55
+branch: factory/review-followup-20261026-2ea2eb55
+commit: v12.17.0 (one commit: the 47 changed/created files, VERSION/CHANGELOG/headers, this record and the summary)
+task_type: implement
+goal: execute the generated fix-tasks.yaml of the report-only review run 20261026-1c588b16 plus the owner's additions (deployer warning flood, one-time legacy memory migration, red suite, §7 calibration gate, info debts, AGENTS.md size gate) and end with a clean backlog
+changed_files: 46 tracked files (+3389/−509) — 15 scripts, 16 self-tests, SKILL.md, code-factory.md, 3 references, both READMEs, AGENTS.md (trimmed 38.8 KB -> 22.8 KB), prepare_factory.ps1, memory/.english-freeze, VERSION, CHANGELOG [verified: `git diff --stat` against base 9acc1b7 and .code-factory/manifest.json]
+created_files: skill-base/golden-set/calibration-log.md (the append-only §7 calibration record); `.code-factory/` artifacts only otherwise (state/*, logs/* incl. findings-disposition.md with 61 disposed findings, report.md, report_code_changes.md)
+results: integration=PASS (every fix carries a reproducing regression: the vaccination harness now registers 39 vaccines — 24 historical + 15 new RF against base 9acc1b7 — all biting with their declared failures) [verified: test_vaccination.py PASS 39 vaccines in the final suite]; regression=PASS (38 self-test files: 38 PASS, 0 FAIL — back from the 35/3 red baseline; test_model_precedence.py is hermetic, the stale vaccine and the stale base-commit probe are repaired) [verified: .code-factory/logs/regression.md written after the last source edit vs .code-factory/logs/baseline.md]; business=PASS (the three verify criteria of the task MET: memory_project.py check exit 0 with zero WARN lines, AGENTS.md 22839 bytes < 32 KB with the size gate live, memory_project.py backlog reports open: 0; the rulebook stays at 27 rules / 86 carriers byte-identical; the deployer CHECK line is one line) [verified: .code-factory/state/acceptance.md SUCCESS 3/3 MET, check_factory_rules.py exit 0, test_windows_scripts.py 91 PASS]; review=approve — iteration 1 request_changes (2 critical + 3 major: missing RF vaccines, casefold collision, calibration not discharged, fail-open journal, commit hygiene), all reworked; iteration 2 one major (fallback too permissive), iteration 3 (owner-authorized beyond the budget of 2) one major (same-run identity) plus one UTF-8 micro-finding, all fixed and test-pinned; final verdict approve with zero open findings [verified: .code-factory/logs/code-review.md]; acceptance=SUCCESS, 3 verify-criteria MET, 17 derived, regression=pass, ledger FRESH (the stale leftover review entry of the previous run was removed from this run's ledger) [verified: verify_acceptance.py exit 0, .code-factory/state/evidence.json]; models=match (main kimi-code/k3, coder deepseek-flash, reviewer kimi-code/k3.1-pro cross-checked against the session wire) [verified: model_attribution.py exit 0, .code-factory/state/model-attribution.json]
+decisions: the one-time migration of the 8 legacy pre-v2 memory entries was executed under the owner's explicit authorization — original text byte-identical, synthetic run_ids YYYYMMDD-<sha256(heading)[:8]> marked "(synthetic, backfilled 2026-10-26)", [inferred] markers only, and the 8 headings added to memory/.english-freeze; memory_project.py learned the annotation (validators strip it before the format check, pinned by test_memory_project.py) [verified: memory_project.py check exit 0 with zero WARN, check_english_only.py green, git-diff proof that every removed line differs only by the appended marker]; the §7 obligation is now code, not prose: calibrate_reviewer.py status judges the prompt digest and the run interval against the append-only skill-base/golden-set/calibration-log.md and is wired into the review flow (SKILL.md CR/CR0, Phase 8b, flow-contract section I); the calibration itself was discharged blind at 7/7 verdict accuracy, precision/recall 1.000 [verified: .code-factory/logs/reviewer-calibration.md, calibrate_reviewer.py status exit 0]; AGENTS.md no longer quotes the canonical rules — it points at references/factory-rules.md (one verbatim home, no drift), and the 28/32 KB size gate is enforced by project_fingerprint.py and check_factory_model.py [verified: check_factory_rules.py 27/86 exit 0, test_factory_model.py boundary tests]; version type = minor by the deterministic matrix (suggest --fix --new-field), validated by the reviewer in every iteration, never chosen by hand [verified: version_manager.py validate exit 0, .code-factory/logs/code-review.md]
+assumptions: the generated fix-tasks.yaml header says "do not edit by hand" — the owner's additions were already inside it, so the task file was consumed as handed over; the root fix-tasks.yaml stays untracked by staging strictly per the manifest (reviewer finding 5 of iteration 1); the RV/PR item texts inside .code-factory/logs/findings-disposition.md are reconstructions from the journal (the original review logs were overwritten by later runs) — the ids, vaccines and the harness contract are exact, and the file is a gitignored run artifact
+models_used: main=kimi-code/k3; coder=deepseek-flash (11 packages incl. rework); reviewer=kimi-code/k3.1-pro (3 iterations + 2 confirmations + the golden calibration pass); documenter=deepseek-flash; analyzer, planner, tester, gui_expert, diagnostician, advisor, security_auditor, skill_manager, refactorer=unused
+factory_version: 12.17.0
+closed:
+  - item: the reviewer calibration obligation (§7: re-calibrate after every reviewer-prompt edit and at least once per 5 reviewed runs) is enforced by prose only, so a prompt edit can ship without a fresh calibration — the state found at the start of this run
+    evidence: v12.17.0 — calibrate_reviewer.py status enforces both triggers deterministically against skill-base/golden-set/calibration-log.md (exit 1 with the named reason when due), is wired into the review flow (SKILL.md CR/CR0 nodes, code-factory.md Phase 8b, references/code-review.md §7) and is pinned by test_flow_contracts.py section I with negative probes plus test_calibrate_reviewer.py cases for both triggers, the same-run identity and the fail-closed journal; the obligation itself was discharged this run at 7/7 accuracy, P/R 1.000 [verified: calibrate_reviewer.py status --repo . exit 0, .code-factory/logs/reviewer-calibration.md, test_calibrate_reviewer.py and test_flow_contracts.py PASS in the final suite]
+  - item: the self-test suite is red on the current tree — 35 PASS / 3 FAIL of 38 (test_model_precedence.py, test_vaccination.py, test_windows_scripts.py), contradicting the previous record's "38 PASS end to end"
+    evidence: v12.17.0 — 38 PASS / 0 FAIL in the final suite (.code-factory/logs/regression.md, run after the last source edit): test_model_precedence.py is hermetic (fixture configs, grep-clean of the live config), the stale vaccine probe is repaired inside the hardened harness (39/39 bite, each with its declared failure), and test_windows_scripts.py re-resolves its negation probe from git and runs 91 PASS / 0 FAIL [verified: .code-factory/logs/regression.md vs .code-factory/logs/baseline.md]
+  - item: 12 review findings (7 critical, 5 major) against the factory's safety gates are open
+    evidence: v12.17.0 — all 12 fixed and dispositioned in .code-factory/logs/findings-disposition.md (RF-1..RF-15 with the owner items), each with a vaccine that fails on base 9acc1b7 and passes now; the reviewer re-reviewed the diff to a final approve with zero open findings [verified: test_vaccination.py PASS 39 vaccines, .code-factory/logs/code-review.md, .code-factory/state/acceptance.md SUCCESS]
+unfinished: no unfinished items

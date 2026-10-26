@@ -5,6 +5,50 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.17.0] — 2026-10-26
+
+### Fixed
+- **Review gate is bounded**: the flow's unconditional `RCR --> M` edge is split into retry /
+  hitl-stop / auto-conditional-pass edges — an exhausted reviewer budget can no longer restart
+  coding with unresolved critical findings (pinned by `test_flow_contracts.py` section H).
+- `action_gate.py`: `git push origin HEAD` / refspecs resolve conservatively to CONFIRM unless the
+  destination is proven non-default (the default-branch deny can no longer be bypassed via HEAD).
+- `evidence_ledger.py`: an empty recorded scope is UNSCOPED, never FRESH; `stamp` refuses an empty
+  `--files`.
+- `verify_acceptance.py`: SUCCESS requires a usable FRESH `regression=pass` ledger entry — no
+  ledger means DEGRADED, never silently green.
+- `test_vaccination.py`: the harness counts a bite only for a focused check with the vaccine's own
+  declared pre-fix failure; crashes, import errors and timeouts are harness failures, never proof.
+- `validate_documentation.py`: comment spans are parsed, so executable code sharing a line with a
+  `/* */` comment is no longer accepted as documentation.
+- `prepare_factory.ps1`: a failed `start.sh.bak` backup aborts the overwrite with a hard
+  deployment error; the memory CHECK lines print the verdict plus a warnings count instead of the
+  full multi-line WARN output.
+- `chrome_devtools_mcp.py`: the vendored pinned install fails closed when the installed version
+  cannot be proven (missing/corrupt package metadata).
+- `model_attribution.py`: an empty `models_used` claim set is DEGRADED (exit 3), never PASS.
+- `model_matrix.py`: a required role with no model resolved is a resolution error (exit 1);
+  `test_model_precedence.py` is hermetic (no live-config dependency).
+- `review_followup_task.py`: generated follow-up tasks carry real `verify:` commands.
+- `version_manager.py`: the Cargo manifest traversal skips symlink cycles and enforces containment
+  beneath the repo (platform-aware `os.path.normcase`).
+- The self-test suite is green end to end again (38/38), incl. a re-resolved base-commit probe and
+  a network-gated behavioural deploy test in `test_windows_scripts.py`.
+
+### Added
+- `calibrate_reviewer.py status`: the §7 periodic-calibration obligation is a deterministic gate
+  (prompt digest + run interval against the append-only
+  `skill-base/golden-set/calibration-log.md`), wired into the review flow (SKILL.md CR/CR0,
+  Phase 8b) and pinned by flow-contract section I; fail-closed journal reads and active-run
+  identity via `pipeline.yaml`.
+- AGENTS.md size gate: warn > 28 KB, fail > 32 KB in `project_fingerprint.py` /
+  `check_factory_model.py`; the root AGENTS.md was trimmed 38.8 KB → 22.8 KB (rule quotations live
+  only in `references/factory-rules.md`, AGENTS.md points at them).
+- `memory_project.py` accepts the one-time migration annotation
+  ` (synthetic, backfilled YYYY-MM-DD)` on `run_id`/`factory_version`; the 8 legacy pre-v2 journal
+  entries were migrated to the v2 format under the owner's explicit authorization (original text
+  byte-identical, `[inferred]` provenance), so `memory_project.py check` runs with zero warnings.
+
 ## [12.16.0] — 2026-10-26
 
 ### Added

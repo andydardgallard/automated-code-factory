@@ -107,6 +107,10 @@ HARD_DENY rules:
     `sh -c "rm -rf /"` is the same root deletion as `rm -rf /`.
 
 CONFIRM rules (destructive but inside the declared scope, and anything the gate cannot read):
+  * `git push` whose DESTINATION is `HEAD` (`git push origin HEAD`, `@`, `+HEAD`, `HEAD:HEAD`):
+    HEAD is whatever branch is checked out, so on `main`/`master` that push IS the default-branch
+    push — the destination is unproven, and only a proven non-default one (`HEAD:feature/x`) stays
+    ALLOW,
   * deletion of a path covered by `--scope`,
   * `git checkout -- <path>` / `git restore` of paths inside scope. Without the `--` separator an
     operand that can only be a pathspec (`.`, `./...`, an absolute or home path, a wildcard)
@@ -798,6 +802,26 @@ def is_default_branch_ref(token: str) -> bool:
     return any(part in DEFAULT_BRANCHES for part in parts)
 
 
+# A push whose DESTINATION is one of these publishes whatever branch is checked out right now.
+HEAD_PUSH_DESTINATIONS = ("HEAD", "@")
+
+
+def push_destination(refspec: str) -> str:
+    """Destination side of a push refspec (`src:dst` -> `dst`), force marker `+` removed."""
+    return norm(refspec).split(":", 1)[-1].lstrip("+").strip()
+
+
+def is_head_push_destination(refspec: str) -> bool:
+    """True when the refspec publishes to HEAD (`git push origin HEAD`, `@`, `+HEAD`).
+
+    `HEAD` is not a branch name but a pointer to whatever is checked out, so `git push origin
+    HEAD` pushes the default branch whenever `main`/`master` is checked out. The gate classifies
+    a command line, not a repository, so it can never prove that destination non-default —
+    an unproven destination CONFIRMs, it is never an ALLOW.
+    """
+    return push_destination(refspec) in HEAD_PUSH_DESTINATIONS
+
+
 def flags_of(argv: list[str]) -> list[str]:
     return [t for t in argv if t.startswith("-") and t != "-"]
 
@@ -815,6 +839,11 @@ def classify_push(argv: list[str]) -> tuple[str, str]:
     hits = [t for t in operands if is_default_branch_ref(t)]
     if hits:
         return HARD_DENY, f"git push targets the default branch ({', '.join(hits)})"
+    head_destinations = [t for t in operands[1:] if is_head_push_destination(t)]
+    if head_destinations:
+        return CONFIRM, (f"git push publishes to HEAD ({', '.join(head_destinations)}): HEAD is "
+                         f"whatever branch is checked out, so the destination cannot be proven "
+                         f"not to be the default branch")
     if len(operands) <= 1:
         return CONFIRM, ("git push does not name a branch; it cannot be proven not to push the "
                          "default branch")

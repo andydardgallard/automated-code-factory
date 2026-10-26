@@ -9,9 +9,13 @@ verifies both halves of the contract:
 
   - the registry parses: every rule has at least one carrier, every carrier path exists in the
     repository, every rule carries exactly one marked block in the rulebook, and the review-gate
-    rule still points at its five canonical documents;
+    rule still points at its four canonical documents;
   - the checker PASSES on the real repository for EVERY rule (the carrier migration is complete),
-    and the review-gate rule still points at its five canonical documents;
+    and the review-gate rule still points at its four canonical documents;
+  - the root `AGENTS.md` is a POINTER, not a carrier: it quotes no `factory-rule` block at all, it
+    names every rule it relies on with a pointer line into the rulebook (a rule silently dropped
+    from the map is caught), and it stays under the 32 KB AGENTS.md size gate; this is what keeps
+    the hand-authored manual a map instead of a 38 KB second copy of the rulebook;
   - the PASS line names the count of checked rules as a COUNT (`all <n> rules: <n> rule(s)
     checked, byte-identical in <m> carrier block(s) (<root>).`), never as a collection;
   - the mechanics are proven on throwaway copies (tempdir, `--root`): a clean tree passes, a
@@ -41,12 +45,23 @@ TOOL = SCRIPTS / "check_factory_rules.py"
 RULEBOOK = ".agents/skills/code-factory/references/factory-rules.md"
 RULE = "review-gate-policy"
 GATE_CARRIERS = (
-    "AGENTS.md",
     ".agents/README.md",
     ".agents/agents/code-factory.md",
     ".agents/skills/code-factory/SKILL.md",
     ".agents/skills/code-factory/references/code-review.md",
 )
+# The root AGENTS.md is a hand-authored MAP, not a carrier: it must NOT quote any rule (that is how
+# it grew past the size gate) and must keep a pointer line for every rule it relies on.
+AGENTS = "AGENTS.md"
+AGENTS_POINTER_RULES = (
+    "artifacts-first", "commit-exclude", "destructive-action-gate", "documentation",
+    "english-only", "evidence-ledger", "git-native", "handoff-briefing", "memory-actuality",
+    "memory-ownership", "memory-provenance", "models-generator-ne-judge",
+    "no-shared-tree-git-mutations", "plan-committee", "repo-scoping", "retry-budgets",
+    "review-gate-policy", "review-report-only", "run-id", "shard-protocol", "task-format",
+    "vaccination", "verified-acceptance", "versioning",
+)
+AGENTS_SIZE_FAIL_BYTES = 32 * 1024
 REQUIRED_MARKERS = ("unverified_review", "conditional pass", "hitl", "auto")
 LEGACY_MARKER = "<!-- review-gate-policy:"
 RULE_HEADING_RE = re.compile(r"^##\s+(\S+)\s*$")
@@ -129,8 +144,27 @@ def main() -> int:
         expect(block, f"rule {rule_id!r} must carry a non-empty marked block")
     expect(RULE in registry, f"the rulebook must declare the rule {RULE!r}")
     expect(set(registry[RULE]) == set(GATE_CARRIERS),
-           f"{RULE!r} must point at its five canonical documents: {registry[RULE]}")
+           f"{RULE!r} must point at its four canonical documents: {registry[RULE]}")
     gate_block = canonical_block(book, RULE)
+
+    # 1b. The root AGENTS.md is a MAP, not a carrier: it quotes nothing and points at every rule it
+    #     relies on (a rule silently dropped from the map is caught), inside the size gate.
+    agents_text = (ROOT / AGENTS).read_text(encoding="utf-8")
+    declared = {carrier for carriers in registry.values() for carrier in carriers}
+    expect(AGENTS not in declared,
+           f"{AGENTS} must not be declared a verbatim carrier of any rule: it points, it does not "
+           "quote (a second verbatim copy only drifts and doubles the file)")
+    expect("factory-rule:" not in agents_text,
+           f"{AGENTS} must not quote a factory-rule block: the rulebook is the single verbatim home")
+    for rule_id in AGENTS_POINTER_RULES:
+        expect(rule_id in registry, f"the pinned pointer {rule_id!r} is no longer a rulebook rule")
+        expect(f"- Rule `{rule_id}`: canonical wording — `{RULEBOOK}` (`## {rule_id}`)." in agents_text,
+               f"{AGENTS} must keep its pointer to rule {rule_id!r}: guidance must not vanish "
+               "when a quote is replaced by a reference")
+    agents_size = len(agents_text.encode("utf-8"))
+    expect(agents_size < AGENTS_SIZE_FAIL_BYTES,
+           f"{AGENTS} is {agents_size} bytes, over the 32 KB size gate: trim verbatim text into "
+           "references/ and keep pointers")
 
     # 2. the migrated rule is consistent on the real repository, and the old marker is gone.
     res = run("--rule", RULE)
@@ -238,9 +272,10 @@ def main() -> int:
     expect(imported <= allowed, f"check_factory_rules must be stdlib-only, imports={imported}")
 
     print(f"PASS - the rulebook declares {len(registry)} rules, every rule has resolvable carriers, "
-          f"and check_factory_rules.py keeps {RULE} byte-identical in "
-          f"{len(GATE_CARRIERS)} documents while catching drift, deletion, duplication and a "
-          "gate watered down everywhere.")
+          f"check_factory_rules.py keeps {RULE} byte-identical in {len(GATE_CARRIERS)} documents "
+          "while catching drift, deletion, duplication and a gate watered down everywhere, and the "
+          f"root {AGENTS} is a POINTER map: {len(AGENTS_POINTER_RULES)} rules referenced, no quote "
+          "copied, under the 32 KB size gate.")
     return 0
 
 

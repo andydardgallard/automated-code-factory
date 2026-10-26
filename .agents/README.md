@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.16.0 -->
+<!-- code-factory-version: 12.17.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -51,11 +51,11 @@ projects or creates projects from scratch.
 │       │   ├── test_run_id.py              # run_id self-test
 │       │   ├── error_router.py             # JSON-first error classification: classify/merge/export-defaults; the project's project-learned patterns ON TOP of defaults (a broken auto-discovered file — warning + defaults)
 │       │   ├── test_error_router.py        # error router self-test
-│       │   ├── calibrate_reviewer.py       # reviewer golden-set calibration: precision/recall/accuracy
+│       │   ├── calibrate_reviewer.py       # reviewer golden-set calibration (score: precision/recall/accuracy, --log appends a record) + the periodic `status` gate: exit 0 = current, 1 = calibration DUE, 2 = it cannot judge
 │       │   ├── test_calibrate_reviewer.py  # reviewer calibration self-test
 │       │   ├── precedent_index.py          # FTS5 precedent index: memory + codebase (build/status/query --fresh)
 │       │   ├── test_precedent_index.py     # precedent index self-test
-│       │   ├── model_matrix.py             # the single model-precedence resolver: task matrix > default matrix, family check, committee second planner
+│       │   ├── model_matrix.py             # the single model-precedence resolver: task matrix > default matrix, family check, committee second planner; `resolve` exits 1 on an ERROR — a role with NO model (source `none`) or a default matrix that breaks generator != judge
 │       │   ├── test_model_precedence.py    # model precedence self-test
 │       │   ├── model_attribution.py        # artifact-backed model attribution from the CLI session wire (cross-checks models_used)
 │       │   ├── test_model_attribution.py   # model attribution self-test
@@ -90,13 +90,13 @@ projects or creates projects from scratch.
 │       │   ├── test_log_tail.py            # log tail self-test
 │       │   ├── factory_preflight.py        # environment pre-flight (python/python3/py etc.; --web-gui adds the browser capability block)
 │       │   ├── test_factory_preflight.py   # pre-flight self-test
-│       │   ├── action_gate.py              # destructive actions: ALLOW/CONFIRM/HARD_DENY (shell wrappers classified by payload; mutating git stash → CONFIRM, `stash list/show` → ALLOW)
+│       │   ├── action_gate.py              # destructive actions: ALLOW/CONFIRM/HARD_DENY (shell wrappers classified by payload; mutating git stash → CONFIRM, `stash list/show` → ALLOW; a push whose destination is `HEAD`/`@` → CONFIRM, because HEAD is whatever branch is checked out)
 │       │   ├── test_action_gate.py         # action gate self-test (+ --help/usage under cp1251)
 │       │   ├── task_graph.py               # on-disk task graph: create/claim/complete/ready/list
 │       │   ├── test_task_graph.py          # task graph self-test
-│       │   ├── evidence_ledger.py          # evidence ledger with FRESH/STALE signatures
+│       │   ├── evidence_ledger.py          # evidence ledger with FRESH/STALE/UNSCOPED signatures (an empty or missing signed scope is UNSCOPED, never FRESH; `stamp` refuses `--files` that name no file)
 │       │   ├── test_evidence_ledger.py     # evidence ledger self-test
-│       │   ├── verify_acceptance.py        # machine verification of acceptance criteria (anti-tautology)
+│       │   ├── verify_acceptance.py        # machine verification of acceptance criteria (anti-tautology: SUCCESS needs a FRESH `--ledger` entry, so no ledger = DEGRADED)
 │       │   ├── test_verify_acceptance.py   # acceptance check self-test
 │       │   ├── verify_quotes.py            # verbatim quote check of evidence quotes (Evidence-Preserving Reducer)
 │       │   ├── test_verify_quotes.py       # quote check self-test
@@ -438,7 +438,13 @@ NEW path unprotected or loses test coverage without replacement; one root cause 
 periodic calibration of the reviewer on the golden set (`scripts/calibrate_reviewer.py`): after every
 edit of the reviewer prompt and at least once per 5 review runs, with soft thresholds of verdict
 accuracy 100% and macro precision ≥ 0.8 (run 20260923-3540d5dc: accuracy 7/7, macro precision
-1.000, recall 1.000; previous run 20260923-bcbe68b3: macro precision 0.619 → 0.857).
+1.000, recall 1.000; previous run 20260923-bcbe68b3: macro precision 0.619 → 0.857). The obligation
+is ENFORCED, not remembered: `calibrate_reviewer.py status --repo <resolved repo_path>` compares the
+current reviewer-prompt digest and the current run count with the last `calibration:` line of
+`skill-base/golden-set/calibration-log.md` — exit 0 = the record is still current, exit 1 =
+calibration is DUE (prompt edited, 5 runs elapsed, or nothing recorded), exit 2 = it cannot judge
+(an unreadable prompt or journal) and the run stops instead of guessing. `score` writes that record
+only with `--log`; without the flag the report is unchanged and nothing is logged.
 A neutral renaming between equally clear names (`result` → `res` in a short function) deserves
 silence, not a nit: a naming finding is warranted only when the new name is materially less clear or
 misleading (§3, "Reporting discipline"). A missed defect and severity inflation are calibration
@@ -453,10 +459,13 @@ errors, and they are cured by editing the reviewer prompt, not the golden set.
 
 Acceptance is additionally verified by machine: criteria with `verify` are executed for real
 (`scripts/verify_acceptance.py` → `.code-factory/state/acceptance.md`), and SUCCESS (exit 0)
-requires at least one criterion to carry `verify`, all criteria with `verify` to be MET, and the
-regression baseline to be proven. A run without a single `verify` or with stale
-evidence gets DEGRADED, not SUCCESS: the FRESH/STALE evidence signatures are computed by
-`scripts/evidence_ledger.py`, so a green log from an old revision does not count as acceptance.
+requires at least one criterion to carry `verify`, all criteria with `verify` to be MET, the
+regression baseline to be proven, AND a usable `--ledger` with a FRESH `regression=pass` entry
+(`--ledger state/evidence.json --evidence-files <files>`). A run without a single `verify`, without
+a ledger (an unsigned regression claim is not evidence), or with stale/UNSCOPED evidence gets
+DEGRADED, not SUCCESS: the FRESH/STALE/UNSCOPED evidence signatures are computed by
+`scripts/evidence_ledger.py`, an entry that signed no file is never FRESH, and a green log from an
+old revision does not count as acceptance.
 <!-- factory-rule: verified-acceptance begin -->
 **Verified acceptance (canonical wording):** acceptance is machine-verifiable — `scripts/verify_acceptance.py` actually executes the criteria with `verify` and writes exit codes and output excerpts into `.code-factory/state/acceptance.md`. Exit 0 is possible only on SUCCESS: at least one criterion with `verify`, all criteria that carry `verify` are MET, baseline proven; criteria without `verify` are marked `derived`/`unverified` and are not evidence. STALE evidence or a degraded baseline lowers the verdict to DEGRADED; SUCCESS without regression evidence is impossible.
 <!-- factory-rule: verified-acceptance end -->

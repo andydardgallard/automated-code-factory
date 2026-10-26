@@ -31,9 +31,21 @@ Output — ONE flat task in the factory task format (`assets/task-template.yaml`
   mode: hitl            the owner decides when it runs
   task_type: implement   a review hands the fix over as a separate implement run
   acceptance_criteria   one criterion per finding (`derived: true` unless the finding carries a
-                        `verify` command) plus a final "the change is reviewed" criterion
+                        `verify` command, or its location is checkable: a module whose sibling
+                        self-test exists derives `python <sibling test>`), then a final
+                        MACHINE-VERIFIABLE criterion that re-runs every such command (or, when no
+                        finding is checkable, the tree-soundness gate), and the "the change is
+                        reviewed" criterion (derived: a code review is not machine-checkable)
   commit_exclude        the factory's standard exclusion list
   leading comments      the source run_id and the reproducing command line
+
+Verified acceptance: the gate `verify_acceptance.py` accepts a run only when at least ONE criterion
+carries a `verify` command — a task whose criteria are all `derived` is doomed to DEGRADED, i.e.
+handed over but never acceptably finishable. The generator therefore never emits such a criterion
+list: every checkable finding contributes its command and the final criterion re-runs them, so the
+generated task can be finished to SUCCESS. The fallback (`DEFAULT_FINAL_VERIFY`) is a real check of
+the tree (`python -m compileall -q .`), not a placeholder: it always executes and never lies about
+proving the findings closed.
 
 Quoting: NO scalar is ever interpolated into `key: value` — every scalar is emitted as a YAML
 double-quoted string (backslash and `"` escaped, newlines as `\\n`) or, for the description, as a
@@ -103,6 +115,19 @@ STANDARD_COMMIT_EXCLUDE = (
 FINAL_CRITERION = ("The change is reviewed: the factory code reviewer inspects the fix and every "
                    "finding above is either fixed or dispositioned with a reason before the task "
                    "is accepted.")
+# The verified-acceptance gate needs at least one criterion with a `verify` command, so the task
+# always ends with a REAL one: the per-finding checks re-run on the fixed tree.
+FINAL_VERIFY_CRITERION = ("The findings are closed and stay closed: the {count} verification "
+                          "command(s) this task carries are re-run on the fixed tree and each of "
+                          "them exits 0.")
+# Last resort when no finding names a checkable location: prove the tree is still sound. It is a
+# modest gate, but a real one — it executes everywhere and never makes the task unfinishable.
+FINAL_VERIFY_CRITERION_DEFAULT = ("The fix leaves the tree sound: every Python file of the "
+                                  "repository still compiles (no fix leaves a broken file "
+                                  "behind).")
+DEFAULT_FINAL_VERIFY = "python -m compileall -q ."
+# Separator of the chained per-finding commands; `&&` works in cmd.exe and /bin/sh alike.
+CHAIN_SEPARATOR = " && "
 
 # YAML subset emitted by this script and read back by parse_task(): a flat top-level mapping of
 # `key: value` scalars, `key:` + `- item` lists, mapping items inside a list, and `|`/`|-` blocks.
@@ -288,10 +313,56 @@ def render_task(title: str, repo_path: str, description: str, criteria: list[dic
     return "\n".join(lines) + "\n"
 
 
-def build_criteria(findings: list[dict]) -> list[dict]:
-    """One criterion per finding (derived unless it carries a verify command) + the review one."""
-    criteria = [{"criterion": criterion_text(finding), "verify": finding["verify"],
-                 "derived": not finding["verify"]} for finding in findings]
+def sibling_test(file: str) -> str:
+    """`x/check.py` -> `x/test_check.py`; "" when the path is not a checkable Python module."""
+    parts = [part for part in file.replace("\\", "/").split("/") if part]
+    name = parts[-1] if parts else ""
+    if not name.endswith(".py") or name.startswith("test_") or ".." in parts:
+        return ""
+    parts[-1] = "test_" + name
+    return "/".join(parts)
+
+
+def derived_verify(finding: dict, repo: pathlib.Path) -> str:
+    """A verify command derived from the finding's location: run the module's sibling self-test.
+
+    A finding usually points at a module (`.../action_gate.py`) and the factory keeps its
+    deterministic self-tests beside it (`test_action_gate.py`), so re-running that test is a real
+    proof that the finding is closed. No sibling test, no command: a fabricated check would be a
+    claim, not evidence.
+    """
+    candidate = sibling_test(finding["file"])
+    if not candidate:
+        return ""
+    try:
+        if (repo / candidate).is_file():
+            return f"python {candidate}"
+    except OSError:      # an unreadable path is simply not checkable
+        pass
+    return ""
+
+
+def build_criteria(findings: list[dict], repo: pathlib.Path = pathlib.Path(".")) -> list[dict]:
+    """One criterion per finding + a final VERIFIED one + the (derived) review criterion.
+
+    A finding carries its own `verify` command, or derives one from its location (see
+    `derived_verify`). The final criterion re-runs every such command, so the generated task always
+    has at least one criterion the verified-acceptance gate can actually execute.
+    """
+    criteria: list[dict] = []
+    verifies: list[str] = []
+    for finding in findings:
+        verify = finding["verify"] or derived_verify(finding, repo)
+        if verify and verify not in verifies:
+            verifies.append(verify)
+        criteria.append({"criterion": criterion_text(finding), "verify": verify,
+                         "derived": not verify})
+    if verifies:
+        criteria.append({"criterion": FINAL_VERIFY_CRITERION.format(count=len(verifies)),
+                         "verify": CHAIN_SEPARATOR.join(verifies)})
+    else:
+        criteria.append({"criterion": FINAL_VERIFY_CRITERION_DEFAULT,
+                         "verify": DEFAULT_FINAL_VERIFY})
     criteria.append({"criterion": FINAL_CRITERION, "verify": "", "derived": True})
     return criteria
 
@@ -462,6 +533,10 @@ def check_task(text: str) -> list[str]:
     for position, item in enumerate(criteria or [], start=1):
         if not isinstance(item, dict) or not str(item.get("criterion", "")).strip():
             problems.append(f"acceptance_criteria[{position - 1}] needs a non-empty 'criterion'")
+    if criteria and not any(isinstance(item, dict) and str(item.get("verify", "")).strip()
+                            for item in criteria):
+        problems.append("acceptance_criteria carries no verify command: the verified-acceptance "
+                        "gate (verify_acceptance.py) can only report DEGRADED for this task")
     exclude = task.get("commit_exclude")
     if exclude and (not isinstance(exclude, list)
                     or not all(isinstance(pattern, str) and pattern for pattern in exclude)):
@@ -611,8 +686,8 @@ def main() -> int:
     command = command_line(args)
     title = args.title.strip() or derive_title(verdict, findings, counts, args.run_id)
     description = render_description(verdict, findings, counts, args.run_id, command)
-    text = render_task(title, args.repo, description, build_criteria(findings), args.run_id,
-                       command)
+    text = render_task(title, args.repo, description,
+                       build_criteria(findings, pathlib.Path(args.repo)), args.run_id, command)
     try:
         write_text(out, text)
     except OSError as exc:

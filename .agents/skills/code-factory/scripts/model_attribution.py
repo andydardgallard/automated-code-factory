@@ -80,6 +80,7 @@ PUBLIC API
   analyse_session(session_dir)            per-agent records + spawn map of one session
   agent_roles(state, records, spawns)     agent id -> role
   compare_claims(claims, roles, degraded) (comparison, lines, flags) of claims vs wire
+  verdict_of(comparison, reason, required) FAIL / DEGRADED / PASS of a comparison
   build_report(...) / write_artifact(...) the JSON artifact of the run
 
 CLI
@@ -106,13 +107,15 @@ CLI
 
 EXIT CODES
 
-  0  the session was found and every claimed role matches the wire
+  0  the session was found and every claimed role matches the wire (with no --pipeline there is
+     no claim side at all, so the run is a wire REPORT: it prints the roles and exits 0)
   1  at least one role MISMATCHES (a claim the wire disproves) — never hidden by a degradation
   2  input error: a bad path, an unreadable wire, an unwritable --out (message, no traceback)
-  3  DEGRADED: no session/wire found, or a claimed role left no wire evidence. The artifact is
-     still written with `attribution_degraded: true` and the reason goes to stderr as ONE line, so
-     the flow can record `models_warning` instead of staying silent. A run never returns 0 without
-     writing the artifact.
+  3  DEGRADED: no session/wire found, a claimed role left no wire evidence, or `--pipeline` was
+     given and its `models_used` block names NO role — an empty claim set confirms nothing, so it
+     is never a PASS. The artifact is still written with `attribution_degraded: true` and the
+     reason goes to stderr as ONE line, so the flow can record `models_warning` instead of staying
+     silent. A run never returns 0 without writing the artifact.
 """
 from __future__ import annotations
 
@@ -753,16 +756,23 @@ def compare_claims(claims: dict[str, str], roles: dict[str, dict],
     return comparison, lines, flags
 
 
-def verdict_of(comparison: dict[str, str], degraded_reason: str = "") -> str:
+def verdict_of(comparison: dict[str, str], degraded_reason: str = "",
+               claims_required: bool = True) -> str:
     """`FAIL` when a claim is disproven, else `DEGRADED` when anything is unconfirmed, else `PASS`.
 
     A proven mismatch is NEVER hidden by a degradation: the wire disproving a claim is the one
     finding the owner must not lose, so it wins.
+
+    An EMPTY comparison is not a success while a claim set was required (`claims_required`, the
+    default): with nothing compared, "every claimed role matches the wire" is vacuously true and
+    the exit code would claim an artifact-backed confirmation of a model that was never named — so
+    a pipeline that names no role in `models_used` is DEGRADED. Only a caller that asks for a
+    claim-free wire report (no `--pipeline` at all, `claims_required=False`) may pass on nothing.
     """
     if any(status == "mismatch" for status in comparison.values()):
         return "FAIL"
-    if degraded_reason or any(status in ("degraded", "unverified")
-                              for status in comparison.values()):
+    if degraded_reason or (claims_required and not comparison) or \
+            any(status in ("degraded", "unverified") for status in comparison.values()):
         return "DEGRADED"
     return "PASS"
 
@@ -815,8 +825,15 @@ def build_report(repo: str, session: str, home: pathlib.Path | None,
     state = session_info.get("state") or {}
     roles_by_agent = agent_roles(state, analysis["agents"], analysis["spawns"])
     roles = role_records(analysis["agents"], analysis["spawns"], roles_by_agent)
+    if pipeline is not None and not claims:
+        # A pipeline whose `models_used` block is empty or absent names no model to confirm: the
+        # run would otherwise exit 0 on an empty comparison, i.e. claim "attributed" without one
+        # single model checked. It is DEGRADED, exactly like a missing wire.
+        degraded_reason = degraded_reason or (
+            f"{pipeline} declares no models_used role: there is no claimed model to confirm "
+            f"against the wire")
     comparison, lines, flags = compare_claims(claims, roles, degraded_reason)
-    verdict = verdict_of(comparison, degraded_reason)
+    verdict = verdict_of(comparison, degraded_reason, claims_required=pipeline is not None)
     session_dir = session_info.get("session_dir")
     skipped_lines = analysis["skipped_lines"]
 

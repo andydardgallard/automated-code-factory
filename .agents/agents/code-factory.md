@@ -308,7 +308,8 @@ TASK-named model is a `models_warning` naming both roles and both models, never 
 task does not name takes the default-matrix value (`default_model` / `[secondary_model]` via the
 role's `model_preference`). Record the resolved matrix in `.code-factory/state/pipeline.yaml` under
 `models_used`. If `model_matrix.py resolve` exits 1, the default matrix breaks its own
-generator != judge rule — do NOT start the run on it: widen `[secondary_model]` in the CLI config
+generator != judge rule OR a required role has no model resolved at all — do NOT start the run on
+it: widen `[secondary_model]` in the CLI config
 so the two sides differ in family, or pin `models.<role>` for the named role(s) in the task's
 `models:` block, then re-run the pre-flight; when the ERROR says both roles take the same side of
 the default matrix, only the pinning remedy can help. Exit 2 is a contract error (unreadable task
@@ -405,7 +406,18 @@ browser criteria stay UNVERIFIED with an infrastructure diagnosis (`references/e
 §1 rows I1–I4) — never MET, and never silently skipped.
 
 ### Phase 8b — Code review (mandatory gate)
-Launch `factory-code-reviewer` following `references/code-review.md`. Scope: for a normal task
+**Calibration gate first (deterministic, before any reviewer runs).** Invoke
+`python .agents/skills/code-factory/scripts/calibrate_reviewer.py status --repo <resolved repo_path>`
+and act on its exit code: `0` — the recorded calibration is current, go on to the reviewer; `1` —
+the calibration is DUE (a reviewer-prompt edit since the record, 5 runs since it, or no record at
+all) — run the golden-set calibration FIRST
+(`calibrate_reviewer.py score --golden skill-base/golden-set/cases --results <results dir>
+--out .code-factory/logs/reviewer-calibration.md --log skill-base/golden-set/calibration-log.md
+--run-id <run_id>`), which appends the record that clears the gate, then re-check; `2` — the gate
+could not judge (an unreadable reviewer prompt or memory journal) — stop and report it, never guess.
+This is the deterministic form of `references/code-review.md` §7: the obligation is not prose any
+more, it is a command whose exit code is obeyed.
+Then launch `factory-code-reviewer` following `references/code-review.md`. Scope: for a normal task
 the DIFF (`git diff` vs `git-head.txt` + `created_files` from `manifest.json`); for a review
 task the WHOLE codebase (see the shard protocol below). Findings carry a severity
 (critical | major | minor | nit), and every quote a finding asserts is re-checked verbatim with
@@ -489,7 +501,10 @@ Acceptance is machine-checked, not asserted: build the criteria input JSON from 
 `acceptance_criteria` (the main agent builds it — stdlib has no YAML parser) and run
 `python .agents/skills/code-factory/scripts/verify_acceptance.py --input <criteria.json>
 --output .code-factory/state/acceptance.md --repo <project> [--regression pass|fail|not-run]
-[--ledger .code-factory/state/evidence.json --evidence-files <file...>] [--run-id <run_id>]`. Criteria that carry `verify` are
+[--ledger .code-factory/state/evidence.json --evidence-files <file...>] [--run-id <run_id>]`. The
+ledger is optional on the command line only — omitting it caps the verdict at DEGRADED (SUCCESS
+requires a usable FRESH `regression=pass` ledger entry), so the orchestrator always supplies it.
+Criteria that carry `verify` are
 executed for real: the
 command, its exit code and an output excerpt land in `acceptance.md`; criteria without `verify`
 are labeled `derived` (inferred from other artifacts) or `unverified` and never count as proof. A
@@ -715,7 +730,11 @@ write `.code-factory/report_code_changes.md` (next to it) via
     and asks the user on exhaustion, and auto allows ONLY a conditional pass that marks the
     criterion `unverified_review` and records the unresolved findings in `report.md`. Normal tasks
     review the DIFF at the end; review tasks review the WHOLE codebase through the shard protocol
-    at the start.
+    at the start. Before EITHER of them the calibration gate runs
+    (`calibrate_reviewer.py status --repo <resolved repo_path>`, see Phase 8b): a due calibration
+    (exit 1) is discharged first with `score --log skill-base/golden-set/calibration-log.md`, and
+    exit 2 stops the run — the periodic re-calibration of `references/code-review.md` §7 is
+    enforced by a command, not by remembering it.
 <!-- factory-rule: vaccination begin -->
 **Vaccination (canonical wording):** a bug found AFTER the task's acceptance first gets a regression test that reproduces it (the test fails on the current code), and only then the fix. A fix without a reproducing test is not accepted, and the test itself stays in the suite as a vaccine against recurrence. The code reviewer checks that every post-acceptance fix has such a test and counts its absence as a finding of severity ≥ major.
 <!-- factory-rule: vaccination end -->

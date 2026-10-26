@@ -35,7 +35,10 @@ entry stays STALE (fail-closed — evidence is never FRESH on doubt), but the re
 `check` with NO `--files` verifies every entry against its own recorded scope — the way a
 mixed-scope ledger is checked. An entry written before the `files` field existed carries no
 recorded scope: it is measured against the caller's `--files` when one was given, and is reported
-`UNSCOPED` (fail-closed, with the reason naming the missing scope) when the caller gave none.
+`UNSCOPED` (fail-closed, with the reason naming the missing scope) when the caller gave none. An
+entry whose recorded scope is EMPTY signed no file at all, so its fingerprint is the hash of
+nothing — which every working tree reproduces — and it is likewise `UNSCOPED`, never FRESH:
+`stamp` refuses to write such an entry in the first place.
 
 Usage:
   python evidence_ledger.py sign  --files src/a.py src/b.py [--repo .] [--run-id <id>]
@@ -215,6 +218,9 @@ def evaluate(entries: list[dict], files, root) -> dict:
         else:
             scope = normalize_scope(recorded, root)
             mismatch = bool(caller_scope) and scope != caller_scope
+            # An entry that RECORDED an empty scope signed no file at all: its fingerprint is the
+            # hash of nothing, which every working tree reproduces, so FRESH would be a tautology.
+            scoped = scoped and bool(scope)
         current = fingerprint_files(scope, root)
         if mismatch:
             scope_mismatch.append(entry["name"])
@@ -228,6 +234,12 @@ def evaluate(entries: list[dict], files, root) -> dict:
     stale = [r["name"] for r in rows if r["status"] == STALE]
     fresh = [r["name"] for r in rows if r["status"] == FRESH]
     unscoped = [r["name"] for r in rows if r["status"] == UNSCOPED]
+    # Two ways to be unverifiable: no scope recorded at all (legacy entry, no caller scope) and an
+    # EMPTY recorded scope (the entry signed no file, so it proves nothing about any tree).
+    empty_scope = [r["name"] for r in rows
+                   if r["status"] == UNSCOPED and r.get("files") is not None]
+    no_scope = [r["name"] for r in rows
+                if r["status"] == UNSCOPED and r.get("files") is None]
     changed = [r["name"] for r in rows if r["status"] == STALE and not r["scope_mismatch"]]
     failed = [r["name"] for r in rows if r["result"] != "pass"]
     if not rows:
@@ -236,10 +248,15 @@ def evaluate(entries: list[dict], files, root) -> dict:
         reason = f"all {len(rows)} evidence entries are FRESH and passed"
     else:
         problems = []
-        if unscoped:
+        if no_scope:
             problems.append(
                 "no scope is recorded for it and none was given, so it cannot be verified "
-                "(pass --files to check it): " + ", ".join(unscoped))
+                "(pass --files to check it): " + ", ".join(no_scope))
+        if empty_scope:
+            problems.append(
+                "the recorded scope is empty (an empty scope signs no file, so the entry proves "
+                "nothing about this tree; re-stamp it over the files the evidence depends on): "
+                + ", ".join(empty_scope))
         if changed:
             problems.append("the signed files changed after it was recorded: " + ", ".join(changed))
         if scope_mismatch:
@@ -264,10 +281,27 @@ def acceptance_blocker(rows: list[dict]) -> str:
 
     Stricter than the `check` exit rule on purpose: acceptance additionally requires a FRESH
     `regression=pass` entry, because a SUCCESS verdict without fresh regression evidence is
-    exactly the tautology this gate exists to close.
+    exactly the tautology this gate exists to close. UNSCOPED evidence (an empty recorded scope or
+    no scope at all) is rejected too: evidence that signed no file proves nothing.
     """
     if not rows:
         return (f"the evidence ledger has no entries: no FRESH {REQUIRED_EVIDENCE}=pass evidence")
+    unscoped = [r["name"] for r in rows if r["status"] == UNSCOPED]
+    if unscoped:
+        # Unverifiable evidence is not evidence: an entry that signed no file (empty scope) or
+        # carries no scope at all must never certify a SUCCESS verdict.
+        empty = [r["name"] for r in rows
+                 if r["status"] == UNSCOPED and r.get("files") is not None]
+        parts = []
+        if empty:
+            parts.append("signed over an empty scope, so it proves nothing about this tree: "
+                         + ", ".join(empty))
+        missing = [r["name"] for r in rows
+                   if r["status"] == UNSCOPED and r.get("files") is None]
+        if missing:
+            parts.append("records no scope and none was given, so it cannot be verified "
+                         "(pass --evidence-files): " + ", ".join(missing))
+        return "UNSCOPED evidence, " + "; ".join(parts)
     stale = [r["name"] for r in rows if r["status"] == STALE]
     if stale:
         mismatched = [r["name"] for r in rows if r["status"] == STALE and r.get("scope_mismatch")]
@@ -294,6 +328,13 @@ def cmd_sign(args: argparse.Namespace) -> int:
 
 def cmd_stamp(args: argparse.Namespace) -> int:
     ledger = pathlib.Path(args.ledger)
+    scope = normalize_scope(args.files, args.repo)
+    if not scope:
+        # An entry stamped over no file is the tautology this gate exists to close: its
+        # fingerprint is the hash of nothing and matches every working tree. Refuse it at source.
+        print("error: --files is empty: an evidence entry must sign at least one file that the "
+              "evidence depends on, otherwise it proves nothing about this tree", file=sys.stderr)
+        return 1
     try:
         entries = load_ledger(ledger)
     except ValueError as exc:
@@ -302,7 +343,7 @@ def cmd_stamp(args: argparse.Namespace) -> int:
     entry = {"name": args.name,
              "result": args.result,
              "fingerprint": fingerprint_files(args.files, pathlib.Path(args.repo)),
-             "files": normalize_scope(args.files, args.repo),
+             "files": scope,
              "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
              "log": args.log or None,
              "run_id": args.run_id or ""}

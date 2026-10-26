@@ -10,9 +10,43 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.16.0 — the 35-finding fix delivery on `feature/v12.15.0-honest-factory`
-(base `fb43f2a`).
-Latest run: implement (run_id 20261025-90bdaf48, `.code-factory/review/fix-tasks.yaml`, hitl) — the
+Factory v12.17.0 — publication-ready again: the second review's 12 findings and every owner item
+are closed, the suite is green end to end (38 PASS / 0 FAIL of 38 self-tests), the memory gates
+run with zero warnings and the backlog is EMPTY (open: 0, 51 closed with evidence).
+Latest run: implement (run_id 20261026-2ea2eb55, fix-tasks.yaml, hitl) — the review follow-up
+executed. Every fix is vaccinated (39 vaccines bite against bases 9acc1b7/fb43f2a, 24 historical +
+15 new RF): the reviewer gate is bounded (RCR split into retry/stop/conditional-pass),
+`git push origin HEAD` is CONFIRM, empty-scope evidence is UNSCOPED, SUCCESS requires a FRESH
+regression ledger entry, the documentation validator parses comment spans, the deployer's failed
+launcher backup is a hard error and its memory CHECK line is a single verdict+warnings line, the
+vendored browser install fails closed, empty models_used is DEGRADED, an unresolved model role is
+a resolve error, generated follow-up tasks carry real `verify:` commands, and the Cargo traversal
+survives symlink cycles. The §7 calibration obligation is now a deterministic gate
+(`calibrate_reviewer.py status` vs the append-only `skill-base/golden-set/calibration-log.md`,
+wired into the review flow; discharged this run at 7/7 accuracy, P/R 1.000). AGENTS.md was trimmed
+38.8 KB → 22.8 KB (rules are pointed at, not quoted) with a 28/32 KB size gate. The 8 legacy
+pre-v2 memory entries were migrated to v2 under the owner's one-time authorization (byte-identical
+text, synthetic backfilled run_ids, [inferred] markers; `memory_project.py check` exits 0 with
+zero WARN). Review: request_changes in iterations 1-3 (user authorized the third), every finding
+reworked, final verdict approve with zero open findings; acceptance SUCCESS (3/3 verify criteria
+MET, regression pass, ledger FRESH); models match the session wire (main kimi-code/k3, coder
+deepseek-flash, reviewer kimi-code/k3.1-pro). Version 12.16.0 -> 12.17.0 (minor, matrix +
+reviewer).
+Previous run: review (run_id 20261026-1c588b16, task.yaml "full pre-publication review", hitl) —
+report-only, nothing edited. Three reviewer shards (kimi-code/k3.1-pro) over 134 tracked files
+(45 409 lines): 12 merged findings, 7 critical, 5 major, 0 minor, 0 nit, 12/12 quotes verified
+verbatim, verdict `request_changes` recorded as `results.review=` and handed over as
+`.code-factory/review/fix-tasks.yaml` (12 items). The critical findings cluster on the safety
+gates themselves: the reviewer-budget loop (SKILL.md `RCR --> M` is unconditional), a
+`git push origin HEAD` bypass of the default-branch deny (action_gate.py), empty-scope evidence
+accepted as FRESH (evidence_ledger.py), any pre-fix failure counted as a vaccine
+(test_vaccination.py), code sharing a line with a block comment accepted by
+validate_documentation.py, SUCCESS without a ledger (verify_acceptance.py), and a swallowed
+launcher-backup failure (prepare_factory.ps1). Baseline: 35 PASS / 3 FAIL of 38 self-tests
+(test_model_precedence.py — the reconfigured CLI config lacks a contrasting [secondary_model];
+test_vaccination.py — 1 of 24 vaccines no longer bites; test_windows_scripts.py — the base-commit
+negation probe is stale), so acceptance ended FAILURE with regression=fail.
+Previous run: implement (run_id 20261025-90bdaf48, `.code-factory/review/fix-tasks.yaml`, hitl) — the
 owner ran the review's follow-up task and every one of its 35 findings (10 major, 24 minor, 1 nit)
 is closed with a test that fails on the pre-fix code, verified by one executed check per finding
 (`check_findings.py ALL` 35/35 MET). Two findings forced a rulebook change: a NEW canonical rule
@@ -64,16 +98,14 @@ unrequested 18-file rework was rolled back).
 Version type: the deterministic matrix proposed `patch`; the code reviewer overrode it to `minor`
 because a new canonical rule, two flow nodes, three scripts, a summary field and a record kind are
 additive, not breaking.
-Open backlog: 1 item (48 closed with evidence) — the §7 reviewer-calibration obligation is still
-enforced by prose only (this run edited no reviewer prompt, so no fresh calibration arose); two
-info-level debts are recorded alongside it: the deployer `start.sh` guard is proven by a static + base-commit
-probe rather than a behavioural deploy (which needs the network), and a generated `fix-tasks.yaml`
-is not matched by the `commit_exclude` patterns (the run stages explicitly). The `test_run_id.py`
-line-ending debt is CLOSED: the id is platform-neutral now.
-Rulebook: 27 rules, 110 carriers, byte-identical (`check_factory_rules.py` exit 0). Memory owner:
+Open backlog: 0 items (51 closed with evidence) — the §7 calibration obligation, the red suite
+and the 12 review findings were all closed by run 20261026-2ea2eb55 (v12.17.0, see above); the
+deployer `start.sh` guard now also has a network-gated behavioural test. The `test_run_id.py`
+line-ending debt stays CLOSED: the id is platform-neutral.
+Rulebook: 27 rules, 86 carriers, byte-identical (`check_factory_rules.py` exit 0 — AGENTS.md now
+points at the rulebook instead of carrying 24 verbatim blocks). Memory owner:
 repo, declared with `project_id` (the repository identity, not the folder name). Self-tests: 38
-files — 38 pass, 0 SKIP, 0 fail; `test_vaccination.py` resolves the release base commit from git and
-proves that the 24 registered vaccines each fail on the pre-fix tree.
+files — 38 pass, 0 SKIP, 0 fail (green end to end; see the latest run above).
 
 ## Key decisions
 - The long-term memory `memory/` belongs to ONE target project (`repo_path`); the field

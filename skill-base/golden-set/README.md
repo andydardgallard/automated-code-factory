@@ -25,3 +25,21 @@ python .agents/skills/code-factory/scripts/calibrate_reviewer.py score \
   --results .code-factory/logs/golden-results \
   --out .code-factory/logs/reviewer-calibration.md
 ```
+
+## Periodic calibration — the append-only log
+
+`references/code-review.md` section 7 makes a (re-)calibration mandatory after EVERY edit to a
+reviewer prompt and at least once per 5 runs that use the review gate. That obligation is checked
+deterministically, not remembered:
+
+- `calibration-log.md` (this directory) is the append-only record — one `calibration:` line per
+  calibration, carrying the reviewer-prompt digest and the run count at that moment;
+- `score --log skill-base/golden-set/calibration-log.md` appends that line (nothing is written
+  without the flag);
+- `calibrate_reviewer.py status` compares the CURRENT prompt digest and the CURRENT run count of
+  `memory/change-log.md` with the last line and exits 1 with the reasons when a calibration is due:
+
+```bash
+python .agents/skills/code-factory/scripts/calibrate_reviewer.py status           # exit 1 = due
+python .agents/skills/code-factory/scripts/calibrate_reviewer.py status --max-runs 5 --repo .
+```

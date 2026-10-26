@@ -290,8 +290,21 @@ if (-not $HasChangeLog -or -not $HasSummary) {
     # Check three outcomes: the journal mixes projects | the memory is declared for ANOTHER
     # project | everything is fine. Any state is only a warning — we do not crash the script.
     $checkRes    = Invoke-Capture -Command (New-MemoryCommand -Mode 'check')
-    $MemCheckOut = (@($checkRes.Output) | ForEach-Object { "$_" }) -join "`n"
+    $MemCheckLines = @($checkRes.Output | ForEach-Object { "$_" })
+    $MemCheckOut   = $MemCheckLines -join "`n"
     $memCheckRc  = $checkRes.ExitCode
+    # `check` prints ONE WARN line per legacy-format entry and the verdict last, so the whole blob is
+    # ~50 wrapped lines with the verdict buried in them (owner evidence: warnings.md). Only the
+    # verdict plus a WARN count may be PRINTED: $MemCheckOut stays for PARSING (owner, entry count,
+    # mixed/other detection) and never reaches the console.
+    $MemWarnCount = @($MemCheckLines | Where-Object { $_ -like 'WARN -*' }).Count
+    $MemVerdictLines = @($MemCheckLines | Where-Object { $_ -match '^(ok|FAIL)\s*-' } | Select-Object -Last 1)
+    if (-not $MemVerdictLines) {
+        # No verdict line at all (an empty output, an interpreter crash): the last non-empty line.
+        $MemVerdictLines = @($MemCheckLines | Where-Object { "$_".Trim() -ne '' } | Select-Object -Last 1)
+    }
+    $MemVerdict = if ($MemVerdictLines) { "$($MemVerdictLines[0])".Trim() } else { 'no output' }
+    $MemReport  = if ($MemWarnCount -gt 0) { "$MemVerdict ($MemWarnCount legacy warnings — run memory_project.py check for details)" } else { "$MemVerdict" }
     $MemOwner    = ''
     if ($MemCheckOut -match "belongs to project '([^']+)'") {
         $MemOwner = $matches[1]
@@ -300,18 +313,18 @@ if (-not $HasChangeLog -or -not $HasSummary) {
     }
     if ($MemCheckOut -match 'mixes projects') {
         $MemState = 'mixed'
-        Warn "    Project memory: INCONSISTENT — entries from different projects in memory ($MemCheckOut)"
+        Warn "    Project memory: INCONSISTENT — entries from different projects in memory ($MemReport)"
         Warn "    Check ownership: the project: field in entries must match the project."
     } elseif (($MemCheckOut -match 'expected') -or
               (($MemOwner -ne '') -and ($MemOwner -ne $MemNameExpect) -and ($MemOwner -ne '(legacy, no project field)')) -or
               ($memCheckRc -ne 0)) {
         # The memory belongs to (or is declared for) ANOTHER project — we are deploying to the wrong place.
         $MemState = 'other'
-        Warn "    Project memory: CHECK — the memory is declared for project '$(if ($MemOwner) { $MemOwner } else { '?' })', but the factory is being deployed in directory '$MemNameExpect' ($MemCheckOut)"
+        Warn "    Project memory: CHECK — the memory is declared for project '$(if ($MemOwner) { $MemOwner } else { '?' })', but the factory is being deployed in directory '$MemNameExpect' ($MemReport)"
         Warn "    Verify this is the same project: the project: field in the memory/change-log.md entries."
     } else {
         $MemState = 'ok'
-        Info "    Project memory: in place — $MemCheckOut"
+        Info "    Project memory: in place — $MemReport"
     }
 } else {
     $MemState = 'unavailable'
@@ -345,15 +358,30 @@ $shText = ($shLines -join "`n") + "`n"
 # We do not silently lose an existing user start.sh: if it differs from the template —
 # warn and keep the old file as start.sh.bak (one backup, not a chain); a byte-identical
 # file is overwritten silently.
+# The promise is "the user's original launcher is preserved": if the backup CANNOT be created the
+# overwrite must not happen at all — an empty catch here swallowed the failure and destroyed the
+# very file this step promises to keep, so a failed backup is a hard deployment error instead.
+$ShBackupOk = $true
 if (Test-Path -LiteralPath $LauncherSh -PathType Leaf) {
     $existingSh = $null
     try { $existingSh = [System.IO.File]::ReadAllText($LauncherSh) } catch { $existingSh = $null }
     if ($null -ne $existingSh -and $existingSh -ne $shText) {
         Warn "    Launcher: $LauncherSh already exists and differs from the template — overwriting (the old file is kept as $LauncherSh.bak)"
-        try { [System.IO.File]::Copy($LauncherSh, "$LauncherSh.bak", $true) } catch { }
+        try {
+            [System.IO.File]::Copy($LauncherSh, "$LauncherSh.bak", $true)
+        } catch {
+            $ShBackupOk = $false
+            $script:HardError = $true
+            Err "    Launcher: the backup $LauncherSh.bak could not be created — $($_.Exception.Message)"
+            Err "    The existing $LauncherSh is left untouched (overwriting it would destroy your launcher)."
+        }
     }
 }
-$ShWritten = Write-FileStrict -Path $LauncherSh -Text $shText -Encoding $EncNoBom
+if ($ShBackupOk) {
+    $ShWritten = Write-FileStrict -Path $LauncherSh -Text $shText -Encoding $EncNoBom
+} else {
+    $ShWritten = $false
+}
 
 $cmdLines = @(
     '@echo off',
@@ -542,7 +570,7 @@ switch ($MemState) {
         }
     }
     'mixed'       { $MemLine = "INCONSISTENT ✗ — entries from different projects in memory — check project:" }
-    'other'       { $MemLine = "CHECK ✗ — declared project '$(if ($MemOwner) { $MemOwner } else { '?' })', deploying into '$(if ($MemNameExpect) { $MemNameExpect } else { '?' })' ($MemCheckOut)" }
+    'other'       { $MemLine = "CHECK ✗ — declared project '$(if ($MemOwner) { $MemOwner } else { '?' })', deploying into '$(if ($MemNameExpect) { $MemNameExpect } else { '?' })' ($MemReport)" }
     'unavailable' {
         if (-not $HasPython) { $MemLine = "not verified (no python)" }
         else                 { $MemLine = "not verified (no memory_project.py)" }

@@ -55,7 +55,14 @@ Usage:
 
 Prints the 64-hex fingerprint(s) to stdout. In the two content modes (`--content`, `--all`)
 UNTRACKED files — outside the tracked content the hash covers — add a note on stderr and leave the
-hashes and the exit code untouched. Zero LLM tokens, stdlib only.
+hashes and the exit code untouched.
+
+AGENTS.md SIZE GATE (both paths share `agents_size_issues`): every mode measures `<repo>/AGENTS.md`
+and says so on stderr — a WARNING over 28 KB (28672 bytes), a hard ERROR over 32 KB (32768 bytes)
+that turns the exit code into 1. The printed hashes never change. `check_factory_model.py` runs the
+same gate on the validation path, so an oversized instruction file cannot be generated, committed or
+accepted silently; the factory's own hand-authored manual is subject to it as well.
+Zero LLM tokens, stdlib only.
 """
 from __future__ import annotations
 
@@ -101,6 +108,52 @@ IGNORE_PARTS = {".git", ".code-factory", ".venv", "venv", "__pycache__",
 # them would move neither level and the "skip regeneration" branch could fire on a changed
 # project. Only the noise above is meant to be invisible.
 EXCLUDED_PARTS = IGNORE_TOP_LEVEL | IGNORE_PARTS
+
+# The AGENTS.md SIZE gate (generation path here, validation path in check_factory_model.py): the
+# instruction file every agent reads must stay a reference, not a book. Over 28 KB it is warned
+# about loudly, over 32 KB it is a hard error — the CLI warns that such a file exceeds its
+# instruction budget, and the bulk of an oversized AGENTS.md is always verbatim text that belongs
+# in `references/` behind a pointer.
+AGENTS_SIZE_WARN_BYTES = 28 * 1024
+AGENTS_SIZE_FAIL_BYTES = 32 * 1024
+
+
+def agents_size_issues(size: int) -> tuple[str, str]:
+    """(warning, error) for an AGENTS.md of `size` bytes — at most one of them is non-empty.
+
+    The single implementation of the size gate, shared by the generation path (`main` below, which
+    fails when the file it fingerprints is already over the hard limit) and the validation path
+    (`check_factory_model.check_agents_model`), so the two cannot drift apart.
+    """
+    if size > AGENTS_SIZE_FAIL_BYTES:
+        return "", (f"AGENTS.md is {size} bytes, over the hard limit of {AGENTS_SIZE_FAIL_BYTES} "
+                    f"bytes (32 KB): trim it — move verbatim rule text into references/ and keep "
+                    f"a one-line pointer (see references/factory-rules.md)")
+    if size > AGENTS_SIZE_WARN_BYTES:
+        return (f"AGENTS.md is {size} bytes, over the {AGENTS_SIZE_WARN_BYTES}-byte (28 KB) warning "
+                f"line (hard limit {AGENTS_SIZE_FAIL_BYTES} bytes / 32 KB) — it is drifting into a "
+                f"book; keep verbatim text in references/", "")
+    return "", ""
+
+
+def _note_agents_size(root: pathlib.Path) -> bool:
+    """Print the size verdict for `<root>/AGENTS.md`; True when it is over the hard limit.
+
+    The note goes to stderr so the printed fingerprints stay machine-readable; it is printed in
+    every mode, because a generator that emits the hash of an unusable instruction file is worse
+    than useless. A project without AGENTS.md has nothing to measure (exit code untouched).
+    """
+    path = root / "AGENTS.md"
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    warning, error = agents_size_issues(size)
+    if error:
+        print(f"error: {error}", file=sys.stderr)
+    elif warning:
+        print(f"warning: {warning}", file=sys.stderr)
+    return bool(error)
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -359,7 +412,7 @@ def use_utf8_output() -> None:
             pass
 
 
-def main() -> None:
+def main() -> int:
     use_utf8_output()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -382,7 +435,10 @@ def main() -> None:
     else:
         # Default stays structural-only: backwards compatible with the existing pipeline.
         print(compute_fingerprint(root))
+    # The generation path enforces the AGENTS.md size gate too: an oversized instruction file must
+    # not be (re-)generated and committed silently. The hashes above stay byte-identical.
+    return 1 if _note_agents_size(root) else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

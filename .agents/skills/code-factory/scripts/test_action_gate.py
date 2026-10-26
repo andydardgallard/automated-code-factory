@@ -15,6 +15,9 @@ Covers the User Sovereignty contract:
     form (`git checkout .` is a whole-tree discard → HARD_DENY outside scope), and an ambiguous
     operand with a path separator (`git checkout src/a.py`, `git checkout feature/x`) CONFIRMs,
     while a plain branch switch (`git checkout main`, `git checkout -b feature`) stays ALLOW;
+    a push whose DESTINATION is `HEAD` (`git push origin HEAD`, `@`, `+HEAD`) is that same
+    unprovable default-branch push — HEAD is whatever is checked out — so it CONFIRMs, never
+    ALLOWs, while `HEAD:feature/x` (proven non-default) keeps its ALLOW;
     also any git invocation the gate cannot parse (unknown global option, missing option value,
     no subcommand) or does not know as read-only (`git frobnicate`, `git branch -D main`):
     fail-safe, never ALLOW,
@@ -155,6 +158,33 @@ def main() -> int:
         # 4. CONFIRM: a bare `git push` cannot be proven not to push the default branch.
         res = gate("--action", "git push")
         expect(res.returncode == 2, f"bare git push must require confirmation: {res.returncode}")
+
+        # 4b. CONFIRM (never ALLOW): a push whose DESTINATION is HEAD — `git push origin HEAD` —
+        #     publishes whatever branch is checked out, so on `main` it IS the default-branch push
+        #     the gate must not wave through. The gate reads a command line, not a repository, so
+        #     it cannot prove that destination: it is exactly as unprovable as the bare form above.
+        for action in ("git push origin HEAD", "git push -u origin HEAD",
+                       "git push -f origin +HEAD", "git push origin @",
+                       "git push origin HEAD:HEAD"):
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                if mode == "hitl":
+                    expect(res.returncode == 2,
+                           f"{action!r} in hitl must require confirmation (exit 2): "
+                           f"{res.returncode} {res.stdout!r}")
+                    expect("decision: CONFIRM_REQUIRED" in res.stdout,
+                           f"{action!r} must report CONFIRM_REQUIRED: {res.stdout!r}")
+                else:
+                    expect(res.returncode == 0 and "decision: ALLOW_WITH_ASSUMPTION" in res.stdout,
+                           f"{action!r} in auto must be a recorded assumption: {res.stdout!r}")
+                expect("decision: ALLOW\n" not in res.stdout,
+                       f"{action!r} must never be a blind ALLOW: {res.stdout!r}")
+
+        # 4c. Precision control: a HEAD SOURCE with a proven non-default destination stays ALLOW —
+        #     the gate confirms only what it cannot prove.
+        for action in ("git push origin HEAD:feature/hardening", "git push origin @:feature/x"):
+            res = gate("--action", action)
+            expect(res.returncode == 0, f"{action!r} must be allowed: {res.stdout!r}")
 
         # 5. reset: remote ref -> HARD_DENY, local ref -> ALLOW.
         for action in ("git reset --hard origin/main", "git reset --hard upstream/master",

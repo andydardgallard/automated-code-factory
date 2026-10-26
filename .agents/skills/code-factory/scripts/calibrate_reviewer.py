@@ -37,16 +37,58 @@ Usage:
 
 `--run-id` (`scripts/run_id.py`) is optional and only adds the line `run_id: <id>` to the header of
 the report, so the artifact names the run it belongs to; without it the output is unchanged.
+
+`--log <path>` (optional) appends ONE `calibration:` line to the append-only calibration log —
+`<repo>/skill-base/golden-set/calibration-log.md` by default — recording the SHA-256 of the
+reviewer prompts, the number of run records the memory journal holds at that moment and the
+metrics of the calibration. Without the flag nothing is written and the report is unchanged.
+
+`status` turns the periodic obligation of `references/code-review.md` §7 ("re-calibrate after
+EVERY edit to a reviewer prompt and at least once per 5 review runs") from prose into a
+deterministic gate: it compares the CURRENT reviewer-prompt digest and the CURRENT number of run
+records since the last recorded calibration with the last line of the log and fails LOUDLY when a
+calibration is due.
+
+  python3 calibrate_reviewer.py status [--repo <root>] [--log <path>] [--max-runs 5]
+
+Exit 0 = the last recorded calibration is still current. Exit 1 = calibration is DUE (the prompt
+changed, the run interval elapsed, or no calibration is recorded at all) — each reason is printed.
+Exit 2 = the run could not be judged: an unreadable reviewer prompt, or a memory journal that
+cannot be read as UTF-8 (ONLY an absent journal — a fresh project — counts as zero runs, so a
+corrupt one can never make a due calibration look current). Every count comes from the files on
+disk, so the check is deterministic and uses no LLM.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
+import re
 import sys
 
 SEVERITIES = ("critical", "major", "minor", "nit")
 VERDICTS = ("approve", "request_changes")
+
+# The repository root this script lives in (scripts/ -> code-factory/ -> skills/ -> .agents/ -> root).
+ROOT = pathlib.Path(__file__).resolve().parents[4]
+# The reviewer PROMPTS: §7 makes an edit to EITHER one invalidate the last calibration.
+REVIEWER_PROMPT_FILES = (
+    ".agents/skills/code-factory/references/code-review.md",
+    ".agents/agents/sub-agents/code-reviewer.md",
+)
+# The memory journal holds one record per run, so it is the deterministic run counter.
+JOURNAL_REL = "memory/change-log.md"
+# The append-only record of calibrations — one `calibration:` line per `score --log` run.
+LOG_REL = "skill-base/golden-set/calibration-log.md"
+# §7: at least one calibration per 5 runs that use the review gate.
+MAX_RUNS_SINCE_CALIBRATION = 5
+RECORD_PREFIX = "calibration:"
+REVIEW_TASK_TYPE = "review"
+# One record of the journal opens with `## <ISO timestamp> — <title>` (see memory/change-log.md).
+RECORD_HEADING_RE = re.compile(r"^##\s+\d{4}-\d{2}-\d{2}T\S*", re.M)
+# The journal fields the run count needs: `run_id:` addresses a run, `task_type:` grades the run.
+RECORD_KEYS = ("run_id", "task_type")
 
 
 class InputError(Exception):
@@ -277,6 +319,249 @@ def write_text(path: pathlib.Path, text: str) -> None:
         handle.write(text)
 
 
+# ---------------------------------------------------------------------------------------------
+# The periodic-calibration gate (§7 of references/code-review.md) — deterministic, no LLM.
+# ---------------------------------------------------------------------------------------------
+def active_run_id(root: pathlib.Path) -> str:
+    """The run_id of the run in progress (`.code-factory/state/pipeline.yaml`), "" when none.
+
+    Read line-wise on purpose (stdlib has no YAML parser); a missing or unreadable checkpoint
+    simply means "no active run" — the calibration gate then stays conservative.
+    """
+    pipeline = root / ".code-factory" / "state" / "pipeline.yaml"
+    try:
+        for line in pipeline.read_text(encoding="utf-8").splitlines():
+            if line.startswith("run_id:"):
+                return line.split(":", 1)[1].strip().strip('"').strip("'")
+    except (OSError, UnicodeDecodeError):
+        pass
+    return ""
+
+
+def prompt_digest(root: pathlib.Path) -> str:
+    """SHA-256 over the reviewer prompts: path + LF-normalized content of every prompt file.
+
+    A digest, not an mtime: the same text hashes the same on every platform, a touched-but-unchanged
+    file does not look like an edit, and a genuine edit cannot hide behind a restored timestamp.
+    An unreadable prompt is an InputError — the gate must not answer "current" without its input.
+    """
+    parts: list[str] = []
+    for rel in REVIEWER_PROMPT_FILES:
+        try:
+            data = (root / rel).read_bytes().replace(b"\r\n", b"\n")
+        except OSError as exc:
+            raise InputError(f"{rel}: the reviewer prompt cannot be read "
+                             f"({exc.strerror or exc})") from None
+        parts.append(f"{rel}:{hashlib.sha256(data).hexdigest()}")
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def journal_runs(root: pathlib.Path) -> list[dict[str, str]]:
+    """The run records of `memory/change-log.md`, in journal order (one record per run).
+
+    A record opens with `## <ISO timestamp> — <title>`; only `run_id` and `task_type` are read.
+
+    ONLY a genuinely ABSENT journal is the fresh-project case (no run has happened yet), and only
+    that one yields an empty list. Every other failure to read it — a permission error, a directory
+    in its place, invalid UTF-8 — is an InputError: counting an unreadable journal as "zero runs"
+    would let a due calibration report itself as CURRENT on no evidence at all, which is exactly the
+    silent-green failure the gate exists to prevent. `status` turns the InputError into exit 2.
+    """
+    path = root / JOURNAL_REL
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return []
+    except OSError as exc:                    # permissions, a directory, a vanished drive, …
+        raise InputError(f"{JOURNAL_REL}: the memory journal cannot be read "
+                         f"({exc.strerror or exc})") from None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise InputError(f"{JOURNAL_REL}: the memory journal cannot be read (not UTF-8: "
+                         f"{exc.reason} at byte {exc.start})") from None
+    starts = [m.start() for m in RECORD_HEADING_RE.finditer(text)]
+    records: list[dict[str, str]] = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(text)
+        fields: dict[str, str] = {}
+        for line in text[start:end].splitlines():
+            key, sep, value = line.partition(":")
+            if sep and key.strip() in RECORD_KEYS:
+                fields[key.strip()] = value.strip()
+        records.append(fields)
+    return records
+
+
+def runs_since(records: list[dict[str, str]],
+               calibration_run_id: str) -> tuple[int, int, bool]:
+    """(runs, review runs, found) recorded AFTER the calibration's own run record.
+
+    The calibration names the run it belongs to, so the count is positional and survives any
+    number of intervening runs. When that record is no longer in the journal (it was compacted
+    away after more than the kept tail of runs) `found` is False and EVERY record counts as
+    "since": a calibration that old is overdue by definition, so the conservative answer is the
+    safe one. Every run passes the review gate (rule `review-gate-policy`), which is why the plain
+    run count is the §7 interval; the review-typed records are a subset and are reported for
+    context.
+    """
+    index = None
+    if calibration_run_id:
+        for position, record in enumerate(records):
+            if record.get("run_id") == calibration_run_id:
+                index = position
+    found = index is not None
+    tail = records if index is None else records[index + 1:]
+    return (len(tail),
+            sum(1 for record in tail if record.get("task_type") == REVIEW_TASK_TYPE),
+            found)
+
+
+def parse_log(text: str) -> list[dict[str, str]]:
+    """Every `calibration:` record of the log, in file order (last one = the current calibration)."""
+    records: list[dict[str, str]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith(RECORD_PREFIX):
+            continue
+        fields: dict[str, str] = {}
+        for token in line[len(RECORD_PREFIX):].split():
+            key, sep, value = token.partition("=")
+            if sep and key and key not in fields:
+                fields[key.strip()] = value.strip()
+        records.append(fields)
+    return records
+
+
+def read_log(path: pathlib.Path) -> list[dict[str, str]]:
+    """The records of the calibration log; a missing log is "no calibration recorded", not an error."""
+    try:
+        return parse_log(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return []
+
+
+def calibration_status(root: pathlib.Path, log_path: pathlib.Path,
+                       max_runs: int) -> dict:
+    """Judge the recorded calibration against the tree: is a (re-)calibration due?
+
+    Two triggers, both from `references/code-review.md` §7 and both computed from files on disk:
+    the reviewer prompt digest changed since the recorded calibration, or `max_runs` run records
+    of the journal were written after it. A log with no record is the third, honest answer: the
+    obligation was never discharged, so a calibration is due.
+    """
+    digest = prompt_digest(root)
+    records = journal_runs(root)
+    total_runs, total_review_runs, _ = runs_since(records, "")
+    entries = read_log(log_path)
+    recorded = entries[-1] if entries else None
+    reasons: list[str] = []
+    runs, review_runs, found = total_runs, total_review_runs, True
+    if recorded is None:
+        reasons.append(f"no calibration is recorded in {log_path}: the §7 obligation has never "
+                       f"been discharged in this repository")
+    else:
+        if recorded.get("prompt_sha256") != digest:
+            reasons.append("the reviewer prompt changed since the last recorded calibration ("
+                           + ", ".join(REVIEWER_PROMPT_FILES) + ") — re-calibrate after EVERY "
+                           "prompt edit")
+        runs, review_runs, found = runs_since(records, recorded.get("run_id", ""))
+        if not found:
+            # The calibration's own run record is absent from the journal. The zeroing fallback
+            # is the SAME-RUN case only, proven by identity, not by count equality: the recorded
+            # run_id is the ACTIVE run of `.code-factory/state/pipeline.yaml` (its memory record
+            # lands at the finish gate, so it cannot be in the journal yet). Every other miss — a
+            # journal compacted past the record, with or without an equal surviving count —
+            # counts every surviving record conservatively: an old calibration is due, never
+            # laundered into "current".
+            if (recorded.get("run_id", "") and recorded.get("run_id") == active_run_id(root)
+                    and recorded.get("runs", "").isdigit()
+                    and int(recorded["runs"]) == total_runs):
+                runs = 0
+                review_runs = 0
+        if runs >= max_runs:
+            reasons.append(f"{runs} run(s) since the last recorded calibration (limit {max_runs})")
+    return {
+        "log": str(log_path),
+        "log_exists": log_path.is_file(),
+        "recorded": recorded,
+        "prompt_sha256": digest,
+        "runs_since": runs,
+        "review_runs_since": review_runs,
+        "run_record_found": found,
+        "max_runs": max_runs,
+        "reasons": reasons,
+        "due": bool(reasons),
+    }
+
+
+def calibration_record(root: pathlib.Path, report: dict, run_id: str) -> str:
+    """The one `calibration:` line `score --log` appends (paths, counts and metrics only)."""
+    records = journal_runs(root)
+    runs, review_runs, _ = runs_since(records, "")
+    verdict = report["verdict"]
+    return (f"{RECORD_PREFIX} run_id={run_id or '-'} prompt_sha256={prompt_digest(root)} "
+            f"runs={runs} review_runs={review_runs} "
+            f"verdict_accuracy={verdict['matched']}/{verdict['total']} "
+            f"accuracy={_percent(verdict['accuracy'])} "
+            f"macro_precision={report['macro']['precision']:.3f}\n")
+
+
+LOG_HEADER = """\
+# Reviewer calibration log — the append-only record of `references/code-review.md` §7
+
+`calibrate_reviewer.py score --log <this file>` appends ONE `calibration:` line per calibration;
+`calibrate_reviewer.py status` reads the LAST one and fails loudly when a calibration is due — the
+reviewer prompt changed since it, or `5` runs were recorded since it. The line is data, not prose:
+
+`calibration: run_id=<id|-> prompt_sha256=<64 hex> runs=<journal run count at calibration> review_runs=<review-typed subset> verdict_accuracy=<matched>/<total> accuracy=<percent> macro_precision=<0.000>`
+
+The log is append-only: a record is never edited or removed, so the history of what the reviewer was
+calibrated against stays readable. A repository with no record yet has never discharged the
+obligation — `status` says so and exits 1.
+"""
+
+
+def append_record(log_path: pathlib.Path, line: str) -> None:
+    """Append one record to the log, creating the file (and its documented header) when absent."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    if not log_path.exists():
+        write_text(log_path, LOG_HEADER + "\n")
+    with log_path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(line)
+
+
+def cmd_status(args) -> int:
+    root = pathlib.Path(args.repo).resolve() if args.repo else ROOT
+    log_path = pathlib.Path(args.log) if args.log else root / LOG_REL
+    if args.max_runs < 1:
+        print("error: --max-runs must be at least 1", file=sys.stderr)
+        return 2
+    try:
+        status = calibration_status(root, log_path, args.max_runs)
+    except InputError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if status["due"]:
+        print(f"FAIL - reviewer calibration is DUE ({log_path}):", file=sys.stderr)
+        for reason in status["reasons"]:
+            print(f"  - {reason}", file=sys.stderr)
+        print("  re-calibrate: python .agents/skills/code-factory/scripts/calibrate_reviewer.py "
+              "score --golden skill-base/golden-set/cases --results <results dir> "
+              f"--out <report> --log {log_path}", file=sys.stderr)
+        return 1
+
+    recorded = status["recorded"] or {}
+    note = "" if status["run_record_found"] else (
+        " (the calibration's run record is no longer in the journal: every journal record counts)")
+    print(f"PASS - reviewer calibration is current: prompt {status['prompt_sha256'][:12]}… matches "
+          f"the record of run {recorded.get('run_id', '-')}, "
+          f"{status['runs_since']} run(s) since (of them {status['review_runs_since']} review) — "
+          f"limit {status['max_runs']}{note}.")
+    return 0
+
+
 def cmd_score(args) -> int:
     golden = pathlib.Path(args.golden)
     results_dir = pathlib.Path(args.results)
@@ -310,6 +595,19 @@ def cmd_score(args) -> int:
           f"macro recall: {report['macro']['recall']:.3f} | "
           f"tp={pooled['tp']} fp={pooled['fp']} fn={pooled['fn']}")
     print(f"report: {args.out}")
+
+    # Recording the calibration is OPTIONAL: `--log` appends one record so `status` can judge the
+    # §7 interval; without it nothing is written and the CLI behaves exactly as before.
+    if args.log:
+        root = pathlib.Path(args.repo).resolve() if args.repo else ROOT
+        log_path = pathlib.Path(args.log)
+        try:
+            append_record(log_path, calibration_record(root, report, args.run_id))
+        except (OSError, InputError) as exc:
+            print(f"error: cannot record the calibration in {log_path}: {exc}", file=sys.stderr)
+            return 2
+        print(f"calibration log: {log_path}")
+
     # Metrics are data, not a gate: a successful scoring run always exits 0.
     return 0
 
@@ -341,7 +639,23 @@ def main() -> int:
     score.add_argument("--out", required=True, metavar="PATH", help="Markdown report to write")
     score.add_argument("--run-id", default="", metavar="ID",
                        help="Run id (see run_id.py); when given it is recorded in the report")
+    score.add_argument("--log", default="", metavar="PATH",
+                       help="Append this calibration to the calibration log (append-only; the "
+                            "record feeds `status`)")
+    score.add_argument("--repo", default=None, metavar="ROOT",
+                       help="Repository root the log record is computed against (default: this repo)")
     score.set_defaults(func=cmd_score)
+
+    status = sub.add_parser("status", help="Fail loudly when a reviewer calibration is due (§7)")
+    status.add_argument("--repo", default=None, metavar="ROOT",
+                        help="Repository root the prompts and the memory journal resolve against "
+                             "(default: this repo)")
+    status.add_argument("--log", default="", metavar="PATH",
+                        help=f"Calibration log (default: <repo>/{LOG_REL})")
+    status.add_argument("--max-runs", type=int, default=MAX_RUNS_SINCE_CALIBRATION, metavar="N",
+                        help="Runs allowed since the last recorded calibration "
+                             f"(default: {MAX_RUNS_SINCE_CALIBRATION})")
+    status.set_defaults(func=cmd_status)
     args = ap.parse_args()
     return args.func(args)
 

@@ -10,6 +10,9 @@ Checks that the documenter touched ONLY documentation:
   3. Source files may change only doc-comment/docstring lines — any changed code line is a
      violation. Lines are classified by their POSITION in the two versions (the diff hunk maps
      old↔new), so duplicated text (a code line repeated inside a docstring) cannot mask a change.
+     A line counts as documentation only when nothing outside a comment SPAN sits on it: code
+     before/after a `/* ... */` span — `/* doc */ return x;`, or the `*/ return x;` closing line
+     of a block — is a code line, not documentation.
 
 Usage:
   python3 validate_documentation.py check --repo <root> --baseline <dir> --files f1 f2 ... [--derive]
@@ -121,6 +124,34 @@ def _is_source(rel: str) -> bool:
     return pathlib.PurePosixPath(rel).suffix.lower() in SOURCE_SUFFIXES
 
 
+def _c_comment_residual(s: str, in_block: bool) -> tuple[str, bool]:
+    """Split `s` into C-style comment SPANS and the text outside them.
+
+    Returns `(residual, in_block)`: `residual` is the line's text outside every `/* ... */` span
+    (concatenated), `in_block` is the state for the NEXT line. A caller treats the line as
+    documentation only when the residual is blank — so `/* doc */ return x;` and the closing line
+    `*/ return x;` of a block are code, while a comment-only line stays documentation. The state
+    is entered only by a line that OPENS a block (the caller decides), never by a stray `*/`.
+    """
+    out: list[str] = []
+    i = 0
+    if in_block:
+        j = s.find(_BLOCK_END, i)
+        if j < 0:
+            return "", True
+        i = j + len(_BLOCK_END)
+    while True:
+        k = s.find(_BLOCK_START, i)
+        if k < 0:
+            out.append(s[i:])
+            return "".join(out), False
+        out.append(s[i:k])
+        j = s.find(_BLOCK_END, k + len(_BLOCK_START))
+        if j < 0:
+            return "".join(out), True
+        i = j + len(_BLOCK_END)
+
+
 def _doc_mask(lines: list[str], rel: str = "") -> list[bool]:
     """Return, per line, whether that line is inside a doc comment/docstring (or is a line
     comment). Heuristic but conservative: a changed non-doc, non-blank line is treated as code.
@@ -135,24 +166,20 @@ def _doc_mask(lines: list[str], rel: str = "") -> list[bool]:
             mask.append(True)  # blank lines never count as a code change
             continue
         is_doc = False
-        # C-style block comment state: `/*`, `/**`, `/*!` open it, `*/` closes it. A `*`
-        # continuation line is documentation ONLY while this state is on — outside a block it is
-        # code (`*ptr = 1;`), so there is no bare-`*` fallback any more.
-        if in_block:
-            is_doc = True
-            if _BLOCK_END in s:
-                in_block = False
+        # C-style block comment SPANS: `/*`, `/**`, `/*!` open the state, `*/` closes it. The line
+        # counts as documentation only when nothing but whitespace sits OUTSIDE the comment spans:
+        # `/* doc */ return x;` and the `*/ return x;` closing line carry executable code and are
+        # therefore code lines (a whole-line `startswith` test let a documenter swap that code).
+        if in_block or s.startswith(_BLOCK_START):
+            residual, in_block = _c_comment_residual(s, in_block)
+            is_doc = not residual.strip()
         # Python triple-quoted docstring state
         elif in_triple:
             is_doc = True
             if s.startswith(_DOCSTRING_DELIMS) or s.endswith(_DOCSTRING_DELIMS):
                 in_triple = False
         else:
-            if s.startswith(_BLOCK_START):
-                is_doc = True
-                if _BLOCK_END not in s[len(_BLOCK_START):]:
-                    in_block = True
-            elif s.startswith(_DOCSTRING_DELIMS):
+            if s.startswith(_DOCSTRING_DELIMS):
                 is_doc = True
                 if s.count('"""') + s.count("'''") < 2:
                     in_triple = True

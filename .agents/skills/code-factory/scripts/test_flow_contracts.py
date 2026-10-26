@@ -10,11 +10,17 @@ must not be restated in a third voice; and the memory contract must have exactly
 implementation. Nothing else reads that prose, so a careless edit could delete the wiring while
 every other self-test stayed green.
 
+The reviewer CALIBRATION gate is pinned the same way (`references/code-review.md` §7): the review
+nodes `CR`/`CR0` of the flow must invoke `calibrate_reviewer.py status` BEFORE the reviewer, name
+the golden-set calibration that discharges a due one and the append-only log it writes, and the
+agent instruction (Phase 8b) and the reference must carry the invocation too — a gate nobody runs
+protects nothing.
+
 This test pins those strings — always against the REAL shipped file — and then proves the pins are
 not tautologies: each contract is broken on a throwaway copy in the way a careless future edit
 would break it (delete the command name, restore `open: 0`, drop the `Memory facts` heading, drop
-`repo_path` required, re-add `warning, not a blocker`, re-add `_validate_entry`), and the checker
-must FAIL on that copy.
+`repo_path` required, re-add `warning, not a blocker`, re-add `_validate_entry`, rename the
+calibration command), and the checker must FAIL on that copy.
 
 Invariant: every command and every constraint pinned below is present in the shipped file, at the
 place where the mechanism lives (a flow node, a named section, a template block) — absence, or a
@@ -45,10 +51,11 @@ CHECK_MODEL = ".agents/skills/code-factory/scripts/check_factory_model.py"
 MEMORY = ".agents/skills/code-factory/scripts/memory_project.py"
 ENGLISH = ".agents/skills/code-factory/scripts/check_english_only.py"
 RULEBOOK = ".agents/skills/code-factory/references/factory-rules.md"
+CODE_REVIEW = ".agents/skills/code-factory/references/code-review.md"
 
 # Every file a contract reads: a probe copies exactly these, then breaks one of them.
 FILES = (SKILL, CODE_FACTORY, AGENTS, README, BRIEFING, PROVIDERS, EXAMPLE_TASK, TASK_TEMPLATE,
-         CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK)
+         CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK, CODE_REVIEW)
 
 FINISH_NODE = "Y"      # `Y[Finish: ...]` — the only place compaction/attribution are invoked
 CODER_NODE = "M"       # `M[Implement: ...]` — the coder delegation and its briefing
@@ -478,13 +485,119 @@ def check_destructive_action_gate(root: pathlib.Path) -> list[str]:
     book = Doc.load(root, RULEBOOK, problems)
     if "## destructive-action-gate" not in book.text:
         problems.append(f"{RULEBOOK}:1: the rulebook carries no `destructive-action-gate` rule")
-    for rel in (RULEBOOK, SKILL, CODE_FACTORY, AGENTS, README):
+    # The VERBATIM carriers of the rule. The root AGENTS.md is not among them any more: it POINTS at
+    # the rulebook (a `Rule <id>: canonical wording ...` line) instead of quoting the block, so what
+    # it must keep is the pointer, not the markers.
+    for rel in (RULEBOOK, SKILL, CODE_FACTORY, README):
         carrier = Doc.load(root, rel, problems)
         for edge in ("begin", "end"):
             marker = f"<!-- factory-rule: destructive-action-gate {edge} -->"
             if carrier.text.count(marker) != 1:
                 problems.append(f"{rel}:1: the canonical block marker "
                                 f"`{marker}` must appear exactly once")
+    agents = Doc.load(root, AGENTS, problems)
+    if "`destructive-action-gate`" not in agents.text:
+        problems.append(f"{AGENTS}:1: the root manual must still POINT at the rule "
+                        "`destructive-action-gate` in the rulebook (it no longer quotes it)")
+    return problems
+
+
+# --------------------------------------------------------------------------------------------
+# H. The reviewer gate is bounded — no unconditional loop back into implementation
+# --------------------------------------------------------------------------------------------
+def check_review_gate_budget(root: pathlib.Path) -> list[str]:
+    """RCR must split into retry / stop (hitl) / conditional-pass (auto) edges.
+
+    The finding this pins: an unconditional `RCR --> M` edge let the flow restart coding even
+    after the reviewer budget was exhausted with critical findings still open, defeating the
+    bounded review gate (rule `review-gate-policy`).
+    """
+    problems: list[str] = []
+    skill = Doc.load(root, SKILL, problems)
+    fence = next((i for i, line in enumerate(skill.lines) if line.strip() == MERMAID_FENCE), None)
+    if fence is None:
+        problems.append(f"{SKILL}:1: no ```mermaid flow — the reviewer gate cannot be wired")
+        return problems
+    edges: list[tuple[int, str]] = []
+    for offset, line in enumerate(skill.lines[fence + 1:]):
+        if line.strip() == "```":
+            break
+        if re.match(r"\s*RCR\s*-->", line):
+            edges.append((fence + 2 + offset, line.strip()))
+    if not edges:
+        problems.append(f"{SKILL}:{fence + 2}: no edges out of RCR — the review-gate policy has "
+                        "no routing at all")
+        return problems
+    for line, edge in edges:
+        if re.fullmatch(r"RCR\s*-->\s*M", edge):
+            problems.append(f"{SKILL}:{line}: an unconditional `RCR --> M` edge restarts coding "
+                            "even when the reviewer budget is exhausted with critical findings "
+                            "open — split RCR into retry / stop (hitl) / conditional-pass (auto)")
+    required = (("budget not exhausted", "M"),
+                ("budget exhausted, hitl", "U2"),
+                ("budget exhausted, auto", "W"))
+    for label, target in required:
+        if not any(label in edge and edge.endswith(f"| {target}") for _line, edge in edges):
+            problems.append(f"{SKILL}:{edges[0][0]}: RCR needs a `{label}` edge to {target} — "
+                            "the bounded review gate (rule `review-gate-policy`) must route the "
+                            "exhausted-budget case away from the coder")
+    return problems
+
+
+def check_reviewer_calibration(root: pathlib.Path) -> list[str]:
+    """The §7 calibration gate must be RUN before the reviewer, in the flow and in the agent.
+
+    The finding this pins: `calibrate_reviewer.py status` existed but no node invoked it, so the
+    periodic obligation stayed prose at the only point where it matters. The check is positional as
+    well as textual — the command has to precede `factory-code-reviewer` inside the review node —
+    because "run it somewhere nearby" is what a due calibration is supposed to stop.
+    """
+    problems: list[str] = []
+    skill = Doc.load(root, SKILL, problems)
+    _first, nodes = flow_nodes(skill)
+    by_id = {ident: (line, body) for line, ident, body in nodes}
+    if not by_id:
+        problems.append(f"{SKILL}:1: no ```mermaid flow — the calibration gate cannot be wired")
+    for node_id in ("CR", "CR0"):
+        node = by_id.get(node_id)
+        if node is None:
+            problems.append(f"{SKILL}:1: the review node {node_id} is gone — the calibration gate "
+                            "has no place to run")
+            continue
+        line, body = node
+        if "calibrate_reviewer.py status" not in body:
+            problems.append(f"{SKILL}:{line}: node {node_id} must invoke "
+                            "`calibrate_reviewer.py status --repo <resolved repo_path>` BEFORE the "
+                            "reviewer runs (a due calibration is prose no more)")
+            continue
+        if node_id == "CR":
+            reviewer = body.find("factory-code-reviewer")
+            if reviewer == -1:
+                problems.append(f"{SKILL}:{line}: node CR no longer names `factory-code-reviewer`")
+            elif body.find("calibrate_reviewer.py status") > reviewer:
+                problems.append(f"{SKILL}:{line}: node CR invokes the calibration gate AFTER the "
+                                "reviewer — it must run first")
+            for needle, why in (("score", "the golden-set calibration that clears the gate"),
+                                ("calibration-log.md", "the append-only record it writes")):
+                if needle not in body:
+                    problems.append(f"{SKILL}:{line}: node CR must name {why} "
+                                    f"({needle!r}) — a due calibration has to be discharged, not "
+                                    "just reported")
+
+    agent = Doc.load(root, CODE_FACTORY, problems)
+    for needle, where in (("calibrate_reviewer.py status", "invoke the calibration gate"),
+                          ("calibration-log.md", "name the calibration log"),
+                          ("score", "discharge a due calibration with the golden-set run")):
+        if needle not in agent.text:
+            problems.append(f"{CODE_FACTORY}:1: Phase 8b must {where} ({needle!r}) — the agent "
+                            "instruction is where the reviewer is actually launched")
+
+    review = Doc.load(root, CODE_REVIEW, problems)
+    if "calibrate_reviewer.py status" not in review.text:
+        problems.append(f"{CODE_REVIEW}:1: §7 must show the `calibrate_reviewer.py status` "
+                        "invocation — the rule's own reference cannot leave it implicit")
+    elif not re.search(r"before the reviewer", review.text, re.I):
+        problems.append(f"{CODE_REVIEW}:1: §7 must say the gate runs BEFORE the reviewer")
     return problems
 
 
@@ -496,6 +609,8 @@ SECTIONS = (
     ("E", "model precedence is not restated in three voices", check_model_precedence),
     ("F", "the memory contract is single", check_single_memory_contract),
     ("G", "the destructive-action gate is run by the flow", check_destructive_action_gate),
+    ("H", "the reviewer gate is bounded", check_review_gate_budget),
+    ("I", "the reviewer calibration gate runs before the reviewer", check_reviewer_calibration),
 )
 
 
@@ -606,6 +721,19 @@ PROBES = (
      check_single_memory_contract,
      ((CHECK_MODEL, None, "\n\ndef _validate_entry(entry):\n    return [], []\n"),),
      "_validate_entry"),
+    ("H: the exhausted-budget stop edge is removed from RCR",
+     check_review_gate_budget,
+     ((SKILL, "budget exhausted, hitl", "user decides, hitl"),),
+     "budget exhausted, hitl"),
+    ("I: the calibration gate stops being invoked by the review node",
+     check_reviewer_calibration,
+     ((SKILL, "calibrate_reviewer.py status --repo <resolved repo_path> BEFORE the reviewer",
+       "calibrate_reviewer.py info --repo <resolved repo_path> BEFORE the reviewer"),),
+     "calibrate_reviewer.py status"),
+    ("I: the agent instruction drops the calibration gate", check_reviewer_calibration,
+     ((CODE_FACTORY, "calibrate_reviewer.py status --repo <resolved repo_path>",
+       "calibrate_reviewer.py inspect --repo <resolved repo_path>"),),
+     "calibrate_reviewer.py status"),
 )
 
 
@@ -644,8 +772,9 @@ def main() -> int:
           f"compaction, the memory gate and the model attribution; the precedent index is built "
           f"by the flow and described as a build product; the briefing carries the memory facts; "
           f"the templates agree with the rulebook; the model precedence has one voice; the memory "
-          f"contract has one implementation — and all {caught} deliberately broken copies were "
-          f"caught.")
+          f"contract has one implementation; the reviewer calibration gate runs BEFORE the "
+          f"reviewer in the flow, the agent and the reference — and all {caught} deliberately "
+          f"broken copies were caught.")
     return 0
 
 

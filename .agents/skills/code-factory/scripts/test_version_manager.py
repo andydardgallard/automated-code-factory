@@ -3,7 +3,8 @@
 Deterministic self-test for `version_manager.py` (zero LLM tokens, stdlib only).
 
 Verifies get/bump/sync/validate/set, the deterministic version-type matrix (`suggest`), the Rust
-(`Cargo.toml`) manifests in the single source of truth, plus the "stdlib only" contract (no
+(`Cargo.toml`) manifests in the single source of truth, the symlink guard of the manifest scan (a
+cycle terminates, a link escaping the repository is excluded), plus the "stdlib only" contract (no
 third-party imports).
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
@@ -11,7 +12,9 @@ Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
+import posixpath
 import re
 import sys
 import tempfile
@@ -47,6 +50,46 @@ def write_manifest(root: pathlib.Path, rel: str, text: str) -> None:
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
+
+
+def fake_link_dir(path: pathlib.Path, target: pathlib.Path, children=None,
+                  limit: int | None = None) -> pathlib.Path:
+    """A `pathlib.Path` that answers like a directory symlink pointing at `target`.
+
+    `resolve()` returns `target` and `iterdir()` returns `children`; with no children the link
+    lists ITSELF, which is exactly what a symlink cycle produces — a walk that never ends. Creating
+    a real symlink needs a privilege Windows does not grant by default, so the guard against a
+    cycle and against a link escaping the repository is pinned with these fakes, platform-independent.
+    `limit` bounds how often such a self-listing link may be walked before the test fails instead
+    of hanging: the fixed scan never walks it at all.
+    """
+    calls = 0
+    self_ref: list[pathlib.Path] = []
+
+    class LinkDir(pathlib.Path):
+        def resolve(self, strict: bool = False) -> pathlib.Path:
+            return target
+
+        def iterdir(self):
+            nonlocal calls
+            calls += 1
+            if limit is not None and calls > limit:
+                raise AssertionError(
+                    f"the manifest scan walked a symlink cycle more than {limit} times")
+            return iter(self_ref if children is None else list(children))
+
+        def is_symlink(self) -> bool:
+            return True
+
+        def is_dir(self) -> bool:
+            return True
+
+        def is_file(self) -> bool:
+            return False
+
+    link = LinkDir(path)
+    self_ref.append(link)
+    return link
 
 
 class OutputSink:
@@ -273,10 +316,66 @@ def main() -> int:
         expect('version = "12.1.0"' in (root / "Cargo.toml").read_text(encoding="utf-8"),
                "sync must still rewrite the unpruned manifest")
 
+    # 25. the manifest scan never follows a symlink out of the repository: the escaping link is
+    #     skipped (on the pre-fix code it is walked and its foreign manifest enters the scan)
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as out_td:
+        root = pathlib.Path(td).resolve()
+        build_clean_repo(root)
+        write_manifest(root, "Cargo.toml", ws_consistent)
+        outside = pathlib.Path(out_td).resolve()
+        (outside / "Cargo.toml").write_text('[package]\nname = "outside"\nversion = "9.9.9"\n',
+                                            encoding="utf-8")
+        escape = fake_link_dir(root / "escape", target=outside,
+                               children=[outside / "Cargo.toml"])
+        fake_root = fake_link_dir(root, target=root, children=[root / "Cargo.toml", escape])
+        manifests = vm.cargo_manifests(fake_root)
+        expect(root / "Cargo.toml" in manifests,
+               f"the scan must still find the manifest inside the repo: {manifests}")
+        expect(not any(p.parent == outside for p in manifests),
+               f"a symlink escaping the repository must be excluded, got {manifests}")
+
+    # 26. a symlink cycle terminates: every REAL directory is walked once (the pre-fix code walks
+    #     the loop forever; the fake fails the test instead of hanging)
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td).resolve()
+        build_clean_repo(root)
+        write_manifest(root, "Cargo.toml", ws_consistent)
+        cycle = fake_link_dir(root / "cyclic", target=root, limit=10)
+        fake_root = fake_link_dir(root, target=root, children=[root / "Cargo.toml", cycle])
+        manifests = vm.cargo_manifests(fake_root)
+        expect(root / "Cargo.toml" in manifests,
+               f"a cycle must not hide the manifest inside the repo: {manifests}")
+        expect(manifests == sorted(manifests), "the scan must stay sorted")
+
+    # 27. on a case-PRESERVING file system `Crate/` and `crate/` are two different directories:
+    #     both are scanned (an unconditional casefold folds them into one key and silently skips
+    #     the second directory's manifests). This box folds case, so POSIX `normcase` (an identity)
+    #     is patched in to model the case-sensitive semantics; the directories are faked and carry
+    #     real manifests, which stay real files.
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td).resolve()
+        build_clean_repo(root)
+        write_manifest(root, "a/Cargo.toml", '[package]\nname = "a"\nversion = "12.1.0"\n')
+        write_manifest(root, "b/Cargo.toml", '[package]\nname = "b"\nversion = "12.1.0"\n')
+        upper = fake_link_dir(root / "Crate", target=root / "Shared",
+                             children=[root / "a" / "Cargo.toml"])
+        lower = fake_link_dir(root / "crate", target=root / "shared",
+                             children=[root / "b" / "Cargo.toml"])
+        fake_root = fake_link_dir(root, target=root, children=[upper, lower])
+        saved_normcase = os.path.normcase
+        os.path.normcase = posixpath.normcase       # case-preserving, as on a POSIX system
+        try:
+            manifests = vm.cargo_manifests(fake_root)
+        finally:
+            os.path.normcase = saved_normcase
+        expect(root / "a" / "Cargo.toml" in manifests and root / "b" / "Cargo.toml" in manifests,
+               "both case-variant directories must be scanned on a case-preserving platform, "
+               f"got {manifests}")
+
     # 17. stdlib-only contract (no third-party imports).
     src = pathlib.Path(vm.__file__).read_text(encoding="utf-8")
     imported = set(re.findall(r"^(?:import|from)\s+([A-Za-z0-9_]+)", src, flags=re.M))
-    allowed = {"__future__", "argparse", "datetime", "pathlib", "re", "sys"}
+    allowed = {"__future__", "argparse", "datetime", "os", "pathlib", "re", "sys"}
     expect(imported <= allowed, f"version_manager must be stdlib-only, imports={imported}")
 
     print("PASS - version manager get/bump/sync/validate/set/suggest behave as expected "

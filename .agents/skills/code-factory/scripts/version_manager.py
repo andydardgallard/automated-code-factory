@@ -27,7 +27,9 @@ e.g. `version_manager.py --repo . validate` (not `validate --repo .`).
 
 `validate` fails on the same files; for Rust it reads every `Cargo.toml` below the repo except
 the pruned `.git`, `.code-factory`, `target`, `node_modules`, `vendor`, `dist`, `build`
-directories (a member that inherits the workspace version is correct and passes).
+directories (a member that inherits the workspace version is correct and passes). A directory is
+walked only while its resolved path stays inside the repo and only once, so a symlink cycle cannot
+hang the scan and a symlink leaving the repository is never read.
 
 `suggest` (the deterministic matrix — hybrid step 1, the reviewer validates in step 2):
   --new-subagent  -> minor   (new subagent)
@@ -43,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import pathlib
 import re
 import sys
@@ -153,21 +156,61 @@ def sync_file(path: pathlib.Path, rel: str, v: str, date: str) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
 
 
+def _resolved(path: pathlib.Path) -> pathlib.Path | None:
+    """`path` with every link resolved, or None when it cannot be resolved.
+
+    A dangling link, a link loop (`ELOOP`) and an unreadable parent all land here.
+    """
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _beneath(root: pathlib.Path, path: pathlib.Path) -> bool:
+    """True when the RESOLVED `path` is `root` itself or lies below it."""
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def cargo_manifests(repo: pathlib.Path) -> list[pathlib.Path]:
-    """Every `Cargo.toml` below `repo`, pruning VCS, factory-state, dependency and build dirs."""
+    """Every `Cargo.toml` below `repo`, pruning VCS, factory-state, dependency and build dirs.
+
+    A link is never trusted on its own: a directory is walked only while its RESOLVED path stays
+    inside `repo`, and only once — every real directory is recorded in `visited`. A symlink cycle
+    (an endless walk) therefore terminates, and a link leaving the repository is skipped instead of
+    being read or crashing the `relative_to` that names a manifest.
+    """
+    if not isinstance(repo, pathlib.Path):       # a str is accepted, a Path subclass is kept as is
+        repo = pathlib.Path(repo)
+    root = _resolved(repo) or repo
     found: list[pathlib.Path] = []
+    visited: set[str] = set()
     stack = [repo]
     while stack:
+        directory = stack.pop()
+        real = _resolved(directory)
+        if real is None or not _beneath(root, real):
+            continue                             # unreadable, a looping link or a foreign dir
+        key = os.path.normcase(str(real))        # one directory where the file system folds case
+        if key in visited:
+            continue                             # this real directory was walked already: a cycle
+        visited.add(key)
         try:
-            entries = sorted(stack.pop().iterdir())
+            entries = sorted(directory.iterdir())
         except OSError:                     # an unreadable directory is skipped, never fatal
             continue
         for entry in entries:
-            if entry.is_dir():
+            if entry.name == CARGO_MANIFEST:
+                target = _resolved(entry)
+                if target is not None and _beneath(root, target) and target.is_file():
+                    found.append(entry)
+            elif entry.is_dir():
                 if entry.name not in CARGO_PRUNED_DIRS:
                     stack.append(entry)
-            elif entry.name == CARGO_MANIFEST and entry.is_file():
-                found.append(entry)
     return sorted(found)
 
 

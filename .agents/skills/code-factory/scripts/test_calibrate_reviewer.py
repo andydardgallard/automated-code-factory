@@ -15,6 +15,11 @@ Two halves:
    incomplete run (no result for a case -> exit 2 naming it), plus the CLI contract (report file
    with the table, deterministic output, the optional `--run-id` header line, broken input ->
    exit 2). Finally the real golden set is scored end to end against synthetic perfect results.
+3. The PERIODIC GATE (`status`) is the deterministic form of `references/code-review.md` section 7:
+   on a throwaway repository root it proves BOTH triggers make a calibration due — an edit to
+   either reviewer prompt, and the fifth run recorded after the calibration — that recording a
+   calibration (`score --log`) clears them, that only the LAST log record decides, that
+   compaction of the journal counts conservatively, and that an unreadable prompt exits 2.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -358,21 +363,277 @@ def check_real_golden_set() -> None:
                f"the table must hold a header and one row per case: {report!r}")
 
 
+def check_calibration_status() -> None:
+    """§7 as a DETERMINISTIC gate: both triggers — a prompt edit and the 5-run interval.
+
+    The fixtures are a throwaway repository root: the two reviewer prompts, a memory journal with
+    one record per run, a tiny golden set and the calibration log. Nothing here talks to an LLM;
+    the gate judges file hashes and record counts.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td) / "repo"
+        golden = root / "cases"
+        results = root / "results"
+        golden.mkdir(parents=True)
+        results.mkdir()
+        write_case(golden, "clean", "approve", [])
+        write_result(results, "clean", "approve", [])
+        log = root / "calibration-log.md"
+        report = root / "calibration.md"
+        prompts = [root / rel for rel in cr.REVIEWER_PROMPT_FILES]
+        prompt_texts = []
+        for index, prompt in enumerate(prompts):
+            prompt.parent.mkdir(parents=True, exist_ok=True)
+            prompt_texts.append(f"# reviewer prompt {index}\nserve the review gate\n")
+            prompt.write_text(prompt_texts[-1], encoding="utf-8")
+        journal = root / cr.JOURNAL_REL
+        journal.parent.mkdir(parents=True)
+        journal.write_text(JOURNAL_HEADER, encoding="utf-8")
+
+        def record_calibration() -> str:
+            """Calibrate for real: `score --log` appends one record computed from the tree."""
+            records = cr.journal_runs(root)
+            run_id = records[-1].get("run_id", "") if records else ""
+            args = ["score", "--golden", str(golden), "--results", str(results),
+                    "--out", str(report), "--log", str(log), "--repo", str(root)]
+            if run_id:
+                args += ["--run-id", run_id]
+            res = run(*args)
+            expect(res.returncode == 0, f"score --log must exit 0: {res.stderr!r}")
+            expect(f"calibration log: {log}" in res.stdout,
+                   f"score --log must name the log it wrote: {res.stdout!r}")
+            return run_id
+
+        def status(*extra: str) -> subprocess.CompletedProcess[str]:
+            return run("status", "--repo", str(root), "--log", str(log), *extra)
+
+        def append_run() -> None:
+            """One more run record in the journal — the §7 run counter goes up by exactly one."""
+            with journal.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(record_text(len(cr.journal_runs(root)) + 1))
+
+        # 0. An untouched repository has NEVER discharged the obligation: FAIL loudly, not a note.
+        no_log = status()
+        expect(no_log.returncode == 1, f"no calibration recorded must exit 1: {no_log.stdout!r}")
+        expect("DUE" in no_log.stderr and "no calibration is recorded" in no_log.stderr,
+               f"the missing calibration must be named: {no_log.stderr!r}")
+
+        # 1. After a calibration with ONE run in the journal: current -> PASS, and the log holds
+        #    the documented record (prompt digest, run count) so the next check needs no LLM.
+        append_run()
+        calibrated_run = record_calibration()
+        text = log.read_text(encoding="utf-8")
+        expect(text.startswith("# Reviewer calibration log"), f"the log header: {text!r}")
+        records = cr.parse_log(text)
+        expect(len(records) == 1, f"one calibration, one record: {records}")
+        expect(records[0]["prompt_sha256"] == cr.prompt_digest(root),
+               f"the record must carry the prompt digest: {records[0]}")
+        expect(records[0]["runs"] == "1", f"the record must carry the run count: {records[0]}")
+        expect("accuracy=100.0%" in text and "macro_precision=1.000" in text,
+               f"the record must carry the metrics: {text!r}")
+        fresh = status()
+        expect(fresh.returncode == 0, f"a current calibration must exit 0: {fresh.stderr!r}")
+        expect("PASS - reviewer calibration is current" in fresh.stdout,
+               f"the PASS line must say so: {fresh.stdout!r}")
+        expect(f"matches the record of run {calibrated_run}" in fresh.stdout,
+               f"the PASS line must name the recorded run: {fresh.stdout!r}")
+        expect(status().stdout == fresh.stdout, "status must be deterministic")
+
+        # 2. TRIGGER 1 — an edit to the reviewer prompt makes the calibration due, even though not
+        #    a single run happened since. Both prompt files trigger it, not only the reference doc.
+        for prompt in prompts:
+            original = prompt.read_text(encoding="utf-8")
+            prompt.write_text(original + "\nan extra instruction line\n", encoding="utf-8")
+            edited = status()
+            expect(edited.returncode == 1,
+                   f"an edit to {prompt.name} must make a calibration due: {edited.stdout!r}")
+            expect("the reviewer prompt changed" in edited.stderr,
+                   f"the prompt trigger must be named: {edited.stderr!r}")
+            prompt.write_text(original, encoding="utf-8")
+            expect(status().returncode == 0,
+                   f"restoring {prompt.name} must not leave a spurious due calibration")
+
+        # 3. TRIGGER 2 — at least one calibration per 5 runs: 4 runs since are still current, the
+        #    5th is due. The interval is positional (after the recorded run), not a global counter.
+        for _ in range(4):                            # four more runs since the calibration
+            append_run()
+        four = status()
+        expect(four.returncode == 0, f"4 runs since must still be current: {four.stderr!r}")
+        expect("4 run(s) since" in four.stdout, f"the run count must be printed: {four.stdout!r}")
+        append_run()                                  # the fifth run since the calibration
+        five = status()
+        expect(five.returncode == 1, f"5 runs since must make a calibration due: {five.stdout!r}")
+        expect("5 run(s) since the last recorded calibration (limit 5)" in five.stderr,
+               f"the interval trigger must be named: {five.stderr!r}")
+
+        # 3a. The limit is a parameter, not a constant buried in prose.
+        expect(status("--max-runs", "99").returncode == 0,
+               "--max-runs must widen the interval")
+        expect(status("--max-runs", "0").returncode == 2, "--max-runs 0 is a usage error")
+
+        # 3b. Recording again clears BOTH triggers, and only the LAST record decides: an older
+        #     record (a different prompt digest, a different run) must not keep the gate red.
+        record_calibration()
+        expect(len(cr.parse_log(log.read_text(encoding="utf-8"))) == 2,
+               "the log is append-only: the second calibration adds a record")
+        cleared = status()
+        expect(cleared.returncode == 0, f"a recorded calibration must clear the gate: "
+                                        f"{cleared.stderr!r}")
+        expect("0 run(s) since" in cleared.stdout,
+               f"the interval restarts at the calibration: {cleared.stdout!r}")
+
+        # 3c. A calibration recorded DURING the current run is recognized by IDENTITY: the
+        #     recorded run_id is the active run of pipeline.yaml (its memory record lands only at
+        #     the finish gate). Without that proof — a recorded count beyond the journal, older
+        #     than the journal, or equal to it under a DIFFERENT run_id (compaction can leave an
+        #     equal-length journal) — every surviving record counts conservatively and the gate
+        #     is DUE.
+        pipeline = root / ".code-factory" / "state" / "pipeline.yaml"
+        pipeline.parent.mkdir(parents=True)
+        pipeline.write_text("run_id: 29991231-deadbeef\nphase: review\nstatus: in_progress\n",
+                            encoding="utf-8")
+        with log.open("a", encoding="utf-8", newline="\n") as handle:
+            total = len(cr.journal_runs(root))
+            handle.write(f"calibration: run_id=29991231-deadbeef "
+                         f"prompt_sha256={cr.prompt_digest(root)} runs={total} "
+                         f"review_runs=0 verdict_accuracy=7/7 accuracy=100.0% "
+                         f"macro_precision=1.000\n")
+        inrun = status()
+        expect(inrun.returncode == 0,
+               f"a calibration of the ACTIVE run must be current: {inrun.stderr!r}")
+        expect("0 run(s) since" in inrun.stdout,
+               f"the active same-run calibration reports zero runs since: {inrun.stdout!r}")
+        with log.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(f"calibration: run_id=29991231-deadbeef "
+                         f"prompt_sha256={cr.prompt_digest(root)} runs={total + 50} "
+                         f"review_runs=0 verdict_accuracy=7/7 accuracy=100.0% "
+                         f"macro_precision=1.000\n")
+        shrunk = status()
+        expect(shrunk.returncode == 1,
+               f"a recorded count beyond the journal means compaction: due: {shrunk.stdout!r}")
+        with log.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(f"calibration: run_id=29991231-deadbeef "
+                         f"prompt_sha256={cr.prompt_digest(root)} runs={total - 2} "
+                         f"review_runs=0 verdict_accuracy=7/7 accuracy=100.0% "
+                         f"macro_precision=1.000\n")
+        laundered = status()
+        expect(laundered.returncode == 1,
+               f"a calibration older than the surviving journal must be DUE, not laundered into "
+               f"current by the subtraction: {laundered.stdout!r}")
+        with log.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(f"calibration: run_id=29991231-0badf00d "
+                         f"prompt_sha256={cr.prompt_digest(root)} runs={total} "
+                         f"review_runs=0 verdict_accuracy=7/7 accuracy=100.0% "
+                         f"macro_precision=1.000\n")
+        equal_count = status()
+        expect(equal_count.returncode == 1,
+               f"count equality under a run_id that is NOT the active run must be DUE: "
+               f"{equal_count.stdout!r}")
+        #     A pipeline checkpoint that cannot be decoded means "no active run", never a crash:
+        #     the same-run fallback stays off and the gate answers conservatively.
+        pipeline.write_bytes(b"run_id: \xff\xfe not utf-8\r\n")
+        corrupt = status()
+        expect(corrupt.returncode == 1 and "Traceback" not in corrupt.stderr,
+               f"an undecodable pipeline.yaml must be conservative, not a crash: "
+               f"{corrupt.stderr!r}")
+        pipeline.write_text("run_id: 29991231-deadbeef\nphase: review\nstatus: in_progress\n",
+                            encoding="utf-8")
+
+        # 4. A calibration whose run record is no longer in the journal (compaction moved it out)
+        #    cannot be counted from, so every journal record counts — the safe direction.
+        (root / cr.JOURNAL_REL).write_text(JOURNAL_HEADER + record_text(1), encoding="utf-8")
+        compacted = status()
+        expect(compacted.returncode == 0,
+               f"a fresh journal of 1 run since is still current: {compacted.stderr!r}")
+        expect("no longer in the journal" in compacted.stdout,
+               f"the positional miss must be stated: {compacted.stdout!r}")
+
+        # 5. An unreadable reviewer prompt is a usage error (exit 2), never a silent PASS.
+        prompts[1].unlink()
+        broken = status()
+        expect(broken.returncode == 2, f"a missing prompt must exit 2: {broken.stdout!r}")
+        expect("cannot be read" in broken.stderr, f"the offender must be named: {broken.stderr!r}")
+        prompts[1].write_text(prompt_texts[1], encoding="utf-8")
+
+        # 5a. An UNREADABLE or CORRUPT journal must fail CLOSED. Only a genuinely ABSENT journal is
+        #     the fresh-project case (zero runs); anything else that cannot be read would otherwise
+        #     be counted as "0 runs since the calibration" — a silent PASS with no evidence at all.
+        #     The fixture is CURRENT here (a fresh record, 0 runs since), so the silent-green bug
+        #     this pins is exactly "corrupt journal -> exit 0, calibration looks current".
+        record_calibration()
+        expect(status().returncode == 0, "the fixture must be current before the corruption probe")
+        journal_path = root / cr.JOURNAL_REL
+        healthy = journal_path.read_bytes()
+        journal_path.write_bytes(b"\xff\xfe\x00 not utf-8 \xc3\x28")
+        try:
+            corrupt = status()
+        finally:
+            journal_path.write_bytes(healthy)
+        expect(corrupt.returncode == 2,
+               f"an invalid-UTF-8 journal must exit 2, not answer with 0 runs: "
+               f"{corrupt.stdout!r} {corrupt.stderr!r}")
+        expect("change-log.md" in corrupt.stderr and "cannot be read" in corrupt.stderr,
+               f"the journal must be named as unreadable: {corrupt.stderr!r}")
+        # A journal path that is a DIRECTORY is an I/O failure, not an empty journal (platform
+        # independent: opening it raises an OSError, on Windows a PermissionError).
+        journal_path.unlink()
+        journal_path.mkdir()
+        try:
+            directory_journal = status()
+        finally:
+            journal_path.rmdir()
+            journal_path.write_bytes(healthy)
+        expect(directory_journal.returncode == 2,
+               f"a journal that cannot be read as a file must exit 2: "
+               f"{directory_journal.stdout!r}")
+        expect("cannot be read" in directory_journal.stderr,
+               f"the I/O failure must be named: {directory_journal.stderr!r}")
+        # ... and an ABSENT journal is still the fresh-project case: zero runs, no error.
+        journal_path.unlink()
+        try:
+            absent = status()
+        finally:
+            journal_path.write_bytes(healthy)
+        expect(absent.returncode == 0,
+               f"an absent journal is a fresh project (0 runs), not a failure: {absent.stderr!r}")
+        expect(status().returncode == 0, "the restored journal must leave the gate green")
+
+        # 6. The CLI contract holds: --help exits 0, the default log path is documented.
+        res = run("status", "--help")
+        expect(res.returncode == 0, f"status --help must exit 0: {res.stderr!r}")
+        expect("--max-runs" in res.stdout and "calibration-log.md" in res.stdout,
+               f"status must document --max-runs and the default log: {res.stdout!r}")
+
+
+JOURNAL_HEADER = "# Change Log\n\n<!-- code-factory-memory: change-log -->\n\n"
+
+
+def record_text(index: int) -> str:
+    """One journal record (the count of these is the §7 run counter)."""
+    return (f"## 2026-10-{index:02d}T00:00:00Z — Run {index}\n"
+            f"title: Run {index}\n"
+            f"run_id: 202610{index:02d}-000000{index - 1:x}\n"
+            f"task_type: {'review' if index % 2 == 0 else 'implement'}\n\n")
+
+
 def main() -> int:
     check_scorer_helpers()
     check_golden_set()
     check_fixtures()
     check_real_golden_set()
+    check_calibration_status()
 
     # stdlib-only contract (no third-party imports).
     src = pathlib.Path(cr.__file__).read_text(encoding="utf-8")
     imported = set(re.findall(r"^(?:import|from)\s+([A-Za-z0-9_]+)", src, flags=re.M))
-    allowed = {"__future__", "argparse", "json", "pathlib", "sys"}
+    allowed = {"__future__", "argparse", "hashlib", "json", "pathlib", "re", "sys"}
     expect(imported <= allowed, f"calibrate_reviewer must be stdlib-only, imports={imported}")
 
     print("PASS - calibrate_reviewer.py scores the golden set deterministically (verdict accuracy, "
-          "macro precision/recall, exit 0 for data, exit 2 for incomplete runs) and the 7 shipped "
-          "golden cases match the calibration brief.")
+          "macro precision/recall, exit 0 for data, exit 2 for incomplete runs), the 7 shipped "
+          "golden cases match the calibration brief, and `status` turns section 7 into a "
+          "deterministic gate: a reviewer-prompt edit and the 5-run interval both fail loudly "
+          "until the calibration is recorded in the append-only log.")
     return 0
 
 

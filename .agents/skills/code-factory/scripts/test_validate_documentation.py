@@ -286,6 +286,51 @@ def main() -> int:
         expect(r.returncode == 0 and "--derive" in r.stdout,
                f"--derive must be discoverable in --help: {r.returncode} {r.stdout[:200]!r}")
 
+        # 22. Comment SPANS, not whole lines. A line is documentation only when everything on it
+        #     outside a comment span is blank: `/* doc */ return x;` carries executable code AFTER
+        #     the closing `*/`, so the whole line is a CODE line. Before the fix any line starting
+        #     with `/*` counted as documentation, so `/* doc */ return safe_value;` could be edited
+        #     into `/* doc */ return dangerous_value;` and pass the documentation-only gate.
+        expect(vd._doc_mask(["/* doc */ return safe_value;"]) == [False],
+               "code after a single-line block comment must be a code line")
+        expect(vd._doc_mask(["/*", " * doc", " */ return safe_value;"]) == [True, True, False],
+               "code on the closing line of a multi-line block comment must be a code line")
+        expect(vd._doc_mask(["/* doc */"]) == [True],
+               "a line holding only a block comment stays documentation")
+        expect(vd._doc_mask(["/* a */ /* b */"]) == [True],
+               "a line of comment spans only stays documentation")
+
+        # 23. End-to-end: changing the value returned AFTER a single-line block comment is a code
+        #     change and must be rejected (the finding's exact exploit).
+        (root / "src" / "span.c").write_text(
+            "int f(void)\n{\n/* doc */ return safe_value;\n}\n", encoding="utf-8")
+        vd.snapshot(root, base, ["src/span.c"])
+        (root / "src" / "span.c").write_text(
+            "int f(void)\n{\n/* doc */ return dangerous_value;\n}\n", encoding="utf-8")
+        errs = vd.check(root, base, ["src/span.c"])
+        expect(any(e.startswith("src/span.c: code line changed:") for e in errs),
+               f"changing code after a single-line block comment must fail: {errs}")
+
+        # 24. End-to-end: the same for code placed on the CLOSING line of a multi-line block.
+        (root / "src" / "span.c").write_text(
+            "int f(void)\n{\n/*\n * doc\n */ return safe_value;\n}\n", encoding="utf-8")
+        vd.snapshot(root, base, ["src/span.c"])
+        (root / "src" / "span.c").write_text(
+            "int f(void)\n{\n/*\n * doc\n */ return dangerous_value;\n}\n", encoding="utf-8")
+        errs = vd.check(root, base, ["src/span.c"])
+        expect(any(e.startswith("src/span.c: code line changed:") for e in errs),
+               f"changing code on the closing line of a block comment must fail: {errs}")
+
+        # 25. The fix must not over-reject: a comment-only line (nothing outside the spans) stays
+        #     documentation in both a single-line and a multi-line block.
+        (root / "src" / "span.c").write_text(
+            "int f(void)\n{\n/* old doc */\nreturn 1;\n}\n", encoding="utf-8")
+        vd.snapshot(root, base, ["src/span.c"])
+        (root / "src" / "span.c").write_text(
+            "int f(void)\n{\n/* new doc */\nreturn 1;\n}\n", encoding="utf-8")
+        expect(vd.check(root, base, ["src/span.c"]) == [],
+               "changing a comment-only block comment line must still pass")
+
     print("PASS - documentation validator allows only documentation-only changes.")
     return 0
 

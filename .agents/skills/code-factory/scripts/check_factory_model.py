@@ -3,7 +3,11 @@
 Deterministic check of the Code Factory's project model (zero LLM tokens).
 
 Checks six invariants of the durable project model:
-  1. AGENTS.md exists and has EXACTLY the 8 canonical `##` sections.
+  1. AGENTS.md exists, is not oversized and has EXACTLY the 8 canonical `##` sections. The SIZE
+     gate (`project_fingerprint.agents_size_issues`, one implementation for both paths) warns over
+     28 KB and FAILS over 32 KB — it runs before the factory-own-root skip, because the factory's
+     own hand-authored manual is the file that once grew to 38 KB. An instruction file nobody can
+     load is not a model, it is a book.
   2. The fingerprint line embedded in AGENTS.md (line 1) matches the fingerprints recomputed
      from the project's current signals. The current format carries BOTH levels:
      `<!-- code-factory-fingerprint: <structural-64-hex> content: <content-64-hex> -->`.
@@ -90,7 +94,8 @@ import re
 import sys
 
 import memory_project
-from project_fingerprint import compute_content_fingerprint, compute_fingerprint, untracked_files
+from project_fingerprint import (agents_size_issues, compute_content_fingerprint,
+                                 compute_fingerprint, untracked_files)
 
 CANONICAL_SECTIONS = [
     "Project Overview",
@@ -165,6 +170,12 @@ def check_agents_model(root: pathlib.Path) -> tuple[list[str], list[str], str]:
     A WARNING (never an error) is added when the worktree holds UNTRACKED files: the content level
     hashes the tracked working-tree content, so untracked files are legitimately outside the model
     and the model may still be up to date.
+
+    The SIZE gate runs FIRST and applies to every root, the factory's own hand-authored manual
+    included: an AGENTS.md over 28 KB is a WARNING, over 32 KB an ERROR (validation side of
+    `project_fingerprint.agents_size_issues`). It is measured before the factory-own-root SKIP on
+    purpose — a skip must never hide an oversized instruction file, which is exactly the file the
+    owner complained about.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -172,13 +183,19 @@ def check_agents_model(root: pathlib.Path) -> tuple[list[str], list[str], str]:
     if not agents.is_file():
         return ["AGENTS.md not found"], warnings, ""
 
+    size_warning, size_error = agents_size_issues(agents.stat().st_size)
+    if size_error:
+        errors.append(size_error)
+    elif size_warning:
+        warnings.append(size_warning)
+
     lines = agents.read_text(encoding="utf-8").splitlines()
     first = lines[0] if lines else ""
 
     if _is_factory_own_root(root, first):
-        return [], warnings, (f"AGENTS.md is the factory's own hand-authored manual "
-                              f"(no '{FINGERPRINT_MARKER}' marker, '{VERSION_MARKER}' present, "
-                              f"{FACTORY_SKILL_REL} present): AGENTS.md model checks skipped")
+        return errors, warnings, (f"AGENTS.md is the factory's own hand-authored manual "
+                                  f"(no '{FINGERPRINT_MARKER}' marker, '{VERSION_MARKER}' present, "
+                                  f"{FACTORY_SKILL_REL} present): AGENTS.md model checks skipped")
 
     m = FINGERPRINT_RE.match(first.strip())
     if not m:

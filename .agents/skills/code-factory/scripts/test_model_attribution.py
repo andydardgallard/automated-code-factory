@@ -31,7 +31,11 @@ Cases:
      the hand `models_used` reader (quotes, prose values, trailing comments, an absent block);
  10. the CLI contract: `--help` exits 0, missing/invalid arguments exit 2 without a traceback, the
      final line is `PASS|FAIL|DEGRADED - <summary> (<out path>)`, `--quiet` prints only that line,
-     and the module imports stdlib only.
+     and the module imports stdlib only;
+ 11. REGRESSION (review 20261026-1c588b16, major 2): a pipeline whose `models_used` block is empty
+     or absent confirms NO role model, so it is DEGRADED (exit 3) — never PASS/exit 0. `verdict_of`
+     of an empty comparison is DEGRADED by default; only the claim-free wire report (no
+     `--pipeline` at all) exits 0.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -663,6 +667,59 @@ def case_10_cli(root: pathlib.Path) -> None:
            f"model_attribution must be stdlib-only, imports={sorted(imported - allowed)}")
 
 
+def case_11_no_claims_is_degraded(root: pathlib.Path) -> None:
+    """Regression (review 20261026-1c588b16, major 2): no claim set is DEGRADED, never PASS.
+
+    `verdict_of({})` used to answer PASS, so a run with a session but a pipeline that names no
+    role in `models_used` exited 0 — "every claimed role matches the wire" is vacuously true, yet
+    NOT ONE model was confirmed. The owner reads exit 0 as an artifact-backed confirmation, so an
+    empty claim set must be DEGRADED (exit 3), exactly like the missing wire.
+    """
+    home, repo = standard_session(root / "noclaims")
+
+    # 1) The `models_used:` block is present but names no role.
+    empty_block = write(root, "pipeline-no-claims.yaml", "\n".join([
+        "run_id: 20261026-2ea2eb55", "phase: implement", "status: ok", "models_used:", ""]))
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(empty_block),
+                               name="no-claims.json")
+    expect(res.returncode == 3,
+           f"an empty models_used set must be DEGRADED (exit 3), not {res.returncode}: {text!r}")
+    expect(artifact["verdict"] == "DEGRADED", f"the verdict: {artifact.get('verdict')!r}")
+    expect(artifact["attribution_degraded"] is True,
+           f"the artifact must admit it: {artifact.get('attribution_degraded')!r}")
+    expect(artifact["comparison"] == {}, f"nothing was compared: {artifact['comparison']!r}")
+    expect("models_used" in (artifact.get("degraded_reason") or ""),
+           f"the reason must name the empty claim set: {artifact.get('degraded_reason')!r}")
+    expect(text.strip().splitlines()[-1].startswith("DEGRADED - "),
+           f"the final line must not read PASS: {text!r}")
+    stderr_lines = [line for line in err(res).splitlines() if line.strip()]
+    expect(len(stderr_lines) == 1 and "DEGRADED" in stderr_lines[0],
+           f"exactly one reason line on stderr: {err(res)!r}")
+
+    # 2) The `models_used` block is absent altogether: the same degradation.
+    absent = write(root, "pipeline-absent-claims.yaml", "run_id: 20261026-2ea2eb55\nstatus: ok\n")
+    res2, artifact2, text2 = attr(root, home, repo, "--pipeline", str(absent),
+                                  name="no-claims-absent.json")
+    expect(res2.returncode == 3,
+           f"a pipeline without models_used must be DEGRADED (exit 3): {text2!r}")
+    expect(artifact2["verdict"] == "DEGRADED", f"verdict: {artifact2.get('verdict')!r}")
+    expect(artifact2["claims"]["compared"] == 0, f"no claim was read: {artifact2['claims']!r}")
+
+    # 3) The invariant itself (the quoted defect line): an empty comparison is never PASS.
+    expect(ma.verdict_of({}) == "DEGRADED",
+           f"verdict_of({{}}) must be DEGRADED, got {ma.verdict_of({})!r}")
+    expect(ma.verdict_of({"a": "match"}) == "PASS",
+           "a confirmed claim is still a PASS")
+
+    # 4) Contrast: with NO --pipeline there is no claim side at all, so the run is a wire report
+    # (documented exit 0) — the degradation above is about equal set, not about reading a wire.
+    res3, artifact3, text3 = attr(root, home, repo, name="report-only.json")
+    expect(res3.returncode == 0, f"a claim-free wire report still exits 0: {text3!r}")
+    expect(artifact3["comparison"] == {}, f"nothing to compare: {artifact3['comparison']!r}")
+    expect("no models_used claim to cross-check" in text3,
+           f"the report must say why nothing was compared: {text3!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -676,6 +733,7 @@ def main() -> int:
         case_8_vaccination(root)
         case_9_helpers(root)
         case_10_cli(root)
+        case_11_no_claims_is_degraded(root)
 
     print("PASS - model_attribution.py confirms every models_used claim against the CLI's own "
           "session wire: roles come from state.json (or subagent.spawned), the wire name is "

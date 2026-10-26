@@ -347,6 +347,27 @@ trusted reviewer:
 - **verdict accuracy: 100%** — every golden verdict is agreed with;
 - **macro precision (severity) ≥ 0.8** — the reviewer rarely invents findings or over-rates severity.
 
+That obligation is ENFORCED deterministically, not remembered: `calibration-log.md` in
+`skill-base/golden-set/` is the append-only record of calibrations, `score --log <that file>`
+appends one record (reviewer-prompt digest + run count + metrics), and
+
+```bash
+python .agents/skills/code-factory/scripts/calibrate_reviewer.py status --repo <resolved repo_path>
+```
+
+compares the CURRENT prompt digest and the number of run records written since the recorded
+calibration with that last record. Exit 0 = still current; exit 1 = DUE (a prompt edit, 5 runs since,
+or no recorded calibration at all) with every reason printed; exit 2 = the gate could not judge (an
+unreadable reviewer prompt or memory journal) and the run stops instead of guessing.
+
+**The command is part of the review gate, not an optional ritual.** The code-review flow node
+(`SKILL.md`, node `CR`) and `agents/code-factory.md` Phase 8b invoke it BEFORE the reviewer starts:
+exit 0 proceeds to the reviewer, exit 1 means the golden-set calibration is run first
+(`score --golden skill-base/golden-set/cases --results <results dir>
+--out .code-factory/logs/reviewer-calibration.md --log skill-base/golden-set/calibration-log.md
+--run-id <run_id>`, which appends the record that clears the gate) and the reviewer is launched only
+afterwards, and exit 2 stops the run with the reason. No LLM is involved: hashes and record counts.
+
 Falling below a target is a signal to tighten the PROMPT (the §3 critical/major boundary is the
 usual culprit), never to move the golden set: `expected.yaml` encodes the rule, so softening a case
 to match the reviewer would hide the defect the case exists to catch. Missing a real defect counts

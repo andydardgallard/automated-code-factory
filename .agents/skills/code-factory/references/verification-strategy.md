@@ -118,7 +118,11 @@ python .agents/skills/code-factory/scripts/evidence_ledger.py check \
   the stage and re-stamp; never carry a stale stamp forward.
 - **STALE downgrades the verdict**: passing `--ledger` to the acceptance gate makes it re-check the
   ledger in-process, and a STALE entry — or the absence of a FRESH `regression=pass` entry —
-  downgrades an otherwise SUCCESS run to **DEGRADED** with the reason quoted in `acceptance.md`:
+  downgrades an otherwise SUCCESS run to **DEGRADED** with the reason quoted in `acceptance.md`.
+  Omitting `--ledger` is not a loophole: without a ledger there is no freshness proof at all, so
+  the verdict is DEGRADED as well — SUCCESS always requires a usable FRESH `regression=pass`
+  ledger entry, and an entry stamped with an EMPTY scope (`--files` empty) is UNSCOPED and never
+  counts as that proof:
 
   ```bash
   python .agents/skills/code-factory/scripts/verify_acceptance.py \

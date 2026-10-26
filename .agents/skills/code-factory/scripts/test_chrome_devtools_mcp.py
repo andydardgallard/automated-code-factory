@@ -18,9 +18,11 @@ Covers, with tempfile fixtures:
     never leaking into the deployed file,
   - `vendor-install`: the documented `npm install --prefix <vendor> --no-save --ignore-scripts
     --omit=dev <pinned>` command line, idempotency against an already installed package, the pin being
-    enforced on disk, and the fail-soft degradations (a simulated/missing npm, a failing runner, a
-    runner that reports success without creating the entry) — with an INJECTED runner and the offline
-    seam `CHROME_DEVTOOLS_MCP_VENDOR_OFFLINE=1`, so the suite never reaches the network or npm,
+    enforced on disk (an unreadable pin — missing or corrupt package metadata — is NOT an installed
+    package: it is reinstalled or reported unavailable, never declared ready), and the fail-soft
+    degradations (a simulated/missing npm, a failing runner, a runner that reports success without
+    creating the entry) — with an INJECTED runner and the offline seam
+    `CHROME_DEVTOOLS_MCP_VENDOR_OFFLINE=1`, so the suite never reaches the network or npm,
   - `probe` with `--simulate-missing node` / `chrome` / `chrome-for-testing` / `mcp-server` /
     `vendor-entry` and with a concrete `--target`: the vendored entry of that project is checked and
     a missing one makes the browser path unusable (DATA, exit 0),
@@ -747,6 +749,73 @@ def test_vendor_install(tmp: pathlib.Path) -> None:
     other = cd.vendor_install(tmp / "vendor-other", asset=other_path, offline=True)
     check(other["status"] == "failed" and "other-mcp" in other["message"],
           f"a template pinning another package must be refused: {other}")
+
+    # 9. An UNPROVABLE version is never "already installed": readiness needs the pin PROVEN on disk,
+    #    so a missing or corrupt package.json must re-run the install instead of reporting a skip.
+    for label, manifest in (("missing", None), ("corrupt", "{ this is not json")):
+        case = tmp / f"vendor-unproven-{label}"
+        case_entry = seed_vendored_entry(case)
+        manifest_path = cd.vendored_package_json(case_entry)
+        if manifest is None:
+            manifest_path.unlink()
+        else:
+            written(manifest_path, manifest)
+        check(cd.vendored_version(case_entry) is None,
+              f"the {label} fixture must carry an unreadable version: "
+              f"{cd.vendored_version(case_entry)!r}")
+        seen: list[list[str]] = []
+
+        def reinstalling_runner(argv: list[str], timeout: int, _case: pathlib.Path = case
+                               ) -> tuple[int, str]:
+            seen.append(argv)
+            seed_vendored_entry(_case)
+            return 0, "added 1 package"
+
+        result = cd.vendor_install(vendor_prefix(case), offline=False, runner=reinstalling_runner)
+        check(len(seen) == 1,
+              f"an unreadable ({label}) package.json must trigger a reinstall, never a skip: {result}")
+        check(result["status"] == "installed" and result["installed"],
+              f"the reinstall of the {label} case must be reported as installed: {result}")
+        check("cannot be read" in result["message"],
+              f"the {label} case must say why it reinstalled: {result['message']!r}")
+        check(cd.vendored_version(case_entry) == cd.PINNED_VERSION,
+              f"the {label} case must end with a PROVEN pin: {cd.vendored_version(case_entry)!r}")
+
+    # 10. Fail closed: an install that leaves the pin unprovable is NOT installed (no managed entry).
+    unproven = tmp / "vendor-unproven-after"
+    unproven_entry = seed_vendored_entry(unproven, version="0.0.1")
+
+    def corrupting_runner(argv: list[str], timeout: int) -> tuple[int, str]:
+        seed_vendored_entry(unproven)
+        written(cd.vendored_package_json(unproven_entry), "{ not json")
+        return 0, "added 1 package"
+
+    after = cd.vendor_install(vendor_prefix(unproven), offline=False, runner=corrupting_runner)
+    check(after["status"] == "failed" and not after["installed"],
+          f"an install that leaves an unprovable version must fail closed: {after}")
+    check("cannot be proven" in after["message"],
+          f"the fail-closed reason must name the unprovable pin: {after['message']!r}")
+
+    # 11. The offline seam repairs unprovable metadata instead of trusting it (idempotent otherwise).
+    repair = tmp / "vendor-offline-repair"
+    repair_entry = seed_vendored_entry(repair)
+    written(cd.vendored_package_json(repair_entry), "{ not json")
+    repaired = cd.vendor_install(vendor_prefix(repair), offline=True)
+    check(repaired["status"] == "offline" and repaired["installed"],
+          f"the offline seam must reinstall an unprovable package: {repaired}")
+    check(cd.vendored_version(repair_entry) == cd.PINNED_VERSION,
+          f"the offline seam must leave a PROVEN pin: {cd.vendored_version(repair_entry)!r}")
+
+    # 12. The CLI must not exit 0 with "present" when the pin cannot be proven and no install is
+    #     possible — an unproven installation is reported as a skip (exit 1), never as ready.
+    cli_unproven = tmp / "vendor-cli-unproven"
+    cli_unproven_entry = seed_vendored_entry(cli_unproven)
+    written(cd.vendored_package_json(cli_unproven_entry), "{ not json")
+    cli_res = run("vendor-install", "--target", str(vendor_prefix(cli_unproven)),
+                  "--simulate-missing", "npm")
+    expect_clean_cli(cli_res, 1, "vendor-install (unprovable pin, no npm)")
+    check(cli_res.stdout.splitlines()[0].strip() != "present",
+          f"an unprovable installation must not be reported as present: {cli_res.stdout!r}")
 
 
 # --------------------------------------------------------------------- probe

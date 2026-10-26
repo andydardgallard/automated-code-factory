@@ -3,16 +3,17 @@
 Deterministic self-test for the canonical review-gate policy (zero LLM tokens).
 
 The review gate is the rule `review-gate-policy` of the factory rulebook
-(`references/factory-rules.md`), quoted VERBATIM into five documents: `references/code-review.md`,
-`agents/code-factory.md`, `skills/code-factory/SKILL.md`, `AGENTS.md` and `.agents/README.md`.
-Five prose copies drift, one machine-checked copy does not — the rulebook is the single home and
+(`references/factory-rules.md`), quoted VERBATIM into four documents: `references/code-review.md`,
+`agents/code-factory.md`, `skills/code-factory/SKILL.md` and `.agents/README.md` (the root
+`AGENTS.md` POINTS at the rule instead of quoting it, so it is not a carrier).
+Four prose copies drift, one machine-checked copy does not — the rulebook is the single home and
 `check_factory_rules.py --rule review-gate-policy` is the checker, so this test is a THIN WRAPPER
 around it (subprocess, assert exit 0) that keeps the historical name and the blast radius of the
 gate. It adds the checks a pure pass/fail wrapper would lose:
 
   - the rulebook still states the policy's key markers (`unverified_review`, `conditional pass`,
     `hitl`, `auto`), so the gate cannot be watered down by rewriting rulebook and carriers at once;
-  - the legacy `<!-- review-gate-policy: ... -->` marker is gone from all five carriers;
+  - the legacy `<!-- review-gate-policy: ... -->` marker is gone from all four carriers;
   - a negative self-check on throwaway copies in a temp directory (never the real documents)
     proves drift, a deleted block, a duplicated block and an everywhere-weakened gate ARE caught.
 
@@ -36,8 +37,10 @@ CHECKER = SCRIPTS / "check_factory_rules.py"
 
 RULEBOOK = ".agents/skills/code-factory/references/factory-rules.md"
 RULE = "review-gate-policy"
+# The four documents that quote the rule VERBATIM. The root AGENTS.md is deliberately NOT one of
+# them: it is a hand-authored map that POINTS at the rulebook, so quoting there would duplicate the
+# wording (and it once pushed the file past the 32 KB instruction-file limit).
 DEFAULT_FILES = (
-    "AGENTS.md",
     ".agents/README.md",
     ".agents/agents/code-factory.md",
     ".agents/skills/code-factory/SKILL.md",
@@ -58,7 +61,7 @@ def check(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def make_tree(dst: pathlib.Path) -> list[pathlib.Path]:
-    """A throwaway root with the rulebook plus byte-identical copies of the five documents."""
+    """A throwaway root with the rulebook plus byte-identical copies of the four documents."""
     if dst.exists():
         shutil.rmtree(dst)
     (dst / RULEBOOK).parent.mkdir(parents=True, exist_ok=True)
@@ -89,7 +92,7 @@ def main() -> int:
            f"check_factory_rules.py --rule {RULE} must exit 0: {res.stdout!r} {res.stderr!r}")
     expect("PASS" in res.stdout, f"the checker must report PASS: {res.stdout!r}")
 
-    # ... and the five documents no longer carry the legacy marker.
+    # ... and the four documents no longer carry the legacy marker.
     for name in DEFAULT_FILES:
         text = (ROOT / name).read_text(encoding="utf-8")
         expect("<!-- review-gate-policy:" not in text,
@@ -111,7 +114,7 @@ def main() -> int:
         expect("differs" in drift.stdout, f"a drifted copy must be reported: {drift.stdout!r}")
 
         copies = make_tree(tree)
-        empty = copies[4]
+        empty = copies[-1]
         empty.write_text(empty.read_text(encoding="utf-8")
                          .replace(begin, "no block").replace(end, "no block"), encoding="utf-8")
         deleted = check("--root", str(tree), "--rule", RULE)

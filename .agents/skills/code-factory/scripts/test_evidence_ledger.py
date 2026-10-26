@@ -8,7 +8,9 @@ marks entries FRESH/STALE by recomputing each entry's fingerprint against its OW
 a file edited after signing turns the evidence STALE and exits 1, a fresh ledger exits 0, a
 mixed-scope ledger verifies with no `--files` at all, and a caller scope that differs from the
 stamped one is a fail-closed STALE whose reason names the scope mismatch instead of a file change,
-(d) a broken ledger is refused, never overwritten, and never leaves a temp file behind.
+(d) a broken ledger is refused, never overwritten, and never leaves a temp file behind, and (e) an
+entry whose recorded scope is EMPTY signs no file, so it is never FRESH — and `stamp` refuses to
+write such an entry at all.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -252,8 +254,38 @@ def main() -> int:
         expect("the signed files changed" not in res.stdout,
                f"an empty scope is not a file change: {res.stdout!r}")
 
+        # 13. An entry whose recorded scope is EMPTY (`files: []`) signed no file at all, so its
+        #     fingerprint is the hash of nothing — and every working tree reproduces it. Such an
+        #     entry must never be FRESH: otherwise a `regression=pass` stamp over an empty file
+        #     list certifies any tree, signed or not.
+        empty_scope = tmp / "empty-scope" / "evidence.json"
+        empty_scope.parent.mkdir(parents=True, exist_ok=True)
+        nothing = sign(tmp)[0]                       # the hash of an empty file set
+        empty_scope.write_text(json.dumps({"version": 1, "entries": [
+            {"name": "regression", "result": "pass", "fingerprint": nothing, "files": [],
+             "timestamp": "2026-09-24T10:00:00+00:00", "log": None, "run_id": ""}]}),
+            encoding="utf-8")
+        res = check(tmp, empty_scope)                # no --files: the entry's own (empty) scope
+        expect(res.returncode == 1,
+               f"an empty signed scope must never be FRESH: {res.stdout!r}{res.stderr!r}")
+        expect("FRESH" not in res.stdout.split("regression")[1][:40],
+               f"the regression row must not be FRESH: {res.stdout!r}")
+        expect("empty scope" in res.stdout,
+               f"the reason must name the empty scope: {res.stdout!r}")
+        expect(check(tmp, empty_scope, "a.py").returncode == 1,
+               "an empty signed scope must not be rescued by a caller --files either")
+
+        # 14. `stamp` refuses to write such an entry in the first place (the same hole, closed at
+        #     the source): exit 1 with an error and no ledger created.
+        no_files = tmp / "no-files" / "evidence.json"
+        res = stamp(tmp, no_files, "regression", "pass")
+        expect(res.returncode == 1 and "error:" in res.stderr,
+               f"stamping an empty scope must be refused: {res.stdout!r}{res.stderr!r}")
+        expect(not no_files.exists(), "a refused stamp must not create the ledger")
+
     print("PASS - evidence_ledger.py behaves as expected (deterministic sign, atomic stamp, "
-          "FRESH/STALE check with stale evidence rejected, run id attributed per entry).")
+          "FRESH/STALE check with stale evidence rejected and an empty signed scope never FRESH, "
+          "run id attributed per entry).")
     return 0
 
 

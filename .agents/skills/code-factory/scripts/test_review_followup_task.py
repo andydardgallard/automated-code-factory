@@ -7,9 +7,13 @@ the generator through its CLI and checks the whole contract:
 
   - the emitted file is a flat factory task carrying every required key, `mode: hitl` and
     `task_type: implement`, with the `--repo` value as `repo_path`;
-  - `acceptance_criteria` holds one criterion per finding plus the final "the change is reviewed"
-    one, each finding criterion marked `derived: true` (a finding carrying a `verify` command is
-    emitted with `verify` instead);
+  - `acceptance_criteria` holds one criterion per finding plus a final MACHINE-VERIFIABLE one and
+    the "the change is reviewed" one, each finding criterion marked `derived: true` unless it
+    carries a `verify` command (given by the finding, or derived from its location by running the
+    module's sibling self-test);
+  - REGRESSION (review 20261026-1c588b16, major 4): the generated task always carries at least one
+    non-empty `verify` — the verified-acceptance gate accepts only such a task — and that command
+    really executes in the repository;
   - the description groups the findings by severity with `file:line`, reports the RECOMPUTED
     counts (the stale `counts` of the input are ignored), states that the file comes from a
     report-only run and names the generation command;
@@ -143,10 +147,10 @@ def main() -> int:
         expect("A second line: with a colon" in " ".join(description.split()),
                "the full multi-line detail must survive in the description")
 
-        # 6. One criterion per finding plus the final review criterion.
+        # 6. One criterion per finding plus the final VERIFIED criterion and the review criterion.
         criteria = task["acceptance_criteria"]
-        expect(len(criteria) == len(FINDINGS) + 1,
-               f"expected {len(FINDINGS) + 1} criteria, got {len(criteria)}")
+        expect(len(criteria) == len(FINDINGS) + 2,
+               f"expected {len(FINDINGS) + 2} criteria, got {len(criteria)}")
         for finding, item in zip(FINDINGS, criteria):
             expect(isinstance(item, dict) and item.get("criterion"),
                    f"every finding needs its own criterion: {item!r}")
@@ -155,7 +159,7 @@ def main() -> int:
             expect(generator.flatten(finding["title"]) in item["criterion"],
                    f"the criterion must quote its finding: {item['criterion']!r}")
         expect("reviewed" in criteria[-1]["criterion"],
-               f"the final criterion must be the review one: {criteria[-1]!r}")
+               f"the last criterion must be the review one: {criteria[-1]!r}")
         expect("[critical] src/app.py:12" in criteria[0]["criterion"],
                f"the criterion must carry severity and file:line: {criteria[0]['criterion']!r}")
 
@@ -276,9 +280,89 @@ def main() -> int:
                f"a finding outside the contract must exit 2: {res.returncode} {res.stderr!r}")
         expect("Traceback" not in res.stderr, "invalid input must not raise a traceback")
 
+        # 15. REGRESSION (review run 20261026-1c588b16, major 4): a generated task always carries a
+        #     MACHINE-VERIFIABLE criterion. Before the fix every criterion was `derived` (the final
+        #     one unconditionally), so the verified-acceptance gate could only ever report DEGRADED.
+        #     A finding pointing at a module whose sibling self-test exists derives `python <test>`,
+        #     and the final criterion re-runs those checks.
+        checkable_repo = tmp / "checked repo"
+        (checkable_repo / "scripts").mkdir(parents=True)
+        (checkable_repo / "scripts" / "check.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (checkable_repo / "scripts" / "test_check.py").write_text("print('ok - check')\n",
+                                                                  encoding="utf-8")
+        (checkable_repo / "scripts" / "other.py").write_text("VALUE = 2\n", encoding="utf-8")
+        checkable = write_json(tmp / "checkable.json", [
+            {"severity": "critical", "file": "scripts/check.py", "line": 1,
+             "title": "The check always passes", "detail": "it must bite on the broken input"},
+            {"severity": "minor", "file": "scripts/other.py", "line": 1,
+             "title": "No sibling self-test for this file", "detail": ""},
+        ])
+        out_checkable = tmp / "checkable-task.yaml"
+        res = run("--findings", str(checkable), "--repo", str(checkable_repo),
+                  "--out", str(out_checkable))
+        expect(res.returncode == 0, f"a checkable finding must generate a task: {res.stderr!r}")
+        checked_text = out_checkable.read_text(encoding="utf-8")
+        checked_criteria = generator.parse_task(checked_text)["acceptance_criteria"]
+        verified_items = [item for item in checked_criteria
+                          if str(item.get("verify", "")).strip()]
+        expect(verified_items,
+               "the generated task must carry at least one criterion with a verify command, "
+               f"else the acceptance gate can only report DEGRADED: {checked_criteria!r}")
+        derived_item = checked_criteria[0]
+        expect(derived_item.get("verify") == "python scripts/test_check.py",
+               f"a finding with a sibling self-test derives that command: {derived_item!r}")
+        expect("derived" not in derived_item,
+               f"a criterion carrying a verify command is not derived: {derived_item!r}")
+        expect(checked_criteria[1].get("derived") is True,
+               f"a finding with nothing checkable stays derived: {checked_criteria[1]!r}")
+        final_verify = checked_criteria[-2]
+        expect(str(final_verify.get("verify", "")).strip() != "",
+               f"the final criterion must carry a verify command: {final_verify!r}")
+        expect(final_verify["verify"] == "python scripts/test_check.py",
+               f"the final criterion re-runs the derived checks: {final_verify!r}")
+        expect("derived" not in final_verify,
+               f"the final verify criterion is not derived: {final_verify!r}")
+        # The emitted command really executes, exactly as the acceptance gate runs it (cwd = repo).
+        executed = subprocess.run(final_verify["verify"], shell=True, cwd=str(checkable_repo),
+                                  capture_output=True, text=True, errors="replace")
+        expect(executed.returncode == 0,
+               f"the emitted verify command must actually execute: {executed.stdout!r} "
+               f"{executed.stderr!r}")
+        expect("ok - check" in executed.stdout,
+               f"the verify command's own evidence must come back: {executed.stdout!r}")
+        # Acceptance shape: the file parses and carries a usable verify command.
+        expect(generator.check_task(checked_text) == [],
+               f"a generated task must pass the acceptance-shape check: "
+               f"{generator.check_task(checked_text)}")
+
+        # 16. When nothing is checkable the final criterion still carries a REAL command (the
+        #     tree-soundness gate) instead of an empty verify — the task is never doomed.
+        final_default = criteria[-2]
+        expect(final_default.get("verify") == generator.DEFAULT_FINAL_VERIFY,
+               f"the fallback final verify must be the tree-soundness gate: {final_default!r}")
+        expect("derived" not in final_default,
+               f"the fallback final verify criterion is not derived: {final_default!r}")
+        executed = subprocess.run(final_default["verify"], shell=True, cwd=str(repo),
+                                  capture_output=True, text=True, errors="replace")
+        expect(executed.returncode == 0,
+               f"the fallback verify command must actually execute: {executed.stdout!r} "
+               f"{executed.stderr!r}")
+
+        # 17. `--check` rejects a task whose criteria carry no verify command at all (the shape the
+        #     bug produced): the verified-acceptance gate would finish DEGRADED on it.
+        unverified = tmp / "unverified-task.yaml"
+        unverified.write_text("\n".join(line for line in text.split("\n")
+                                        if not line.startswith("    verify:")),
+                              encoding="utf-8")
+        res = run("--check", "--out", str(unverified))
+        expect(res.returncode == 1,
+               f"--check must reject a task without any verify criterion: {res.returncode}")
+        expect("verify" in res.stderr, f"the missing verify must be named: {res.stderr!r}")
+
     print("PASS - review_followup_task.py behaves as expected (flat factory task with quoted "
-          "scalars, one criterion per finding plus the review criterion, same input -> identical "
-          "bytes, --check shape validation, exit codes 0/1/2, and the naive-emitter vaccination).")
+          "scalars, one criterion per finding plus a VERIFIED final criterion and the review "
+          "one, same input -> identical bytes, --check shape validation, exit codes 0/1/2, and "
+          "the naive-emitter vaccination).")
     return 0
 
 

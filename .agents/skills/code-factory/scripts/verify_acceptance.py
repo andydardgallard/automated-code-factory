@@ -13,12 +13,14 @@ Input (JSON — the main agent builds it from task.yaml, since stdlib has no YAM
 
 Verdict (SUCCESS is the only accepted outcome):
   SUCCESS  — at least one criterion carries `verify`, ALL of them are MET, the regression baseline
-             is proven (`--regression pass`), and — when `--ledger` is given — the ledger holds
-             FRESH `regression=pass` evidence.
+             is proven (`--regression pass`), AND a usable `--ledger` holds a FRESH
+             `regression=pass` entry. The ledger is not optional for SUCCESS: it is the only
+             proof that the regression evidence is about the tree being accepted.
   DEGRADED — nothing failed, but the baseline is not proven (`--regression not-run`), no criterion
-             carries a `verify` command (nothing was actually verified), or the evidence ledger is
-             STALE / has no FRESH `regression=pass` entry (stale evidence downgrades an otherwise
-             SUCCESS run, even with `--regression pass`).
+             carries a `verify` command (nothing was actually verified), no `--ledger` was given
+             (the regression claim is unsigned), or the evidence ledger is STALE / UNSCOPED / has
+             no FRESH `regression=pass` entry (stale evidence downgrades an otherwise SUCCESS run,
+             even with `--regression pass`).
   FAILURE  — any verify criterion FAILED, or `--regression fail`.
 
 Exit code 0 only for SUCCESS, so a degraded or degenerate run can never be accepted silently.
@@ -35,11 +37,12 @@ Usage:
          [--task-type implement|review|refactor|security_audit] \\
          [--ledger state/evidence.json --evidence-files src/a.py src/b.py]
 
-`--ledger`/`--evidence-files` are optional and off by default: when given, the ledger is
-re-checked in-process via `evidence_ledger` (import, not subprocess) against the current content
-of `--evidence-files`. Any STALE entry, a non-pass entry, or the absence of a FRESH
-`regression=pass` entry downgrades the verdict to DEGRADED with the reason quoted in
-acceptance.md — a green log from an older revision is not proof about the current tree.
+`--ledger`/`--evidence-files` are the freshness gate: the ledger is re-checked in-process via
+`evidence_ledger` (import, not subprocess) against the current content of `--evidence-files`. Any
+STALE entry, an UNSCOPED entry (an empty or missing signed scope), a non-pass entry, or the absence
+of a FRESH `regression=pass` entry downgrades the verdict to DEGRADED with the reason quoted in
+acceptance.md — a green log from an older revision is not proof about the current tree. Omitting
+`--ledger` altogether is the same downgrade: SUCCESS is impossible without it.
 
 `--run-id` (see `run_id.py`) is optional and only adds the line `run_id: <id>` to the header of
 acceptance.md, so the artifact names the run it belongs to.
@@ -376,7 +379,9 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=600,
                     help="Seconds per verify command; 0 disables the timeout (default: 600)")
     ap.add_argument("--ledger", default="",
-                    help="Optional evidence ledger JSON; checked when given (see module docstring)")
+                    help="Evidence ledger JSON; SUCCESS is impossible without it (see module "
+                         "docstring). When omitted the verdict is DEGRADED, because an unsigned "
+                         "regression claim is not evidence")
     ap.add_argument("--evidence-files", nargs="*", default=[], metavar="FILE",
                     help="Files the ledger evidence was signed over (required in practice for "
                          "--ledger: a different scope makes every entry STALE)")
@@ -410,6 +415,14 @@ def main() -> int:
                 verdict, reason = "DEGRADED", f"evidence ledger rejected: {ledger_report['reason']}"
             else:
                 reason = f"{reason}; evidence ledger rejected: {ledger_report['reason']}"
+    elif verdict == "SUCCESS":
+        # The ledger is the only thing that can prove the regression evidence is about THIS tree:
+        # with no ledger there is nothing to check, so the fresh-evidence contract is unmet and
+        # SUCCESS is impossible. DEGRADED (not FAILURE): nothing failed, the proof is missing.
+        verdict = "DEGRADED"
+        reason = ("no evidence ledger given (--ledger ... --evidence-files ...): SUCCESS requires "
+                  f"a usable FRESH {evidence_ledger.REQUIRED_EVIDENCE}=pass ledger entry, and an "
+                  "unsigned regression claim is not evidence")
     # Explicit, -O-proof contract check: an `assert` would vanish under `python -O` and an
     # out-of-contract verdict would be rendered into acceptance.md as if it were a real one.
     if verdict not in VERDICTS:

@@ -25,6 +25,7 @@ Public API (`precedence()` returns the same rulebook as one English paragraph):
   resolve(task_matrix, default_matrix, role)  one role: model, source (task|default|none), warnings
   resolve_all(task_matrix, default_matrix)    every role, in ROLES order
   check_families(resolved)                    {"errors": [...], "warnings": [...]} generator vs judge
+  check_resolution(resolved)                  the full pre-flight: unresolved roles + families
   committee_second_planner(first_model, ...)  the contrasting planner of the plan committee
   precedence()                                the precedence, one paragraph
 
@@ -35,9 +36,11 @@ CLI:
 
 `family` prints the vendor family of one alias. `default` prints the default matrix, `resolve`
 prints the resolved matrix of a task plus the family check. Exit codes: 0 = success; 1 = `resolve`
-found a family ERROR, i.e. the default matrix breaks its own generator != judge rule; 2 = a contract
-error with a message and no traceback — an alias `family` cannot place into a known family, or a
-task file `resolve` cannot read. A missing config file or missing sub-agent file degrades gracefully
+found a resolution ERROR — either a REQUIRED role with no model at all (source `none`: no task
+entry and no default-matrix entry, and there is no third path), or the default matrix breaks its
+own generator != judge rule; 2 = a contract error with a message and no traceback — an alias
+`family` cannot place into a known family, or a task file `resolve` cannot read. A missing config
+file or missing sub-agent file degrades gracefully
 (that role is simply absent from the default matrix) — the factory then has no model to offer and
 says so instead of inventing one.
 """
@@ -385,6 +388,34 @@ def precedence() -> str:
     )
 
 
+def check_resolution(resolved) -> dict[str, list[str]]:
+    """The full pre-flight of a run: unresolved REQUIRED roles + the generator != judge check.
+
+    Every role `resolve_all()` returns is a role the factory must launch, so every one of them is
+    REQUIRED: a role whose source is "none" has no model at all, and the contract offers no third
+    path to fall back on (rule `models-generator-ne-judge`). Such a role is an ERROR, not the
+    per-entry warning `resolve()` carries — otherwise a completely empty configuration (no task
+    `models:` block, no default matrix) would read as a clean resolve and the run would start
+    with roles nobody can hand a model to. Returns {"errors", "warnings"}, the family check's own
+    lists included, so a caller has ONE verdict to act on.
+    """
+    report = check_families(resolved)
+    entries = list(resolved.values()) if isinstance(resolved, dict) else list(resolved)
+    errors: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if _model(entry.get("model")):
+            continue
+        role = _model(entry.get("role")) or "<unknown>"
+        errors.append(
+            f"{role}: no model resolved — the task's models matrix does not name this role and "
+            f"the default matrix offers none (source 'none'); there is no third path, so pin "
+            f"models.{role} in the task or have the role's side of the default matrix declare a "
+            f"model before the run starts")
+    return {"errors": errors + report["errors"], "warnings": report["warnings"]}
+
+
 # --------------------------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------------------------
@@ -448,7 +479,7 @@ def cmd_resolve(args) -> int:
         return 2
     default_matrix = load_default_matrix(args.config)
     resolved = resolve_all(task_matrix, default_matrix)
-    report = check_families(resolved)
+    report = check_resolution(resolved)
     if args.json:
         print(json.dumps({"resolved": resolved, "check": report}, indent=2, ensure_ascii=False))
     else:

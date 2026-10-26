@@ -24,6 +24,10 @@ Builds a synthetic project, then verifies `check_factory_model.py`:
     (exit 0), while a target project missing ANY of them still fails: without the version marker
     (though `prepare_factory` deploys the skill into every target project) and with a model whose
     fingerprint went stale,
+  - the AGENTS.md SIZE GATE: over 28 KB is a WARNING, over 32 KB a hard ERROR, on BOTH the
+    validation path (`check_factory_model.py`) and the generation path (`project_fingerprint.py`,
+    whose printed hash never changes), with the boundary proven exact and the factory's own
+    hand-authored manual explicitly NOT exempt (it is the file that once reached 38 KB),
   - the two-level fingerprint line is validated: the `... content: <hash>` format passes, a
     forged or stale CONTENT hash fails, and a legacy single-hash line only warns,
   - ONE memory contract, TWO entry points: `check_factory_model.validate_memory` delegates to
@@ -1159,15 +1163,113 @@ def main() -> int:
             expect(not hasattr(check_factory_model, name),
                    f"{name} must be GONE from check_factory_model.py (delegation, not a copy)")
 
+        # 32. The AGENTS.md SIZE GATE (owner request): over 28 KB is a loud WARNING, over 32 KB a
+        #     hard ERROR — and the SAME numbers on both paths, because the generation path
+        #     (`project_fingerprint.py`) and the validation path (`check_factory_model.py`) share
+        #     one implementation (`agents_size_issues`). An oversized AGENTS.md is a book nobody
+        #     loads: the bulk is always verbatim text that belongs in references/ behind a pointer.
+        size_root = fixture(str(pathlib.Path(td) / "size"), PROJECT)
+        build(size_root)
+        agents = size_root / "AGENTS.md"
+        original = agents.read_text(encoding="utf-8")
+
+        def sized(target: int) -> str:
+            """The valid 8-section model padded with plain ASCII lines up to EXACTLY `target` bytes."""
+            filler = "padding line that adds bytes and no heading " + "x" * 40 + "\n"
+            missing = target - len(original.encode("utf-8"))
+            if missing <= 0:
+                return original
+            return original + (filler * (missing // len(filler) + 1))[:missing]
+
+        def write_agents(text: str) -> None:
+            """Write AGENTS.md with LF only, so `target` bytes really are `target` bytes on disk."""
+            agents.write_text(text, encoding="utf-8", newline="\n")
+
+        warn_line = project_fingerprint.AGENTS_SIZE_WARN_BYTES
+        fail_line = project_fingerprint.AGENTS_SIZE_FAIL_BYTES
+        expect(warn_line == 28672 and fail_line == 32768,
+               f"the documented limits are 28 KB / 32 KB, got {warn_line} / {fail_line}")
+
+        # (a) Exactly at a limit nothing is reported for it: the gate is `>`, not `>=`.
+        write_agents(sized(warn_line))
+        expect(check_factory_model.check_agents_model(size_root)[:2] == ([], []),
+               "an AGENTS.md of exactly 28 KB must be silent")
+        write_agents(sized(fail_line))
+        exact = check_factory_model.check_agents_model(size_root)
+        expect(exact[0] == [],
+               f"an AGENTS.md of exactly 32 KB must still pass (it only warns): {exact}")
+        expect(any("28 KB" in warning for warning in exact[1]),
+               f"exactly 32 KB is over the warning line and must warn: {exact[1]}")
+
+        # (b) Over 28 KB: a WARNING on the validation path (stderr, exit 0) ...
+        write_agents(sized(warn_line + 1))
+        warned_errors, warned = check_factory_model.check_agents_model(size_root)[:2]
+        expect(warned_errors == [], f"28 KB + 1 byte must not be an error: {warned_errors}")
+        expect(any("28 KB" in warning for warning in warned),
+               f"28 KB + 1 byte must warn: {warned}")
+        cli = run_cli_out("--repo", str(size_root))
+        expect(cli.returncode == 0, f"a warning must keep exit 0: {cli.stderr!r}")
+        expect("WARN" in cli.stderr and "28 KB" in cli.stderr,
+               f"the size warning must reach stderr: {cli.stderr!r}")
+
+        # ... and the generation path says the same thing while still printing its hash.
+        generated = run_fp("--repo", str(size_root))
+        expect(generated.returncode == 0, f"the generator must stay green on a warning: "
+                                         f"{generated.stderr!r}")
+        expect(generated.stdout.strip() == project_fingerprint.compute_fingerprint(size_root),
+               f"the printed hash must stay machine-readable: {generated.stdout!r}")
+        expect("28 KB" in generated.stderr,
+               f"the generator must warn on stderr: {generated.stderr!r}")
+
+        # (c) Over 32 KB: a hard FAIL on BOTH paths, and the file is named with the limit.
+        write_agents(sized(fail_line + 1))
+        failed_errors = check_factory_model.check_agents_model(size_root)[0]
+        expect(any("over the hard limit" in error and "32 KB" in error for error in failed_errors),
+               f"32 KB + 1 byte must be a hard error: {failed_errors}")
+        cli = run_cli_out("--repo", str(size_root))
+        expect(cli.returncode == 1, f"an oversized AGENTS.md must fail the CLI: {cli.stdout!r}")
+        expect("AGENTS.md is" in cli.stderr and "32 KB" in cli.stderr,
+               f"the FAIL must name the size and the limit: {cli.stderr!r}")
+        generated = run_fp("--repo", str(size_root))
+        expect(generated.returncode == 1,
+               f"the generator must fail on an oversized AGENTS.md: {generated.stderr!r}")
+        expect("over the hard limit" in generated.stderr,
+               f"the generator must name the limit: {generated.stderr!r}")
+
+        # (d) The gate measures the FILE, not the model: the padding is invisible to both
+        #     fingerprints (AGENTS.md is excluded), so no hash and no other check changes.
+        write_agents(sized(fail_line + 1))
+        big_fp = (project_fingerprint.compute_fingerprint(size_root),
+                  project_fingerprint.compute_content_fingerprint(size_root))
+        write_agents(original)
+        expect(big_fp == (project_fingerprint.compute_fingerprint(size_root),
+                          project_fingerprint.compute_content_fingerprint(size_root)),
+               "the size gate must not disturb the fingerprints")
+        expect(check_factory_model.check_agents_model(size_root)[:2] == ([], []),
+               "restoring the model must clear the size gate")
+
+        # (e) The factory's OWN hand-authored manual is NOT exempt: the skip note stays (no
+        #     8-section model to validate) but the size ERROR is still reported — that file is
+        #     exactly the one that grew to 38 KB.
+        own = fixture(td, "own_root")
+        own.mkdir(parents=True, exist_ok=True)
+        deploy_flow_skill(own)
+        (own / "AGENTS.md").write_text(HAND_AUTHORED_AGENTS + "x" * fail_line, encoding="utf-8")
+        own_errors, own_warnings, own_skip = check_factory_model.check_agents_model(own)
+        expect(own_skip, "the factory's own root must still be a SKIP for the model checks")
+        expect(any("over the hard limit" in error for error in own_errors),
+               f"the size gate must bite the hand-authored manual too: {own_errors}")
+
     print("PASS - factory model scripts behave as expected (valid passes, corruptions fail, "
           "unfinished/factory_version/project validated, memory format v2 (run_id + provenance "
           "marks) enforced on current-generation records, WIP checkpoints validated, "
           "structural+content fingerprints distinguish depth>=2 content changes, the content hash "
           "sees UNSTAGED edits of tracked files and reports UNTRACKED files as a warning, the "
-          "factory's own hand-authored root auto-detected as SKIP, and the memory contract has ONE "
-          "implementation: both entry points agree on the owner, the `backlog` record kind, the "
-          "required keys, the `results` sub-keys, an empty `project:`, `closed:` without "
-          "`evidence:` and a valid journal).")
+          "factory's own hand-authored root auto-detected as SKIP, the AGENTS.md size gate warns "
+          "over 28 KB and fails over 32 KB on BOTH the generation and the validation path, and the "
+          "memory contract has ONE implementation: both entry points agree on the owner, the "
+          "`backlog` record kind, the required keys, the `results` sub-keys, an empty `project:`, "
+          "`closed:` without `evidence:` and a valid journal).")
     return 0
 
 

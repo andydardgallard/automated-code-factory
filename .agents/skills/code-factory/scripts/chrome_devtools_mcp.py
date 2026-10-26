@@ -553,10 +553,12 @@ def _write_offline_placeholder(entry: pathlib.Path, version: str) -> None:
                          f"{VENDOR_OFFLINE_ENV} is set, so no npm install ran.\n"
                          "// This placeholder is NOT a working browser server - never ship it.\n",
                          encoding="utf-8")
-    package_json = vendored_package_json(entry)
-    if not package_json.is_file():
-        package_json.write_text(json.dumps({"name": PACKAGE, "version": version,
-                                            "private": True}, indent=2) + "\n", encoding="utf-8")
+    # The manifest is (re)written whenever the pin cannot be PROVEN from it: a missing, corrupt or
+    # stale package.json is repaired instead of being trusted, so the seam's result is provable too.
+    if vendored_version(entry) != version:
+        vendored_package_json(entry).write_text(
+            json.dumps({"name": PACKAGE, "version": version, "private": True}, indent=2) + "\n",
+            encoding="utf-8")
 
 
 def _last_line(text: str) -> str:
@@ -590,6 +592,11 @@ def vendor_install(target: str | pathlib.Path, asset: str | pathlib.Path | None 
     config launched from a missing entry breaks every Kimi session in that project — an absent
     server that is REPORTED is strictly better than a broken one nobody notices.
 
+    The pin is fail-closed in both directions: an entry whose version cannot be PROVEN from its
+    package metadata (missing, unreadable or corrupt) is never declared already-installed — it is
+    reinstalled, and when the reinstall proves nothing either the result is `failed`, so the deployer
+    writes no managed entry.
+
     `offline=True` (or `CHROME_DEVTOOLS_MCP_VENDOR_OFFLINE=1`) is the documented test seam: it
     writes a placeholder entry + package.json instead of calling npm. `runner` is the injectable
     command runner used by the tests (`_run_npm` by default), so the suite never reaches the network.
@@ -610,13 +617,21 @@ def vendor_install(target: str | pathlib.Path, asset: str | pathlib.Path | None 
     note = ""
     if entry.is_file():
         on_disk = vendored_version(entry)
-        if on_disk == version or on_disk is None:
+        if on_disk == version:
             return {**result, "status": "present", "installed": True,
-                    "message": (f"the pinned {spec} is already vendored at {vendor}"
-                                + (f" (version on disk: {on_disk})" if on_disk else
-                                   " (the version on disk is not readable; the entry is left as it is)")
-                                + " — idempotent, no npm call")}
-        note = f"replacing the vendored {package}@{on_disk} with the pinned {spec}; "
+                    "message": (f"the pinned {spec} is already vendored at {vendor} (version on disk: "
+                                f"{on_disk}) — idempotent, no npm call")}
+        # Fail closed: readiness requires the PINNED release to be PROVEN on disk. An unreadable
+        # version (missing, empty or corrupt package metadata) is not a reason to declare the entry
+        # installed — such an entry may be any release at all, so it is reinstalled and, when that
+        # proves nothing either, reported as unavailable.
+        if on_disk is None:
+            note = (f"the version of the vendored {package} at {vendor} cannot be read from "
+                    f"{vendored_package_json(entry)} (missing, unreadable or corrupt package "
+                    f"metadata), so the pinned {spec} is not proven on disk; "
+                    "reinstalling it; ")
+        else:
+            note = f"replacing the vendored {package}@{on_disk} with the pinned {spec}; "
     use_offline = offline_seam_enabled() if offline is None else bool(offline)
     if use_offline:
         _write_offline_placeholder(entry, version)
@@ -647,6 +662,12 @@ def vendor_install(target: str | pathlib.Path, asset: str | pathlib.Path | None 
                 "message": (f"npm reported success but the expected entry file {entry} is missing — "
                             "the package layout is not the reviewed one, so no managed entry is "
                             "written")}
+    installed = vendored_version(entry)
+    if installed != version:
+        return {**result, "command": argv, "status": "failed",
+                "message": (note + f"npm reported success, but the version on disk is "
+                            f"{installed or 'not readable'}: the pinned {spec} cannot be proven, so no "
+                            "managed entry is written (the installed release was never reviewed)")}
     return {**result, "command": argv, "status": "installed", "installed": True,
             "message": (note + f"installed the pinned {spec} into {vendor} (--no-save, "
                         "--ignore-scripts, --omit=dev): the managed server launches "

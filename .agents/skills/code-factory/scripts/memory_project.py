@@ -248,6 +248,15 @@ FIX_LIST_RE = re.compile(r"^(?P<indent>\s*)-\s+(?P<val>.*)$")
 # A record must carry them once it comes from a factory NEWER than MEMORY_V2_AFTER, or as soon
 # as it already carries one of the v2 fields (so a half-migrated record is caught as well).
 RUN_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{8}$")
+# A one-time, owner-authorized legacy migration backfills a synthetic run_id/factory_version:
+# the canonical value plus the annotation ` (synthetic, backfilled YYYY-MM-DD)`. The annotation
+# is stripped before validation, so the migrated history is valid without being rewritten.
+SYNTHETIC_SUFFIX_RE = re.compile(r" \(synthetic, backfilled \d{4}-\d{2}-\d{2}\)$")
+
+
+def unsynth(value: str) -> str:
+    """The canonical value without a ` (synthetic, backfilled ...)` migration annotation."""
+    return SYNTHETIC_SUFFIX_RE.sub("", value)
 PROVENANCE_RE = re.compile(r"\[verified:[^\[\]]+\]|\[inferred\]")
 MEMORY_V2_AFTER = (12, 8, 0)
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
@@ -636,7 +645,7 @@ def journal_projects(change_log: pathlib.Path) -> list[str]:
 
 def version_after(factory_version: str, base: tuple[int, int, int] = MEMORY_V2_AFTER) -> bool:
     """True when `factory_version` (X.Y.Z) is strictly newer than `base`."""
-    m = VERSION_RE.match(factory_version.strip())
+    m = VERSION_RE.match(unsynth(factory_version.strip()))
     return bool(m) and tuple(int(g) for g in m.groups()) > base
 
 
@@ -669,7 +678,7 @@ def record_format_issues(change_log: pathlib.Path) -> tuple[list[str], list[str]
         run_id = fields.get("run_id", "").strip()
         if not run_id:
             problems.append("missing or empty key 'run_id'")
-        elif not RUN_ID_RE.match(run_id):
+        elif not RUN_ID_RE.match(unsynth(run_id)):
             problems.append(f"invalid run_id '{run_id}' (expected YYYYMMDD-<8 hex>)")
         for field in ("decisions", "results"):
             if not PROVENANCE_RE.search(fields.get(field, "")):
@@ -728,7 +737,7 @@ def record_contract_issues(change_log: pathlib.Path) -> tuple[list[str], list[st
         if "timestamp" in fields and not TIMESTAMP_RE.search(fields["timestamp"]):
             errors.append(f"entry '{heading}': timestamp not ISO-date-like "
                           f"'{fields['timestamp']}'")
-        if "factory_version" in fields and not VERSION_RE.match(fields["factory_version"]):
+        if "factory_version" in fields and not VERSION_RE.match(unsynth(fields["factory_version"])):
             errors.append(f"entry '{heading}': invalid factory_version "
                           f"'{fields['factory_version']}'")
         if "results" in fields:

@@ -33,11 +33,16 @@ Cases (fixtures live in a tempdir; nothing is written into the repository):
      message and no traceback, a default-matrix collision in `resolve` exits 1, `default` on a
      missing config exits 0, and the module imports stdlib only;
  11. an UNPINNED task (no `models:` block) passes `resolve` with exit 0 and no ERROR on the
-     shipped sub-agent frontmatter + a two-model config (and on this machine's real config):
-     the judge-side advisor sits on the primary side, opposite the secondary-side generators;
+     shipped sub-agent frontmatter + a hermetic two-model config: the judge-side advisor sits on
+     the primary side, opposite the secondary-side generators. A hermetic SINGLE-model config
+     (primary == secondary, the owner's live reconfiguration) is refused with exit 1 — the test
+     NEVER reads the machine's own config, so it is green on any machine;
  12. a collision where both roles read the SAME side of the config names ONLY the achievable fix
      (pin models.<role> — widening that one key cannot separate them), and a side that resolves
-     no model at all is a warning ("cannot be fully checked"), not a silent pass.
+     no model at all is a warning ("cannot be fully checked"), not a silent pass;
+ 13. VACCINATION probe for "no third path": a completely EMPTY configuration (no task `models:`
+     block, no default matrix) is a resolution ERROR and `resolve` exits 1 — the pre-fix code
+     printed source "none" as warnings only and exited 0.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -77,14 +82,24 @@ FIXTURE_CONFIG_PRIMARY_ONLY = """\
 default_model = "kimi-code/k3"
 """
 
-# A task naming every side of the collision with the SAME model — the vaccination case (8).
+# A task naming EVERY role (so no role is left unresolved) with a coder/reviewer family
+# collision — the vaccination case (8) and a legal exit-0 task for the CLI cases.
 FIXTURE_TASK = """\
 title: collision fixture
 repo_path: .
 models:
+  analyzer: kimi-code/k3
+  planner: deepseek-flash
   coder: deepseek-flash
-  reviewer: deepseek-flash
   tester: kimi-k3
+  gui_expert: deepseek-flash
+  refactorer: deepseek-flash
+  reviewer: deepseek-flash
+  diagnostician: kimi-code/k3
+  advisor: kimi-code/k3
+  documenter: deepseek-flash
+  security_auditor: kimi-code/k3
+  skill_manager: kimi-code/k3
 acceptance_criteria:
   - criterion: "the fixture is not a real task"
 """
@@ -396,8 +411,12 @@ def case_10_cli(root: pathlib.Path) -> None:
 
     no_models = write(root, "task-empty.yaml", FIXTURE_TASK_NO_MODELS)
     broken = run("resolve", "--task", str(no_models), "--config", str(no_defaults))
-    expect(broken.returncode == 0,
-           f"no default matrix means no default-matrix error: {out(broken)!r}")
+    expect(broken.returncode == 1,
+           f"a task with no matrix on a config with no default_model leaves every role "
+           f"unresolved, so the run must not start: {out(broken)!r}")
+    expect("ERROR:" in out(broken), f"the unresolved roles must be errors: {out(broken)!r}")
+    expect("(none)" in out(broken), f"the roles must still be printed: {out(broken)!r}")
+    expect(b"Traceback" not in broken.stderr, f"no traceback: {err(broken)!r}")
 
     colliding = write(root, "config-colliding.toml",
                       "default_model = \"deepseek-flash\"\n\n[secondary_model]\n"
@@ -422,7 +441,10 @@ def case_10_cli(root: pathlib.Path) -> None:
     absent = run("default", "--config", str(root / "no-such-config.toml"))
     expect(absent.returncode == 0, f"a missing config must not fail the CLI: {err(absent)!r}")
 
-    unreadable = run("resolve", "--task", str(root / "no-such-task.yaml"))
+    # --config is passed even though the task cannot be read: no CLI call of this test may fall
+    # back to the machine's live ~/.kimi-code/config.toml (the test is hermetic).
+    unreadable = run("resolve", "--task", str(root / "no-such-task.yaml"),
+                     "--config", str(no_defaults))
     expect(unreadable.returncode == 2, f"an unreadable task must exit 2: {unreadable.returncode}")
     expect("no-such-task.yaml" in err(unreadable),
            f"the message must name the file: {err(unreadable)!r}")
@@ -447,6 +469,12 @@ def case_11_shipped_default_matrix_is_satisfiable(root: pathlib.Path) -> None:
     (primary + [secondary_model]) must resolve with exit 0 and no ERROR: the judge-side advisor
     reads the PRIMARY side, opposite the secondary-side generators. Before the advisor fix this
     case failed with three default-matrix ERRORs that no config widening could ever fix.
+
+    HERMETIC: this case never reads the machine's own `~/.kimi-code/config.toml`. That file is the
+    owner's live configuration — it may legitimately be a single-model one, in which case the
+    generators and judges share a family by design and no assertion about it belongs in a
+    self-test. The second half pins the SAME verdict hermetically: a single-model fixture config
+    (primary == secondary) must be REFUSED with exit 1, exactly like the live one would be.
     """
     no_models = write(root, "task-unpinned.yaml", FIXTURE_TASK_NO_MODELS)
     config = write(root, "config-two-models.toml", FIXTURE_CONFIG)
@@ -461,12 +489,15 @@ def case_11_shipped_default_matrix_is_satisfiable(root: pathlib.Path) -> None:
             expect(mm.family(default[generator]) != mm.family(default[judge]),
                    f"{generator} and {judge} must sit on different families: {default!r}")
 
-    # The REAL config of this machine (when present) must pass the same pre-flight.
-    if mm.DEFAULT_CONFIG.is_file():
-        real = run("resolve", "--task", str(no_models))
-        expect(real.returncode == 0,
-               f"the real config must satisfy an unpinned task: {out(real)!r} {err(real)!r}")
-        expect("ERROR:" not in out(real), f"no family error on the real config: {out(real)!r}")
+    # A single-model config (primary == secondary — the owner's live reconfiguration) cannot keep
+    # the families apart, so the pre-flight must refuse it instead of starting a blind run.
+    single = write(root, "config-single-model.toml",
+                   'default_model = "kimi-code/k3"\n\n[secondary_model]\n'
+                   'default_model = "kimi-code/k3"\n')
+    refused = run("resolve", "--task", str(no_models), "--config", str(single))
+    expect(refused.returncode == 1,
+           f"a single-model default matrix must be refused: {out(refused)!r}")
+    expect("ERROR:" in out(refused), f"the family error must be printed: {out(refused)!r}")
 
 
 def case_12_same_side_collision_and_empty_side() -> None:
@@ -499,6 +530,42 @@ def case_12_same_side_collision_and_empty_side() -> None:
                f"widening the key both roles read is NOT an achievable fix: {message!r}")
 
 
+def case_13_empty_matrix_is_a_resolution_error(root: pathlib.Path) -> None:
+    """VACCINATION probe: an EMPTY configuration must not pass the pre-flight.
+
+    The contract has no third path, so a role nobody names has no model at all and the run cannot
+    start. The pre-fix resolver printed `source=none` as a warning only and `cmd_resolve` exited 0
+    whenever no family collision existed — this case is red exactly there.
+    """
+    empty_task = write(root, "task-fully-empty.yaml", FIXTURE_TASK_NO_MODELS)
+    empty_config = write(root, "config-nothing.toml", "# no model configured at all\n")
+    res = run("resolve", "--task", str(empty_task), "--config", str(empty_config))
+    expect(res.returncode != 0,
+           f"an empty matrix must not pass the pre-flight: exit {res.returncode} {out(res)!r}")
+    expect(res.returncode == 1,
+           f"an unresolved role is a resolution error (exit 1), not a contract error: "
+           f"{res.returncode} {err(res)!r}")
+    body = out(res)
+    expect("ERROR:" in body, f"the unresolved roles must be errors: {body!r}")
+    expect("no model resolved" in body, f"the error must say no model resolved: {body!r}")
+    expect("models." in body, f"the error must name the fix (pinning): {body!r}")
+    expect(b"Traceback" not in res.stderr, f"no traceback: {err(res)!r}")
+
+    # The API agrees: every role a resolve run prints is required, so each unresolved one is an
+    # error, and ONE unresolved role is already enough to block the run.
+    report = mm.check_resolution(mm.resolve_all({}, {}))
+    expect(len(report["errors"]) == len(mm.ROLES),
+           f"every unresolved role must be an error: {report!r}")
+    expect(report["warnings"] == [], f"no family warning is left to report: {report!r}")
+    partial = mm.check_resolution(mm.resolve_all({"coder": "deepseek-flash"}, {}))
+    expect(len(partial["errors"]) == len(mm.ROLES) - 1,
+           f"one pinned role leaves every OTHER role unresolved: {partial!r}")
+    # A fully resolvable matrix still reports no error — the check does not fire on a clean run.
+    complete = mm.check_resolution(mm.resolve_all(mm.task_models(
+        write(root, "task-complete.yaml", FIXTURE_TASK_DIVERSE)), {}))
+    expect(complete["errors"] == [], f"a fully pinned task must stay clean: {complete!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -514,10 +581,12 @@ def main() -> int:
         case_10_cli(root)
         case_11_shipped_default_matrix_is_satisfiable(root)
         case_12_same_side_collision_and_empty_side()
+        case_13_empty_matrix_is_a_resolution_error(root)
 
     print("PASS - model_matrix.py keeps the task's model verbatim on a collision (warning only), "
           "falls back to the default matrix for an unnamed role (error when the default matrix "
-          "collides), refuses a third path outside the committee's contrasting second planner, "
+          "collides), refuses to start on a role it cannot resolve (empty matrix = error, no "
+          "third path), keeps the committee's contrasting second planner as the only override, "
           "and reports an unclassifiable alias instead of crashing.")
     return 0
 

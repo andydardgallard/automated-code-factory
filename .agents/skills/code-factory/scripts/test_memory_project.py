@@ -508,6 +508,23 @@ def main() -> int:
         expect(run("check", "--repo", str(v2)).returncode == 1,
                "a half-migrated v2 record must still be an error")
 
+        #     A one-time legacy migration backfills a SYNTHETIC run_id/factory_version: the value
+        #     keeps the canonical form and carries the annotation ` (synthetic, backfilled
+        #     YYYY-MM-DD)` — valid, so the migrated history passes without daily WARN lines.
+        write_journal(v2, journal_entry("2026-09-25T00:00:00Z", "v2_proj",
+                                       run_id="20260901-e9c0219e (synthetic, backfilled 2026-10-26)",
+                                       factory_version="12.8.0 (synthetic, backfilled 2026-10-26)",
+                                       marks=True))
+        res = run("check", "--repo", str(v2))
+        expect(res.returncode == 0,
+               f"a synthetic backfilled run_id/factory_version must be valid: {res.stderr!r}")
+        write_journal(v2, journal_entry("2026-09-25T00:00:00Z", "v2_proj",
+                                       run_id="20260901-e9c0219e (synthetic)",
+                                       factory_version="12.9.0", marks=True))
+        res = run("check", "--repo", str(v2))
+        expect(res.returncode == 1 and "invalid run_id" in res.stderr,
+               f"a truncated annotation must stay invalid: {res.stderr!r}")
+
         #     A record of a pre-v2 factory stays VALID but must WARN: the documented contract makes
         #     a record with `project:` that predates the format a warning (never rewritten, never an
         #     error) — item 2 closed the else-branch that used to accept it silently.

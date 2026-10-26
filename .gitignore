@@ -28,7 +28,6 @@ __pycache__/
 *.key
 
 # --- Code Factory (auto-added by prepare_factory.ps1) ---
-.agents/
 .code-factory/
 .kimi-code/mcp.json
 .kimi-code/vendor/

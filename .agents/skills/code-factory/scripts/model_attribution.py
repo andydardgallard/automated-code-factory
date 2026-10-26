@@ -77,6 +77,8 @@ PUBLIC API
   resolve_session(repo, session, home)    {"session_dir","session_id","resolved_by",...}; raises
                                           Degraded when nothing matches
   read_models_used(path)                  (run_id, {role: claim}) of a pipeline.yaml
+  unknown_roles(claims)                   `models_used` keys the factory's registry does not have
+  unknown_role_line(role)                 the one-line report of such a key (a run error)
   analyse_session(session_dir)            per-agent records + spawn map of one session
   agent_roles(state, records, spawns)     agent id -> role
   compare_claims(claims, roles, degraded) (comparison, lines, flags) of claims vs wire
@@ -103,13 +105,20 @@ CLI
     `role: unverified (claimed but no wire agent)`  no session/wire at all to confirm the claim
     `role: degraded (no wire for this role)`        the session exists, the role left no evidence
     `role: mismatch (claimed=unused wire=[Y:N])`    the pipeline says `unused`, the wire disagrees
+    `role: run error -- not a role of the factory`  the pipeline invented a role (see below)
   The last line is always `PASS|FAIL|DEGRADED - <summary> (<out path>)`.
+
+  A `models_used` key that is not a role of the factory — not in `model_matrix.ROLES`, with `main`
+  the one non-matrix key the flow legitimately logs — is a RUN ERROR, never a degradation: it used
+  to fall through to "no wire for this role" (DEGRADED, exit 3), which filed a contract breach as
+  a technical detail. The registry is imported from `model_matrix`, so it has ONE source.
 
 EXIT CODES
 
   0  the session was found and every claimed role matches the wire (with no --pipeline there is
      no claim side at all, so the run is a wire REPORT: it prints the roles and exits 0)
-  1  at least one role MISMATCHES (a claim the wire disproves) — never hidden by a degradation
+  1  a claim the wire disproves (a role MISMATCH) or a `models_used` role the factory does not
+     have — never hidden by a degradation
   2  input error: a bad path, an unreadable wire, an unwritable --out (message, no traceback)
   3  DEGRADED: no session/wire found, a claimed role left no wire evidence, or `--pipeline` was
      given and its `models_used` block names NO role — an empty claim set confirms nothing, so it
@@ -125,6 +134,8 @@ import json
 import pathlib
 import re
 import sys
+
+from model_matrix import ROLES      # the ONE role registry of the factory (`models_used` keys)
 
 # The CLI's wire root. A module-level constant on purpose: no environment variable may silently
 # re-point the attribution at another root (the CLI has no session-id variable either); `--home`
@@ -151,6 +162,13 @@ ROLE_ALIASES = {"code-reviewer": "reviewer", "gui-expert": "gui_expert",
                 "security-auditor": "security_auditor", "skill-manager": "skill_manager"}
 # Vendor family words folded off a version token by `canonical()` (`kimi-k3` -> `k3`).
 FAMILY_WORDS = ("kimi", "moonshot", "deepseek", "qwen", "dashscope")
+# The role registry of the factory (`model_matrix.ROLES`) plus the one key that is NOT a matrix
+# role: `models_used` also logs the main agent's own session model. A `models_used` key outside
+# this set is a RUN ERROR, not a degradation — the pipeline named a role the factory does not have,
+# and "no wire for this role" would file a contract breach as a technical detail.
+NON_MATRIX_ROLES = ("main",)
+KNOWN_ROLES = NON_MATRIX_ROLES + tuple(ROLES)
+REGISTRY_HINT = "model_matrix.ROLES (" + ", ".join(ROLES) + ")"
 
 # The flat `models_used:` block of a pipeline.yaml: `run_id` plus `role: alias` scalars. A
 # deliberately small reader — the factory owns the checkpoint format and must not grow a YAML
@@ -689,6 +707,22 @@ def is_unused(raw: str) -> bool:
     return claim_model(raw).lower() == UNUSED
 
 
+def unknown_roles(claims: dict[str, str]) -> list[str]:
+    """`models_used` keys that name no role of the factory, sorted (`main` aside).
+
+    The registry is the single source (`model_matrix.ROLES`); `main` is the session model the
+    factory logs next to the roles. A key nobody declared is not "a role without a wire" — it is a
+    pipeline that invented a role, which the run must report as an error (exit 1).
+    """
+    return sorted(role for role in claims if role not in KNOWN_ROLES)
+
+
+def unknown_role_line(role: str) -> str:
+    """The one-line report of a `models_used` role the factory does not have."""
+    return (f"{role}: run error -- not a role of the factory registry {REGISTRY_HINT}; a "
+            f"models_used key must be one of {', '.join(KNOWN_ROLES)}")
+
+
 # --------------------------------------------------------------------------------------------
 # The comparison
 # --------------------------------------------------------------------------------------------
@@ -712,10 +746,15 @@ def compare_claims(claims: dict[str, str], roles: dict[str, dict],
       `unverified` there is no session at all, so nothing can be confirmed (`degraded_reason`).
     A role the pipeline does not claim at all is listed in `flags.unclaimed_roles` (the claim
     side is the factory's own contract, so an unclaimed wire role is informational, not a failure).
+    The FIFTH status of the artifact — `unknown_role`, for a `models_used` key outside the factory's
+    registry — is not produced here: `build_report` adds it from `unknown_roles(claims)` and lists
+    the key in `flags.unknown_roles`, because a key nobody declared is a run error (exit 1), not a
+    comparison of a claim with the wire.
     """
     comparison: dict[str, str] = {}
     lines: list[str] = []
-    flags: dict[str, list[str]] = {"unused_but_wired": [], "unclaimed_roles": []}
+    flags: dict[str, list[str]] = {"unused_but_wired": [], "unclaimed_roles": [],
+                                   "unknown_roles": []}
     for role in claims:
         raw = claims.get(role, "")
         claimed = claim_model(raw)
@@ -758,10 +797,12 @@ def compare_claims(claims: dict[str, str], roles: dict[str, dict],
 
 def verdict_of(comparison: dict[str, str], degraded_reason: str = "",
                claims_required: bool = True) -> str:
-    """`FAIL` when a claim is disproven, else `DEGRADED` when anything is unconfirmed, else `PASS`.
+    """`FAIL` when a claim is disproven or a role is unknown, else `DEGRADED`, else `PASS`.
 
     A proven mismatch is NEVER hidden by a degradation: the wire disproving a claim is the one
-    finding the owner must not lose, so it wins.
+    finding the owner must not lose, so it wins. A `models_used` role that is not in the factory's
+    registry (`unknown_role`) is the same kind of finding — the pipeline invented a role — so it is
+    a run error (FAIL), never a degradation.
 
     An EMPTY comparison is not a success while a claim set was required (`claims_required`, the
     default): with nothing compared, "every claimed role matches the wire" is vacuously true and
@@ -769,7 +810,7 @@ def verdict_of(comparison: dict[str, str], degraded_reason: str = "",
     a pipeline that names no role in `models_used` is DEGRADED. Only a caller that asks for a
     claim-free wire report (no `--pipeline` at all, `claims_required=False`) may pass on nothing.
     """
-    if any(status == "mismatch" for status in comparison.values()):
+    if any(status in ("mismatch", "unknown_role") for status in comparison.values()):
         return "FAIL"
     if degraded_reason or (claims_required and not comparison) or \
             any(status in ("degraded", "unverified") for status in comparison.values()):
@@ -833,6 +874,14 @@ def build_report(repo: str, session: str, home: pathlib.Path | None,
             f"{pipeline} declares no models_used role: there is no claimed model to confirm "
             f"against the wire")
     comparison, lines, flags = compare_claims(claims, roles, degraded_reason)
+    bogus = unknown_roles(claims)
+    if bogus:
+        # A role the factory does not have is a run error, not a degradation: report it FIRST (the
+        # owner must see the contract breach before the per-role details) and force the verdict.
+        for role in bogus:
+            comparison[role] = "unknown_role"
+            flags["unknown_roles"].append(role)
+        lines = [unknown_role_line(role) for role in bogus] + lines
     verdict = verdict_of(comparison, degraded_reason, claims_required=pipeline is not None)
     session_dir = session_info.get("session_dir")
     skipped_lines = analysis["skipped_lines"]
@@ -878,6 +927,11 @@ def _summary(verdict: str, report: dict, degraded_reason: str) -> str:
     """The one-line summary of the run, WITHOUT the verdict prefix (never a fake success)."""
     comparison = report["comparison"]
     if verdict == "FAIL":
+        bogus = [role for role, status in comparison.items() if status == "unknown_role"]
+        if bogus:
+            return (f"{len(bogus)} models_used role(s) are not roles of the factory: "
+                    + "; ".join(f"{role} is not in {REGISTRY_HINT}" for role in sorted(bogus))
+                    + " -- a pipeline may only name the factory's own roles")
         bad = []
         for role, status in comparison.items():
             if status != "mismatch":

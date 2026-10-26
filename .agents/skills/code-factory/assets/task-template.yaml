@@ -67,13 +67,26 @@ acceptance_criteria:
     verify: "python -m pytest -q tests/test_si_regression.py"
   - criterion: "Criterion 3, e.g.: The report lists the CNY instrument."
     derived: true
+  # A criterion may also be a block scalar (`|`): write the business wording on several
+  # indented lines, and keep `verify:`/`derived:` as sibling keys at the SAME indent as
+  # `criterion:`. Every line of the block stays part of the criterion text.
+  - criterion: |
+      Criterion 4, e.g.: The monthly report is produced for the CNY instrument.
+      The numbers in the report match the numbers the manager sees in the terminal.
+    derived: true
 
 # Optional: business test scenarios. If omitted, the factory will ask you about
-# them at the planning stage (in hitl mode).
-# business_tests:                    # scenario, configs and expected business results
-#   - scenario: "Run the strategy on the CNY data file"
-#     config: "path/to/config.toml"
-#     expected_results: "At least 5 LONG/SHORT signals and a positive equity curve"
+# them at the planning stage (in hitl mode). Each item takes the three keys below
+# (any of them may also be a `|` block scalar, as `expected_results` is here).
+business_tests:
+  - scenario: "Run the strategy on the CNY data file"
+    config: "path/to/config.toml"
+    expected_results: "At least 5 LONG/SHORT signals and a positive equity curve"
+  - scenario: "Run the same strategy on the Si data file and compare the runs"
+    config: "path/to/config.toml"
+    expected_results: |
+      The Si results are identical to the results before the change.
+      No signal is lost and no new signal appears.
 
 # Optional: external knowledge for THIS task — books/documents (PDF, EPUB, DOCX,
 # Markdown, HTML, folders) converted into reusable skills and stored in the

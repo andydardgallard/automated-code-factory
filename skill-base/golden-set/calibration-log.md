@@ -11,3 +11,4 @@ calibrated against stays readable. A repository with no record yet has never dis
 obligation — `status` says so and exits 1.
 
 calibration: run_id=20261026-2ea2eb55 prompt_sha256=a77413b0786597a4aa9b093c151b251058405ec118b2dd81eacc46651c44286e runs=31 review_runs=8 verdict_accuracy=7/7 accuracy=100.0% macro_precision=1.000
+calibration: run_id=20261026-838dc245 prompt_sha256=40473b916eeee05361e805d8f0ae0a6c5b623fb6f06d6d21a5923c93813b809b runs=32 review_runs=8 verdict_accuracy=7/7 accuracy=100.0% macro_precision=1.000

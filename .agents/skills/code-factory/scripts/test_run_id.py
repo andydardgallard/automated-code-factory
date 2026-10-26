@@ -7,7 +7,7 @@ Checks through the CLI that (a) `gen` is deterministic and follows the documente
 recomputed independently here; the normalization makes the digest platform-neutral, so the SAME
 text written with LF and with CRLF must yield the SAME id (the old raw-bytes hash did not, which
 is exactly why the normalization exists) — (b) the digest of the committed, static fixture
-`assets/task-template.yaml` equals the pinned `dfc96d9f` — the algorithm proven against a real
+`assets/task-template.yaml` equals the pinned `b6735bd7` — the algorithm proven against a real
 committed task file, not only against a temp fixture; the fixture is pinned to `eol=lf` by
 .gitattributes and the hash normalizes anyway, so the pin holds on any checkout; the date part is
 TODAY by construction, so only its FORMAT `YYYYMMDD-` is pinned (a pinned date would rot
@@ -39,14 +39,14 @@ REPO = TOOL.resolve().parents[4]
 TASK = REPO / ".agents" / "skills" / "code-factory" / "assets" / "task-template.yaml"
 # Committed, static fixture task file (same shape as a real task) — pinning it survives every run,
 # unlike the ephemeral `.code-factory/state/task.yaml`.
-# The digest is re-pinned whenever the fixture's CONTENT changes (the last change appended the
-# `gui_expert` line to the models example): the fixture stays a real committed task file and the
+# The digest is re-pinned whenever the fixture's CONTENT changes (the last change activated the
+# `business_tests` example and a multi-line criterion): the fixture stays a real committed task file and the
 # digest half of the id proves the algorithm against it. The pin is the digest of the
 # CRLF→LF-NORMALIZED bytes (what the committed blob hashes to), so it holds on an LF checkout and
 # on a CRLF one alike — .gitattributes pins the fixture to `eol=lf` as well, because a fixture
 # whose bytes are hashed must not vary by checkout.
 # Its DATE is today's by construction, so only the digest half is compared literally.
-KNOWN_TASK_RUN_ID = "20260929-dfc96d9f"
+KNOWN_TASK_RUN_ID = "20261026-b6735bd7"
 HEX = set("0123456789abcdef")
 
 

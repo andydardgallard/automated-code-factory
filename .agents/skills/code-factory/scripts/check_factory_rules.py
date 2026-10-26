@@ -45,6 +45,9 @@ CARRIERS_RE = re.compile(r"^carriers:\s*(.+?)\s*$")
 # Sentences the canonical wording of a rule must keep, whatever else it says.
 REQUIRED_MARKERS = {
     "review-gate-policy": ("unverified_review", "conditional pass", "hitl", "auto"),
+    # The stop rule must keep saying WHAT happens (a stop, with the two modes), that no role work is
+    # handed over or substituted, and that an unknown role is an error rather than a degradation.
+    "model-unavailable-stop": ("STOPS", "NEVER substitutes", "`ROLES`"),
 }
 
 

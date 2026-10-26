@@ -251,6 +251,16 @@ minor/nit findings are attached separately as "optional" and the coder may skip 
 
 ## 5. Iteration & budget
 
+- **The reviewer model is part of the gate**: when the reviewer model the task names cannot be
+  reached (provider auth/rate/model error at launch), NO review verdict artifact is produced —
+  `.code-factory/logs/code-review.md` gets no verdict, the finding list stays unwritten — and the
+  stop rule `model-unavailable-stop` applies: retry the SAME reviewer model within the
+  infrastructure budget 3, then hitl asks the owner (change the matrix or stop) and auto ends
+  FAILED with the explicit reason. The main agent never performs the review itself and never
+  re-points the review to another model, in either mode.
+<!-- factory-rule: model-unavailable-stop begin -->
+**Named-model unavailability stops the run (canonical wording):** when a model named in the task's `models:` matrix is unavailable — a provider auth/rate/model error at launch or probe of its role — the run STOPS: in hitl mode the factory asks the owner via `AskUserQuestion` whether to change the matrix (the answer is written to `state/task.yaml`) or to stop, and in auto mode the run ends FAILED with the explicit reason naming the model and the provider error. The main agent NEVER performs the named role's work itself and NEVER substitutes another model, in no mode and under no pretext — "otherwise the run stalls" is not a reason — and no artifact presented as that role's result is produced. A provider failure of a task-named model is classified first with `scripts/error_router.py classify`: a `PROVIDER_*` category routes to infrastructure with budget 3, the record goes to `logs/errors.md` and the counter to `state/pipeline.yaml`, but every retry uses the SAME named model, and an exhausted budget means stop-and-ask, never degradation. An unknown role written into `models_used` — a key absent from the `ROLES` registry of `scripts/model_matrix.py` (`main` aside) — is a run error that exits 1 naming the role, never DEGRADED.
+<!-- factory-rule: model-unavailable-stop end -->
 - Review is bounded: **reviewer budget = 2** iterations per `implement`/`refactor` task (track
   `retry_counters.reviewer` in `.code-factory/state/pipeline.yaml`).
 - For `implement`/`refactor` only: after a `request_changes` round, the coder applies the rework

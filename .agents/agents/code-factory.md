@@ -320,6 +320,14 @@ check during pre-flight that `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` is expor
 `echo "${KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL:-unset}"`). If it is missing, write
 `models_warning: "KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL is not set — coder/tester subagents
 will use the primary model"` into pipeline.yaml and carry the warning into report.md.
+**Named model unavailable = STOP**: if a delegation of a TASK-NAMED model fails at launch with a
+provider error (auth/rate/model), the run does not degrade — classify the error text with
+`python .agents/skills/code-factory/scripts/error_router.py classify`, retry the SAME named model
+within the infrastructure budget, then stop and ask the owner (hitl) or end FAILED (auto). The main
+agent never performs the role's work itself and never substitutes another model.
+<!-- factory-rule: model-unavailable-stop begin -->
+**Named-model unavailability stops the run (canonical wording):** when a model named in the task's `models:` matrix is unavailable — a provider auth/rate/model error at launch or probe of its role — the run STOPS: in hitl mode the factory asks the owner via `AskUserQuestion` whether to change the matrix (the answer is written to `state/task.yaml`) or to stop, and in auto mode the run ends FAILED with the explicit reason naming the model and the provider error. The main agent NEVER performs the named role's work itself and NEVER substitutes another model, in no mode and under no pretext — "otherwise the run stalls" is not a reason — and no artifact presented as that role's result is produced. A provider failure of a task-named model is classified first with `scripts/error_router.py classify`: a `PROVIDER_*` category routes to infrastructure with budget 3, the record goes to `logs/errors.md` and the counter to `state/pipeline.yaml`, but every retry uses the SAME named model, and an exhausted budget means stop-and-ask, never degradation. An unknown role written into `models_used` — a key absent from the `ROLES` registry of `scripts/model_matrix.py` (`main` aside) — is a run error that exits 1 naming the role, never DEGRADED.
+<!-- factory-rule: model-unavailable-stop end -->
 **Web GUI pre-flight (conditional)**: only when Phase 1 decided `applicable`, probe the browser
 capabilities into the same capability file
 (`python .agents/skills/code-factory/scripts/factory_preflight.py --web-gui --repo <resolved repo_path>
@@ -423,6 +431,11 @@ task the WHOLE codebase (see the shard protocol below). Findings carry a severit
 (critical | major | minor | nit), and every quote a finding asserts is re-checked verbatim with
 `scripts/verify_quotes.py` before it counts as evidence. Write the verdict to
 `.code-factory/logs/code-review.md` and log `models_used.reviewer`.
+**Reviewer model unavailable**: if the named reviewer model cannot be reached, NO verdict artifact
+is produced — `.code-factory/logs/code-review.md` stays without a verdict and the stop rule
+`model-unavailable-stop` applies: retry the SAME reviewer model within the infrastructure budget,
+then hitl asks the owner / auto ends FAILED with the reason. The main agent never reviews in the
+reviewer's place and never re-points the review to another model.
 
 <!-- factory-rule: review-gate-policy begin -->
 **Review gate (canonical wording):** a task is NOT accepted while the reviewer has open severity=critical findings (verdict `request_changes` with open critical findings). The reviewer budget = 2 iterations. If the budget is exhausted and critical findings remain: in hitl mode the factory STOPS and asks the user; in auto mode only a conditional pass is allowed — the corresponding criterion is marked `unverified_review` in `.code-factory/state/acceptance.md`, and the unresolved findings go into `.code-factory/report.md` (unresolved findings section), never silently. A full SUCCESS with open critical findings is impossible. For a `task_type: review` run the gate judges the delivered review, not the reviewed code: the verdict stays `request_changes` in `results.review=` while the run's own acceptance records whether the report and the follow-up task file were produced.
@@ -597,8 +610,9 @@ A `review`/`security_audit` run additionally writes its follow-up/fix-task file
 (`scripts/review_followup_task.py` for a review). Finally confirm the models with an ARTIFACT, never
 with the claim: `python .agents/skills/code-factory/scripts/model_attribution.py --session auto
 --repo <resolved repo_path> --pipeline .code-factory/state/pipeline.yaml --out
-.code-factory/state/model-attribution.json` (exit 0 = match, 1 = mismatch, 3 = degraded; a degraded
-result is recorded as `models_warning` in `pipeline.yaml` and `report.md`, never silently green).
+.code-factory/state/model-attribution.json` (exit 0 = match, 1 = a mismatch or a `models_used` role the factory does not have — a run error,
+never a degradation, 3 = degraded; a degraded result is recorded as `models_warning` in
+`pipeline.yaml` and `report.md`, never silently green).
 <!-- factory-rule: memory-ownership begin -->
 **Memory ownership (canonical wording):** one memory belongs to exactly one project — the one named in the task's `repo_path`. The `memory/` directory lives at the DEPLOYMENT ROOT; the summary declares `project: <name>` (the project's name) and `project_id: <identity>`, where the identity is the first 12 hex characters of the sha256 of the repository's root commit, so renaming the folder or taking a versioned copy never invalidates the memory and a memory of a different repository is refused. A memory that declares no `project_id` falls back to the deployment-root basename, which is only a fallback and says so. The only writer is the main agent: exactly one entry in `memory/change-log.md` per run (`run_id`-addressed; a run with no record or with two records is an error), compaction into `memory/summary.md` at the 50-entry threshold (the last 20 remain, severity=critical and follow_up=true items always survive, and the flow invokes `memory_project.py compact`). Entries from different projects in one journal are an error (`check_factory_model.py`, `memory_project.py check`), entries without `project:` are legacy (a warning, not an error). The development history of the factory itself never enters the target project's memory.
 <!-- factory-rule: memory-ownership end -->

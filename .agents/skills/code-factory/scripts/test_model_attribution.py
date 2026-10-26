@@ -36,6 +36,10 @@ Cases:
      or absent confirms NO role model, so it is DEGRADED (exit 3) — never PASS/exit 0. `verdict_of`
      of an empty comparison is DEGRADED by default; only the claim-free wire report (no
      `--pipeline` at all) exits 0.
+ 12. REGRESSION (run 20261026-a65b9a6e): a `models_used` key that is no role of the factory (e.g.
+     the invented `orchestrator`) is a RUN ERROR — exit 1, the role and the registry named in the
+     report, `flags.unknown_roles` listing it — never the DEGRADED "no wire for this role". The
+     registry is `model_matrix.ROLES` (plus the non-matrix `main`), imported, not re-declared.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -658,11 +662,12 @@ def case_10_cli(root: pathlib.Path) -> None:
     expect(len(out(quiet).strip().splitlines()) == 1,
            f"--quiet prints only the summary line: {out(quiet)!r}")
 
-    # stdlib-only contract.
+    # stdlib-only contract (plus the one sibling registry module — a second copy of the role list
+    # would be exactly the drift the registry import prevents).
     source = pathlib.Path(ma.__file__).read_text(encoding="utf-8")
     imported = set(re.findall(r"^(?:import|from)\s+([A-Za-z0-9_]+)", source, flags=re.M))
-    allowed = {"__future__", "argparse", "datetime", "hashlib", "json", "pathlib", "re", "sys",
-               "tempfile"}
+    allowed = {"__future__", "argparse", "datetime", "hashlib", "json", "model_matrix", "pathlib",
+               "re", "sys", "tempfile"}
     expect(imported <= allowed,
            f"model_attribution must be stdlib-only, imports={sorted(imported - allowed)}")
 
@@ -720,6 +725,50 @@ def case_11_no_claims_is_degraded(root: pathlib.Path) -> None:
            f"the report must say why nothing was compared: {text3!r}")
 
 
+def case_12_unknown_role_is_a_run_error(root: pathlib.Path) -> None:
+    """A `models_used` role the factory does not have is exit 1, never the DEGRADED exit 3.
+
+    Regression (run 20261026-a65b9a6e): the main agent invented the role `orchestrator` in
+    `models_used` and performed the reviewer's work itself. `model_attribution.py` accepted ANY
+    key, found no wire for it and reported DEGRADED ("no wire for this role") — a contract breach
+    filed as a technical detail. The registry is `model_matrix.ROLES`, imported so it cannot drift.
+    """
+    home = root / "home12"
+    repo = root / "repo12"
+    repo.mkdir(parents=True, exist_ok=True)
+    spec = write(root, "pipeline-bogus-role.yaml",
+                 pipeline(("main", "deepseek-flash"), ("reviewer", "kimi-code/k3.1-pro"),
+                          ("orchestrator", "kimi-k3")))
+
+    # The helper itself (the contract, not only the CLI).
+    expect(ma.unknown_roles({"main": "x", "reviewer": "y"}) == [],
+           "the roles of the factory and `main` are known keys")
+    expect(ma.unknown_roles({"orchestrator": "kimi-k3"}) == ["orchestrator"],
+           "an invented role must be reported by name")
+    expect(ma.verdict_of({"orchestrator": "unknown_role"}) == "FAIL",
+           "an unknown role is a FAIL, never a DEGRADED")
+    source = pathlib.Path(ma.__file__).read_text(encoding="utf-8")
+    expect(re.search(r"^from\s+model_matrix\s+import\b", source, re.M) is not None,
+           "the role registry must be IMPORTED from model_matrix.py, never re-declared")
+
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(spec), name="bogus-role.json")
+    expect(res.returncode == 1,
+           f"an unknown models_used role must exit 1 (NOT 3 = degraded): {res.returncode} {text!r}")
+    expect(artifact["verdict"] == "FAIL", f"the verdict must be FAIL: {artifact.get('verdict')!r}")
+    expect(artifact["comparison"]["orchestrator"] == "unknown_role",
+           f"the comparison must name the breach: {artifact['comparison']!r}")
+    expect(artifact["flags"]["unknown_roles"] == ["orchestrator"],
+           f"the flag must list the invented role: {artifact['flags']!r}")
+    said = text + err(res)
+    expect("orchestrator" in said, f"the report must name the offending role: {said!r}")
+    expect("model_matrix.ROLES" in said,
+           f"the report must name the registry the role is missing from: {said!r}")
+    expect(text.strip().splitlines()[-1].startswith("FAIL - "),
+           f"the final line must not read DEGRADED: {text!r}")
+    expect("not a role of the factory" in text,
+           f"the per-role line must say it plainly: {text!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -734,12 +783,14 @@ def main() -> int:
         case_9_helpers(root)
         case_10_cli(root)
         case_11_no_claims_is_degraded(root)
+        case_12_unknown_role_is_a_run_error(root)
 
     print("PASS - model_attribution.py confirms every models_used claim against the CLI's own "
           "session wire: roles come from state.json (or subagent.spawned), the wire name is "
           "normalised to its alias, only top-level typed events are counted, a disproven claim is "
-          "a mismatch (exit 1), a missing session is DEGRADED with an artifact (exit 3), and the "
-          "self-reported view that would look green without the cross-check is proven red.")
+          "a mismatch (exit 1), a missing session is DEGRADED with an artifact (exit 3), a role "
+          "the factory does not have is a run error (exit 1), and the self-reported view that "
+          "would look green without the cross-check is proven red.")
     return 0
 
 

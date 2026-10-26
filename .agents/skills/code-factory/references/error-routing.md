@@ -111,8 +111,16 @@ Routing rules:
 - AUTH / RATE / UPSTREAM → INFRASTRUCTURE (auto-fix: verify/repair the provider config in
   `~/.kimi-code/config.toml` — api_key, base_url, provider `type` — then re-run). These are
   configuration/environment problems, not code problems; do NOT roll back the code.
+- **Scope for a TASK-NAMED model**: when the failing model is the one the task's `models:` matrix
+  names, the infrastructure route means config-repair plus wait-and-retry of the SAME model within
+  budget 3, and then stop-and-ask (rule `model-unavailable-stop`): in hitl the owner decides
+  (change the matrix in `state/task.yaml`, or stop), in auto the run ends FAILED with the reason.
+  Substitution is NEVER an infrastructure auto-fix — no other model, and the main agent never does
+  the role's work itself. The route is otherwise unchanged for every non-task-named failure.
 - MODEL / FORMAT → PLANNER (the chosen model alias does not resolve to a configured provider, or
   the request shape is wrong for that provider — re-read `providers.md` and fix the mapping).
+  For a TASK-NAMED model this repair likewise never becomes a substitution: fixing the alias →
+  provider mapping keeps the model the task names, and an unfixable one stops the run.
 - The retry budget for provider errors is INFRASTRUCTURE=3 (see §3).
 
 ## 1.2 Project-learned patterns (project-first overlay)

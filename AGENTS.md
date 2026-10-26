@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.17.0 -->
+<!-- code-factory-version: 12.18.0 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.
@@ -43,7 +43,8 @@ mandatory code review before acceptance.
   default matrix where the generator≠judge rule is enforced, the family check and the committee's
   contrasting second planner), `model_attribution.py` (artifact-backed model attribution: reads the
   CLI session wire and cross-checks `models_used` — a mismatch FAILS the run, a missing wire is
-  DEGRADED), `review_followup_task.py` (deterministic review follow-up task generator: the merged
+  DEGRADED, and a `models_used` key that is not a role of the factory is a run error, exit 1),
+`review_followup_task.py` (deterministic review follow-up task generator: the merged
   findings → `.code-factory/review/fix-tasks.yaml`),
   `plan_arbiter.py` (deterministic merge of two competing plans + list of discrepancies —
   committee on double plan rejection), `precedent_index.py` (FTS5 precedent index over memory +
@@ -51,9 +52,17 @@ mandatory code review before acceptance.
   refusing a stale index instead of answering from it),
   `chrome_devtools_mcp.py` (conditional Web GUI browser path: applicability `decide`, existing
   E2E-stack discovery, browser matrix, vendored pinned install (`vendor-install`) + idempotent merge
-  of the node-direct `chrome-devtools` server into `.kimi-code/mcp.json`, fail-soft capability probe).
-  Self-tests pin these contracts: `test_model_precedence.py`, `test_model_attribution.py` and
-  `test_review_followup_task.py` cover the three scripts above; `test_review_report_only.py` pins
+  of the node-direct `chrome-devtools` server into `.kimi-code/mcp.json`, fail-soft capability probe),
+  `task_parser.py` (deterministic stdlib task.yaml parser/validator for Phase 0: the full documented
+  task schema incl. `business_tests` and multi-line `|` block scalars inside list items, verbatim
+  texts, actionable line-numbered errors — exit 2 names the line and the fix, never a generic
+  "unreadable" and never a traceback).
+  Self-tests pin these contracts: `test_model_precedence.py` and `test_model_attribution.py` cover
+  the two model scripts, `test_review_followup_task.py` the follow-up generator and
+  `test_task_accepts_business_scenario.py` / `test_task_accepts_multiline_criteria.py` /
+  `test_task_error_is_actionable.py` the task parser; `test_no_role_substitution.py` and
+  `test_provider_stop.py` pin the `model-unavailable-stop` rule, its four carriers and the
+  provider-failure branch of the flow; `test_review_report_only.py` pins
   the report-only review routing, `test_security_audit_guarantee.py` pins the audit's guarantee,
   `test_flow_contracts.py` pins the wiring that lives in prose, and `test_vaccination.py` proves
   every fix of this release bites (its check fails on the pre-fix tree).
@@ -242,6 +251,7 @@ mandatory code review before acceptance.
   Kimi (K3) and Qwen models are routed via the task's `models` field (see
   `references/providers.md`).
 - Rule `models-generator-ne-judge`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## models-generator-ne-judge`).
+- Rule `model-unavailable-stop`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## model-unavailable-stop`).
 
 - **Reports**: `report.md` (run history) + `report_code_changes.md` (before→after diff)
   are generated automatically in `.code-factory/` on completion.

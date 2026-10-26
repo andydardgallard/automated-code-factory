@@ -10,9 +10,24 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.17.0 — publication-ready again: the second review's 12 findings and every owner item
-are closed, the suite is green end to end (38 PASS / 0 FAIL of 38 self-tests), the memory gates
-run with zero warnings and the backlog is EMPTY (open: 0, 51 closed with evidence).
+Factory v12.18.0 — the two defects of run 20261026-a65b9a6e are closed: an unavailable
+task-named model now STOPS the run (canonical rule `model-unavailable-stop`, SKILL.md nodes
+MS/VMS/RDM — hitl asks the owner, auto FAILED, the SAME model retried within infrastructure
+budget 3, substitution and main-agent role execution forbidden, a models_used role outside
+`model_matrix.ROLES` is a run error, never DEGRADED), and Phase 0 parses the original task
+deterministically first (`task_parser.py` → `state/task.json`; `business_tests` and multi-line
+`|` criteria survive verbatim; a malformed task gets an actionable line-numbered error, never
+"unreadable"). The suite is green end to end (43 PASS / 0 FAIL of 43 self-tests, 41 vaccines),
+the memory gates run clean and the backlog is EMPTY (open: 0, 51 closed with evidence).
+Latest run: implement (run_id 20261026-838dc245, task_factory_hardening.yaml, hitl) — the new
+gate dogfooded itself: attribution FAILED the run on a real matrix violation (analyzer first ran
+on the default model), re-run on the task-named k3.1-pro and fixed. Review: request_changes in
+iterations 1-3 (iterations 3-4 owner-authorized beyond the budget of 2) — 3+1 critical and 2+2
+major findings reworked, incl. a fan-out retry hub that broke review-report-only (20 violations,
+replaced by the semantic same-origin retry); final verdict approve, zero open findings.
+Acceptance SUCCESS (8/8 verify criteria MET, regression pass, ledger FRESH); models match the
+session wire; reviewer re-calibrated at 7/7 accuracy, P/R 1.000. Version 12.17.0 -> 12.18.0
+(minor, matrix + reviewer).
 Latest run: implement (run_id 20261026-2ea2eb55, fix-tasks.yaml, hitl) — the review follow-up
 executed. Every fix is vaccinated (39 vaccines bite against bases 9acc1b7/fb43f2a, 24 historical +
 15 new RF): the reviewer gate is bounded (RCR split into retry/stop/conditional-pass),

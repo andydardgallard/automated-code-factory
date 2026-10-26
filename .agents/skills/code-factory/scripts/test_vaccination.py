@@ -60,7 +60,7 @@ Cross-checks run before anything slow, and `--registry-only` stops after them:
     by at least one `fixed:` line (reported both ways — an orphaned vaccine is as bad as a
     registered ID nobody claims);
   - every item carries `fixed:` or `deferred:`, and a `deferred:` item carries `reason:`;
-  - the ids RV-1..RV-20, BL-1..BL-8, PR-1..PR-18 and RF-1..RF-15 are all present;
+  - the ids RV-1..RV-20, BL-1..BL-8, PR-1..PR-18, RF-1..RF-15 and NM-1..NM-2 are all present;
   - every registered test module (and the `test_prompt_structure.py` helper) exists in the
     working tree.
 The disposition file lives under the gitignored `.code-factory/`, so a FRESH CLONE keeps no run
@@ -138,7 +138,7 @@ HELPER_TEST = "test_prompt_structure.py"
 # The disposition contract: every group of the task's sources, exhaustively. `RF` is this run's
 # own review follow-up group: a release whose vaccines were only ever replayed against an older
 # base proves nothing about the change set being shipped now.
-EXPECTED_GROUPS = (("RV", 20), ("BL", 8), ("PR", 18), ("RF", 15))
+EXPECTED_GROUPS = (("RV", 20), ("BL", 8), ("PR", 18), ("RF", 15), ("NM", 2))
 
 
 class Vaccine(NamedTuple):
@@ -449,6 +449,13 @@ REGISTRY: tuple[Vaccine, ...] = (
             RUN_BASE_SHA),
     Vaccine("V-rf-c6", PROBE, PROBE_AGENTS_SIZE_GATE,
             r"AGENTS\.md (?:needs a size gate|is \d+ bytes — over the)", RUN_BASE_SHA),
+    # ---- NM: this run's own fixes (run 20261026-838dc245) — the named-model stop rule and the
+    # unknown-role run error. Replayed against the same base the run started from: at 9acc1b7 no
+    # stop rule exists and an invented `models_used` role fell through to DEGRADED.
+    Vaccine("V-nm-1", MODULE, "test_no_role_substitution.py",
+            r"rule 'model-unavailable-stop' is missing", RUN_BASE_SHA),
+    Vaccine("V-nm-2", MODULE, "test_provider_stop.py",
+            r"no provider-failure node", RUN_BASE_SHA),
 )
 
 # `- RV-12: fixed: ... | vaccine: V-memory-identity` — one item per finding, never wrapped.

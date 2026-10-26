@@ -5,6 +5,35 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.18.0] — 2026-10-26
+
+### Added
+- **Canonical rule `model-unavailable-stop`**: an unavailable model named in the task's `models:`
+  matrix STOPS the run — in hitl the owner is asked (change the matrix or stop), in auto the run
+  ends FAILED with the explicit reason; the main agent never performs the named role's work itself
+  and never substitutes another model. A PROVIDER_* failure of a task-named model is classified by
+  `error_router.py` (infrastructure, budget 3, logged to `logs/errors.md`), but a retry always uses
+  the SAME model. Carriers: SKILL.md (new flow node MS fed by M/CR/CR0), providers.md,
+  code-review.md, `.agents/agents/code-factory.md`; pinned by `test_no_role_substitution.py` and
+  `test_provider_stop.py`.
+- `task_parser.py` (stdlib): the deterministic Phase 0 task parser/validator — the full documented
+  task schema including `business_tests` and multi-line `|` block scalars inside list items; texts
+  survive verbatim into `state/task.json`; a malformed task yields an actionable line-numbered
+  error (exit 2), never a generic "unreadable" and never a traceback. Pinned by
+  `test_task_accepts_business_scenario.py`, `test_task_accepts_multiline_criteria.py`,
+  `test_task_error_is_actionable.py`; `assets/task-template.yaml` now demonstrates both shapes.
+
+### Fixed
+- `model_attribution.py`: a role in `models_used` that is absent from `model_matrix.ROLES` (e.g. an
+  invented "orchestrator") is a run ERROR (exit 1 naming the role and the registry), not DEGRADED —
+  a review produced by a model outside the task matrix can no longer pass as a technicality.
+- `references/error-routing.md` §1.1 scoped: for a task-named model the infrastructure route is
+  config-repair / wait-and-retry of the SAME model; substitution is never an infrastructure
+  auto-fix.
+- `test_run_id.py` re-pinned to the new task-template digest (`b6735bd7`) after the template gained
+  the `business_tests` example (the documented re-pin path).
+- Reviewer re-calibrated on the 7 golden cases: 7/7 verdict accuracy, macro P/R 1.000.
+
 ## [12.17.0] — 2026-10-26
 
 ### Fixed

@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.17.0 -->
+<!-- code-factory-version: 12.18.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -100,6 +100,12 @@ projects or creates projects from scratch.
 │       │   ├── test_verify_acceptance.py   # acceptance check self-test
 │       │   ├── verify_quotes.py            # verbatim quote check of evidence quotes (Evidence-Preserving Reducer)
 │       │   ├── test_verify_quotes.py       # quote check self-test
+│       │   ├── task_parser.py              # deterministic task.yaml parser (Phase 0): the documented schema incl. `business_tests` and multi-line `|` criteria, verbatim texts, line-numbered actionable errors
+│       │   ├── test_task_accepts_business_scenario.py # task parser self-test: a `business_tests:` block survives verbatim
+│       │   ├── test_task_accepts_multiline_criteria.py # task parser self-test: multi-line `|` criteria with sibling verify/derived
+│       │   ├── test_task_error_is_actionable.py # task parser self-test: an error names the line and the fix
+│       │   ├── test_no_role_substitution.py # model-unavailable-stop text contract (rule, carriers, flow branch)
+│       │   ├── test_provider_stop.py       # provider-failure stop path end to end (router → budget → stop)
 │       │   ├── test_repo_scoping.py        # repo-scoping contract self-test: a run with repo_path != cwd keeps every artifact (and the git half) in the resolved repo
 │       │   ├── test_review_gate.py         # canonical review gate self-test (5 documents)
 │       │   └── test_windows_scripts.py     # Windows deployment/launch scripts self-test
@@ -353,7 +359,9 @@ business_tests:              # optional: scenario, configs, and expected busines
     expected_results: "At least 5 LONG/SHORT signals and a positive equity curve"
 ```
 There is no `priority` field — all tasks are processed with the highest priority by default.
-`business_tests` is read in Phase 0 together with the task; if the field is absent, the factory clarifies the scenario,
+`business_tests` is read in Phase 0 together with the task, deterministically: `scripts/task_parser.py`
+parses the file, so an acceptance criterion or a `business_tests` text may be written as a multi-line
+`|` block scalar and keeps every line verbatim; if the field is absent, the factory clarifies the scenario,
 configs, and expected business results with the user at the planning stage (hitl).
 <!-- factory-rule: task-format begin -->
 **Task format (canonical wording):** a task carries `title`, `repo_path`, `description`, optionally `user_story`, `mode` (`hitl`|`auto`), `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria` (a criterion may carry `verify: <command>` and `derived: true`), `business_tests` (scenario, configs, expected business results), `commit_exclude`, `models`, `reference_docs`, `reference_skills`. `repo_path` is REQUIRED for every task except a green-field one (a brand-new project created in place) and is always resolved ONCE to an absolute path at the start of the run. There is NO `priority` field — all tasks are high by default, the factory does not prioritize them. A missing required field is a task parsing error, not a reason to guess it mid-run.
@@ -688,6 +696,10 @@ The actual model is recorded in `.code-factory/state/pipeline.yaml` (`models_use
 model, the models were not split. Splitting requires the flag
 `export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — without it, coder/tester fall back to primary.
 The factory checks this in pre-flight and writes `models_warning` to pipeline.yaml/report.md.
+If a model NAMED in the task's matrix is unavailable (provider auth/rate error at delegation time),
+the run STOPS — it never degrades: see the canonical rule `model-unavailable-stop` in
+`references/factory-rules.md` (carriers: SKILL.md, providers.md, code-review.md,
+`.agents/agents/code-factory.md`).
 <!-- factory-rule: models-generator-ne-judge begin -->
 **Models: task first, then the default matrix (canonical wording):** exactly two cases and no third. (a) When the task's `models:` matrix names a role, that exact model is used and is NEVER substituted: a generator/judge family collision is a WARNING naming both roles and both models, never a reason to swap. (b) When the task does not name the role, its model comes from the factory's DEFAULT MATRIX — the CLI config's `default_model` / `[secondary_model] default_model` selected by the role's `model_preference` — where the generator≠judge rule IS enforced: a same-family coder/tester/gui_expert versus reviewer/diagnostician/advisor pair with either side taken from the default matrix is an ERROR naming the fix (widen `[secondary_model]` or pin `models.<role>` in the task). (c) There is no third path: the main agent never picks a model on its own. The ONE exception is the plan committee's second planner, which always comes from a family contrasting the first planner. `scripts/model_matrix.py` is the single implementation of this precedence, `scripts/test_model_precedence.py` pins it, and the model actually served is confirmed by an ARTIFACT: `scripts/model_attribution.py` reads the CLI session wire and cross-checks `models_used`, a mismatch fails the run, and a missing wire is DEGRADED — never silently green. The secondary model works only with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`; otherwise the factory writes `models_warning` and continues on the primary. The actual role models are logged in `.code-factory/state/pipeline.yaml` (`models_used`) and in `report.md`.
 <!-- factory-rule: models-generator-ne-judge end -->

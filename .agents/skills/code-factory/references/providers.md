@@ -123,6 +123,16 @@ Agent(subagent_type: "factory-code-reviewer", model: "deepseek-flash", ...)
 - **Case (a) — the task names the role**: that exact model is used, verbatim, and is NEVER
   substituted. A generator/judge family collision is a WARNING naming both roles and both models:
   the task is authoritative, so the run continues on the configured models.
+- **An unavailable named model is a STOP, not a substitution opportunity**: when a TASK-named
+  model cannot be reached (provider auth/rate/model error at the launch or probe of its role), the
+  run stops — retry the SAME model within the infrastructure budget, then in hitl ask the owner
+  (change the matrix in `state/task.yaml`, or stop) and in auto end FAILED with the reason. The
+  main agent never performs the role's work itself and never re-points the role to another model;
+  an unavailable model is not a licence to keep the run going on a different one: the model named
+  in the task is never substituted.
+<!-- factory-rule: model-unavailable-stop begin -->
+**Named-model unavailability stops the run (canonical wording):** when a model named in the task's `models:` matrix is unavailable — a provider auth/rate/model error at launch or probe of its role — the run STOPS: in hitl mode the factory asks the owner via `AskUserQuestion` whether to change the matrix (the answer is written to `state/task.yaml`) or to stop, and in auto mode the run ends FAILED with the explicit reason naming the model and the provider error. The main agent NEVER performs the named role's work itself and NEVER substitutes another model, in no mode and under no pretext — "otherwise the run stalls" is not a reason — and no artifact presented as that role's result is produced. A provider failure of a task-named model is classified first with `scripts/error_router.py classify`: a `PROVIDER_*` category routes to infrastructure with budget 3, the record goes to `logs/errors.md` and the counter to `state/pipeline.yaml`, but every retry uses the SAME named model, and an exhausted budget means stop-and-ask, never degradation. An unknown role written into `models_used` — a key absent from the `ROLES` registry of `scripts/model_matrix.py` (`main` aside) — is a run error that exits 1 naming the role, never DEGRADED.
+<!-- factory-rule: model-unavailable-stop end -->
 - **Case (b) — the task does not name the role**: the model comes from the factory's DEFAULT
   MATRIX — `default_model` / `[secondary_model] default_model` in `config.toml`, selected by the
   role's `model_preference: primary|secondary` in `.agents/agents/sub-agents/<role>.md`. That lookup
@@ -199,7 +209,10 @@ it looks: only the SECOND planner is affected, the first planner keeps its matri
 Provider-side failures (auth 401/403, rate limit 429, upstream 5xx, unknown model, malformed
 request) are integrated into the deterministic router — see `references/error-routing.md` §1.1.
 Auth/rate/upstream → INFRASTRUCTURE auto-fix (repair the provider config, no code rollback);
-model/format → PLANNER (fix the alias → provider mapping). Budget: INFRASTRUCTURE=3.
+model/format → PLANNER (fix the alias → provider mapping). Budget: INFRASTRUCTURE=3. For a model
+the task NAMES, the infrastructure route is config-repair plus wait-and-retry of the SAME model
+within that budget 3, and then stop-and-ask (§5, rule `model-unavailable-stop`): substituting
+another model is never an infrastructure auto-fix.
 
 ## 7. Backward compatibility
 

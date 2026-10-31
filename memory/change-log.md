@@ -1207,3 +1207,27 @@ unfinished:
     reason: NEW — reviewer iteration-2 minor findings; the verdict is approve and no critical finding is open, so the run accepts them as debt instead of a third review iteration
     severity: info
     follow_up: false
+
+## 2026-10-31 — Factory self-review (report-only)
+
+project: repo
+title: Factory self-review — skill consistency (report-only)
+timestamp: 2026-10-31T15:45:00+03:00
+branch: task/clean-code-20261031-6dfd0921
+commit: 52ef383
+run_id: 20261031-d2f6fea6
+factory_version: 12.19.0
+task_type: review
+goal: Full detailed review of the factory itself with special attention to skill consistency; the owner redirected scope from farukon_v3.1.0 to the factory repo at the clarity gate.
+changed_files: none — report-only review, no source/test/config/doc/data file edited [verified: git status shows only .code-factory/, memory/, task_review.yaml]
+created_files: .code-factory run artifacts (state/, logs/, review/fix-tasks.yaml, report.md, report_code_changes.md) [verified: .code-factory/]
+results: integration=not-run regression=pass business=not-run review=request_changes | run acceptance SUCCESS 5/5 verify MET [verified: .code-factory/state/acceptance.md exit 0]; 26 merged findings (critical 17, major 6, minor 3) over 3 shards, 27/27 quotes verified verbatim [verified: .code-factory/logs/code-review-merged.json]; baseline green 48/48 exit 0 incl. full self-test suite and the three deterministic gates [verified: .code-factory/logs/baseline.md]; follow-up task generated [verified: .code-factory/review/fix-tasks.yaml]
+decisions: scope redirected to the factory repo with owner approval; task file repo_path updated to "." and re-parsed, state/task.yaml + state/task.json kept in sync [verified: .code-factory/state/task.json]; report-only guarantee kept — no source/test/config/doc/data file edited, deliverables are the report + fix-tasks.yaml [verified: git status shows only .code-factory/ + memory/ + task_review.yaml changes]; reviewer calibration gate passed before the reviewers ran [verified: calibrate_reviewer.py status exit 0]
+assumptions: none
+models_used: main=kimi-code/k3; reviewer=kimi-code/k3.1-pro (3 shards); other roles not delegated (report-only review); models_warning: coder/tester/gui_expert vs advisor share the deepseek family (task matrix authoritative); model attribution DEGRADED for non-delegated roles only (no wire evidence), main+reviewer match [verified: .code-factory/state/model-attribution.json]
+
+unfinished:
+  - item: 26 review findings (17 critical) of run 20261031-d2f6fea6
+    reason: report-only review never edits the project; the findings are handed over as .code-factory/review/fix-tasks.yaml for the owner to schedule as an implement task
+    severity: critical
+    follow_up: true

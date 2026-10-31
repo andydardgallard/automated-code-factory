@@ -19,8 +19,12 @@ SOURCE@REVISION` (multi-source `sources` list; offline pin re-verification; `-` 
 reviewer holds every change to the gates through the standing `## 2.2 Metric gates` section of
 code-review.md (numbered-gate citations; "not measured + why" never blocks); coder/gui-expert
 carry the discipline as standing practice. The suite is green end to end (45 PASS / 0 FAIL of 45
-self-tests), the memory gates run clean and the backlog is EMPTY (open: 0).
-Latest run: implement (run_id 20261031-6dfd0921, task.yaml "clean-code discipline + metric
+self-tests), the memory gates run clean. Open backlog: 1 — the 26 findings (17 critical) of self-review
+20261031-d2f6fea6, handed over as `.code-factory/review/fix-tasks.yaml` (report-only; nothing was
+edited).
+Latest run: review 20261031-d2f6fea6 (report-only factory self-review, skill-consistency focus) —
+26 merged findings over 3 shards, 27/27 quotes verified, run acceptance SUCCESS 5/5.
+Previous run: implement (run_id 20261031-6dfd0921, task.yaml "clean-code discipline + metric
 gates", hitl, plan approved with 0 rejections) — the new §2.2 gates dogfooded on the run's own
 diff: review iteration 1 request_changes (4 major + 1 minor, incl. two real bugs — a hex URL
 query misparsed as an extra-source revision, and offline pinned reuse trusting cache metadata

@@ -36,8 +36,12 @@ Responsibilities in order:
    (.code-factory/state/plan.md, section "Business tests"), collect the ACTUAL business results
    and compare with the EXPECTED results. If the plan carries a `user_story`, treat it as the
    definition of "done" and check that the story's outcome is actually produced.
-4. Refactor tasks — see `.agents/skills/code-factory/references/refactoring.md`: the ONLY
-   acceptance signal is that the existing suite passes 100% unchanged; any test edit is a failure.
+4. Refactor tasks — see `.agents/skills/code-factory/references/refactoring.md`: the acceptance
+   signal is the FREEZE on the existing suite's BEHAVIORAL expectations — every existing test
+   passes 100% unchanged and no existing test is edited or re-asserted (that IS a failure).
+   Adding a pure unit test for a newly extracted helper is ALLOWED, because it changes no existing
+   expectation (the same allowance the `factory-refactorer` role works under); a new test that
+   alters what an existing test asserts is a failure.
 
 **Web GUI acceptance is independent and yours.** When the task involves a Web GUI, YOU execute the
 final browser business scenario through the Chrome DevTools MCP tools (`mcp__chrome-devtools__*`)

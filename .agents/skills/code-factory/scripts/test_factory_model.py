@@ -1024,6 +1024,37 @@ def main() -> int:
         expect(project_fingerprint.compute_content_fingerprint(wroot) == cf_before,
                ".code-factory/ must stay excluded: the factory's own artifacts never move the hash")
 
+        # 29g. A TRACKED file DELETED from the worktree (deleted but not staged) used to fall back
+        #      to its raw INDEX record, so the level-2 value was partly a GIT OBJECT ID instead of
+        #      a content digest — exactly the kind of value that can already sit in a stale
+        #      AGENTS.md. The absent (or unreadable) file now carries an explicit MISSING marker,
+        #      so losing the content is a change like any other and the record never depends on
+        #      the index at all.
+        subprocess.run(["git", "-C", str(wroot), "add", "-A"], check=True)
+        stamp(wroot)  # a clean baseline: the embedded pair describes this tree
+        delete_before = project_fingerprint.compute_content_fingerprint(wroot)
+        deleted = wroot / "src" / "main.py"
+        expect(deleted.is_file(), "the 29g fixture needs a tracked file to delete")
+        deleted.unlink()
+        expect(project_fingerprint.compute_content_fingerprint(wroot) != delete_before,
+               "deleting a tracked file MUST move the content hash "
+               "(an index-record fallback hides the deletion)")
+        expect(any("content fingerprint mismatch" in e
+                   for e in check_factory_model.check_agents(wroot)),
+               "a tracked deletion must make the embedded content hash stale, not buy a SKIP")
+        #      The record itself is the vaccination: an absent file is marked as MISSING and never
+        #      reuses the index object id, so no index state can masquerade as content.
+        records = project_fingerprint._content_records(wroot)
+        expect(records is not None, "the 29g fixture must still be a git repository")
+        absent = [r for r in records if r.endswith(" src/main.py")]
+        expect(len(absent) == 1 and "MISSING" in absent[0],
+               f"a deleted tracked file must be recorded with an explicit marker, not its index "
+               f"record: {absent}")
+        index_record = next((r for r in (project_fingerprint._git_index_records(wroot) or [])
+                             if r.endswith(" src/main.py")), None)
+        expect(index_record is not None and absent[0] != index_record,
+               f"the missing-file record must differ from the index record: {absent} vs {index_record!r}")
+
     # 30. ONE memory contract, TWO entry points — the parity that used to be missing. The memory
     #     contract was implemented TWICE by hand (`memory_project.py` and this checker) and the two
     #     copies disagreed on six axes in both directions, so each one was blind exactly where the

@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.19.0 -->
+<!-- code-factory-version: 12.19.1 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.
@@ -52,7 +52,9 @@ mandatory code review before acceptance.
   refusing a stale index instead of answering from it),
   `chrome_devtools_mcp.py` (conditional Web GUI browser path: applicability `decide`, existing
   E2E-stack discovery, browser matrix, vendored pinned install (`vendor-install`) + idempotent merge
-  of the node-direct `chrome-devtools` server into `.kimi-code/mcp.json`, fail-soft capability probe),
+  of the node-direct `chrome-devtools` server into `.kimi-code/mcp.json`, capability probe that is
+  fail-soft overall but fail-closed on the vendored pin — an unreadable or unreviewed version is not
+  usable),
   `task_parser.py` (deterministic stdlib task.yaml parser/validator for Phase 0: the full documented
   task schema incl. `business_tests` and multi-line `|` block scalars inside list items, verbatim
   texts, actionable line-numbered errors — exit 2 names the line and the fix, never a generic
@@ -134,7 +136,9 @@ mandatory code review before acceptance.
   and commits (with no separate Kimi init step); the "SKIP regeneration" branch is allowed ONLY when
   BOTH hashes match — a match of the structural level alone is not enough (changes deeper
   than the first level are seen by the content hash). The content hash is computed over the `git ls-files` working tree,
-  so unstaged edits are visible to it; untracked files stay outside the hash — the factory
+  so unstaged edits are visible to it, and a tracked file that is absent from the worktree (deleted
+  but not staged) or unreadable is recorded with an explicit `MISSING` marker instead of its index
+  record, so losing the content still moves the hash; untracked files stay outside the hash — the factory
   warns about this rather than staying silent: `--content`/`--all` print a stderr note,
   `check_factory_model.py` prints a warning (hashes and exit codes do not change; `git add` brings an
   untracked file into the hash). Subagents read AGENTS.md instead of re-deriving the structure.
@@ -165,8 +169,10 @@ mandatory code review before acceptance.
   lists the run's artifacts without a `run_id`. The `pipeline.yaml` checkpoint carries the required keys
   `run_id`, `phase`, `status` (`ok|failed|in_progress`), `updated_at`, and the optional
   `files_touched`, `pending_decision`, `resume_hint`, `retry_counters`, `models_used`; checked by
-  `scripts/check_factory_model.py` (missing file — SKIP). A v2 memory entry carries a `run_id` and
-  provenance markers `[verified: <evidence>]`/`[inferred]` in `decisions` and `results`.
+  `scripts/check_factory_model.py` (missing file — SKIP). A v2 memory entry carries a `run_id`,
+  provenance markers `[verified: <evidence>]`/`[inferred]` in `decisions` and `results`, and the
+  `unfinished` and `factory_version` fields — omitting either in a v2 entry is a format error,
+  while a pre-v2 entry only warns.
 
 - Communication with the user — business language only.
 - Rule `english-only`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## english-only`).
@@ -177,7 +183,7 @@ mandatory code review before acceptance.
 
 - **Repo gate**: if the task references files/symbols/configs missing from the repository —
   in hitl mode stop and ask the user; in auto mode record an assumption.
-- **Error routing**: deterministic regex → Diagnostician (LLM) → Advisor (secondary,
+- **Error routing**: deterministic regex → Diagnostician (LLM) → Advisor (a judge-side model,
   a family contrasting with the diagnostician, budget 1) → Human → FAILED; retries per role budgets
   (coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2).
 - Rule `retry-budgets`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## retry-budgets`).
@@ -268,7 +274,9 @@ mandatory code review before acceptance.
 - When factory files change, update `.agents/README.md` and these instructions.
 - **Documentation**: after every successful implement/refactor, the
   `factory-documenter` subagent (secondary) is invoked — it updates only doc comments and `.md` files; validator
-  `validate_documentation.py` with a budget of 1 retry; not invoked for review/security_audit.
+  `validate_documentation.py` with a budget of 1 retry, whose `--derive` scope guard recounts the
+  changed files from git and includes untracked new ones, so an undeclared file fails the check;
+  not invoked for review/security_audit.
 - Rule `documentation`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## documentation`).
 
 - **Version**: `VERSION` is the single source of truth; the version type is determined by a deterministic

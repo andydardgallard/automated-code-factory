@@ -24,7 +24,9 @@ them while the rest of the suite stayed green:
 
 `acceptance-verify` re-implements — without shelling out to a per-run, gitignored `task.yaml` — the
 second and third `verify:` commands of the task: the gates' words must be present across the whole
-skill base, and so must the install/shell warning.
+skill base, and so must the install/shell warning — BOTH halves of it, the shell string and the
+argument vector, and `acceptance-verify-cases` proves a one-sided body is rejected instead of
+passing on the half that happens to be there.
 
 Invariant: every failure line names the shipped file (and the line, where one exists), so a red run
 says what to restore rather than that "something is wrong".
@@ -536,13 +538,49 @@ def check_acceptance_verify(root: pathlib.Path) -> tuple[list[str], list[str]]:
     if "install" not in low:
         errors.append("acceptance verify #3 fails: no skill warns that the tools can install "
                       "packages")
-    elif "shell" not in low and "argument vector" not in low:
+    elif "shell" not in low or "argument vector" not in low:
+        # BOTH halves are the warning: a shell string is executed through a shell, only the
+        # argument-vector form is safe. Accepting either half alone would pass a body that names
+        # "shell" somewhere and never warns about the unsafe form.
         errors.append("acceptance verify #3 fails: no skill warns about a shell string versus the "
                       "argument vector")
 
     if not errors:
         notes.append(f"verify #2 and #3 hold over {len(files)} SKILL.md file(s)")
     return notes, errors
+
+
+def seed_skill_base(root: pathlib.Path, body: str) -> None:
+    """One SKILL.md whose whole text is `body`, in a temporary skill base."""
+    path = root / SKILLS / DISCIPLINE / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
+def test_acceptance_verify_one_sided() -> None:
+    """A ONE-SIDED shell warning must fail verify #3: both halves of the warning are required."""
+    wanted = "no skill warns about a shell string versus the argument vector"
+    base = "install on their own initiative\n\nCRAP, duplication, mutant\n\n"
+    cases = (
+        ("only the shell string",
+         base + "a coverage command given as a shell string runs through a shell\n", True),
+        ("only the argument vector",
+         base + "prefer the safe argument vector form\n", True),
+        ("both halves",
+         base + "a shell string runs through a shell; only the argument vector form is safe\n",
+         False),
+    )
+    for label, body, must_fail in cases:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            seed_skill_base(root, body)
+            _notes, errors = check_acceptance_verify(root)
+        hit = [error for error in errors if wanted in error]
+        if must_fail and not hit:
+            raise AssertionError(f"verify #3 passed a body carrying {label}: the warning needs both "
+                                 f"halves (got {errors})")
+        if not must_fail and hit:
+            raise AssertionError(f"verify #3 rejected a body carrying {label}: {hit}")
 
 
 # =============================================================================================
@@ -558,6 +596,7 @@ CASES: tuple[tuple[str, Callable[[pathlib.Path], tuple[list[str], list[str]]]], 
 # A check that takes no root: it builds its own fixtures (and must not touch the shipped files).
 FIXTURE_CASES: tuple[tuple[str, Callable[[], None]], ...] = (
     ("manifest-cases", test_manifest_cases),
+    ("acceptance-verify-cases", test_acceptance_verify_one_sided),
 )
 
 

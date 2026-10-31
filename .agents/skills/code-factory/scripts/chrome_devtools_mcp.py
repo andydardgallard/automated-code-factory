@@ -1191,7 +1191,9 @@ def probe_capabilities(simulate_missing: tuple[str, ...] | list[str] = (),
 
     `target` is the managed `mcp.json` of a CONCRETE project (optional): with it the probe also
     checks the vendored package entry that this project's managed server launches, and a missing
-    entry counts against `mcp_usable` — the server cannot start from a file that is not there.
+    entry counts against `mcp_usable` — the server cannot start from a file that is not there. The
+    check is fail-closed on the reviewed pin: the entry is usable only when its version is PROVEN
+    equal to `PINNED_VERSION`, so an unreviewed or unreadable version counts against it too.
     Without a target there is no installation to inspect: the check reports itself as not performed
     instead of inventing a path (the deployer is what creates the layout).
     """
@@ -1237,13 +1239,32 @@ def probe_capabilities(simulate_missing: tuple[str, ...] | list[str] = (),
             str(asset_path))
     elif entry_path.is_file():
         installed = vendored_version(entry_path)
-        caps["vendor_entry"] = _capability(
-            True,
-            f"the vendored package entry for {config_path} is in place ({entry_path}"
-            + (f", {PACKAGE}@{installed})" if installed else ", version not reported)")
-            + ("" if installed in (None, PINNED_VERSION) else
-               f"; WARNING: the tested release is {PACKAGE}@{PINNED_VERSION}"),
-            str(entry_path))
+        reinstall = (f"`chrome_devtools_mcp.py vendor-install --target "
+                     f"{vendor_dir_for(config_path)}`")
+        if installed == PINNED_VERSION:
+            caps["vendor_entry"] = _capability(
+                True,
+                f"the vendored package entry for {config_path} is in place ({entry_path}, "
+                f"{PACKAGE}@{installed}), i.e. exactly the tested release",
+                str(entry_path))
+        elif installed is None:
+            # Fail closed: an existing file is not proof of the pin. A version that cannot be read
+            # may be any release at all, so it is never reported as usable.
+            caps["vendor_entry"] = _capability(
+                False,
+                f"the vendored package entry for {config_path} exists ({entry_path}), but its version "
+                f"cannot be read from {vendored_package_json(entry_path)} (missing, unreadable or "
+                f"corrupt package metadata): the tested release {PACKAGE}@{PINNED_VERSION} is not "
+                f"proven on disk, so an unidentifiable release must not be used — reinstall it with "
+                f"{reinstall}",
+                str(entry_path))
+        else:
+            caps["vendor_entry"] = _capability(
+                False,
+                f"the vendored package entry for {config_path} is {PACKAGE}@{installed} ({entry_path}), "
+                f"but the tested release is {PACKAGE}@{PINNED_VERSION}: an unreviewed version must "
+                f"never be used — reinstall the pin with {reinstall}",
+                str(entry_path))
     else:
         caps["vendor_entry"] = _capability(
             False,

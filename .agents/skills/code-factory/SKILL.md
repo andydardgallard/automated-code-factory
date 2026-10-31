@@ -3,7 +3,7 @@ name: code-factory
 description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 type: flow
 ---
-<!-- code-factory-version: 12.19.0 -->
+<!-- code-factory-version: 12.19.1 -->
 
 # Code Factory
 
@@ -90,7 +90,7 @@ flowchart TD
     C -->|No| D[Ask the user business-level clarifying questions via AskUserQuestion. Ask ONLY business logic and expectations, never coding questions. Then update the parsed task.]
     D --> B
     C -->|Yes| E[Analyze the project: launch factory-analyzer subagents in parallel to determine tech stack, structure, entry points, test setup. Detect the stack deterministically using references/tech-stack-detection.md. Run the existing test suite to establish a regression baseline and save it to .code-factory/logs/baseline.md. Build the precedent index and query it FRESH, so "how was this solved before" is answered from a current index instead of a re-read of the history: python .agents/skills/code-factory/scripts/precedent_index.py build --repo <resolved repo_path>, then precedent_index.py query --repo <resolved repo_path> --fresh <terms> (the build is idempotent and cheap, and --fresh refuses a stale index with exit 3).]
-    E --> SC[Scout pipeline: compute the deterministic structural fingerprint via scripts/project_fingerprint.py; if AGENTS.md exists and its embedded fingerprint matches, SKIP regeneration; otherwise generate AGENTS.md with exactly the 8 standard sections (no init step).]
+    E --> SC[Scout pipeline: compute the deterministic TWO-LEVEL fingerprint via scripts/project_fingerprint.py --all — structural AND content hashes; if AGENTS.md exists and BOTH its embedded hashes match the recomputed ones, SKIP regeneration; a single matching hash is not enough, otherwise GENERATE AGENTS.md with exactly the 8 standard sections (no init step).]
     SC --> C2{Does the task match the analyzed repo? Check that files, symbols, configs and data referenced by the task actually exist.}
     C2 -->|No| R1[Ask the user for the missing files or context via AskUserQuestion in hitl mode, or in auto mode record an assumption that the repo is the source of truth and continue. Then re-analyze.]
     R1 --> E
@@ -155,7 +155,7 @@ flowchart TD
     DR -->|ba| P2
     DR -->|planner| P2
     DR -->|infrastructure| AI
-    DR -->|human| ADV[Escalation step three: run the factory-advisor subagent (secondary model, budget advisor=1) with a self-contained briefing — the task, files by path, what was tried and why it failed, acceptance criteria. It returns the machine-read agreement (agree|disagree with the Diagnostician's route), root_cause, recommended_role, recommended_action and confidence, logged to .code-factory/logs/diagnostic.md.]
+    DR -->|human| ADV[Escalation step three: run the factory-advisor subagent (a judge-side model, budget advisor=1) with a self-contained briefing — the task, files by path, what was tried and why it failed, acceptance criteria. It returns the machine-read agreement (agree|disagree with the Diagnostician's route), root_cause, recommended_role, recommended_action and confidence, logged to .code-factory/logs/diagnostic.md.]
     ADV --> ADR{Advisor recommendation}
     ADR -->|coder| P
     ADR -->|ba| P2
@@ -255,8 +255,8 @@ Rules that always apply:
 - **Repo-mismatch gate**: if the task references files, symbols, configs or data that are absent
   in the repo, stop in hitl mode and ask the user for them (or record an assumption in auto
   mode). Never silently skip missing inputs.
-- **Escalation ladder**: deterministic regex → Diagnostician (LLM) → Advisor (LLM, secondary
-  model family, budget 1) → Human (HITL) → FAILED with a full log. The Advisor is the second
+- **Escalation ladder**: deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model
+  contrasting with the Diagnostician's family, budget 1) → Human (HITL) → FAILED with a full log. The Advisor is the second
   opinion taken when the Diagnostician's fix did not work; it receives a self-contained briefing
   per `references/handoff-briefing.md` and never edits files. The factory never crashes silently.
 - **Retry budgets**: coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3,
@@ -271,7 +271,7 @@ Rules that always apply:
 **Report-only review (canonical wording):** a `task_type: review` run never edits the project: no review verdict, in either mode, reaches a node that starts a coder, writes a backup or changes a tracked source, test, config, documentation or data file — the run's own `.code-factory/` artifacts and its single `memory/` record are the only writes. The deliverable is the report (`.code-factory/logs/code-review.md` + `.code-factory/report.md`) plus a generated follow-up task file (`.code-factory/review/fix-tasks.yaml`, produced by `scripts/review_followup_task.py`) that the owner runs later as a separate `implement` task; the findings never become this run's plan. A review criterion that is not MET stops the run and asks the owner — it is never routed into error routing's coder branch — and because the run changes nothing, every `verify:` criterion of a review task must be satisfiable on the unmodified tree: a criterion that needs a change is an authoring error the run reports. A review run's acceptance judges the delivered report, while the verdict on the reviewed code stays recorded as `results.review=`; the two facts are never conflated. `security_audit` keeps its own guarantee (reports plus a fix-task file, no auto-fixing) unchanged, and this rule does not restate it.
 <!-- factory-rule: review-report-only end -->
 <!-- factory-rule: retry-budgets begin -->
-**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, secondary model, contrasting model family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently.
+**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently.
 <!-- factory-rule: retry-budgets end -->
 <!-- factory-rule: checkpoint-resume begin -->
 **Checkpoint/resume (canonical wording):** after every phase the main agent writes `.code-factory/state/pipeline.yaml` (phase, status, files touched, pending decision, resume hint, run_id, time) — the run state lives on disk, not in the context. On restart the factory reconciles the plan checkpoint and, if the task has not changed, continues from the RECORDED phase, not from the beginning. `resume` restores the retry counters, so exhausted budgets are not reset by a restart.
@@ -290,10 +290,14 @@ Rules that always apply:
 <!-- factory-rule: run-id end -->
 
 - **AGENTS.md (single source of truth) + fingerprint**: the factory generates `AGENTS.md` with
-  exactly 8 `##` sections and embeds a deterministic structural fingerprint on its first line
-  (`scripts/project_fingerprint.py`). At the start of a task, if the embedded fingerprint matches
-  the recomputed one, skip regeneration; otherwise regenerate. At the end of a task, regenerate
-  if structure/stack/entry points changed, then commit it. There is no init step.
+  exactly 8 `##` sections and embeds a deterministic TWO-LEVEL fingerprint on its first line —
+  `scripts/project_fingerprint.py --all`, a `code-factory-fingerprint` marker carrying BOTH
+  `<structural-64-hex>` and `content: <content-64-hex>`. At the start
+  of a task, compute BOTH hashes and skip regeneration only when BOTH match the embedded ones; a
+  single matching hash is NOT enough (`references/tech-stack-detection.md`: the levels are
+  independent and a content-only change already must regenerate — a structural match with a
+  differing content hash leaves `AGENTS.md` stale). At the end of a task, regenerate if
+  structure/stack/entry points OR content changed, then commit it. There is no init step.
 - **Long-term memory (`memory/`)**: committable, never ignored. It is the memory of the TARGET
   PROJECT named by the task's `repo_path` (one memory — one project; the factory repository is
   itself such a target project when the task points at it), never the memory of the factory's own
@@ -318,8 +322,10 @@ Rules that always apply:
   `item`, `reason`, `severity` (critical|warning|info) and `follow_up` (true|false).
   `memory/summary.md` MUST declare the project with `project:`/`repo_path:` lines right after the
   canonical marker. Compaction MUST preserve items with severity=critical or follow_up=true.
-  Legacy entries without
-  `project:` or the `unfinished`/`factory_version` keys validate with a warning, never an error;
+  A record of the memory format v2 MUST carry both `unfinished` and `factory_version` — omitting
+  either is a format error there; only a genuinely pre-v2 entry (written by a factory no newer
+  than 12.8.0 and carrying no v2 field) or an entry without `project:` validates with a warning,
+  never an error;
   entries of DIFFERENT projects in one journal are an error (caught by
   `scripts/check_factory_model.py` and `memory_project.py check`). Verify with
   `scripts/check_factory_model.py --repo <resolved repo_path>` (8 sections + fingerprint + memory format).
@@ -459,6 +465,6 @@ Rules that always apply:
   path, never pasted content; read-only roles get the no-edits suffix), and every subagent returns
   a concise structured result with artifact paths.
 <!-- factory-rule: handoff-briefing begin -->
-**Briefing of every delegation (canonical wording):** every delegation to a subagent is a self-contained briefing per `references/handoff-briefing.md` (Task / Context / relevant files BY PATH, without inlining their contents / what has already been tried and why it failed / the MEMORY FACTS: the open backlog items that touch this work and the relevant past decisions read from `memory/summary.md` and the journal, so a subagent never re-derives the project's history). Only the main agent writes files; read-only roles (analyzer, reviewer, security-auditor, diagnostician, advisor) carry the "no edits" suffix. The subagent returns a compact structured result with paths to artifacts, not a retelling of the context.
+**Briefing of every delegation (canonical wording):** every delegation to a subagent is a self-contained briefing per `references/handoff-briefing.md` (Task / Context / relevant files BY PATH, without inlining their contents / what has already been tried and why it failed / the MEMORY FACTS: the open backlog items that touch this work and the relevant past decisions read from `memory/summary.md` and the journal, so a subagent never re-derives the project's history). Only the main agent writes files; read-only roles (analyzer, planner, reviewer, security-auditor, diagnostician, advisor) carry the "no edits" suffix. The subagent returns a compact structured result with paths to artifacts, not a retelling of the context.
 <!-- factory-rule: handoff-briefing end -->
 

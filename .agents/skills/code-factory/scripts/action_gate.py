@@ -117,7 +117,10 @@ CONFIRM rules (destructive but inside the declared scope, and anything the gate 
     takes the SAME scope route — `.` IS a pathspec that discards the whole tree, never an ALLOW —
     and an operand with a path separator is ambiguous (a branch name or a path) and CONFIRMs;
     only a plain branch/ref switch (`git checkout main`, `git checkout -b feature`) does not
-    discard file changes and stays ALLOW,
+    discard file changes and stays ALLOW. A ref flag is no licence to ALLOW either: the
+    `-b`/`-B`/`--orphan` branch forms take a branch and an optional start point; `--detach` stays
+    ALLOW only when no pathspec follows it, because `git checkout --detach HEAD .` still restores
+    `.` from HEAD over the uncommitted changes,
   * `git clean` (repo-wide by nature). `git clean -n` / `--dry-run` is a no-op → ALLOW,
   * `git stash` in its mutating forms: a bare `git stash` (which IS the default `push`), `push`,
     `pop`, `apply`, `drop`, `clear`. Stashing rewrites the SHARED working tree of the run, where
@@ -882,7 +885,11 @@ def classify_reset(argv: list[str], scopes: list[str]) -> tuple[str, str]:
     return ALLOW, "git reset --hard on a local ref"
 
 
-CHECKOUT_REF_FLAGS = ("-b", "-B", "--orphan", "--detach")
+# Ref flags that take a branch operand (and an optional start point), never a path.
+CHECKOUT_BRANCH_FLAGS = ("-b", "-B", "--orphan")
+# `--detach` alone takes only a ref, but git still reads the operands AFTER that ref as paths
+# (`git checkout --detach HEAD .` restores `.` from HEAD), so it is not a licence to ALLOW.
+DETACH_FLAGS = ("--detach",)
 # A drive-letter path (`C:\x`, `C:/x`) can only be a pathspec, never a branch name.
 DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
@@ -903,6 +910,17 @@ def is_pathspec_token(token: str) -> bool:
             or any(mark in raw for mark in "*?["))
 
 
+def paths_follow_ref_flag(operands: list[str]) -> bool:
+    """True when a `--detach` operand list may still end in paths, not a ref alone.
+
+    With `--detach` git reads the FIRST operand as the ref and EVERY following operand as a
+    pathspec, so `git checkout --detach HEAD .` restores `.` (and everything under it) from HEAD
+    over the uncommitted changes; a single unmistakable pathspec operand (`.`, `../`, a wildcard)
+    is a path too. Only when no such operand follows is the command a pure ref switch.
+    """
+    return len(operands) >= 2 or any(is_pathspec_token(t) for t in operands)
+
+
 def classify_checkout(argv: list[str], scopes: list[str]) -> tuple[str, str]:
     sub = argv[1].lower()
     rest = argv[2:]
@@ -912,9 +930,13 @@ def classify_checkout(argv: list[str], scopes: list[str]) -> tuple[str, str]:
             paths = rest[rest.index("--") + 1:]
         else:
             operands = operands_of(rest, 0)
-            if any(f in CHECKOUT_REF_FLAGS for f in flags_of(rest)):
-                return ALLOW, ("git checkout -b/-B/--orphan/--detach creates or switches a "
-                               "branch; it does not discard file changes")
+            flags = flags_of(rest)
+            if any(f in CHECKOUT_BRANCH_FLAGS for f in flags):
+                return ALLOW, ("git checkout -b/-B/--orphan creates or switches a branch; it "
+                               "does not discard file changes")
+            if any(f in DETACH_FLAGS for f in flags) and not paths_follow_ref_flag(operands):
+                return ALLOW, ("git checkout --detach switches to a detached head without a "
+                               "pathspec; it does not discard file changes")
             if not operands:
                 return ALLOW, "bare git checkout without a pathspec does not discard file changes"
             if len(operands) >= 2:

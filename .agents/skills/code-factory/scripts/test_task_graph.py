@@ -16,7 +16,10 @@ Verifies that readiness and status transitions are decided by the script, never 
   - the OPTIONAL `--repo`/`--root` anchor (before or after the subcommand) resolves the RELATIVE
     paths of the invocation — `--dir` and the `file` of `sha`/`verify-sha` — against the run's
     resolved repo_path, while an absolute path stays as it is and the flag-less invocation keeps
-    resolving against the cwd.
+    resolving against the cwd,
+  - a MALFORMED task file (scalar, array, wrong field types) is one clean `error: ` line naming the
+    file, exit 1 — never a TypeError traceback — in every command that loads the graph, and a graph
+    holding one broken file is refused as a whole instead of being half-read.
 
 Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
 """
@@ -218,9 +221,70 @@ def main() -> int:
                == ["anchored_02"],
                "an absolute --dir must never be re-anchored")
 
+        # 13. REGRESSION (self-review 20261031-d2f6fea6, critical 11): a malformed task FILE is a
+        #     clean refusal, never a TypeError traceback. `read_task` used to run its membership
+        #     tests on the decoded JSON before checking that it is an object, so a `bad.json`
+        #     containing `1` printed `TypeError: argument of type 'int' is not a container or
+        #     iterable` — a crash in EVERY command that loads the graph.
+        broken = tmp / "broken"
+        broken.mkdir()
+        bad_json = broken / "bad.json"
+        bad_json.write_text("1\n", encoding="utf-8")
+        for args in (("list",), ("ready",),
+                     ("claim", "--id", "task_01", "--owner", "coder"),
+                     ("complete", "--id", "task_01"),
+                     ("create", "--id", "task_new", "--title", "New")):
+            res = run(*args, "--dir", str(broken))
+            expect(res.returncode == 1,
+                   f"{args[0]} must refuse a scalar task file with exit 1: "
+                   f"{res.returncode} {res.stdout!r} {res.stderr!r}")
+            expect("Traceback" not in res.stderr,
+                   f"{args[0]} must not print a traceback: {res.stderr!r}")
+            expect(res.stderr.startswith("error: ") and "bad.json" in res.stderr,
+                   f"{args[0]} must name the broken file in one 'error: ' line: {res.stderr!r}")
+            expect(res.stderr.strip().count("\n") == 0,
+                   f"{args[0]} must print exactly one error line: {res.stderr!r}")
+
+        # The same refusal for the other malformed shapes: a JSON array, a task whose `blockedBy`
+        # is not a list (a string would have been iterated character by character), and a task
+        # whose `title` is not text.
+        bad_json.unlink()                   # one malformed file at a time: each must be named
+        for name, body in (("array.json", "[1, 2]\n"),
+                           ("string-null.json", "null\n"),
+                           ("bad-blockedby.json", json.dumps(
+                               {"id": "bad_blockedby", "title": "T", "status": "pending",
+                                "owner": None, "blockedBy": "bad_blockedby"}) + "\n"),
+                           ("bad-title.json", json.dumps(
+                               {"id": "bad_title", "title": 7, "status": "pending",
+                                "owner": None, "blockedBy": []}) + "\n"),
+                           ("bad-status.json", json.dumps(
+                               {"id": "bad_status", "title": "T", "status": ["pending"],
+                                "owner": None, "blockedBy": []}) + "\n")):
+            (broken / name).write_text(body, encoding="utf-8")
+            # `ready` reads the whole directory, so it must refuse every malformed shape.
+            res = run("ready", "--dir", str(broken))
+            expect(res.returncode == 1 and "Traceback" not in res.stderr,
+                   f"a malformed task file must be refused cleanly ({name}): "
+                   f"{res.returncode} {res.stderr!r}")
+            expect(res.stderr.startswith("error: ") and name in res.stderr,
+                   f"the refusal must name {name}: {res.stderr!r}")
+            (broken / name).unlink()
+
+        # A valid task next to a broken file is still refused as a WHOLE: the graph is either read
+        # completely or not at all (a half-read graph would decide readiness on partial state).
+        bad_json.write_text("1\n", encoding="utf-8")
+        (broken / "good.json").write_text(json.dumps(
+            {"id": "good", "title": "Good", "status": "pending", "owner": None,
+             "blockedBy": []}) + "\n", encoding="utf-8")
+        res = run("list", "--dir", str(broken))
+        expect(res.returncode == 1 and "Traceback" not in res.stderr,
+               f"a broken graph must not be half-read: {res.returncode} {res.stderr!r}")
+        expect("bad.json" in res.stderr, f"the refusal must name the broken file: {res.stderr!r}")
+
     print("PASS - task_graph.py creates/claims/completes tasks, refuses cycles, blocked claims and "
-          "unclaimed completions, reports readiness deterministically, checks sha256, and anchors "
-          "the relative graph/sha paths at --repo.")
+          "unclaimed completions, reports readiness deterministically, checks sha256, anchors the "
+          "relative graph/sha paths at --repo, and refuses a malformed task file (scalar, array, "
+          "wrong field type) with one clean 'error: ' line instead of a TypeError traceback.")
     return 0
 
 

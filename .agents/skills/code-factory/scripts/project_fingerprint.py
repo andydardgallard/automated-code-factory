@@ -27,8 +27,10 @@ re-analysis + AGENTS.md regeneration ("skip Scout if unchanged").
    CRLF→LF normalized before hashing, so the value does not depend on the checkout's line
    endings (`.cmd`/`.ps1` are pinned to eol=crlf by .gitattributes and would otherwise hash
    differently from an LF checkout). A tracked file ABSENT from the worktree (deleted but not
-   staged) or unreadable falls back to its index record (`<mode> <index-sha> <path>`): losing
-   the content is a change too, and the value stays computable instead of failing. UNTRACKED
+   staged) or unreadable is recorded with an explicit `MISSING` marker in the digest field
+   (`<mode> MISSING <path>`) — never with its index record: losing the content is a change too,
+   and a marker keeps the value free of any git object id that could already sit in a stale
+   AGENTS.md. UNTRACKED
    files are outside `git ls-files` and therefore outside the hash; that boundary is not hidden
    but made VISIBLE: `--content`/`--all` print a stderr note with their count (`untracked_files`,
    the factory's own artifacts excluded), and `check_factory_model.py` warns the same way. The
@@ -116,6 +118,12 @@ EXCLUDED_PARTS = IGNORE_TOP_LEVEL | IGNORE_PARTS
 # in `references/` behind a pointer.
 AGENTS_SIZE_WARN_BYTES = 28 * 1024
 AGENTS_SIZE_FAIL_BYTES = 32 * 1024
+
+# The digest-field value of a tracked file that is ABSENT from the worktree (deleted but not
+# staged) or unreadable. It replaces the digest instead of the file's index record: a git object id
+# in a content-hash record is a different KIND of value (and a stable one across the deletion), so
+# the explicit marker is what makes losing the content show up as a change.
+MISSING_CONTENT = "MISSING"
 
 
 def agents_size_issues(size: int) -> tuple[str, str]:
@@ -317,8 +325,9 @@ def _content_records(root: pathlib.Path) -> list[str] | None:
     The tracked set and the file modes come from the index (`git ls-files -s`, see
     `_git_index_records`), the hash from the WORKING TREE — that is what makes an UNSTAGED edit move
     the content fingerprint. A tracked file ABSENT from the worktree (deleted but not staged) or
-    unreadable keeps its INDEX record (`<mode> <index-sha> <path>`): losing the content is a change
-    too, and the value stays computable instead of failing.
+    unreadable is recorded with the explicit `MISSING_CONTENT` marker instead of a digest — never
+    with its index record: losing the content is a change too, and the marker keeps the hash free
+    of a git object id.
     """
     index = _git_index_records(root)
     if index is None:
@@ -329,8 +338,7 @@ def _content_records(root: pathlib.Path) -> list[str] | None:
         try:
             digest = _worktree_content_sha(root / path, mode)
         except OSError:                    # tracked but not in the worktree (or unreadable)
-            records.append(record)
-            continue
+            digest = MISSING_CONTENT
         records.append(f"{mode} {digest} {path}")
     return records
 
@@ -373,9 +381,10 @@ def compute_content_fingerprint(root: pathlib.Path) -> str:
     """Content fingerprint (level 2): SHA-256 over the tracked WORKING-TREE content, see docstring.
 
     Hashes each tracked non-excluded file's worktree content (`git ls-files -s`, CRLF→LF
-    normalized), so an UNSTAGED edit moves the hash; a file missing from the worktree falls back to
-    its index record. Untracked files are outside the tracked set and thus outside the hash —
-    `untracked_files` reports them to the CLI and to `check_factory_model.py`.
+    normalized), so an UNSTAGED edit moves the hash; a file missing from the worktree is recorded
+    with the explicit `MISSING_CONTENT` marker (its index record is never used). Untracked files are
+    outside the tracked set and thus outside the hash — `untracked_files` reports them to the CLI and
+    to `check_factory_model.py`.
     """
     records = _content_records(root)
     if records is None:

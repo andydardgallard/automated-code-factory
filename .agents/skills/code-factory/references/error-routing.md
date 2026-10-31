@@ -18,15 +18,14 @@ disagrees with the JSON, the JSON is authoritative. The tables are kept as docum
 default snapshot. How the learned file is located, merged and prioritized — and what happens when
 it is broken — is §1.2.
 
-Known quirks of that snapshot (carried over verbatim so the JSON and the tables below match):
-row 8 keeps `error[E\d+]` as a character class — it matches one of the characters `E`, `\d`, `+`,
-not a Rust error code; row 18 keeps unescaped parentheses in `Traceback (most recent call last)`,
-so they form a group; rows 16/17 are two identical TIMEOUT rows and, under first-match-wins, row
-16 shadows row 17 (an output containing "test" routes to PLANNER, anything else never reaches
-row 17's CODER); and the §2 nuance `WRONG_RESULTS (with "regression")` → CODER does NOT apply
-under JSON-first classification: row 2 of the snapshot matches any WRONG_RESULTS (its pattern
-contains `regression`) and routes it to DIAGNOSTICIAN, and the JSON is authoritative over the §2
-table.
+The JSON and the tables below agree row for row. Two rows that used to be quirks are now real
+predicates: row 8 matches Rust error codes (`error[E0308]`) with the brackets escaped, and row 16
+carries the test-context predicate the route has always documented, so a test timeout reaches
+PLANNER while every other timeout reaches row 17's CODER. Two left-overs stay documented as they
+are: row 18 keeps unescaped parentheses in `Traceback (most recent call last)`, so they form a
+group, and the §2 nuance `WRONG_RESULTS (with "regression")` → CODER does NOT apply under
+JSON-first classification — row 2 of the snapshot matches any WRONG_RESULTS (its pattern contains
+`regression`) and routes it to DIAGNOSTICIAN, and the JSON is authoritative over the §2 table.
 
 Match the combined error output (stdout + stderr) against these patterns IN ORDER — more
 specific first. First match wins.
@@ -44,7 +43,7 @@ specific first. First match wins.
 | 5 | MISSING_FILE | `No such file or directory\|cannot open file\|file not found\|does not exist` | BA |
 | 6 | MISSING_FILE | `ModuleNotFoundError\|ImportError.*No module named` | BA |
 | 7 | BAD_COMMAND | `command not found\|: not found\|No such command\|unknown option\|syntax error near unexpected token` | PLANNER |
-| 8 | COMPILE_ERROR | `error[E\d+]\|^error: \|cannot find\|failed to compile\|no member named` | CODER |
+| 8 | COMPILE_ERROR | `error\[E\d+\]\|^error: \|cannot find\|failed to compile\|no member named` | CODER |
 | 9 | COMPILE_ERROR | `SyntaxError\|IndentationError\|NameError.*not defined` | CODER |
 | 10 | COMPILE_ERROR | `npm ERR!\|error TS\d+\|Type error:\|cannot find module` | CODER |
 | 11 | COMPILE_ERROR | `go: cannot find\|cannot find package\|\.go:\d+:\d+: .* undefined` | CODER |
@@ -52,8 +51,8 @@ specific first. First match wins.
 | 13 | LINK_ERROR | `linking\|undefined reference\|cannot find -l\|ld returned\|library not found` | CODER |
 | 14 | DEPENDENCY | `cargo.*could not compile.*dependency\|npm ERR! 404\|pip.*No matching distribution` | INFRASTRUCTURE |
 | 15 | PERMISSION | `Permission denied\|EACCES\|operation not permitted\|sudo required` | HUMAN |
-| 16 | TIMEOUT | `timed?\s*out\|timeout\|TimeoutExpired\|operation timed out` (with "test" in output) | PLANNER |
-| 17 | TIMEOUT | `timed?\s*out\|timeout\|TimeoutExpired\|operation timed out` | CODER |
+| 16 | TIMEOUT (test) | `(?s)(?=.*(?:\btest\|pytest\|unittest))(?=.*(?:timed?\s*out\|timeout\|TimeoutExpired\|operation timed out))` — one regex carrying BOTH conditions (a test-context token AND a timeout token), so it matches only in test context | PLANNER |
+| 17 | TIMEOUT (other) | `timed?\s*out\|timeout\|TimeoutExpired\|operation timed out` — reached by every timeout row 16 does not claim | CODER |
 | 18 | RUNTIME_CRASH | `thread .* panicked\|Segmentation fault\|core dumped\|Fatal error\|Traceback (most recent call last)\|panic:` | CODER |
 | 19 | ASSERTION | `AssertionError\|assert .* failed\|test.*failed\|FAILED.*test` | CODER |
 | 20 | UNKNOWN | (no pattern matched) | DIAGNOSTICIAN |
@@ -103,12 +102,14 @@ endpoint/auth/routing rules. Add these patterns (in order, most specific first):
 | A | PROVIDER_AUTH | `401\|unauthorized\|invalid api key\|authentication failed\|api key (missing\|expired)` | INFRASTRUCTURE |
 | B | PROVIDER_AUTH | `403\|forbidden\|access denied\|insufficient permission` | INFRASTRUCTURE |
 | C | PROVIDER_RATE | `429\|rate limit\|too many requests\|quota exceeded\|billing\|insufficient.*balance` | INFRASTRUCTURE |
-| D | PROVIDER_MODEL | `model (not found\|does not exist\|not available\|invalid.*model)` | PLANNER |
+| D | PROVIDER_MODEL | `model (not found\|does not exist\|not available\|invalid.*model)` | INFRASTRUCTURE |
 | E | PROVIDER_UPSTREAM | `502\|503\|504\|5\d\d\|upstream\|temporarily unavailable\|connection (refused\|reset)` | INFRASTRUCTURE |
-| F | PROVIDER_FORMAT | `unsupported.*format\|malformed.*request\|invalid_request_error\|base_url.*not reachable` | PLANNER |
+| F | PROVIDER_FORMAT | `unsupported.*format\|malformed.*request\|invalid_request_error\|base_url.*not reachable` | INFRASTRUCTURE |
 
 Routing rules:
-- AUTH / RATE / UPSTREAM → INFRASTRUCTURE (auto-fix: verify/repair the provider config in
+- Every provider row (A-F) → INFRASTRUCTURE, budget 3: the canonical `model-unavailable-stop` rule
+  ("a `PROVIDER_*` category routes to infrastructure with budget 3") leaves no provider failure on
+  another route. AUTH / RATE / UPSTREAM (auto-fix: verify/repair the provider config in
   `~/.kimi-code/config.toml` — api_key, base_url, provider `type` — then re-run). These are
   configuration/environment problems, not code problems; do NOT roll back the code.
 - **Scope for a TASK-NAMED model**: when the failing model is the one the task's `models:` matrix
@@ -117,10 +118,11 @@ Routing rules:
   (change the matrix in `state/task.yaml`, or stop), in auto the run ends FAILED with the reason.
   Substitution is NEVER an infrastructure auto-fix — no other model, and the main agent never does
   the role's work itself. The route is otherwise unchanged for every non-task-named failure.
-- MODEL / FORMAT → PLANNER (the chosen model alias does not resolve to a configured provider, or
-  the request shape is wrong for that provider — re-read `providers.md` and fix the mapping).
-  For a TASK-NAMED model this repair likewise never becomes a substitution: fixing the alias →
-  provider mapping keeps the model the task names, and an unfixable one stops the run.
+- MODEL / FORMAT → INFRASTRUCTURE too (the chosen model alias does not resolve to a configured
+  provider, or the request shape is wrong for that provider — repair the alias → provider mapping
+  or the provider config per `providers.md`, then re-run). For a TASK-NAMED model this repair
+  likewise never becomes a substitution: fixing the mapping keeps the model the task names, and an
+  unfixable one stops the run after budget 3.
 - The retry budget for provider errors is INFRASTRUCTURE=3 (see §3).
 
 ## 1.2 Project-learned patterns (project-first overlay)
@@ -217,7 +219,7 @@ After classification, decide who retries:
 | INFRASTRUCTURE | 3 |
 | HUMAN | 0 (cannot auto-retry) |
 <!-- factory-rule: retry-budgets begin -->
-**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, secondary model, contrasting model family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently.
+**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently.
 <!-- factory-rule: retry-budgets end -->
 
 - Each retry increments the per-role counter in `.code-factory/state/pipeline.yaml`

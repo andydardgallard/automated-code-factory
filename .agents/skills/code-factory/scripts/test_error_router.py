@@ -25,7 +25,12 @@ MISSING-NODE WORDING regressions (the line the Web GUI probe ACTUALLY emits is r
 `chrome_devtools_mcp.py` itself, and the line the INSTALLER ACTUALLY reports is produced by calling
 `vendor_install()` with only `node` absent — both produced, never hand-copied, and both must
 classify as row I1) with the row-I1 JSON to `references/error-routing.md` agreement, plus the
-stdlib-only import contract.
+stdlib-only import contract. Three routing regressions are pinned end to end: a normal Cargo error
+`error[E0308]` reaches COMPILE_ERROR/CODER (row 8's brackets are escaped), a test-context timeout
+reaches TIMEOUT/PLANNER while every other timeout reaches TIMEOUT/CODER (rows 16/17 are no longer
+identical), and every `PROVIDER_*` row (D and F included) reaches INFRASTRUCTURE — as rule
+`model-unavailable-stop` requires — with the rows 8/16 JSON to `references/error-routing.md`
+agreement.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -174,9 +179,9 @@ EXPECTED_PROVIDERS = [
     ("A", "PROVIDER_AUTH", "infrastructure"),
     ("B", "PROVIDER_AUTH", "infrastructure"),
     ("C", "PROVIDER_RATE", "infrastructure"),
-    ("D", "PROVIDER_MODEL", "planner"),
+    ("D", "PROVIDER_MODEL", "infrastructure"),
     ("E", "PROVIDER_UPSTREAM", "infrastructure"),
-    ("F", "PROVIDER_FORMAT", "planner"),
+    ("F", "PROVIDER_FORMAT", "infrastructure"),
 ]
 BUDGETS = {"coder": 1, "ba": 2, "planner": 2, "diagnostician": 1, "advisor": 1,
            "infrastructure": 3, "reviewer": 2}
@@ -186,6 +191,9 @@ SAMPLES = [
     ("ModuleNotFoundError: No module named 'x'", "6", "MISSING_FILE", "ba"),
     ("AssertionError: expected 5 but got 7", "2", "WRONG_RESULTS", "diagnostician"),
     ("error: cannot find value `x` in this scope", "8", "COMPILE_ERROR", "coder"),
+    # A normal Cargo error code, the regression of the character-class finding: `error[E\d+]` never
+    # matched this line, so real Rust compile failures fell through to UNKNOWN/DIAGNOSTICIAN.
+    ("error[E0308]: mismatched types\n  --> src/main.rs:4:9", "8", "COMPILE_ERROR", "coder"),
     ("Task file not found: task.yaml", "1", "MISSING_INPUT", "human"),
     ("Auto-merging a.py\nMerge conflict in target/debug/x", "3", "INFRASTRUCTURE",
      "infrastructure"),
@@ -195,6 +203,16 @@ SAMPLES = [
     ("test_x FAILED: 1 != 2", "19", "ASSERTION", "coder"),
     ("cargo: could not compile `bar`: dependency failed", "14", "DEPENDENCY", "infrastructure"),
     ("HTTP 429: rate limit exceeded", "C", "PROVIDER_RATE", "infrastructure"),
+    # Every provider row routes to INFRASTRUCTURE (rule `model-unavailable-stop`: "a PROVIDER_*
+    # category routes to infrastructure with budget 3"), including the model/format rows that used
+    # to say PLANNER and so took a different retry/stop path.
+    ("400 provider error: model not found: kimi-k4", "D", "PROVIDER_MODEL", "infrastructure"),
+    ("invalid_request_error: unsupported response format", "F", "PROVIDER_FORMAT",
+     "infrastructure"),
+    # TIMEOUT is one rule split in two: a test-context timeout reaches PLANNER, every other timeout
+    # reaches CODER. Identical rows would make the second branch unreachable (first match wins).
+    ("pytest: test_inventory timed out after 30s", "16", "TIMEOUT", "planner"),
+    ("Command 'make build' timed out after 600s", "17", "TIMEOUT", "coder"),
     # Browser/MCP INFRASTRUCTURE rows (§1 rows I1-I4): a missing capability is an environment
     # problem, not a code problem. It must never be swallowed by the generic BAD_COMMAND/MISSING_FILE
     # rows, and it never reaches the coder — the coder route stays the ONLY implementation route.
@@ -330,19 +348,29 @@ def main() -> int:
     # Note in §1: business-result markers may sit inside an assertion message.
     expect(ids.index("2") < ids.index("8") < ids.index("19"),
            "WRONG_RESULTS must be checked before the compile/assertion rows")
-    # Rows 16/17 share the same regexes — the "(with 'test' in output)" condition is prose, not a
-    # regex, so row 16 shadows row 17 under "first match wins". Pinned here so the shadowing is
-    # visible rather than silent (the text update of error-routing.md has to resolve it).
-    expect(by_id["16"]["patterns"] == by_id["17"]["patterns"],
-           "rows 16 and 17 must still mirror the table's shared pattern cell")
-    # Row 8's cell is `error[E\d+]` — a CHARACTER CLASS, so it matches `error4`, not Cargo's
-    # `error[E0432]`. Copied verbatim here (the snapshot must not rewrite the table); a project can
-    # override id 8 with a learned pattern, and the text update of error-routing.md has to decide.
-    expect("error[E\\d+]" in by_id["8"]["patterns"],
-           f"row 8 must snapshot the table's regex verbatim: {by_id['8']['patterns']}")
+    # Rows 16/17 are ONE routing rule split in two: row 16 carries the test-context predicate in a
+    # single regex (a test token AND a timeout token), so a test timeout reaches PLANNER and every
+    # other timeout falls through to row 17's CODER. Pinned here because two IDENTICAL rows would
+    # make row 17 unreachable under "first match wins".
+    expect(by_id["16"]["patterns"] != by_id["17"]["patterns"],
+           "rows 16 and 17 must not be identical: row 16 shadows row 17 under first-match-wins")
+    test_ctx = re.compile(by_id["16"]["patterns"][0])
+    expect(test_ctx.search("pytest: test_inventory timed out after 30s"),
+           "row 16 must match a test-context timeout")
+    expect(not test_ctx.search("Command 'make build' timed out after 600s"),
+           "row 16 must NOT claim a non-test timeout — row 17 owns that route")
+    # Row 8's cell is `error\[E\d+\]` — brackets ESCAPED, so it matches a real Rust error code
+    # (`error[E0308]`) and not the character class `errorE`/`error5`/`error+`.
+    expect("error\\[E\\d+\\]" in by_id["8"]["patterns"],
+           f"row 8 must carry the bracket-escaped Rust error-code regex: {by_id['8']['patterns']}")
+    rust = re.compile(by_id["8"]["patterns"][0])
+    expect(rust.search("error[E0308]: mismatched types"),
+           "row 8 must match a normal Cargo error code")
+    expect(not any(rust.search(text) for text in ("errorE", "error5", "error+", "error")),
+           "row 8 must no longer match the character-class spellings")
     # Row 18's `Traceback (most recent call last)` keeps its parentheses UNESCAPED (a regex group),
-    # so the live alternatives are `Segmentation fault`, `Fatal error`, `panic:` … — same verbatim
-    # snapshot policy: the snapshot never rewrites the table, the findings go to the text update.
+    # so the live alternatives are `Segmentation fault`, `Fatal error`, `panic:` … — the snapshot
+    # keeps that cell verbatim; the finding is a text update of error-routing.md, not a regex change.
     expect("Traceback (most recent call last)" in by_id["18"]["patterns"],
            f"row 18 must snapshot the table's regex verbatim: {by_id['18']['patterns']}")
     raw = DEFAULT.read_bytes()
@@ -366,6 +394,21 @@ def main() -> int:
            "row I1 of error-routing.md must list exactly the JSON patterns in order (a top-level "
            f"alternative is written `\\|`, an inner pipe stays raw): {documented.split(chr(92) + '|')!r} "
            f"!= {by_id['I1']['patterns']!r}")
+
+    # 1b. Rows 8 and 16 are the two rows this suite once pinned as KNOWN QUIRKS (a character class
+    #     instead of a Rust error-code regex; a timeout predicate that lived only in prose). Their
+    #     table cells must now carry the real JSON regex: row 8's cell splits into the JSON list on
+    #     the escaped separator, and row 16's single combined regex appears with every pipe escaped.
+    row8 = next((line for line in doc_text.splitlines() if line.startswith("| 8 |")), None)
+    expect(row8 is not None, f"row 8 must keep its table row in {DOC}")
+    expect(row8.split("`")[1].split("\\|") == by_id["8"]["patterns"],
+           "row 8 of error-routing.md must list exactly the JSON patterns in order "
+           f"(the Rust regex with escaped brackets): {row8.split('`')[1]!r}")
+    row16 = next((line for line in doc_text.splitlines() if line.startswith("| 16 |")), None)
+    expect(row16 is not None, f"row 16 must keep its table row in {DOC}")
+    expect(by_id["16"]["patterns"][0].replace("|", "\\|") in row16,
+           "row 16 of error-routing.md must show its combined predicate regex "
+           f"(every pipe escaped): {by_id['16']['patterns'][0]!r}")
 
     # 2. Library classification of the table's error families.
     entries = er.match_order(doc)

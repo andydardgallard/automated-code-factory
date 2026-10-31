@@ -42,9 +42,13 @@ read-only test collection (e.g. `cargo test -- --list`, `pytest --collect-only`,
 just to count, search or aggregate them: write a short stdlib script (Python) that prints only
 the answer, or use the existing analyzers in `.agents/skills/code-factory/scripts/` —
 `repo_stats.py` (sizes / entry-points / imports) and `repo_inventory.py` (inventory / shards).
-Large output goes to a file first: write the full result to `.code-factory/logs/` and put only
-the `log_tail.py` output (counters + tail) into your context, never the whole dump. `cat`/`head`/
-`grep` are for reading one small fragment — a loop over dozens of files is a script, not a read.
+Large output goes to a file first: write the full result to an EXTERNAL temp location — a file in
+the system temp directory (e.g. `%TEMP%\factory-analyzer.log` on Windows, `$TMPDIR/factory-analyzer.log`
+elsewhere), never inside the analyzed project — and put only the `log_tail.py` output (counters +
+tail) into your context, never the whole dump. `.code-factory/logs/` belongs to the MAIN AGENT: you
+are read-only, so you return the temp path in your handoff and the main agent decides whether to
+keep it as a run artifact. `cat`/`head`/`grep` are for reading one small fragment — a loop over
+dozens of files is a script, not a read.
 
 **No edits.** You MUST NOT create, modify or delete any file (disallowedTools is enforced);
 analysis only. If you need a helper script, run it via `python -c` or from a temp directory

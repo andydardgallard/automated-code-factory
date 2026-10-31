@@ -51,24 +51,45 @@ tree the run started from) and a pre-fix failure of its own: every `Vaccine` may
 proven against an older tree proves nothing about the current change set, which is exactly why the
 group exists and why `EXPECTED_GROUPS` lists its finding ids.
 
+The `CC` group closes the same hole for the 12.19 CLEAN-CODE release: its six checks are replayed
+against the v12.18.0 release commit the run started from (`CLEAN_CODE_BASE_SHA`), so the release
+the harness claims to cover is covered by its own pre-fix tree. That release left no per-run
+disposition file behind (a clone keeps none), so its finding list lives in `CLEAN_CODE_FINDINGS`
+next to the vaccines it claims, and the SAME two-way cross-check runs over it: an orphaned CC
+vaccine and a claim no vaccine answers are both red.
+
+The `FX` group is THIS run's own change set (run 20261031-dd7ffa0e): one focused check per TESTABLE
+code fix, replayed against `FX_BASE_SHA`, so the fixes being shipped now are proven against the tree
+the run started from. Its claim is the disposition the run itself wrote — `FX-1..FX-15`, one item per
+fix, each naming its vaccine — so a fix without a bite cannot be dispositioned as done.
+
 `V-review-verdict-distinction` has no test module: its check is the local probe below, which reads
 the canonical `factory-rule` blocks from the root it is pointed at — the same function serves both
 runs, so the block that is absent at the base commit fails there and passes here.
 
 Cross-checks run before anything slow, and `--registry-only` stops after them:
-  - every `vaccine: <ID>` of the disposition file is registered, and every registered ID is named
-    by at least one `fixed:` line (reported both ways — an orphaned vaccine is as bad as a
-    registered ID nobody claims);
-  - every item carries `fixed:` or `deferred:`, and a `deferred:` item carries `reason:`;
-  - the ids RV-1..RV-20, BL-1..BL-8, PR-1..PR-18, RF-1..RF-15 and NM-1..NM-2 are all present;
+  - every `vaccine: <ID>` of the disposition file is registered, and every registered ID is claimed
+    by name (the disposition or a shipped claim list) or is attributable to a group whose own run
+    kept no artifact — reported both ways, because an orphaned vaccine is as bad as a registered ID
+    nobody claims;
+  - a claim item carries `fixed:` (with a `vaccine:`), `fixed-prose:` (with `files:` and `because:`,
+    documentation/prompt/meta-test material only) or `deferred:` (with `reason:`);
+  - every group the disposition ENUMERATES has its complete id inventory, and every vaccine of that
+    group is named by one of its items — a group the disposition does not enumerate has to be one of
+    the five historical groups whose run artifact is not kept;
   - every registered test module (and the `test_prompt_structure.py` helper) exists in the
-    working tree.
+    working tree;
+  - `check_disposition_fixtures()` re-proves the cross-checks themselves: seven dispositions the
+    harness MUST refuse (no claim, fixed without a vaccine, a claim on an unregistered vaccine, a
+    prose claim on production code, a prose claim without `because:`, an incomplete inventory, an
+    enumerated group whose vaccines are unnamed) plus the shipped file, which must pass.
+
 The disposition file lives under the gitignored `.code-factory/`, so a FRESH CLONE keeps no run
-artifact. Its absence is NOT a failure: the harness's durable ground truth is its own REGISTRY. A
-missing file prints `note - <path> absent (a fresh clone keeps no run artifact):
-registry/disposition cross-checks skipped`, the registry-only checks still run, and the proof
-continues — exit 0. When the file IS present the cross-checks run and still fail the harness for
-any disagreement.
+artifact. Its ABSENCE is not a failure: the harness's durable ground truth is its own REGISTRY, and a
+missing file prints a note. Its PRESENCE without a single `vaccine:` claim and without a group id is
+NOT that case any more: it fails, because every fix it disposes of would sit outside the pre-fix
+proof. A run whose fixes are mostly prose/meta declares them `fixed-prose:` with `files:` and
+`because:` instead of weakening the claim.
 
 Invariant: a vaccine is proven ONLY by a pair of runs — PASS on the working tree and, on the
 pre-fix tree, a failure whose line matches the vaccine's own declared `expected` regex, with the
@@ -124,6 +145,14 @@ BASE_SHA = "fb43f2a400bfac6f1edcffafc5a09370425b4357"
 # commit): every `RF` vaccine is replayed against it, so the new change set is proven by its own
 # pre-fix tree instead of riding on an older release's proof.
 RUN_BASE_SHA = "9acc1b7e742ea0ebbe9f65b30f3eee80c8b9be5e"
+# The base of the 12.19 CLEAN-CODE release (run 20261031-6dfd0921 started from the v12.18.0 release
+# commit): every `CC` vaccine is replayed against it, so the release this harness claims to cover is
+# covered by its own pre-fix tree.
+CLEAN_CODE_BASE_SHA = "34b7a468fe6036ba58e2848a3cfc85921797bc09"
+# The base of THIS run's own fixes (run 20261031-dd7ffa0e started from the v12.19.0 release commit):
+# every `FX` vaccine is replayed against it, so the change set being shipped now is proven against
+# the tree it started from instead of riding on an older release's proof.
+FX_BASE_SHA = "33b8ed84bb0bf5517475e57d5a153a6e835bfdd7"
 
 # The four kinds of focused check a vaccine can name (see the module docstring).
 MODULE = "module"
@@ -134,11 +163,29 @@ KINDS = (MODULE, STRUCTURAL, PROBE, LOCAL)
 # The sibling parser the new text-contract self-tests import; copied so those imports resolve in
 # the pre-fix tree as well (`test_prompt_structure.py` itself predates the base commit).
 HELPER_TEST = "test_prompt_structure.py"
+# The self-test modules the FOCUSED probes import for their fixtures (a probe reuses the module's
+# own helpers instead of re-inventing them). They are copied into every pre-fix tree even when no
+# `module`/`structural` vaccine of that run happens to name them.
+PROBE_FIXTURES = ("test_chrome_devtools_mcp.py", "test_memory_project.py",
+                  "test_model_attribution.py", "test_version_manager.py")
 
-# The disposition contract: every group of the task's sources, exhaustively. `RF` is this run's
-# own review follow-up group: a release whose vaccines were only ever replayed against an older
-# base proves nothing about the change set being shipped now.
-EXPECTED_GROUPS = (("RV", 20), ("BL", 8), ("PR", 18), ("RF", 15), ("NM", 2))
+# The disposition contract: every group of the task's sources, exhaustively. `RF` is an earlier
+# review follow-up group, `CC` the 12.19 clean-code release and `FX` THIS run's own fixes: a release
+# whose vaccines were only ever replayed against an older base proves nothing about the change set
+# being shipped now.
+EXPECTED_GROUPS = (("RV", 20), ("BL", 8), ("PR", 18), ("RF", 15), ("NM", 2), ("CC", 6), ("FX", 15))
+# The id prefix that tags a registered vaccine with its group. The five historical groups below
+# carry no tag (their vaccines are the release-wide `V-memory-*`, `V-model-*`, ... entries).
+GROUP_TAGS = {"RF": "V-rf-", "NM": "V-nm-", "CC": "V-cc-", "FX": "V-fx-"}
+# Groups whose per-run disposition artifact is NOT kept anywhere a clone can read: `.code-factory/`
+# is gitignored, so their item texts are gone. Their vaccines are still attributable by tag (RF/NM)
+# or by the shared historical release base (RV/BL/PR), and that attribution is what keeps the
+# orphan check alive for them. A group that is NOT in this tuple has to be enumerated by the
+# disposition in force — this run's own `FX` group cannot claim anything by attribution.
+LOST_GROUPS = ("RV", "BL", "PR", "RF", "NM")
+# The three historical groups share one release base and carry no id tag, so their vaccines are
+# attributable to the set, never to one group.
+HISTORICAL_GROUP = "RV/BL/PR"
 
 
 class Vaccine(NamedTuple):
@@ -364,6 +411,494 @@ if size > fail:
                          "gate; the instructions file must be a pointer map, not a copy")
 '''
 
+# Two RF vaccines are PROBES, not whole-module runs, for the reason this harness documents: their
+# self-test modules now carry later checks that fail EARLIER on the pre-fix tree, so a module run
+# would abort on a neighbouring defect and never reach the vaccine's own signature. Each probe
+# exercises only its own defect and reuses the module's own fixtures (the current module is copied
+# into the pre-fix tree, so `import test_memory_project` resolves there).
+PROBE_DOC_COMMENT_CODE = '''\
+import sys
+sys.path.insert(0, ".")
+import validate_documentation as vd
+mask = vd._doc_mask(["/* doc */ return safe_value;"])
+if mask != [False]:
+    raise AssertionError("code after a single-line block comment must be a code line: _doc_mask "
+                         f"returned {mask} for `/* doc */ return safe_value;` — a line is "
+                         "documentation only when everything outside its comment spans is blank")
+'''
+
+PROBE_MEMORY_SYNTHETIC_BACKFILL = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_memory_project as t
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td) / "proj"
+    root.mkdir()
+    t.expect(t.run("init", "--repo", str(root), "--project", "proj").returncode == 0,
+             "init must exit 0")
+    t.write_journal(root, t.journal_entry(
+        "2026-09-25T00:00:00Z", "proj",
+        run_id="20260901-e9c0219e (synthetic, backfilled 2026-10-26)",
+        factory_version="12.8.0 (synthetic, backfilled 2026-10-26)", marks=True))
+    res = t.run("check", "--repo", str(root))
+    t.expect(res.returncode == 0,
+             f"a synthetic backfilled run_id/factory_version must be valid: {res.stderr!r}")
+'''
+
+# NM-2's two halves are the flow hub and the unknown-role run error. A whole-module run of
+# `test_provider_stop.py` now aborts on a later, neighbouring row-D assertion, so the vaccine is a
+# probe: the hub is read from SKILL.md and the unknown-role half is the self-test's own case 12,
+# which is re-executed against the pre-fix `model_attribution.py` as well.
+PROBE_PROVIDER_FAILURE_NODE = '''\
+import pathlib, re, sys, tempfile
+sys.path.insert(0, ".")
+root = pathlib.Path(".").resolve().parents[3]
+skill = (root / ".agents/skills/code-factory/SKILL.md").read_text(encoding="utf-8")
+node = re.search(r"\\bMS\\[[^\\n]*", skill)
+feeds = re.findall(r"-->\\|[^|\\n]*provider error at delegation[^|\\n]*\\|\\s*MS\\b", skill)
+if node is None or len(feeds) < 10:
+    raise AssertionError("no provider-failure node: the flow must carry an `MS[...]` node fed by "
+                         "every task-named delegation (found "
+                         f"{0 if node is None else len(feeds)} such edge(s), 14 today) — a provider "
+                         "refusal of a task-named model would have no branch to classify the error, "
+                         "spend the infrastructure budget on the SAME model and stop")
+import test_model_attribution as t
+with tempfile.TemporaryDirectory() as td:
+    t.case_12_unknown_role_is_a_run_error(pathlib.Path(td))
+'''
+
+# --------------------------------------------------------------------------------------------
+# THIS RUN's (FX) focused probes: one per TESTABLE code fix of run 20261031-dd7ffa0e, replayed
+# against FX_BASE_SHA (the v12.19.0 release commit the run started from). Each probe re-executes
+# that fix's regression assertion and nothing else, so a fix whose self-test module is shared with
+# a later change still proves its own defect on the pre-fix tree.
+# --------------------------------------------------------------------------------------------
+PROBE_FX_RUST_REGEX = '''\
+import pathlib, subprocess, sys, tempfile
+log = pathlib.Path(tempfile.mkdtemp()) / "rust.log"
+log.write_text("error[E0308]: mismatched types\\n  --> src/main.rs:3:5\\n", encoding="utf-8")
+res = subprocess.run([sys.executable, "error_router.py", "classify", "--log", str(log)],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+fields = dict(line.split(": ", 1) for line in res.stdout.splitlines() if ": " in line)
+if fields.get("route") != "coder" or fields.get("category") != "COMPILE_ERROR":
+    raise AssertionError("a Rust compile error `error[E0308]` must route to COMPILE_ERROR/coder "
+                         f"(row 8), got route={fields.get('route')!r} "
+                         f"category={fields.get('category')!r} "
+                         f"pattern_id={fields.get('pattern_id')!r} — a character class instead of a "
+                         "bracket-escaped error code matches no real Rust error, so compile "
+                         "failures stop reaching the coder")
+'''
+
+PROBE_FX_TIMEOUT_SPLIT = '''\
+import pathlib, subprocess, sys, tempfile
+
+def classify(text):
+    log = pathlib.Path(tempfile.mkdtemp()) / "timeout.log"
+    log.write_text(text, encoding="utf-8")
+    res = subprocess.run([sys.executable, "error_router.py", "classify", "--log", str(log)],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return dict(line.split(": ", 1) for line in res.stdout.splitlines() if ": " in line)
+
+non_test = classify("the command timed out after 60s\\n")
+test = classify("pytest: a test timed out\\n")
+if non_test.get("route") != "coder":
+    raise AssertionError("a NON-test timeout must reach the coder route (row 17), got "
+                         f"{non_test.get('route')!r} via pattern {non_test.get('pattern_id')!r} — a "
+                         "row-16 pattern with no test-context predicate shadows every timeout and "
+                         "makes the documented coder branch unreachable")
+if test.get("route") != "planner":
+    raise AssertionError("a TEST timeout must stay with the planner (row 16), got "
+                         f"{test.get('route')!r} via pattern {test.get('pattern_id')!r}")
+'''
+
+PROBE_FX_PROVIDER_ROUTE = '''\
+import json, pathlib, subprocess, sys, tempfile
+doc = json.loads(pathlib.Path("..", "references", "error-patterns.default.json")
+                 .read_text(encoding="utf-8"))
+routes = {row["id"]: row.get("route") for row in doc.get("provider_patterns", [])}
+wrong = [ident for ident in ("D", "F") if routes.get(ident) != "infrastructure"]
+if wrong:
+    raise AssertionError("a PROVIDER_MODEL / PROVIDER_FORMAT failure must route to infrastructure "
+                         f"(budget 3), rows {', '.join(wrong)} say otherwise: {routes} — the "
+                         "canonical stop rule sends every task-named PROVIDER_* failure to the "
+                         "infrastructure path, not to the planner")
+log = pathlib.Path(tempfile.mkdtemp()) / "provider.log"
+log.write_text("model not found: kimi-code/k9\\n", encoding="utf-8")
+res = subprocess.run([sys.executable, "error_router.py", "classify", "--log", str(log)],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+fields = dict(line.split(": ", 1) for line in res.stdout.splitlines() if ": " in line)
+if fields.get("route") != "infrastructure":
+    raise AssertionError("a PROVIDER_MODEL failure must route to infrastructure, got "
+                         f"{fields.get('route')!r} via pattern {fields.get('pattern_id')!r}")
+'''
+
+PROBE_FX_DETACH_PATHSPEC = '''\
+import pathlib, subprocess, sys, tempfile
+scope = pathlib.Path(tempfile.mkdtemp()) / "repo"
+scope.mkdir()
+subprocess.run(["git", "init", "-q", str(scope)], capture_output=True, text=True)
+res = subprocess.run([sys.executable, "action_gate.py", "check", "--action",
+                      "git checkout --detach HEAD .", "--scope", str(scope), "--mode", "hitl"],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+if "decision: ALLOW" in res.stdout:
+    raise AssertionError("`git checkout --detach HEAD .` must never be ALLOW: a ref flag does not "
+                         "prove there is no pathspec, and this form restores `.` over the tree — a "
+                         f"ref-flag shortcut that returns before examining the pathspec destroys "
+                         f"uncommitted work (got {res.stdout.strip()!r})")
+'''
+
+PROBE_FX_VENDOR_PIN = '''\
+import json, pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_chrome_devtools_mcp as t
+with tempfile.TemporaryDirectory() as td:
+    project = pathlib.Path(td) / "unreviewed"
+    t.seed_vendored_entry(project, version="0.0.1-unreviewed")
+    res = t.run("probe", "--target", str(t.project_assets(project)[0]), "--json")
+    payload = json.loads(res.stdout or "{}")
+    cap = (payload.get("capabilities") or {}).get("vendor_entry") or {}
+    if cap.get("present") or payload.get("mcp_usable") is not False:
+        raise AssertionError("an unreviewed vendored version must make the browser path unusable: a "
+                             "present entry file is not proof of the reviewed pin — only a version "
+                             f"PROVEN equal to PINNED_VERSION may count as installed (got {cap!r}, "
+                             f"mcp_usable={payload.get('mcp_usable')!r})")
+'''
+
+PROBE_FX_FIX_TASK_REPO_PATH = '''\
+import sys
+sys.path.insert(0, ".")
+import memory_project as mp
+required = tuple(getattr(mp, "FIX_TASK_REQUIRED", ()))
+if "repo_path" not in required:
+    raise AssertionError("FIX_TASK_REQUIRED must carry repo_path: the security-audit and task-format "
+                         "contracts require a resolved repo_path, so a fix task without it is "
+                         f"unusable for whoever runs it next (got {required!r})")
+'''
+
+PROBE_FX_IDENTITY_UNVERIFIED = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import memory_project as mp
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td) / "not-a-repository"
+    (root / "memory").mkdir(parents=True)
+    (root / "memory" / "summary.md").write_text(
+        "# Summary\\n\\n<!-- code-factory-memory: summary -->\\n\\nproject: declared\\n"
+        "repo_path: .\\nproject_id: deadbeefcafe\\n\\n## Current state\\n", encoding="utf-8")
+    try:
+        owner, basis, warnings = mp.expected_owner(root)
+    except Exception as exc:
+        raise AssertionError(f"expected_owner must fall back, not fail: {exc!r}")
+    if basis != "identity-unverified":
+        raise AssertionError("an unverifiable project_id must fall back to the name basis with the "
+                             f"`identity-unverified` basis, got basis={basis!r} owner={owner!r} — "
+                             "trusting a declared id exactly when no root commit can be computed "
+                             "lets a foreign or arbitrary id pass")
+'''
+
+PROBE_FX_V2_KEYS = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_memory_project as t
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td) / "proj"
+    root.mkdir()
+    t.expect(t.run("init", "--repo", str(root), "--project", "proj").returncode == 0,
+             "init must exit 0")
+    t.write_journal(root, t.journal_entry("2026-09-28T00:00:00Z", "proj",
+                                          run_id="20260928-aaaabbbb", marks=True))
+    res = t.run("check", "--repo", str(root), "--no-owner-check")
+    said = res.stdout + res.stderr
+    if res.returncode != 1 or "factory_version" not in said:
+        raise AssertionError("a v2 record missing the mandatory keys must fail, not warn: the "
+                             "record proves itself v2 by its run_id, so a missing "
+                             f"`unfinished`/`factory_version` is an error (exit {res.returncode}, "
+                             f"said {said.strip()[:200]!r})")
+'''
+
+PROBE_FX_MIXED_MODEL = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_model_attribution as t
+with tempfile.TemporaryDirectory() as td:
+    try:
+        t.case_13_mixed_model_service_is_a_mismatch(pathlib.Path(td))
+    except AssertionError as exc:
+        raise AssertionError("a mixed-model service must be a mismatch: a role served by the "
+                             "claimed model AND by a substituted fallback model passes a membership "
+                             f"test, so the anti-substitution gate stays green ({exc})")
+'''
+
+PROBE_FX_MISSING_MARKER = '''\
+import pathlib, subprocess, sys, tempfile
+sys.path.insert(0, ".")
+import project_fingerprint as pf
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td) / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], capture_output=True, text=True)
+    (root / "a.txt").write_text("hello\\n", encoding="utf-8")
+    git = ["git", "-C", str(root), "-c", "user.email=factory@example.test", "-c", "user.name=factory"]
+    subprocess.run([*git, "add", "a.txt"], capture_output=True, text=True)
+    subprocess.run([*git, "commit", "-qm", "fixture"], capture_output=True, text=True)
+    (root / "a.txt").unlink()
+    records = pf._content_records(root) or []
+    marker = getattr(pf, "MISSING_CONTENT", "MISSING")
+    if not any(f" {marker} " in record for record in records):
+        raise AssertionError("a deleted tracked file must be recorded with the MISSING marker: "
+                             "falling back to the index record keeps the content fingerprint "
+                             "unchanged (the baseline already embeds it), so a deep deletion can "
+                             f"take the SKIP path (records {records!r}, marker {marker!r})")
+'''
+
+PROBE_FX_GRAPH_SCALAR = '''\
+import pathlib, subprocess, sys, tempfile
+tasks = pathlib.Path(tempfile.mkdtemp()) / "tasks"
+tasks.mkdir()
+(tasks / "bad.json").write_text("1\\n", encoding="utf-8")
+res = subprocess.run([sys.executable, "task_graph.py", "list", "--dir", str(tasks)],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+if res.returncode != 1 or "Traceback" in res.stderr or "bad.json" not in res.stderr:
+    raise AssertionError("a scalar JSON task file must be refused, not crash: the decoded state has "
+                         "to be validated before any membership test, so a `1` names the file and "
+                         f"fails cleanly (exit {res.returncode}, stderr {res.stderr.strip()[:200]!r})")
+'''
+
+PROBE_FX_UNTERMINATED_QUOTE = '''\
+import pathlib, subprocess, sys, tempfile
+task = pathlib.Path(tempfile.mkdtemp()) / "task.yaml"
+task.write_text('title: "unterminated\\nrepo_path: .\\ndescription: probe\\ntask_type: implement\\n'
+                'mode: hitl\\nacceptance_criteria:\\n  - criterion: probe\\n', encoding="utf-8")
+res = subprocess.run([sys.executable, "task_parser.py", "parse", "--task", str(task)],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+if res.returncode != 2 or "error:" not in res.stderr:
+    raise AssertionError("an unterminated double-quoted scalar must exit 2 with an actionable "
+                         "message: `_scalar` treats a quote as a delimiter only when both ends "
+                         "exist, so malformed owner input enters every later stage "
+                         f"(exit {res.returncode}, stderr {res.stderr.strip()[:200]!r})")
+'''
+
+PROBE_FX_DOCSTRING_RESIDUAL = '''\
+import sys
+sys.path.insert(0, ".")
+import validate_documentation as vd
+line = '"""doc"""; safe = 1'
+mask = vd._doc_mask([line])
+if mask != [False]:
+    raise AssertionError("code after a docstring must be a code line: a line is documentation only "
+                         "when the residual outside its triple-quoted span is blank, so a change "
+                         "after the closing delimiter is a code change (got "
+                         f"{mask!r} for {line!r})")
+'''
+
+PROBE_FX_DERIVE_UNTRACKED = '''\
+import pathlib, subprocess, sys, tempfile
+sys.path.insert(0, ".")
+import validate_documentation as vd
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td) / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], capture_output=True, text=True)
+    (root / "docs").mkdir()
+    (root / "docs" / "d.md").write_text("# doc\\n", encoding="utf-8")
+    git = ["git", "-C", str(root), "-c", "user.email=factory@example.test", "-c", "user.name=factory"]
+    subprocess.run([*git, "add", "docs/d.md"], capture_output=True, text=True)
+    subprocess.run([*git, "commit", "-qm", "fixture"], capture_output=True, text=True)
+    (root / "src").mkdir()
+    (root / "src" / "sneaky.py").write_text("dangerous = 1\\n", encoding="utf-8")
+    files, _note = vd.derive_changed_files(root)
+    if not any("sneaky.py" in str(name) for name in files):
+        raise AssertionError("--derive must include an undeclared untracked file: skipping git's "
+                             "`??` entries lets a documenter create a new source file with real "
+                             "code, leave it out of --files, and never submit it to check() "
+                             f"(derived {files!r})")
+'''
+
+PROBE_FX_TITLE_ESCAPE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_version_manager as t
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td) / "repo"
+    t.build_clean_repo(root)
+    readme = root / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    if "v12.1.0" not in text:
+        raise AssertionError(f"the fixture README must carry the version title, got {text!r}")
+    readme.write_text(text.replace("v12.1.0", "v12x1x0"), encoding="utf-8")
+    code, out, err = t.run_validate(root)
+    said = out + err
+    if code == 0 or "title does not match" not in said:
+        raise AssertionError("a near-miss README title must be refused: VERSION is interpolated "
+                             "into a regular expression, so its dots match any character and "
+                             f"`v12x1x0` passes as consistent (exit {code}, said {said.strip()[:200]!r})")
+'''
+
+# --------------------------------------------------------------------------------------------
+# The 12.19 release's (CC) focused probes: one defect each, replayed against CLEAN_CODE_BASE_SHA.
+# They read the tree they are pointed at (cwd = that tree's scripts dir; the root is three levels
+# up), so the shipped artifact of the release is what is proven — never a copy of it.
+# --------------------------------------------------------------------------------------------
+PROBE_CC_SKILLS = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+sections = {"clean-code-discipline": ("Overview", "Key concepts", "How to use", "Constraints"),
+            "clean-code-metrics": ("Overview", "Key concepts", "How to use", "Business criteria",
+                                   "Constraints")}
+for name in sections:
+    rel = f"skill-base/skills/{name}/SKILL.md"
+    path = root / rel
+    if not path.is_file():
+        raise AssertionError(f"{rel} must be shipped: the {name} skill of the 12.19 release is "
+                             "missing from the skill base")
+    text = path.read_text(encoding="utf-8")
+    head = text.split("---")[1] if text.startswith("---") else ""
+    if f"name: {name}" not in head:
+        raise AssertionError(f"{rel}: the frontmatter must name the skill {name!r}")
+    for section in sections[name]:
+        if f"\\n## {section}\\n" not in text:
+            raise AssertionError(f"{rel}: the contract section `## {section}` is missing")
+'''
+
+PROBE_CC_METRICS = '''\
+import pathlib, re
+root = pathlib.Path(".").resolve().parents[3]
+rel = "skill-base/skills/clean-code-metrics/SKILL.md"
+path = root / rel
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+gates = (("CRAP < 10", r"CRAP\\s*<\\s*10"),
+         ("0.8 or above", r"0\\.8\\s+or\\s+above"),
+         ("rank >= 0.8", r"rank\\s*>=\\s*0\\.8"),
+         ("kill the surviving mutants", r"kill\\w*\\s+(?:the|each)\\s+surviving\\s+mutant"),
+         ("delete the dead code", r"(?:delete|remove)s?\\s+(?:the\\s+)?dead\\s+code"))
+for label, pattern in gates:
+    if not re.search(pattern, text, re.I):
+        raise AssertionError(f"{rel}: the gate threshold {label!r} is not stated (an absent file "
+                             "states nothing)")
+'''
+
+PROBE_CC_SAFETY = '''\
+import pathlib, re
+root = pathlib.Path(".").resolve().parents[3]
+rel = "skill-base/skills/clean-code-metrics/SKILL.md"
+path = root / rel
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+if not re.search(r"on their own initiative|without asking", text, re.I):
+    raise AssertionError(f"{rel}: no warning that the measuring tools install packages on their own "
+                         "initiative (an absent file warns about nothing)")
+if not re.search(r"must not happen unattended", text, re.I):
+    raise AssertionError(f"{rel}: the install warning does not forbid the unattended form")
+if not (re.search(r"shell", text, re.I) and re.search(r"argument\\s+vector", text, re.I)):
+    raise AssertionError(f"{rel}: no warning contrasting a shell-string coverage command with the "
+                         "argument-vector form")
+prohibition = r"(?:installer|viewer|get-uml-viewer)\\b[^.]{0,160}?\\b(?:must\\s+not|must\\s+never|never|do\\s+not)\\s+(?:be\\s+)?(?:executed|run)\\b"
+if not re.search(prohibition, text, re.I):
+    raise AssertionError(f"{rel}: no prohibition on EXECUTING scripts/get-uml-viewer")
+'''
+
+PROBE_CC_MANIFEST = '''\
+import json, pathlib
+root = pathlib.Path(".").resolve().parents[3]
+rel = "skill-base/manifest.json"
+path = root / rel
+skills = {}
+if path.is_file():
+    skills = json.loads(path.read_text(encoding="utf-8")).get("skills") or {}
+pinned = (("clean-code-discipline", "57a8bdd28e45ed41900ace0bafa2ff76dd9ed70f", 0),
+          ("clean-code-metrics", "6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d", 4))
+for name, revision, sources in pinned:
+    entry = skills.get(name)
+    if not isinstance(entry, dict):
+        raise AssertionError(f"{rel}: the 12.19 skill {name} is not registered — it has no source, "
+                             "no content hash and no pinned revision")
+    if entry.get("resolved_revision") != revision:
+        raise AssertionError(f"{rel}: {name} is not pinned to {revision} "
+                             f"(got {entry.get('resolved_revision')!r})")
+    sha = entry.get("sha256")
+    digest_ok = isinstance(sha, str) and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha)
+    if not digest_ok:
+        raise AssertionError(f"{rel}: {name} has no 64-hex content hash (got {sha!r})")
+    if sources:
+        listed = entry.get("sources") or []
+        if len(listed) != sources:
+            raise AssertionError(f"{rel}: {name} must carry all {sources} sources in its `sources` "
+                                 f"list (got {len(listed)})")
+'''
+
+PROBE_CC_WIRING = '''\
+import pathlib, re
+root = pathlib.Path(".").resolve().parents[3]
+rel = ".agents/skills/code-factory/references/code-review.md"
+path = root / rel
+if not path.is_file():
+    raise AssertionError(f"{rel} must be shipped")
+text = path.read_text(encoding="utf-8")
+if not re.search(r"(?m)^##\\s+2\\.2\\s+Metric gates\\s*$", text):
+    raise AssertionError(f"{rel}: the standing `## 2.2 Metric gates` section is missing — the "
+                         "reviewer is not held to the gates")
+gates = (("gate 1", r"(?m)^1\\.\\s+\\*\\*Complexity vs test coverage \\(gate 1\\)\\*\\*"),
+         ("gate 2", r"(?m)^2\\.\\s+\\*\\*Duplication \\(gate 2\\)\\*\\*"),
+         ("gate 3", r"(?m)^3\\.\\s+\\*\\*Test strength \\(gate 3\\)\\*\\*"))
+for label, pattern in gates:
+    if not re.search(pattern, text):
+        raise AssertionError(f"{rel}: the numbered {label} is missing from `## 2.2 Metric gates`")
+reference = "skill-base/skills/clean-code-discipline/SKILL.md"
+for role in ("coder.md", "gui-expert.md"):
+    body_path = root / ".agents/agents/sub-agents" / role
+    if not body_path.is_file():
+        raise AssertionError(f".agents/agents/sub-agents/{role} must be shipped")
+    if reference not in body_path.read_text(encoding="utf-8"):
+        raise AssertionError(f".agents/agents/sub-agents/{role}: does not reference {reference} — the "
+                             "role that writes code is not held to the discipline")
+reviewer = root / ".agents/agents/sub-agents/code-reviewer.md"
+if not reviewer.is_file() or "2.2" not in reviewer.read_text(encoding="utf-8"):
+    raise AssertionError(".agents/agents/sub-agents/code-reviewer.md: does not reference the metric "
+                         "gates of `references/code-review.md` 2.2")
+'''
+
+PROBE_CC_CLI = '''\
+import subprocess, sys
+
+def help_of(*args):
+    res = subprocess.run([sys.executable, "skill_base.py", *args], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
+    if res.returncode != 0:
+        raise AssertionError(f"`skill_base.py {' '.join(args)}` must exit 0, got {res.returncode}: "
+                             f"{res.stderr.strip()[:200]}")
+    return res.stdout + res.stderr
+
+resolve = help_of("resolve", "--help")
+if "--revision" not in resolve:
+    raise AssertionError("skill_base.py resolve must advertise --revision: pinning a Git source to "
+                         "an exact commit is the provenance feature of the 12.19 release")
+record = help_of("record", "--help")
+for flag in ("--revision", "--extra-source"):
+    if flag not in record:
+        raise AssertionError(f"skill_base.py record must advertise {flag}: the multi-source "
+                             "registration of the 12.19 release is missing")
+'''
+
+# The 12.19 release's own finding list: (id, what the release delivered, the vaccine that proves it
+# bites on CLEAN_CODE_BASE_SHA). The release left no per-run disposition file that survives in a
+# clone, so the claim lives here and is cross-checked two-way against REGISTRY exactly like the
+# disposition items (no orphaned vaccine, no unregistered claim).
+CLEAN_CODE_FINDINGS: tuple[tuple[str, str, str], ...] = (
+    ("CC-1", "the clean-code discipline skill was not part of the factory: no permanent skill "
+             "carried the writing discipline and its contract sections", "V-cc-skills"),
+    ("CC-2", "the three metric gates existed in no artifact: CRAP < 10, duplication 0.8 or above "
+             "and the surviving-mutant/dead-code gate had no wording a reviewer could apply",
+     "V-cc-metrics"),
+    ("CC-3", "the measuring tools' safety warnings were unwritten: the install-on-their-own-"
+             "initiative risk, the shell-string form and the get-uml-viewer installer",
+     "V-cc-safety"),
+    ("CC-4", "the two new skills were unregistered: no manifest entry with a content hash, a pinned "
+             "revision and the four metrics sources", "V-cc-manifest"),
+    ("CC-5", "the gates were not WIRED: code-review.md had no standing §2.2 and the code-writing "
+             "and reviewer roles referenced nothing", "V-cc-wiring"),
+    ("CC-6", "skill_base.py had no pinned revisions and no multi-source registration "
+             "(--revision / --extra-source / `-`)", "V-cc-cli"),
+)
+
 # id -> the FOCUSED check that proves it, and the pre-fix failure it must produce. `ids come from
 # the disposition file`: a finding's `vaccine:` names one of these, and the cross-check refuses a
 # registry id that no `fixed:` line claims.
@@ -423,7 +958,7 @@ REGISTRY: tuple[Vaccine, ...] = (
             r"'git push origin HEAD' in hitl must require confirmation", RUN_BASE_SHA),
     Vaccine("V-rf-a3", MODULE, "test_evidence_ledger.py",
             r"an empty signed scope must never be FRESH", RUN_BASE_SHA),
-    Vaccine("V-rf-a5", MODULE, "test_validate_documentation.py",
+    Vaccine("V-rf-a5", PROBE, PROBE_DOC_COMMENT_CODE,
             r"code after a single-line block comment must be a code line", RUN_BASE_SHA),
     Vaccine("V-rf-a6", MODULE, "test_verify_acceptance.py",
             r"SUCCESS without a ledger must be impossible", RUN_BASE_SHA),
@@ -442,7 +977,7 @@ REGISTRY: tuple[Vaccine, ...] = (
             r"a symlink escaping the repository must be excluded", RUN_BASE_SHA),
     Vaccine("V-rf-c1", PROBE, PROBE_MEM_WARN_FLOOD,
             r"the memory CHECK line must print the verdict plus a WARN count", RUN_BASE_SHA),
-    Vaccine("V-rf-c2", MODULE, "test_memory_project.py",
+    Vaccine("V-rf-c2", PROBE, PROBE_MEMORY_SYNTHETIC_BACKFILL,
             r"a synthetic backfilled run_id/factory_version must be valid", RUN_BASE_SHA),
     Vaccine("V-rf-c4", STRUCTURAL, "test_calibrate_reviewer.py",
             r"AttributeError: module 'calibrate_reviewer' has no attribute 'REVIEWER_PROMPT_FILES'",
@@ -454,12 +989,71 @@ REGISTRY: tuple[Vaccine, ...] = (
     # stop rule exists and an invented `models_used` role fell through to DEGRADED.
     Vaccine("V-nm-1", MODULE, "test_no_role_substitution.py",
             r"rule 'model-unavailable-stop' is missing", RUN_BASE_SHA),
-    Vaccine("V-nm-2", MODULE, "test_provider_stop.py",
+    Vaccine("V-nm-2", PROBE, PROBE_PROVIDER_FAILURE_NODE,
             r"no provider-failure node", RUN_BASE_SHA),
+    # ---- CC: the 12.19 clean-code release (run 20261031-6dfd0921), replayed against
+    # CLEAN_CODE_BASE_SHA. One focused probe per delivered item: the release bundled several fixes,
+    # so a whole-module run would validate only the first failing check of each module.
+    Vaccine("V-cc-skills", PROBE, PROBE_CC_SKILLS,
+            r"clean-code-discipline/SKILL\.md must be shipped", CLEAN_CODE_BASE_SHA),
+    Vaccine("V-cc-metrics", PROBE, PROBE_CC_METRICS,
+            r"the gate threshold 'CRAP < 10' is not stated", CLEAN_CODE_BASE_SHA),
+    Vaccine("V-cc-safety", PROBE, PROBE_CC_SAFETY,
+            r"no warning that the measuring tools install packages on their own", CLEAN_CODE_BASE_SHA),
+    Vaccine("V-cc-manifest", PROBE, PROBE_CC_MANIFEST,
+            r"the 12\.19 skill clean-code-discipline is not registered", CLEAN_CODE_BASE_SHA),
+    Vaccine("V-cc-wiring", PROBE, PROBE_CC_WIRING,
+            r"the standing `## 2\.2 Metric gates` section is missing", CLEAN_CODE_BASE_SHA),
+    Vaccine("V-cc-cli", PROBE, PROBE_CC_CLI,
+            r"skill_base\.py resolve must advertise --revision", CLEAN_CODE_BASE_SHA),
+    # ---- FX: THIS run's own fixes (run 20261031-dd7ffa0e), replayed against FX_BASE_SHA ---------
+    # One focused probe per TESTABLE code fix. The prose/meta fixes of the same run cannot bite by
+    # definition and are dispositioned `fixed-prose:` instead (see findings-disposition.md).
+    Vaccine("V-fx-rust-regex", PROBE, PROBE_FX_RUST_REGEX,
+            r"a Rust compile error `error\[E0308\]` must route to COMPILE_ERROR/coder", FX_BASE_SHA),
+    Vaccine("V-fx-timeout-split", PROBE, PROBE_FX_TIMEOUT_SPLIT,
+            r"a NON-test timeout must reach the coder route", FX_BASE_SHA),
+    Vaccine("V-fx-provider-route", PROBE, PROBE_FX_PROVIDER_ROUTE,
+            r"a PROVIDER_MODEL / PROVIDER_FORMAT failure must route to infrastructure", FX_BASE_SHA),
+    Vaccine("V-fx-detach-pathspec", PROBE, PROBE_FX_DETACH_PATHSPEC,
+            r"`git checkout --detach HEAD \.` must never be ALLOW", FX_BASE_SHA),
+    Vaccine("V-fx-vendor-pin", PROBE, PROBE_FX_VENDOR_PIN,
+            r"an unreviewed vendored version must make the browser path unusable", FX_BASE_SHA),
+    Vaccine("V-fx-fix-task-repo-path", PROBE, PROBE_FX_FIX_TASK_REPO_PATH,
+            r"FIX_TASK_REQUIRED must carry repo_path", FX_BASE_SHA),
+    Vaccine("V-fx-identity-unverified", PROBE, PROBE_FX_IDENTITY_UNVERIFIED,
+            r"an unverifiable project_id must fall back to the name basis", FX_BASE_SHA),
+    Vaccine("V-fx-v2-keys", PROBE, PROBE_FX_V2_KEYS,
+            r"a v2 record missing the mandatory keys must fail, not warn", FX_BASE_SHA),
+    Vaccine("V-fx-mixed-model", PROBE, PROBE_FX_MIXED_MODEL,
+            r"a mixed-model service must be a mismatch", FX_BASE_SHA),
+    Vaccine("V-fx-missing-marker", PROBE, PROBE_FX_MISSING_MARKER,
+            r"a deleted tracked file must be recorded with the MISSING marker", FX_BASE_SHA),
+    Vaccine("V-fx-graph-scalar", PROBE, PROBE_FX_GRAPH_SCALAR,
+            r"a scalar JSON task file must be refused, not crash", FX_BASE_SHA),
+    Vaccine("V-fx-unterminated-quote", PROBE, PROBE_FX_UNTERMINATED_QUOTE,
+            r"an unterminated double-quoted scalar must exit 2", FX_BASE_SHA),
+    Vaccine("V-fx-docstring-residual", PROBE, PROBE_FX_DOCSTRING_RESIDUAL,
+            r"code after a docstring must be a code line", FX_BASE_SHA),
+    Vaccine("V-fx-derive-untracked", PROBE, PROBE_FX_DERIVE_UNTRACKED,
+            r"--derive must include an undeclared untracked file", FX_BASE_SHA),
+    Vaccine("V-fx-title-escape", PROBE, PROBE_FX_TITLE_ESCAPE,
+            r"a near-miss README title must be refused", FX_BASE_SHA),
 )
 
-# `- RV-12: fixed: ... | vaccine: V-memory-identity` — one item per finding, never wrapped.
-ITEM_RE = re.compile(r"^-\s+([A-Z][A-Z0-9]*-\d+)\s*:\s*(.*)$")
+# `- RV-12: fixed: ... | vaccine: V-memory-identity` — one item per finding, never wrapped. The id
+# is either a group id (`RV-12`) or a finding id of the run's own review (`C13`, `Maj2`, `Min3`).
+ITEM_RE = re.compile(r"^-\s+([A-Z][A-Za-z]*(?:-\d+|\d+))\s*:\s*(.*)$")
+# The concrete grammar a follow-up run writes: `- C13 test_review_report_only.py — ...`, i.e. a
+# finding id that is not a `<PREFIX>-<n>` group id, then a subject.
+ITEM_PROSE_RE = re.compile(r"^-\s+([A-Z][A-Za-z]*\d+)\s+\S")
+# The `files:` and `because:` fields a prose-only fix must carry (see PROSE_FILES_RE).
+FILES_RE = re.compile(r"\bfiles\s*:\s*([^|]+)")
+BECAUSE_RE = re.compile(r"\bbecause\s*:")
+# What a prose-only fix may touch: documentation, prompts, the journal and the factory's own
+# meta-tests. Production code, patterns JSON and runtime assets need a vaccine that bites.
+PROSE_FILES_RE = re.compile(
+    r"^(?:.*\.md|memory/.*|CHANGELOG.*|.*test_[^/]*\.py|.*\.task\.yaml)$")
 VACCINE_RE = re.compile(r"vaccine\s*:\s*([A-Za-z0-9_.-]+(?:\s*,\s*[A-Za-z0-9_.-]+)*)")
 # Tolerates the `<!-- factory-rule: <id> begin -->` / `end` markers with any inner spacing.
 BLOCK_RE = r"<!--\s*factory-rule:\s*{id}\s*begin\s*-->(.*?)<!--\s*factory-rule:\s*{id}\s*end\s*-->"
@@ -516,6 +1110,19 @@ class Item(NamedTuple):
         return "deferred:" in self.text
 
     @property
+    def is_prose_fixed(self) -> bool:
+        """A fixed finding with no pre-fix bite possible (documentation, prompts, meta-tests)."""
+        return "fixed-prose:" in self.text
+
+    @property
+    def files(self) -> tuple[str, ...]:
+        """Every path the item names in its `files:` field."""
+        match = FILES_RE.search(self.text)
+        if not match:
+            return ()
+        return tuple(part.strip() for part in match.group(1).split(",") if part.strip())
+
+    @property
     def vaccines(self) -> tuple[str, ...]:
         """Every vaccine id the item names, in order (`vaccine: A, B` names two)."""
         match = VACCINE_RE.search(self.text)
@@ -531,35 +1138,97 @@ class Item(NamedTuple):
 
 
 def parse_disposition(root: pathlib.Path, problems: list[str]) -> tuple[list[Item], bool]:
-    """Every `- <ID>: ...` item of the disposition file, plus whether the file exists at all.
+    """Every claim or concrete item of the disposition file, plus whether the file exists at all.
 
     A MISSING file is deliberately NOT a problem: `.code-factory/` is gitignored, so a fresh clone
     keeps no run artifact. The harness's durable ground truth is its own REGISTRY; the caller prints
     a note and skips the cross-checks that need the artifact. A file that IS there is held to the
-    whole contract below.
+    grammar it uses — `- <ID>: fixed: … | vaccine: <ID>` (claims) or `- <ID> <subject> — …`
+    (concrete, no vaccine claims) — and an unparsable file is a problem, not a silent skip.
     """
     path = root / DISPOSITION
     if not path.is_file():
         return [], False
     items: list[Item] = []
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        match = ITEM_RE.match(line.strip())
+        stripped = line.strip()
+        match = ITEM_RE.match(stripped)
         if match is None:
+            concrete = ITEM_PROSE_RE.match(stripped)
+            if concrete is not None:
+                # A dash-form item (`- C1 <subject> — ...`): the id is recognised so the refusal
+                # below names it, instead of reporting an unreadable file. It carries no marker, so
+                # it fails the `fixed:`/`fixed-prose:`/`deferred:` contract like any other item.
+                items.append(Item(number, concrete.group(1), stripped))
             continue
         item = Item(number, match.group(1), match.group(2))
         items.append(item)
-        if not (item.is_fixed or item.is_deferred):
-            problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` carries neither `fixed:` "
-                            "nor `deferred:` — every finding is disposed of explicitly")
+        if not (item.is_fixed or item.is_deferred or item.is_prose_fixed):
+            problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` carries neither `fixed:`, "
+                            "`fixed-prose:` nor `deferred:` — every finding is disposed of explicitly")
         if item.is_deferred and "reason:" not in item.text:
             problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` is deferred without "
                             "`reason:` — a deferred finding says why it waits")
         if item.is_fixed and not item.vaccine:
             problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` is fixed without "
                             "`vaccine: <ID>` — an unfrozen fix cannot be proven")
+        if item.is_prose_fixed:
+            problems += prose_fix_problems(item)
     if not items:
-        problems.append(f"{DISPOSITION}:1: no `- <ID>: ...` item found — the format changed")
+        problems.append(f"{DISPOSITION}:1: no `- <ID>: …` or `- <ID> <subject> — …` item found — the "
+                        "format changed")
     return items, True
+
+
+def prose_fix_problems(item: Item) -> list[str]:
+    """A prose-only fix says why no bite is possible and touches no production code.
+
+    `fixed-prose:` is the one way to dispose of a fix that cannot fail on a pre-fix tree —
+    documentation, a prompt, a meta-test. It is not a free pass: the claim must name the artifacts
+    it touched, and every one of them must be documentation/prompt/meta-test material. A production
+    module, the patterns JSON or a runtime asset needs a `vaccine:` that bites.
+    """
+    problems: list[str] = []
+    if not BECAUSE_RE.search(item.text):
+        problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` is a prose fix without "
+                        "`because:` — a fix with no pre-fix bite says why none is possible")
+    if not item.files:
+        problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` is a prose fix without "
+                        "`files:` — the claim must name the artifacts it touched")
+    for rel in item.files:
+        if not PROSE_FILES_RE.match(rel):
+            problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` claims a PROSE fix on "
+                            f"{rel!r} — production code needs a `vaccine:` replayed on its pre-fix "
+                            "base, a documentation/prompt/meta-test edit does not")
+    return problems
+
+
+def speaks_claims(items: list[Item]) -> bool:
+    """True when the disposition names a vaccine or a group id, i.e. can be cross-checked.
+
+    The two lists are only comparable when the file names vaccines (`vaccine: <ID>`) or group ids
+    (`<PREFIX>-<n>`). A disposition that names neither cannot be checked at all, and the harness
+    refuses it (see `check_registry`) instead of passing it: a fix that is not tied to a vaccine
+    replayed on its own pre-fix base is not proven by anything.
+    """
+    if any(item.vaccines for item in items):
+        return True
+    prefixes = {prefix for prefix, _count in EXPECTED_GROUPS}
+    return any(item.ident.rsplit("-", 1)[0] in prefixes for item in items)
+
+
+def vaccine_group(vaccine: Vaccine) -> str:
+    """The group a registered vaccine belongs to ("" when it belongs to none).
+
+    A group whose per-run artifact is gone (see `LOST_GROUPS`) is claimed by ATTRIBUTION: the
+    vaccines of RF/NM/CC carry the group's tag in their id, and the historical RV/BL/PR vaccines
+    share the release base and carry no tag at all. Any other vaccine — this run's `FX` group, a
+    future group — must be NAMED by a claim, because attribution would make its claim vacuous.
+    """
+    for group, tag in GROUP_TAGS.items():
+        if vaccine.ident.startswith(tag):
+            return group
+    return HISTORICAL_GROUP if not vaccine.base else ""
 
 
 def check_registry(items: list[Item], disposed: bool = True) -> tuple[list[str], list[str]]:
@@ -572,8 +1241,10 @@ def check_registry(items: list[Item], disposed: bool = True) -> tuple[list[str],
     proves nothing about this release, and a finding whose vaccine is unregistered is never run.
 
     `disposed=False` means the disposition file is absent (a fresh clone): the registry is then the
-    only ground truth, so the registry-INTRINSIC checks (unique ids, every module present) still
-    run, while the two lists cannot be compared at all and the comparison is skipped, not faked.
+    only ground truth, so the registry-INTRINSIC checks (unique ids, every module present, the
+    release claim list agreeing with the registry) still run, while the two lists cannot be compared
+    at all and the comparison is skipped, not faked. A file that IS present but names no vaccine and
+    no group id is NOT that case: it is refused, because a fix no vaccine answers is not proven.
     """
     problems: list[str] = []
     registered = [vaccine.ident for vaccine in REGISTRY]
@@ -582,36 +1253,193 @@ def check_registry(items: list[Item], disposed: bool = True) -> tuple[list[str],
         duplicates = sorted({vid for vid in registered if registered.count(vid) > 1})
         problems.append(f"REGISTRY: duplicate id(s) {', '.join(duplicates)} — one vaccine, one entry")
     problems += check_focus()
+    problems += check_release_claims()
 
     drift: list[str] = []
-    if disposed:
+    # A claim comes from the run's disposition file OR from the release claim list shipped next to
+    # the vaccines (a release whose per-run artifact a clone does not keep). The claim list names a
+    # finding id AND the vaccine that answers it, so both are read here.
+    claimed_vaccines = {vaccine for _ident, _what, vaccine in CLEAN_CODE_FINDINGS}
+    declared_ids = {ident for ident, _what, _vaccine in CLEAN_CODE_FINDINGS}
+    if disposed and not speaks_claims(items):
+        # The escape this used to be is closed: a present disposition that names no vaccine and no
+        # group id cannot be cross-checked by anything, so every fix it disposes of would sit
+        # outside the pre-fix proof.
+        problems.append(f"{DISPOSITION}:1: the disposition names no `vaccine:` claim and no group id, "
+                        "so nothing in it can be cross-checked against REGISTRY — a fix that is not "
+                        "tied to a vaccine replayed on its own pre-fix base is not proven")
+    if disposed and speaks_claims(items):
         named = {vid for item in items if item.is_fixed for vid in item.vaccines}
         claimed = {vid for item in items for vid in item.vaccines}
         drift = [f"{DISPOSITION}: `{vaccine}` is named by a finding but is NOT registered in REGISTRY — "
                  "its check would never be executed"
-                 for vaccine in sorted(claimed - registered_set)]
-        drift += [f"REGISTRY: `{vaccine}` is registered but no `fixed:` line of {DISPOSITION} names it "
-                  "— an orphaned vaccine proves nothing"
-                  for vaccine in sorted(registered_set - named)]
+                 for vaccine in sorted((claimed | claimed_vaccines) - registered_set)]
 
-        present = {item.ident for item in items}
+        # The orphan half: a registered vaccine is claimed either by NAME (this disposition or the
+        # shipped claim list) or by ATTRIBUTION to a group whose artifact is lost. Attribution is
+        # never available to a group that is not in LOST_GROUPS, so this run's own group cannot
+        # escape the registry/disposition comparison.
+        drift += [f"REGISTRY: `{vaccine}` is registered but neither a `fixed:` line of {DISPOSITION} "
+                  "nor a release claim names it — an orphaned vaccine proves nothing"
+                  for vaccine in sorted(registered_set - named - claimed_vaccines)
+                  if vaccine_group(_by_id(vaccine)) not in LOST_GROUPS
+                  and vaccine_group(_by_id(vaccine)) != HISTORICAL_GROUP]
+
+        enumerated = groups_enumerated(items)
+        present = {item.ident for item in items} | declared_ids
         for prefix, count in EXPECTED_GROUPS:
+            if prefix in LOST_GROUPS and prefix not in enumerated:
+                continue                       # that run's item texts are not kept: see LOST_GROUPS
             missing = [f"{prefix}-{index}" for index in range(1, count + 1)
                        if f"{prefix}-{index}" not in present]
             if missing:
                 problems.append(f"{DISPOSITION}: missing id(s) {', '.join(missing)} — the "
                                 f"{prefix} inventory must be complete ({prefix}-1..{prefix}-{count})")
 
-    for tool in sorted(module_targets() | {HELPER_TEST}):
+        # A group the disposition enumerates has to be answered ONE-FOR-ONE by the vaccines that
+        # carry it: an enumerated group is a group whose fixes are being shipped now.
+        for group in sorted(enumerated - set(LOST_GROUPS)):
+            unnamed = sorted(v.ident for v in REGISTRY
+                             if vaccine_group(v) == group and v.ident not in named)
+            if unnamed:
+                problems.append(f"{DISPOSITION}: the {group} group is enumerated but "
+                                f"{', '.join(unnamed)} answer no `fixed:` item — every vaccine of a "
+                                "group this disposition lists must be named by one of its items")
+
+    for tool in sorted(module_targets() | set(PROBE_FIXTURES) | {HELPER_TEST}):
         if not (SCRIPT_DIR / tool).is_file():
             problems.append(f"{SCRIPT_DIR.name}/{tool}: file is missing — the vaccine of "
                             "REGISTRY cannot be executed")
     return problems, drift
 
 
+def _by_id(ident: str) -> Vaccine:
+    """The registered vaccine with that id (the caller iterates the registry, so it exists)."""
+    return next(vaccine for vaccine in REGISTRY if vaccine.ident == ident)
+
+
+def check_release_claims() -> list[str]:
+    """The shipped claim list and REGISTRY must name each other, one vaccine per claim.
+
+    A release whose per-run disposition artifact a clone does not keep needs its claim written down
+    somewhere durable; `CLEAN_CODE_FINDINGS` is that place. The check is the same two-way contract
+    the disposition gets: a claim with no registered vaccine is never executed, and a registered
+    `CC` vaccine no claim answers could be removed without anyone noticing.
+    """
+    problems: list[str] = []
+    registered = {vaccine.ident for vaccine in REGISTRY}
+    claims = [ident for ident, _what, _vaccine in CLEAN_CODE_FINDINGS]
+    for ident in sorted({claim for claim in claims if claims.count(claim) > 1}):
+        problems.append(f"CLEAN_CODE_FINDINGS: `{ident}` is claimed twice — one claim, one vaccine")
+    for ident, _what, vaccine in CLEAN_CODE_FINDINGS:
+        if vaccine not in registered:
+            problems.append(f"CLEAN_CODE_FINDINGS: {ident} names the vaccine `{vaccine}`, which is "
+                            "NOT registered — its check would never be executed")
+    claimed_vaccines = {vaccine for _ident, _what, vaccine in CLEAN_CODE_FINDINGS}
+    for vaccine in sorted(registered - claimed_vaccines):
+        if vaccine.startswith("V-cc-"):
+            problems.append(f"REGISTRY: `{vaccine}` is a release vaccine no CLEAN_CODE_FINDINGS item "
+                            "claims — an orphaned vaccine proves nothing")
+    return problems
+
+
+def groups_enumerated(items: list[Item]) -> set[str]:
+    """The group prefixes the disposition enumerates (`FX-7` present ⇒ `FX`)."""
+    return {prefix for prefix, _count in EXPECTED_GROUPS
+            if any(item.ident.startswith(f"{prefix}-") for item in items)}
+
+
+def inventory_state(items: list[Item], declared_ids: set[str] | None = None
+                    ) -> tuple[list[str], list[str]]:
+    """(group labels whose 1..N inventory is verified, group labels claimed by attribution).
+
+    A group whose per-run artifact is lost and which the disposition does not enumerate has no
+    item texts left to check, so its vaccines are claimed by ATTRIBUTION instead — reported, never
+    presented as a verified inventory.
+    """
+    enumerated = groups_enumerated(items)
+    declared = declared_ids or set()
+    verified, attested = [], []
+    for prefix, count in EXPECTED_GROUPS:
+        label = f"{prefix}-1..{prefix}-{count}"
+        if prefix in LOST_GROUPS and prefix not in enumerated and not any(
+                ident.startswith(f"{prefix}-") for ident in declared):
+            attested.append(prefix)
+        else:
+            verified.append(label)
+    return verified, attested
+
+
 def module_targets() -> set[str]:
     """Every self-test module a `module`/`structural` vaccine runs (probes need no file)."""
     return {vaccine.target for vaccine in REGISTRY if vaccine.kind in (MODULE, STRUCTURAL)}
+
+
+# --------------------------------------------------------------------------------------------
+# The cross-checks must REFUSE a disposition that cannot be proven, and ACCEPT the shipped one.
+# Each fixture is a whole disposition body; `expected` is the fragment the refusal must carry
+# ("" = the fixture must be accepted).
+# --------------------------------------------------------------------------------------------
+DISPOSITION_FIXTURES: tuple[tuple[str, str, str], ...] = (
+    ("a present disposition that names no vaccine claim",
+     "# Disposition\n\n## Fixed\n\n- C1 error-patterns.default.json — fixed by hand\n",
+     "the disposition names no `vaccine:` claim and no group id"),
+    ("a fixed item that names no vaccine",
+     "- FX-15: fixed: the near-miss title is refused | files: README.md\n",
+     "is fixed without `vaccine: <ID>`"),
+    ("a claim naming a vaccine that is not registered",
+     "- FX-15: fixed: the near-miss title is refused | vaccine: V-not-a-vaccine\n",
+     "is named by a finding but is NOT registered in REGISTRY"),
+    ("a prose claim on production code",
+     "- C13: fixed-prose: the guard | files: .agents/skills/code-factory/scripts/error_router.py "
+     "| because: meta\n- FX-15: fixed: title | vaccine: V-fx-title-escape\n",
+     "claims a PROSE fix on"),
+    ("a prose claim that says why no bite is possible",
+     "- C13: fixed-prose: the guard | files: .agents/skills/code-factory/scripts/test_x.py\n"
+     "- FX-15: fixed: title | vaccine: V-fx-title-escape\n",
+     "is a prose fix without `because:`"),
+    ("an enumerated group with an incomplete inventory",
+     "- FX-1: fixed: the Rust regex | vaccine: V-fx-rust-regex\n",
+     "the FX inventory must be complete"),
+    ("an enumerated group whose vaccines are not named one-for-one",
+     "".join(f"- FX-{n}: fixed: the same vaccine again | vaccine: V-fx-rust-regex\n"
+             for n in range(1, 16)),
+     "answer no `fixed:` item"),
+)
+
+
+def check_disposition_fixtures() -> list[str]:
+    """Run the fixtures above: every refusal has to happen, and the shipped file has to pass.
+
+    This is the self-check of the cross-checks themselves. Without it the "cannot be cross-checked"
+    refusal could rot into a silent pass again — which is exactly the defect it was written for.
+    """
+    problems: list[str] = []
+    for name, body, expected in DISPOSITION_FIXTURES:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            path = root / DISPOSITION
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+            found: list[str] = []
+            items, disposed = parse_disposition(root, found)
+            more, drift = check_registry(items, disposed)
+        said = "\n".join(found + more + drift)
+        if expected and expected not in said:
+            problems.append(f"FIXTURE {name!r}: the cross-checks must refuse it with {expected!r}, "
+                            f"said {said.strip()[:200]!r}")
+        elif not expected and said.strip():
+            problems.append(f"FIXTURE {name!r}: must be accepted, refused with "
+                            f"{said.strip()[:200]!r}")
+
+    found = []
+    items, disposed = parse_disposition(REPO_ROOT, found)
+    if disposed:
+        more, drift = check_registry(items, disposed)
+        if found or more or drift:
+            problems.append(f"{DISPOSITION}: the shipped disposition must pass its own cross-checks: "
+                            f"{(found + more + drift)[0]}")
+    return problems
 
 
 def check_focus() -> list[str]:
@@ -762,10 +1590,10 @@ def extract_base_tree(repo: pathlib.Path, sha: str, dest: pathlib.Path) -> str:
 
 
 def copy_tests(dest_scripts: pathlib.Path) -> list[str]:
-    """Copy the CURRENT test modules REGISTRY needs into the pre-fix tree; report what is missing."""
+    """Copy the CURRENT test modules the vaccines and probes need into the pre-fix tree."""
     problems: list[str] = []
     dest_scripts.mkdir(parents=True, exist_ok=True)
-    for tool in sorted(module_targets() | {HELPER_TEST}):
+    for tool in sorted(module_targets() | set(PROBE_FIXTURES) | {HELPER_TEST}):
         source = SCRIPT_DIR / tool
         if not source.is_file():
             problems.append(f"{tool}: not in the working tree — its vaccines cannot be copied")
@@ -1100,13 +1928,17 @@ def main(argv: list[str]) -> int:
     items, disposed = parse_disposition(REPO_ROOT, problems)
     registry_problems, drift = check_registry(items, disposed)
     problems.extend(registry_problems)
+    problems.extend(check_disposition_fixtures())
     if problems:
         print(f"FAIL - {len(problems)} vaccination cross-check problem(s) under {REPO_ROOT}:")
         for problem in problems:
             print(f"  - {problem}")
         return 1
     vaccines = len(REGISTRY)
-    groups = ", ".join(f"{prefix}-1..{prefix}-{count}" for prefix, count in EXPECTED_GROUPS)
+    verified, attested = inventory_state(items, {i for i, _w, _v in CLEAN_CODE_FINDINGS})
+    groups = ", ".join(verified)
+    gone = (f"; {', '.join(attested)} are claimed by attribution (their own run kept no artifact)"
+            if attested else "")
     kinds = ", ".join(f"{sum(1 for v in REGISTRY if v.kind == kind)} {kind}" for kind in KINDS)
     if not disposed:
         # Durable ground truth is REGISTRY: no run artifact, nothing to compare it with.
@@ -1117,14 +1949,14 @@ def main(argv: list[str]) -> int:
               f"so its id inventory and the two lists are not compared)")
     elif drift:
         print(f"FAIL - cross-checks: {len(items)} item(s) disposed of, {vaccines} registered "
-              f"vaccine(s), every id present ({groups}), but the registry and {DISPOSITION} "
-              f"disagree ({len(drift)} place(s), reported both ways):")
+              f"vaccine(s), every enumerated id present ({groups}){gone}, but the registry and "
+              f"{DISPOSITION} disagree ({len(drift)} place(s), reported both ways):")
         for problem in drift:
             print(f"  - {problem}")
     else:
         print(f"PASS - cross-checks: {len(items)} item(s) disposed of, {vaccines} registered "
-              f"vaccine(s) ({kinds}), every id present ({groups}), REGISTRY and {DISPOSITION} name "
-              f"each other")
+              f"vaccine(s) ({kinds}), every enumerated id present ({groups}){gone}, REGISTRY and "
+              f"{DISPOSITION} name each other")
 
     if args.registry_only:
         return 1 if drift else 0

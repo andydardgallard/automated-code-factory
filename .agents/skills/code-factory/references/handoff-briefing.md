@@ -141,7 +141,7 @@ Relevant files: .agents/skills/code-factory/references/error-routing.md — the 
 Current state: advisor.md is created; on the base commit all self-tests PASS (test_factory_model.py, test_prompt_structure.py).
 What was tried — why it failed: editing only §2 — the reviewer rejected it: §5 was left without Advisor, the document is inconsistent.
 Memory facts: memory/summary.md "Open backlog" item 3 (error-routing drift) touches this file; the v12.10.1 decision keeps the ladder at five rungs.
-Decisions: the role identifier is advisor; the model is secondary (the family contrasting diagnostician); the ladder itself does not change.
+Decisions: the role identifier is advisor; the model is judge-side (the family contrasting the diagnostician's); the ladder itself does not change.
 Acceptance criteria: grep -n "Advisor" references/error-routing.md finds §2 and §5; python scripts/test_factory_model.py PASS.
 Constraints: only the two listed files; stdlib-only; python (no python3); in the answer — a summary ≤ 15 lines, no dumps.
 ```

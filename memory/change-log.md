@@ -17,7 +17,7 @@ timestamp: <ISO8601 дата>
 run_id: <YYYYMMDD-8hex — идентификатор прогона, scripts/run_id.py>
 branch: <ветка или "(none)">
 commit: <sha или "(none)">
-task_type: implement | review | refactor | security_audit
+task_type: implement | review | refactor | security_audit | backlog
 goal: <краткая цель>
 changed_files: <список через "; ">
 created_files: <список через "; ">
@@ -31,6 +31,19 @@ unfinished: нет незавершённых элементов
 
 Однострочный пример записи (одна запись — один блок, поля построчно):
 `title: Короткий заголовок | project: repo | timestamp: 2026-01-01T00:00:00+0300 | run_id: 20260101-1a2b3c4d | task_type: implement`
+
+**Record kinds: `task_type` is `implement | review | refactor | security_audit | backlog`.** A
+`backlog` record is the journal's debt-declaration kind: it records the DISCOVERY of a defect or of
+technical debt for which no run exists yet (the journal itself contains one — the 2026-10-23 entry
+on `version_manager.py` not syncing a Cargo `[workspace.package]` version). It carries the same
+header fields as any v2 record, with `branch: none` / `commit: none` / `changed_files: none`,
+but its `results:` field carries the pair `finding=<what was found>; impact=<why it matters>` —
+each with a `[verified: <command/test/log>]` or `[inferred]` mark — INSTEAD of the run quadruple
+`integration=` / `regression=` / `business=` / `review=`. Its `unfinished:` block states the open
+item with `follow_up: true`, so `memory_project.py backlog` folds it into the open backlog, and a
+later `implement` run closes it with a `closed:` block carrying `evidence:`. The enum lives once, in
+`RECORD_KINDS` of `scripts/memory_project.py` (`check_factory_model.py` delegates to it); a
+`task_type` outside this enum is an error, never a legacy warning.
 
 Память `memory/` принадлежит ТОЛЬКО одному проекту — тому, что указан в поле `repo_path`
 задачи; `project:` = basename разрешённого `repo_path`. Для этого репозитория целевой проект —
@@ -1231,3 +1244,33 @@ unfinished:
     reason: report-only review never edits the project; the findings are handed over as .code-factory/review/fix-tasks.yaml for the owner to schedule as an implement task
     severity: critical
     follow_up: true
+
+## 2026-10-31T21:18:00+03:00 — Fix 26 findings of factory self-review 20261031-d2f6fea6: v12.19.1
+
+title: All 26 self-review findings closed — 25 fixed with regression vaccines, 1 dispositioned as a false positive with the root-cause wording fixed instead
+project: repo
+timestamp: 2026-10-31T21:18:00+03:00
+run_id: 20261031-dd7ffa0e
+branch: fix/20261031-dd7ffa0e-review-findings
+commit: v12.19.1 (one commit: the changed files, VERSION/AGENTS.md header sync, this record and the summary)
+task_type: implement
+goal: apply every finding of the report-only self-review 20261031-d2f6fea6, handed over as fix-tasks.yaml — deterministic scripts hardened (error routing, action gate, MCP pin probe, memory validator, model attribution, fingerprint, task graph/parser, documentation validator, version manager), meta-tests made honest (report-only guard, vaccination registry, clean-code probe), docs aligned
+changed_files: 37 files — error-patterns.default.json + error-routing.md (Rust regex, timeout split, provider rows D/F -> infrastructure), action_gate.py (--detach pathspec gate), chrome_devtools_mcp.py (fail-closed vendor pin), memory_project.py (repo_path required, identity-unverified fallback, v2 mandatory keys), model_attribution.py (mixed-model mismatch), project_fingerprint.py (MISSING marker), task_graph.py (GraphError on malformed state), task_parser.py (quoted-scalar rejection), validate_documentation.py (docstring residual, --derive untracked), version_manager.py (re.escape title), their test files, test_review_report_only.py (write-capable nodes forbidden/gated), test_vaccination.py (CC + FX groups, disposition claims grammar), SKILL.md/code-factory.md/AGENTS.md/.agents/README.md/factory-rules.md/verification-strategy.md/handoff-briefing.md/tech-stack-detection.md/analyzer.md/tester.md (wording sync), memory/change-log.md format header (backlog kind) [verified: git diff --name-only HEAD against base 33b8ed84 and .code-factory/manifest.json]
+created_files: none tracked; .code-factory/ run artifacts only [verified: git status]
+results: integration=PASS (all per-fix verify commands exit 0) [verified: .code-factory/state/acceptance.md]; regression=PASS (45 self-test files: 45 PASS / 0 FAIL on the final tree) [verified: .code-factory/logs/regression.md vs .code-factory/logs/baseline.md]; business=SKIP (factory self-fix; the owner accepted the acceptance proof as sufficient at the business-test gate); review=approve — iteration 1 request_changes (1 critical: vaccination speaks_claims escape; 1 major: residual Advisor-secondary prose), both reworked (FX-1..FX-15 vaccine group registered, escape removed with 7 negative fixtures; three prose carriers synced to judge-side wording), iteration 2 approve with zero findings [verified: .code-factory/logs/code-review.md]; acceptance=SUCCESS, 11/11 verify criteria MET, 17 derived, regression=pass, ledger FRESH [verified: verify_acceptance.py exit 0, .code-factory/state/acceptance.md, .code-factory/state/evidence.json]; reviewer calibration was DUE and discharged blind before the reviewer ran: 7/7 verdict accuracy, macro P/R 1.000 [verified: .code-factory/logs/reviewer-calibration.md, calibrate_reviewer.py status exit 0 after scoring]
+decisions: Maj1 (advisor model_preference) dispositioned as a FALSE POSITIVE — advisor.md keeps primary because the verified past decision (test_model_precedence.py cases 11-12) makes a secondary-side advisor unsatisfiable for unpinned tasks; the root cause was fixed instead: the canonical retry-budgets block and every prose copy now describe the Advisor as a judge-side model contrasting with the Diagnostician's family [verified: check_factory_rules.py exit 0, model_matrix probe 3 ERRORs with secondary vs 0 with primary]; C10's literal mechanism does not reproduce on current git (a git object id never equals a bare content digest) — the explicit MISSING marker was applied as correct hardening and the regression pins the real invariant [verified: test_factory_model.py case 29g]; vaccination disposition file now speaks the claims grammar and a no-vaccine disposition FAILS the harness [verified: test_vaccination.py --registry-only exit 0 and the fixture probe]; version type = patch by the deterministic matrix (suggest --fix), validated by the reviewer [verified: version_manager.py suggest/validate exit 0]
+assumptions: no business_tests were requested by the owner — the acceptance proof (verify commands + full suite + reviewer gate) was accepted as the business-level evidence
+models_used: main=kimi-code/k3; coder=deepseek-flash (9 parallel packages + 2 rework passes); reviewer=kimi-code/k3.1-pro (7 golden calibration passes, 2 diff iterations, version validation); documenter=deepseek-flash; analyzer, planner, tester, gui_expert, diagnostician, advisor=unused; models_warning: task-named family collision coder/tester/gui_expert vs advisor (deepseek) — task matrix authoritative, no substitution
+factory_version: 12.19.1
+closed:
+  - item: 26 review findings (17 critical) of run 20261031-d2f6fea6
+    evidence: 25 fixed and vaccinated (FX-1..FX-15 bite on base 33b8ed84, prose fixes cross-checked), Maj1 dispositioned with root-cause fix; review iteration 2 approve [verified: .code-factory/logs/findings-disposition.md, test_vaccination.py --registry-only exit 0, .code-factory/logs/code-review.md, verify_acceptance.py exit 0]
+unfinished:
+  - item: module-kind vaccines remain fragile to newer assertions in shared test modules overtaking a vaccine's declared first-failure signature (three conversions were needed this run)
+    reason: carried — the harness documents the probe kind as the remedy; converting every remaining module vaccine to probes is a separate hardening task
+    severity: info
+    follow_up: false
+  - item: historical vaccine groups RV/BL/PR/RF/NM are claimed by attribution because their per-run disposition artifacts predated the claims grammar
+    reason: carried — reconstructing durable per-vaccine claim lists for those releases is a separate task, flagged by the coder
+    severity: info
+    follow_up: false

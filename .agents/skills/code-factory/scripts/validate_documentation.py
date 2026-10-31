@@ -12,7 +12,8 @@ Checks that the documenter touched ONLY documentation:
      old↔new), so duplicated text (a code line repeated inside a docstring) cannot mask a change.
      A line counts as documentation only when nothing outside a comment SPAN sits on it: code
      before/after a `/* ... */` span — `/* doc */ return x;`, or the `*/ return x;` closing line
-     of a block — is a code line, not documentation.
+     of a block — is a code line, not documentation. The same span rule governs Python docstrings:
+     a line that carries code after (or before) a triple-quoted span is a code line.
 
 Usage:
   python3 validate_documentation.py check --repo <root> --baseline <dir> --files f1 f2 ... [--derive]
@@ -27,10 +28,11 @@ code change); `;` counts only where it is a comment (Clojure), `%` only in MATLA
 only in SQL/Lua/Haskell, and `//` only in the C/Java/JS family.
 
 With `check --derive` the validator does not take the declared file list on faith: it computes the
-changed TRACKED files itself from `git -C <repo> status --porcelain` and FAILS when a changed file
-is missing from `--files` (an edit to an unlisted source/test/config file cannot hide). When git
-is unavailable or <repo> is not a git repository the mode degrades with a message and exit code 2
-(never a traceback).
+changed files itself from `git -C <repo> status --porcelain` — modified TRACKED files plus
+UNTRACKED (`??`) new ones, ignored (`!!`) entries excluded — and FAILS when a changed file is
+missing from `--files` (an edit to, or a brand-new, unlisted source/test/config file cannot hide).
+When git is unavailable or <repo> is not a git repository the mode degrades with a message and
+exit code 2 (never a traceback).
 
 Exit code 0 = PASS, 1 = FAIL (each violation printed to stderr), 2 = the deriving mode could not
 run (git unavailable / not a repository). stdlib only.
@@ -152,6 +154,45 @@ def _c_comment_residual(s: str, in_block: bool) -> tuple[str, bool]:
         i = j + len(_BLOCK_END)
 
 
+def _next_delim(s: str, i: int) -> tuple[int, str]:
+    """Position of the earliest triple quote at or after `i` plus the delimiter that matched it."""
+    best, best_d = -1, ""
+    for d in _DOCSTRING_DELIMS:
+        k = s.find(d, i)
+        if k >= 0 and (best < 0 or k < best):
+            best, best_d = k, d
+    return best, best_d
+
+
+def _docstring_residual(s: str, in_triple: bool) -> tuple[str, bool]:
+    """Split `s` into triple-quoted SPANS and the text outside them, like `_c_comment_residual`.
+
+    Returns `(residual, in_triple)`: `residual` is the line's text outside every docstring span
+    (concatenated), `in_triple` is the state for the NEXT line. A caller treats the line as
+    documentation only when the residual is blank: a one-line docstring followed by `safe = 1`, and
+    the closing line of a multi-line docstring followed by `+ x`, both carry code and are code
+    lines, while a docstring-only line stays documentation. A span is opened and closed by the
+    SAME delimiter, so a triple-double-quoted span may contain a triple-single-quote sequence.
+    """
+    out: list[str] = []
+    i = 0
+    if in_triple:
+        j, d = _next_delim(s, i)
+        if j < 0:
+            return "", True
+        i = j + len(d)
+    while True:
+        k, d = _next_delim(s, i)
+        if k < 0:
+            out.append(s[i:])
+            return "".join(out), False
+        out.append(s[i:k])
+        j = s.find(d, k + len(d))       # the span ends with the delimiter that opened it
+        if j < 0:
+            return "".join(out), True
+        i = j + len(d)
+
+
 def _doc_mask(lines: list[str], rel: str = "") -> list[bool]:
     """Return, per line, whether that line is inside a doc comment/docstring (or is a line
     comment). Heuristic but conservative: a changed non-doc, non-blank line is treated as code.
@@ -170,24 +211,22 @@ def _doc_mask(lines: list[str], rel: str = "") -> list[bool]:
         # counts as documentation only when nothing but whitespace sits OUTSIDE the comment spans:
         # `/* doc */ return x;` and the `*/ return x;` closing line carry executable code and are
         # therefore code lines (a whole-line `startswith` test let a documenter swap that code).
-        if in_block or s.startswith(_BLOCK_START):
+        if in_triple:
+            residual, in_triple = _docstring_residual(s, True)
+            is_doc = not residual.strip()
+        elif in_block or s.startswith(_BLOCK_START):
             residual, in_block = _c_comment_residual(s, in_block)
             is_doc = not residual.strip()
-        # Python triple-quoted docstring state
-        elif in_triple:
+        # Python triple-quoted docstring SPANS, by the same rule: `"""doc"""; safe = 1` and the
+        # closing line `""" + x` carry code outside the string and are code lines.
+        elif s.startswith(_DOCSTRING_DELIMS):
+            residual, in_triple = _docstring_residual(s, False)
+            is_doc = not residual.strip()
+        elif s.startswith(prefixes):
             is_doc = True
-            if s.startswith(_DOCSTRING_DELIMS) or s.endswith(_DOCSTRING_DELIMS):
-                in_triple = False
-        else:
-            if s.startswith(_DOCSTRING_DELIMS):
-                is_doc = True
-                if s.count('"""') + s.count("'''") < 2:
-                    in_triple = True
-            elif s.startswith(prefixes):
-                is_doc = True
-            # No fallback for a bare `*` or `|` line: outside a block/docstring/markdown file it
-            # is code (`*ptr = 1;`, `| mask = 2;`), and treating it as documentation let a code
-            # edit through.
+        # No fallback for a bare `*` or `|` line: outside a block/docstring/markdown file it
+        # is code (`*ptr = 1;`, `| mask = 2;`), and treating it as documentation let a code
+        # edit through.
         mask.append(is_doc)
     return mask
 
@@ -266,19 +305,23 @@ def check(root: pathlib.Path, baseline: pathlib.Path, files: list[str]) -> list[
 
 
 def derive_changed_files(root: pathlib.Path) -> tuple[list[str], str]:
-    """Return the changed TRACKED files of `root` from `git status --porcelain`.
+    """Return the changed files of `root` from `git status --porcelain`.
 
     The second tuple element is "" on success, otherwise a human-readable reason (git missing,
-    `root` not a repository) — the caller degrades with a message, never a traceback. Untracked
-    (`??`) and ignored (`!!`) entries are out of scope: the mode polices edits to tracked files.
+    `root` not a repository) — the caller degrades with a message, never a traceback. UNTRACKED
+    (`??`) files are part of the set: a new source/config/test file the documenter created is
+    exactly as much an edit as a modified one, so leaving it out of `--files` must not hide it.
+    Ignored (`!!`) entries stay out of scope — they are not the run's deliverable. `-uall` makes
+    git list the files of an untracked directory separately instead of the bare `dir/` entry,
+    so every entry names a file that `check()` can classify.
     """
     try:
         # `-z` + an explicit UTF-8 decode: NUL-separated and never C-quoted, so a non-ASCII path
         # arrives as the real name. `text=True` would decode git's output with the LOCALE code page
         # (cp1251 on a Russian Windows), so a name with a diacritic would come back as mojibake
         # that no declared path can match.
-        proc = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "-z"],
-                              capture_output=True, timeout=30)
+        proc = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "-z",
+                               "--untracked-files=all"], capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         return [], f"git status could not run: {exc}"
     if proc.returncode != 0:
@@ -290,8 +333,8 @@ def derive_changed_files(root: pathlib.Path) -> tuple[list[str], str]:
     while index < len(entries):
         entry = entries[index]
         index += 1
-        if len(entry) < 4 or entry[:2] in ("??", "!!"):
-            continue
+        if len(entry) < 4 or entry[:2] == "!!":
+            continue            # only IGNORED entries are out of scope; `??` is a new file
         path = entry[3:]
         if entry[0] in "RC" and index < len(entries):
             index += 1          # `-z` puts the ORIGINAL path in the next record
@@ -328,9 +371,10 @@ def main() -> int:
         sp.add_argument("--files", nargs="+", required=True, help="Files touched by the documenter")
         if name == "check":
             sp.add_argument("--derive", action="store_true",
-                            help="Do not take --files on faith: compute the changed TRACKED files "
-                                 "from `git -C <repo> status --porcelain` and FAIL when a changed "
-                                 "file is missing from --files (exit 2 when git cannot answer)")
+                            help="Do not take --files on faith: compute the changed files (tracked "
+                                 "edits plus untracked new ones, ignored excluded) from "
+                                 "`git -C <repo> status --porcelain` and FAIL when a changed file "
+                                 "is missing from --files (exit 2 when git cannot answer)")
 
     args = ap.parse_args()
     root = pathlib.Path(args.repo).resolve()

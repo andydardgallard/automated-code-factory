@@ -40,6 +40,10 @@ Cases:
      the invented `orchestrator`) is a RUN ERROR — exit 1, the role and the registry named in the
      report, `flags.unknown_roles` listing it — never the DEGRADED "no wire for this role". The
      registry is `model_matrix.ROLES` (plus the non-matrix `main`), imported, not re-declared.
+ 13. REGRESSION (self-review 20261031-d2f6fea6, critical 9): a role the wire served with the claimed
+     model AND a substituted/fallback model is a `mismatch` (exit 1) — the membership test that
+     accepted it passed exactly the substitution the anti-substitution gate must reject. The served
+     canonical set must EQUAL the singleton claimed set (`k3` and `kimi-k3` are one model).
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -769,6 +773,60 @@ def case_12_unknown_role_is_a_run_error(root: pathlib.Path) -> None:
            f"the per-role line must say it plainly: {text!r}")
 
 
+def case_13_mixed_model_service_is_a_mismatch(root: pathlib.Path) -> None:
+    """Regression (self-review 20261031-d2f6fea6, critical 9): a role served by BOTH the claimed
+    model and a fallback one must FAIL, not match.
+
+    The gate is the artifact-backed anti-substitution gate, and its question is "did this role run
+    exactly the model the pipeline claims?", not "did it ever run it". A membership test accepted a
+    mixed service (`deepseek-flash` + a substituted `kimi-k3`), so precisely the substitution the
+    gate exists to catch passed. The served canonical set must EQUAL the singleton claimed set.
+    """
+    # The helper itself: the contract, independent of the CLI and the fixtures.
+    comparison, lines, _flags = ma.compare_claims(
+        {"analyzer": "deepseek-flash"},
+        {"analyzer": {"models_served": {"deepseek-flash": 2, "kimi-k3": 1}}})
+    expect(comparison == {"analyzer": "mismatch"},
+           f"a mixed-model service must be a mismatch, got {comparison!r}: {lines!r}")
+    expect(ma.verdict_of(comparison) == "FAIL",
+           "a mixed-model service must FAIL the run, never pass the gate")
+    # The wire name is normalised before the comparison: `k3` is the same model as `kimi-k3`, so a
+    # claim of `kimi-k3` served under both spellings is still ONE model and still a match.
+    same = ma.compare_claims({"coder": "kimi-k3"},
+                             {"coder": {"models_served": {"kimi-k3": 1, "k3": 2}}})
+    expect(same[0] == {"coder": "match"},
+           f"two spellings of ONE model must match ({same[1]!r}), the set is canonical")
+
+    # The CLI: a role the wire served with the claimed model AND a fallback model -> exit 1.
+    home = root / "home13"
+    repo = root / "repo13"
+    repo.mkdir(parents=True, exist_ok=True)
+    build_session(home, repo, "session_13131313-1313-4313-8313-131313131313", {
+        "main": [llm("main", "deepseek-flash", at=T0),
+                 spawned("agent-0", "factory-analyzer", "deepseek-flash", at=T0)],
+        "agent-0": [llm("agent-0", "deepseek-flash", at=T0 + 10),
+                    usage("agent-0", "deepseek-flash", at=T0 + 11),
+                    llm("agent-0", "k3", "kimi-k3", at=T0 + 20),
+                    usage("agent-0", "kimi-k3", at=T0 + 21)],
+    }, profiles={"agent-0": "factory-analyzer"})
+    spec = write(root, "pipeline-mixed.yaml",
+                 pipeline(("main", "deepseek-flash"), ("analyzer", "deepseek-flash")))
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(spec), name="mixed.json")
+    expect(res.returncode == 1,
+           f"a role served by the claimed model AND a fallback must exit 1: "
+           f"{res.returncode} {text!r} {err(res)!r}")
+    expect(artifact["roles"]["analyzer"]["models_served"]
+           == {"deepseek-flash": 1, "kimi-k3": 1},
+           f"the wire evidence must be counted per model: {artifact['roles']['analyzer']!r}")
+    expect(artifact["comparison"] == {"main": "match", "analyzer": "mismatch"},
+           f"only the mixed role mismatches: {artifact['comparison']!r}")
+    expect(artifact["verdict"] == "FAIL", f"the verdict must be FAIL: {artifact['verdict']!r}")
+    expect("analyzer: mismatch (claimed=deepseek-flash wire=[deepseek-flash:1,kimi-k3:1])" in text,
+           f"the mismatch line must show BOTH served models: {text!r}")
+    expect(text.strip().splitlines()[-1].startswith("FAIL - "),
+           f"the final line must not read PASS: {text!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -784,13 +842,15 @@ def main() -> int:
         case_10_cli(root)
         case_11_no_claims_is_degraded(root)
         case_12_unknown_role_is_a_run_error(root)
+        case_13_mixed_model_service_is_a_mismatch(root)
 
     print("PASS - model_attribution.py confirms every models_used claim against the CLI's own "
           "session wire: roles come from state.json (or subagent.spawned), the wire name is "
           "normalised to its alias, only top-level typed events are counted, a disproven claim is "
           "a mismatch (exit 1), a missing session is DEGRADED with an artifact (exit 3), a role "
-          "the factory does not have is a run error (exit 1), and the self-reported view that "
-          "would look green without the cross-check is proven red.")
+          "the factory does not have is a run error (exit 1), a role served by the claimed model AND "
+          "a fallback model is a mismatch (exit 1, the served set must EQUAL the claimed one), and "
+          "the self-reported view that would look green without the cross-check is proven red.")
     return 0
 
 

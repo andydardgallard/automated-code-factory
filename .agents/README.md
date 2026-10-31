@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.19.0 -->
+<!-- code-factory-version: 12.19.1 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -185,9 +185,10 @@ by the main agent/planner/analyzer at the start and by other roles as needed.
 A v2-format entry carries `run_id: <YYYYMMDD-8hex>` and provenance markers `[verified: <evidence>]` /
 `[inferred]` in the `decisions` and `results` fields. An entry counts as v2 if its
 `factory_version` is newer than 12.8.0 OR it already carries a v2 field (`run_id` or a marker): for it,
-a missing `run_id` (or a malformed `run_id`) or a missing marker is a format error, whereas entries
-written by a factory no newer than 12.8.0 without v2 fields, and legacy entries without `project:`, produce only a
-warning.
+a missing `run_id` (or a malformed `run_id`) or a missing marker is a format error, and so is a
+missing `unfinished` or `factory_version` field — every current-generation record is written with
+both; whereas entries written by a factory no newer than 12.8.0 without v2 fields, and legacy entries
+without `project:`, produce only a warning.
 
 ## Launch (Kimi Code 0.34+, Node)
 
@@ -494,8 +495,8 @@ On the failure of any test, the factory does NOT roll back blindly:
    (per `manifest.json`), and returns the project to its pre-change state.
 3. **Retry budgets**: coder=1, BA=2, Planner=2, Diagnostician=1, advisor=1, infrastructure=3,
    reviewer=2. On exhaustion — escalation to the Diagnostician (LLM analysis, writes
-   `.code-factory/logs/diagnostic.md`), then to the Advisor (`factory-advisor`, a secondary model
-   from a contrasting model family, read-only, budget 1; the route is decided by the machine-readable `agreement` field
+   `.code-factory/logs/diagnostic.md`), then to the Advisor (`factory-advisor`, a judge-side model
+   from a family contrasting with the Diagnostician's, read-only, budget 1; the route is decided by the machine-readable `agreement` field
    of the report — see `references/error-routing.md` §4.1).
 4. **Human**: if the Advisor or Diagnostician recommends it — show the user and ask.
 5. **FAILED**: only when all budgets are exhausted, with a full log in

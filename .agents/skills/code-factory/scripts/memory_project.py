@@ -41,8 +41,10 @@ ownership explicit and machine-checkable:
                                  memory without a `project:` declaration stays a warning, never an
                                  error. The memory format v2 (see change_log_template) is enforced
                                  on the records of a current-generation factory: they must carry a
-                                 well-formed `run_id` AND a provenance mark in `decisions` and in
-                                 `results`; records that predate the format — with a `project:`
+                                 well-formed `run_id`, a provenance mark in `decisions` and in
+                                 `results`, AND the `unfinished` and `factory_version` fields —
+                                 a missing one is an error there and a warning only in a record
+                                 that predates the format; records that predate the format — with a `project:`
                                  but not v2 — only warn (never rewritten, a warning by contract),
                                  exactly like records without `project:`.
                                  The `## Current state` of the summary is compared with the live
@@ -264,8 +266,10 @@ VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 LEGACY_NO_PROJECT = "(legacy, no project field)"
 # Task types of the factory task format (see references/security-audit.md, section 4).
 TASK_TYPES = ("implement", "review", "refactor", "security_audit")
-# Required by every generated fix task, per references/security-audit.md, section 4.
-FIX_TASK_REQUIRED = ("title", "description", "task_type", "acceptance_criteria")
+# Required by every generated fix task, per references/security-audit.md, section 4 AND the
+# task-format contract: `repo_path` is mandatory for every non-green-field task, so a fix task
+# without it is unusable for the follow-up run and is refused here instead of at the finish gate.
+FIX_TASK_REQUIRED = ("title", "repo_path", "description", "task_type", "acceptance_criteria")
 
 # RECORD KINDS — the `task_type` of a memory record, decided ONCE here (used by
 # `record_contract_issues`, documented in the change-log template and in this docstring).
@@ -284,6 +288,9 @@ ENTRY_REQUIRED_KEYS = ("title", "timestamp", "branch", "commit", "task_type", "g
                        "changed_files", "created_files", "results", "decisions", "assumptions",
                        "models_used")
 ENTRY_OPTIONAL_KEYS = ("unfinished", "factory_version", "project")
+# The two newer keys a CURRENT-generation record may not omit: once a record is proven v2 (see
+# is_v2_record) it must carry both — the warning below is reserved for genuinely pre-v2 history.
+ENTRY_V2_REQUIRED = ("unfinished", "factory_version")
 # Enums of an `unfinished` item (see the change-log template).
 UNFINISHED_SEVERITIES = ("critical", "warning", "info")
 UNFINISHED_BOOLS = ("true", "false")
@@ -349,38 +356,14 @@ def summary_project_id(summary: pathlib.Path) -> str:
     return declaration_value(summary, "project_id")
 
 
-def expected_owner(root: pathlib.Path, expect: str = "",
-                   no_owner_check: bool = False) -> tuple[str, str, list[str]]:
-    """Return (expected_owner, basis, warnings) — the owner the memory under `root` may carry.
+def name_basis(summary: pathlib.Path, root: pathlib.Path) -> tuple[str, str, list[str]]:
+    """The documented NAME-based owner chain: (basis, owner, warnings) — no `project_id:` used.
 
-    Precedence, in this order:
-      "expect"             `--expect <name>` wins over everything else;
-      "no-owner-check"     `--no-owner-check` drops the owner comparison — and nothing else;
-      "foreign-repository" the summary's `project_id:` names ANOTHER repository: the memory is
-                           refused (the caller turns this basis into a hard error naming both ids);
-      "identity"           the declared `project_id:` matches this repository, so the memory's own
-                           `project:` declaration is the owner — no name-based comparison at all;
-      "summary-repo-path"  no `project_id:` — the basename of the declared `repo_path:` line (a
-                           memory that pins its own root keeps working, like before);
-      "repo-dir"           nothing usable declared — the basename of `--repo`, with a warning that
-                           the identity basis is the directory name (the fallback stays so nothing
-                           passes by accident).
-    A memory without `project_id:` keeps exactly the pre-identity, name-based rule and gets a
-    migration hint; `warnings` carries those hints and never a "WARN" line.
+    "summary-repo-path" when memory/summary.md declares a `repo_path:` other than `.` (a memory
+    that pins its own root keeps working, like before); "repo-dir" otherwise — the basename of
+    `--repo`, WITH the warning that the directory name is the identity basis, so nothing passes by
+    accident. The `project_id:` migration hint is the caller's business (see expected_owner).
     """
-    if expect:
-        return expect.strip(), "expect", []
-    if no_owner_check:
-        return "", "no-owner-check", []
-    summary = root / "memory" / "summary.md"
-    declared_id = summary_project_id(summary)
-    computed = project_identity(root)
-    if declared_id:
-        if computed and computed != declared_id:
-            return "", "foreign-repository", [
-                f"hint: memory/summary.md declares project_id {declared_id} while this "
-                f"repository's root commit gives {computed}"]
-        return summary_project(summary), "identity", []
     basis, owner = "repo-dir", root.name
     declared_repo = declaration_value(summary, "repo_path")
     if declared_repo and declared_repo != ".":
@@ -391,6 +374,52 @@ def expected_owner(root: pathlib.Path, expect: str = "",
             f"hint: the identity basis is the directory name '{owner}' (no 'project_id:' and no "
             f"declared 'repo_path:' in memory/summary.md) - renaming or re-versioning the "
             f"deployment folder invalidates memory nobody edited")
+    return basis, owner, warnings
+
+
+def expected_owner(root: pathlib.Path, expect: str = "",
+                   no_owner_check: bool = False) -> tuple[str, str, list[str]]:
+    """Return (expected_owner, basis, warnings) — the owner the memory under `root` may carry.
+
+    Precedence, in this order:
+      "expect"              `--expect <name>` wins over everything else;
+      "no-owner-check"      `--no-owner-check` drops the owner comparison — and nothing else;
+      "foreign-repository"  the summary's `project_id:` names ANOTHER repository: the memory is
+                            refused (the caller turns this basis into a hard error naming both ids);
+      "identity"            the declared `project_id:` MATCHES this repository, so the memory's own
+                            `project:` declaration is the owner — no name-based comparison at all;
+      "identity-unverified" a `project_id:` is declared but this repository yields no root commit,
+                            so the id cannot be compared with anything: the declaration proves
+                            nothing and the name-based fallback decides (the caller reports it).
+                            Trusting it here would let a foreign or arbitrary id pass exactly when
+                            nobody can check it;
+      "summary-repo-path"   no (usable) `project_id:` — the basename of the declared `repo_path:`
+                            line (a memory that pins its own root keeps working, like before);
+      "repo-dir"            nothing usable declared — the basename of `--repo`, with a warning that
+                            the identity basis is the directory name (the fallback stays so nothing
+                            passes by accident).
+    A memory without `project_id:` keeps exactly the pre-identity, name-based rule and gets a
+    migration hint; `warnings` carries those hints and never a "WARN" line.
+    """
+    if expect:
+        return expect.strip(), "expect", []
+    if no_owner_check:
+        return "", "no-owner-check", []
+    summary = root / "memory" / "summary.md"
+    declared_id = summary_project_id(summary)
+    computed = project_identity(root)
+    if declared_id and computed:
+        if computed != declared_id:
+            return "", "foreign-repository", [
+                f"hint: memory/summary.md declares project_id {declared_id} while this "
+                f"repository's root commit gives {computed}"]
+        return summary_project(summary), "identity", []
+    basis, owner, warnings = name_basis(summary, root)
+    if declared_id:
+        # No root commit to compare with: the id is accepted as OWNERSHIP only after a non-empty
+        # match, so an unverifiable declaration never becomes the basis — the documented name-based
+        # fallback decides and validate_memory() reports the unverified declaration.
+        return owner, "identity-unverified", warnings
     warnings.append(
         f"hint: memory/summary.md declares no 'project_id:' - pin the repository identity with "
         f"'memory_project.py init' or with a documented edit of the declaration area "
@@ -523,8 +552,11 @@ unfinished:
 
 The `unfinished` section is filled in for every entry, even when empty (the explicit `no
 unfinished items` marker). During compaction the elements with severity=critical or
-follow_up=true are always preserved. Entries without `project`, `unfinished` or
-`factory_version` pass validation with a warning (not an error) — this is legacy compatibility.
+follow_up=true are always preserved. A record of the memory format v2 MUST carry `unfinished`
+and `factory_version` — omitting either is a format ERROR there; entries without `project`, and
+records written before the format (pre-v2) without `unfinished`/`factory_version`, pass
+validation with a warning (not an error) — this is legacy compatibility, and history is never
+rewritten.
 
 **Closing protocol: an item NEVER disappears without evidence.** When a debt is closed (fixed in
 code or deemed obsolete), the closing entry carries a `closed:` block next to `unfinished:` —
@@ -708,9 +740,12 @@ def record_contract_issues(change_log: pathlib.Path) -> tuple[list[str], list[st
     """Return (errors, warnings) of the record CONTRACT over a whole journal.
 
     Every record must carry ENTRY_REQUIRED_KEYS and a `task_type` from RECORD_KINDS — an unknown
-    kind is an ERROR, `backlog` is a member of the enum (see the module docstring). A missing
-    newer key (`unfinished`, `factory_version`, `project`) only WARNS: legacy compatibility, so
-    history written before the format evolved stays valid and is never rewritten. `results` must
+    kind is an ERROR, `backlog` is a member of the enum (see the module docstring). A missing newer
+    key of a GENUINELY PRE-V2 record (`unfinished`, `factory_version`, `project`) only WARNS:
+    legacy compatibility, so history written before the format evolved stays valid and is never
+    rewritten. A record that is v2 (see is_v2_record: a factory newer than MEMORY_V2_AFTER, or a
+    v2 field already present) must carry `unfinished` AND `factory_version` — omitting either is an
+    ERROR there, because every current-generation record is written that way. `results` must
     carry the sub-keys of the record's own kind: the four run keys for a run record, `finding=`
     and `impact=` for a `backlog` record. A `project:` key with an EMPTY value is an error,
     never silent legacy. The `unfinished` block is either the explicit no-debt marker or a list
@@ -725,8 +760,14 @@ def record_contract_issues(change_log: pathlib.Path) -> tuple[list[str], list[st
         for key in ENTRY_REQUIRED_KEYS:
             if key not in fields:
                 errors.append(f"entry '{heading}': missing key '{key}'")
+        v2 = is_v2_record(fields)
         for key in ENTRY_OPTIONAL_KEYS:
-            if key not in fields:
+            if key in fields:
+                continue
+            if v2 and key in ENTRY_V2_REQUIRED:
+                errors.append(f"entry '{heading}': missing key '{key}' (required by the memory "
+                              f"format v2 - only a pre-v2 record may omit it)")
+            else:
                 warnings.append(f"entry '{heading}': missing key '{key}' (legacy format)")
         if "project" in fields and not fields["project"].strip():
             errors.append(f"entry '{heading}': empty 'project' value")
@@ -822,12 +863,14 @@ def validate_memory(root: str | pathlib.Path, expect: str = "", no_owner_check: 
       - the journal and the summary exist and carry their canonical marker;
       - the owner chain (`expected_owner`): `--expect` wins, then the summary's `project_id:`,
         then the declared `repo_path:`, then the directory name; a FOREIGN `project_id:` is
-        refused and a memory of another project is an error — `--no-owner-check` drops only the
-        comparison;
+        refused, an UNVERIFIABLE one (no root commit to compare it with) is reported as a WARNING
+        and never used as the basis, and a memory of another project is an error —
+        `--no-owner-check` drops only the comparison;
       - the journal's `project:` values agree with each other and with the summary declaration;
         a summary without a declaration and records without `project:` are the documented legacy
         WARNINGS, never errors;
-      - the record contract (`record_contract_issues`): required keys, the record KIND
+      - the record contract (`record_contract_issues`): required keys, the v2 fields a
+        current-generation record may not omit (`unfinished`, `factory_version`), the record KIND
         (`RECORD_KINDS`), the `results` sub-keys of that kind and the `unfinished` items;
       - the memory format v2 (`record_format_issues`): `run_id` + provenance marks, with the
         pre-v2 and no-`project:` records kept as warnings and never rewritten;
@@ -905,6 +948,12 @@ def validate_memory(root: str | pathlib.Path, expect: str = "", no_owner_check: 
                       f"different repository and is refused")
     elif expected and owner and owner != expected:
         errors.append(f"{OWNER_MISMATCH} '{owner}', expected '{expected}'")
+    if basis == "identity-unverified":
+        # The declared id could not be compared (no root commit): it is reported, and the owner
+        # comparison above already ran on the name-based basis it fell back to.
+        warnings.append(f"memory/summary.md declares project_id {summary_project_id(summary)} but "
+                        f"this repository yields no root commit to compare it with - the identity "
+                        f"cannot be verified, so the owner follows the name-based basis")
 
     state_warnings = summary_state_warnings(root)
     if strict:

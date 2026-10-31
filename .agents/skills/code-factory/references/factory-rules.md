@@ -61,7 +61,7 @@ carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md
 ## retry-budgets
 carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; .agents/skills/code-factory/references/error-routing.md
 <!-- factory-rule: retry-budgets begin -->
-**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, secondary model, contrasting model family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently.
+**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently.
 <!-- factory-rule: retry-budgets end -->
 
 ## task-format
@@ -115,7 +115,7 @@ carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; 
 ## handoff-briefing
 carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md
 <!-- factory-rule: handoff-briefing begin -->
-**Briefing of every delegation (canonical wording):** every delegation to a subagent is a self-contained briefing per `references/handoff-briefing.md` (Task / Context / relevant files BY PATH, without inlining their contents / what has already been tried and why it failed / the MEMORY FACTS: the open backlog items that touch this work and the relevant past decisions read from `memory/summary.md` and the journal, so a subagent never re-derives the project's history). Only the main agent writes files; read-only roles (analyzer, reviewer, security-auditor, diagnostician, advisor) carry the "no edits" suffix. The subagent returns a compact structured result with paths to artifacts, not a retelling of the context.
+**Briefing of every delegation (canonical wording):** every delegation to a subagent is a self-contained briefing per `references/handoff-briefing.md` (Task / Context / relevant files BY PATH, without inlining their contents / what has already been tried and why it failed / the MEMORY FACTS: the open backlog items that touch this work and the relevant past decisions read from `memory/summary.md` and the journal, so a subagent never re-derives the project's history). Only the main agent writes files; read-only roles (analyzer, planner, reviewer, security-auditor, diagnostician, advisor) carry the "no edits" suffix. The subagent returns a compact structured result with paths to artifacts, not a retelling of the context.
 <!-- factory-rule: handoff-briefing end -->
 
 ## shard-protocol
@@ -185,7 +185,7 @@ carriers: .agents/README.md; .agents/agents/code-factory.md; .agents/skills/code
 <!-- factory-rule: memory-actuality end -->
 
 ## plan-committee
-carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; .agents/skills/code-factory/references/planning-guide.md
+carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; .agents/skills/code-factory/references/planning-guide.md; .agents/README.md
 <!-- factory-rule: plan-committee begin -->
 **Committee on double plan rejection (canonical wording):** if the user rejected the plan twice (hitl, Revise branch), the main agent launches a second independent planner subagent from a contrasting model family, which builds an alternative plan from the same task and the user's accumulated remarks; the deterministic `scripts/plan_arbiter.py` (stdlib) compares both plans by machine-readable sections (DAG tasks, verify commands, risks, business tests) and forms a merged variant with a list of discrepancies; the user is presented with the merged plan and the discrepancies, and further edits are made against it.
 <!-- factory-rule: plan-committee end -->

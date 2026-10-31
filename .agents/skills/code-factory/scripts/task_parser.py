@@ -30,6 +30,9 @@ Supported schema (top level, column 0):
 Every text value may be a plain (multi-word) scalar, a quoted scalar, a literal block scalar
 (`|`, also `|-` and `|+`) or a folded one (`>`); a key written with no value followed by indented
 lines is read as the same text block (the shape the live tasks actually use for `user_story:`).
+A quoted scalar must be CLOSED on the same line, and a double-quoted one must be valid
+JSON-escaped text: `title: "unterminated` or an invalid escape (`"A \\q value"`) is an error naming
+the line and the fix, never text that silently keeps its opening quote.
 Block scalars chomp the way YAML does, for both the literal and the folded style: `|-` strips
 (no trailing newline), plain `|`/`>` clips (exactly one trailing newline) and `|+`/`>+` keeps
 EVERY trailing blank line of the block, so a keep-form text is never shortened. LEADING and
@@ -143,15 +146,34 @@ def _strip_comment(text: str) -> str:
     return "".join(out).rstrip()
 
 
-def _scalar(text: str) -> str:
-    """One scalar value: quoted (with escapes) or plain. Nothing else is rewritten."""
+def _scalar(text: str, line: int | None = None) -> str:
+    """One scalar value: quoted (with escapes) or plain. Nothing else is rewritten.
+
+    A quoted scalar must be CLOSED on the same line: `"unterminated` is an authoring error naming
+    the line, never text that silently keeps its opening quote (the pre-fix fallback returned it
+    unchanged, so a malformed owner input entered every later stage). A double-quoted value must
+    also be valid JSON-escaped text — an invalid escape is an error, not a stripped quote.
+    """
     text = text.strip()
-    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+    if text.startswith('"'):
+        if len(text) < 2 or not text.endswith('"'):
+            raise TaskError(
+                f"broken double-quoted scalar {text!r} — a quoted value must END with its closing "
+                f"quote on this line, so this one is unterminated or followed by extra text; close "
+                f"it ('\"<text>\"') or write the text without quotes", line)
         try:
             return json.loads(text)
-        except ValueError:
-            return text[1:-1].replace('\\"', '"')
-    if len(text) >= 2 and text[0] == "'" and text[-1] == "'":
+        except ValueError as exc:
+            raise TaskError(
+                f"invalid double-quoted scalar {text!r}: {exc} — inside double quotes use a valid "
+                f"escape ('\\\"', '\\\\', '\\n', '\\t' ...) or drop the quotes and write plain "
+                f"text", line) from None
+    if text.startswith("'"):
+        if len(text) < 2 or not text.endswith("'"):
+            raise TaskError(
+                f"broken single-quoted scalar {text!r} — a quoted value must END with its closing "
+                f"quote on this line, so this one is unterminated or followed by extra text; close "
+                f"it (\"'<text>'\") or write the text without quotes", line)
         return text[1:-1].replace("''", "'")
     return text
 
@@ -230,7 +252,7 @@ class TaskParser:
                         f"invalid block scalar header {rest!r} — use '|' (literal, line breaks "
                         f"kept) or '>' (folded), optionally with '-' or '+' (e.g. '|-')", line)
                 return self._block_scalar(key_column, rest, line)
-            return _scalar(rest)
+            return _scalar(rest, line)
         nxt = self._skip(self.index)
         if nxt < len(self.lines):
             indent, content = self._content(nxt)          # type: ignore[misc]
@@ -395,7 +417,7 @@ class TaskParser:
 
     def _plain_item(self, field: str, allowed: tuple[str, ...], body: str,
                     line: int) -> dict:
-        text = _scalar(body)
+        text = _scalar(body, line)
         if field != "acceptance_criteria":
             raise TaskError(
                 f"an item of '{field}:' must be a mapping with the keys "
@@ -438,7 +460,7 @@ class TaskParser:
                 raise TaskError(
                     f"a '{field}:' entry is a plain string, not a mapping — write '- \"<text>\"' "
                     f"instead of '- {body}:'", i + 1)
-            values.append(_scalar(body))
+            values.append(_scalar(body, i + 1))
             self.index = i + 1
         return values
 

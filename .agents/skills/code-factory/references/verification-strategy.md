@@ -266,7 +266,13 @@ while read -r f; do rm -f "$f"; done < <(python -c "import json;print('\n'.join(
 
 After rollback the resolved repository MUST be byte-identical to the pre-change state — and the
 launch/deployment root MUST be untouched: no artifact, backup or commit of the run ever lands
-there.
+there. The ONE documented exception is the deployment-root state the canonical rules REQUIRE
+(rule `repo-scoping`): the run's long-term memory record in `memory/` (`memory/change-log.md`,
+`memory/summary.md`) and the `VERSION` bump applied through `scripts/version_manager.py` live at
+the DEPLOYMENT ROOT even when `repo_path` is a subdirectory of it. They are legitimate state of
+the run, not a leak of artifacts into the root, so neither rollback nor the finish gate removes or
+suppresses them; every OTHER artifact (`.code-factory/`, backups, plan, reports) stays scoped to
+the resolved repository.
 
 ### 4.4 Iteration
 

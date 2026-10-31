@@ -25,7 +25,9 @@ Covers, with tempfile fixtures:
     `CHROME_DEVTOOLS_MCP_VENDOR_OFFLINE=1`, so the suite never reaches the network or npm,
   - `probe` with `--simulate-missing node` / `chrome` / `chrome-for-testing` / `mcp-server` /
     `vendor-entry` and with a concrete `--target`: the vendored entry of that project is checked and
-    a missing one makes the browser path unusable (DATA, exit 0),
+    a missing one makes the browser path unusable (DATA, exit 0); and the reviewed pin is enforced
+    fail-closed — an entry with a wrong or unreadable version is NOT usable, because an unreviewed
+    release must never be reported as such,
   - `validate_config` accepting the shipped template (placeholder entry) and a merged config, and
     rejecting npx/relative/wrong-version/unpinned variants, non-isolated, statistics/CrUX/update-check
     and blanket-permission variants,
@@ -895,6 +897,35 @@ def test_probe(tmp: pathlib.Path) -> None:
     payload = json.loads(res.stdout)
     check(payload["vendor"]["checked"] and payload["vendor"]["present"],
           f"the probe must check the vendored entry of the given project: {payload['vendor']}")
+
+    # Fail closed on the reviewed pin: an entry whose version is WRONG or UNREADABLE may be any
+    # release at all, so `mcp_usable` must refuse it — an existing file is not proof of the pin.
+    unreviewed = tmp / "probe-unreviewed-project"
+    seed_vendored_entry(unreviewed, version="0.0.1-unreviewed")
+    res = run("probe", "--target", str(project_assets(unreviewed)[0]), "--json")
+    expect_clean_cli(res, 0, "probe --target (unreviewed version)")
+    payload = json.loads(res.stdout)
+    cap = payload["capabilities"]["vendor_entry"]
+    check(cap["present"] is False,
+          f"a vendored entry with an unreviewed version must not be usable: {cap}")
+    check("vendor_entry" in payload["missing"] and payload["mcp_usable"] is False,
+          f"an unreviewed vendored version must make the browser path unusable: {payload}")
+    check(cd.PINNED_VERSION in cap["reason"] and "0.0.1-unreviewed" in cap["reason"],
+          f"the reason must contrast the tested release with the installed one: {cap['reason']!r}")
+
+    unreadable = tmp / "probe-unreadable-project"
+    unreadable_entry = seed_vendored_entry(unreadable)
+    cd.vendored_package_json(unreadable_entry).unlink()
+    res = run("probe", "--target", str(project_assets(unreadable)[0]), "--json")
+    expect_clean_cli(res, 0, "probe --target (unreadable version)")
+    payload = json.loads(res.stdout)
+    cap = payload["capabilities"]["vendor_entry"]
+    check(cap["present"] is False,
+          f"a vendored entry whose version cannot be read must not be usable: {cap}")
+    check("vendor_entry" in payload["missing"] and payload["mcp_usable"] is False,
+          f"an unreadable vendored version must make the browser path unusable: {payload}")
+    check("cannot be" in cap["reason"] or "not read" in cap["reason"],
+          f"the reason must say the version could not be read: {cap['reason']!r}")
 
     empty_project = tmp / "probe-empty-project"
     empty_config = project_assets(empty_project)[0]

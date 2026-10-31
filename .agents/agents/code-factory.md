@@ -76,7 +76,7 @@ suffix — a subagent writes files only when its role owns the change. When you 
 sub-agent, its final message IS the complete handoff — require a concise, structured result
 (summary + artifact paths), never a dump.
 <!-- factory-rule: handoff-briefing begin -->
-**Briefing of every delegation (canonical wording):** every delegation to a subagent is a self-contained briefing per `references/handoff-briefing.md` (Task / Context / relevant files BY PATH, without inlining their contents / what has already been tried and why it failed / the MEMORY FACTS: the open backlog items that touch this work and the relevant past decisions read from `memory/summary.md` and the journal, so a subagent never re-derives the project's history). Only the main agent writes files; read-only roles (analyzer, reviewer, security-auditor, diagnostician, advisor) carry the "no edits" suffix. The subagent returns a compact structured result with paths to artifacts, not a retelling of the context.
+**Briefing of every delegation (canonical wording):** every delegation to a subagent is a self-contained briefing per `references/handoff-briefing.md` (Task / Context / relevant files BY PATH, without inlining their contents / what has already been tried and why it failed / the MEMORY FACTS: the open backlog items that touch this work and the relevant past decisions read from `memory/summary.md` and the journal, so a subagent never re-derives the project's history). Only the main agent writes files; read-only roles (analyzer, planner, reviewer, security-auditor, diagnostician, advisor) carry the "no edits" suffix. The subagent returns a compact structured result with paths to artifacts, not a retelling of the context.
 <!-- factory-rule: handoff-briefing end -->
 
 ## Lazy Senior ladder (Ponytail) — mandatory before writing any code
@@ -198,12 +198,15 @@ under a second), and `--fresh` refuses a STALE index with exit 3, so "how was th
 is answered from a current index and never from memory of a previous run.
 **Scout pipeline (AGENTS.md as single source of truth)** — follow
 `references/tech-stack-detection.md` §7:
-1. Compute the deterministic structural fingerprint
-   (`python .agents/skills/code-factory/scripts/project_fingerprint.py --repo <project>`).
-2. If `AGENTS.md` exists AND its embedded fingerprint (first line comment) matches the
-   recomputed one → the project is unchanged: SKIP regeneration. Otherwise generate `AGENTS.md`
-   with exactly the 8 standard sections (overwriting any existing file) and embed the new
-   fingerprint on the first line.
+1. Compute the deterministic TWO-LEVEL fingerprint
+   (`python .agents/skills/code-factory/scripts/project_fingerprint.py --repo <project> --all` —
+   `--content` prints only the content level and no flag only the structural one; the SKIP branch
+   needs BOTH, `# structural: <64-hex>` and `# content: <64-hex>`).
+2. If `AGENTS.md` exists AND BOTH embedded hashes (first line comment) match the recomputed ones
+   → the project is unchanged: SKIP regeneration. One matching hash is NOT enough — a
+   content-only change keeps the structural hash and still makes `AGENTS.md` stale. Otherwise
+   generate `AGENTS.md` with exactly the 8 standard sections (overwriting any existing file) and
+   embed the new TWO-LEVEL fingerprint on the first line.
 3. There is **no init step** — do not run the init slash command (it would overwrite the file
    and erase the 8 sections).
 4. Roles read AGENTS.md + the target project's memory instead of re-deriving structure: the
@@ -651,7 +654,7 @@ On ANY failure, do NOT roll back immediately. Follow `references/error-routing.m
    is exhausted, escalate to the Diagnostician, then to the Advisor (budget 1), and finally to the
    human; for the reviewer the canonical review-gate policy of Phase 8b applies.
 <!-- factory-rule: retry-budgets begin -->
-**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, secondary model, contrasting model family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently.
+**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently.
 <!-- factory-rule: retry-budgets end -->
 
 3. **Diagnostician** (LLM): launch `factory-diagnostician` with the error output + attempt
@@ -664,7 +667,7 @@ On ANY failure, do NOT roll back immediately. Follow `references/error-routing.m
 **Evidence ledger and quotes (canonical wording):** every piece of evidence (baseline, tests, review) is signed with the working-tree fingerprint via `scripts/evidence_ledger.py` and is accepted only with FRESH status; STALE evidence (files changed after signing) does not count as acceptance. Every quote from the reviewer, diagnostician or advisor is re-checked verbatim by `scripts/verify_quotes.py` (exact substring, only CRLF→LF is normalized). An unconfirmed quote is marked UNTRUSTED and does not affect the verdict.
 <!-- factory-rule: evidence-ledger end -->
 
-4. **Advisor** (LLM, secondary model — deliberately a DIFFERENT family from the Diagnostician,
+4. **Advisor** (LLM, a judge-side model — deliberately a DIFFERENT family from the Diagnostician,
    budget advisor=1): when the Diagnostician's fix did not work (its budget is exhausted or the
    same error repeats), launch `factory-advisor` with a self-contained briefing per
    `references/handoff-briefing.md` (task, files BY PATH, current state, what was tried and why it
@@ -686,8 +689,8 @@ write `.code-factory/report_code_changes.md` (next to it) via
 
 ## Mandatory rules
 
-1. **Escalation ladder** — deterministic regex → Diagnostician (LLM) → Advisor (LLM, secondary
-   model family, budget 1) → Human (HITL) → FAILED with a full log. The Advisor is the second
+1. **Escalation ladder** — deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model
+   contrasting with the Diagnostician's family, budget 1) → Human (HITL) → FAILED with a full log. The Advisor is the second
    opinion after the Diagnostician's fix failed; it never edits files. Never crash silently; never
    loop forever.
 2. **Rollback on retry** — before retrying a role, restore backups, remove created files, verify

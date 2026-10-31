@@ -99,8 +99,9 @@ whether re-analysis + AGENTS.md regeneration are skipped:
   per non-excluded entry, sorted), so ANY modification of a tracked file changes it — an UNSTAGED
   edit included, plus changes level 1 cannot see. Content is CRLF→LF normalized, so the value does
   not depend on the checkout's line endings (`.cmd`/`.ps1` are pinned to eol=crlf by
-  .gitattributes); a tracked file absent from the worktree falls back to its index record
-  (`mode index-sha path`); without a usable git repository the level hashes every non-excluded
+  .gitattributes); a tracked file absent from the worktree (or unreadable) is recorded with an
+  explicit `MISSING` marker (`mode MISSING path`) instead of its index record — a git object id is a
+  different kind of value than a content digest and a deletion must move the hash; without a usable git repository the level hashes every non-excluded
   working-tree file instead (same normalization and exclusions). Reading the WORKING TREE is what
   makes unstaged edits visible, while the value stays commit-stable (a commit changes no worktree
   file) and platform-neutral, so AGENTS.md can still embed its own hash pair. UNTRACKED files are

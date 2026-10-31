@@ -25,7 +25,12 @@ Cases (fixtures live in a tempdir; nothing is written into the repository):
      any case are accepted;
   6. the CLI contract: `--help` exits 0 with usage, a missing `--task` exits 2, an unreadable task
      file exits 2 with a read message — none of them prints a traceback, and the successful path
-     stays silent on stderr.
+     stays silent on stderr;
+  7. REGRESSION (self-review 20261031-d2f6fea6, critical 12): an unterminated double or single quote
+     and an invalid double-quoted escape sequence exit 2 naming the line and the fix — the pre-fix
+     `_scalar` only recognised a quoted scalar when BOTH delimiters existed and otherwise returned
+     the text unchanged, so `title: "unterminated` parsed successfully — while well-formed quotes
+     and escapes still parse verbatim.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -99,6 +104,30 @@ title: "A valid task"
 repo_path: .
 acceptance_criteria:
   - criterion: "The report lists the CNY instrument."
+"""
+
+# REGRESSION (self-review 20261031-d2f6fea6, critical 12): the quoted-scalar shapes that used to be
+# accepted silently. Each line number below is 1-based in its own fixture.
+UNTERMINATED_DOUBLE = """\
+title: "A title whose quote never closes
+repo_path: .
+"""
+
+UNTERMINATED_SINGLE = """\
+title: 'A title whose quote never closes
+repo_path: .
+"""
+
+BAD_DOUBLE_ESCAPE = """\
+title: "A \\q bad escape"
+repo_path: .
+"""
+
+QUOTED_ESCAPES_OK = """\
+title: "A \\"quoted\\" \\\\ title with \\t escapes"
+repo_path: .
+acceptance_criteria:
+  - "A plain quoted item with a \\"quote\\" inside."
 """
 
 
@@ -250,6 +279,52 @@ def case_6_cli_contract(root: pathlib.Path) -> None:
            f"the summary must carry the counts: {out(ok)!r}")
 
 
+def case_7_malformed_quoted_scalars_are_rejected(root: pathlib.Path) -> None:
+    """Regression (self-review 20261031-d2f6fea6, critical 12): a broken quote is an error.
+
+    `_scalar` used to treat text as double-quoted only when BOTH delimiters were present and
+    otherwise returned it unchanged, so `title: "unterminated` parsed successfully (exit 0, title
+    `'"unterminated'`) and malformed owner input entered every later stage. An unterminated quote
+    and an invalid double-quoted escape are now refused with the same actionable exit 2.
+    """
+    # (a) unterminated double quote, (b) unterminated single quote, (c) invalid escape sequence.
+    # Every message must also show the offending text, so the owner can see what broke.
+    for name, text, needles in (
+            ("unterminated-double.yaml", UNTERMINATED_DOUBLE,
+             ("line 1", "unterminated", "double-quoted", "closing quote",
+              "A title whose quote never closes")),
+            ("unterminated-single.yaml", UNTERMINATED_SINGLE,
+             ("line 1", "unterminated", "single-quoted", "closing quote",
+              "A title whose quote never closes")),
+            ("bad-escape.yaml", BAD_DOUBLE_ESCAPE,
+             ("line 1", "invalid", "double-quoted", "escape", "\\q"))):
+        task_file = write(root, name, text)
+        expect_failure(run("parse", "--task", str(task_file)), task_file, needles)
+        try:
+            tp.parse_file(task_file)
+        except tp.TaskError as exc:
+            expect("line 1" in str(exc),
+                   f"{name}: the library error must name line 1: {exc!r}")
+        else:
+            raise AssertionError(f"{name}: a malformed quoted scalar must raise TaskError")
+
+    # The VALUE is never invented: a broken quote is refused instead of being half-read.
+    expect(not (root / "bad-escape.json").exists(),
+           "a refused task must not write its normalized JSON")
+
+    # Contrast: WELL-FORMED escapes and quotes still parse (the check is about breaking the quote
+    # contract, not about banning quotes).
+    good = write(root, "quoted-escapes.yaml", QUOTED_ESCAPES_OK)
+    res = run("parse", "--task", str(good))
+    expect(res.returncode == 0, f"a well-formed quoted scalar must parse: {err(res)!r}")
+    task, _warnings = tp.parse_file(good)
+    expect(task["title"] == 'A "quoted" \\ title with \t escapes',
+           f"the escapes must be decoded: {task['title']!r}")
+    expect(task["acceptance_criteria"] == [{"criterion": 'A plain quoted item with a "quote" '
+                                                          'inside.'}],
+           f"a quoted list item must survive: {task['acceptance_criteria']!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -269,6 +344,10 @@ def main() -> int:
         case_6_cli_contract(root)
         print("PASS 6 - --help exits 0, wrong/unreadable invocations exit 2, no traceback ever, "
               "and the valid path is silent on stderr")
+        case_7_malformed_quoted_scalars_are_rejected(root)
+        print("PASS 7 - an unterminated double/single quote and an invalid double-quoted escape "
+              "exit 2 naming the line and the fix (never a silent fallback), while well-formed "
+              "quotes and escapes still parse")
     return 0
 
 

@@ -152,7 +152,7 @@ def check_router(root: pathlib.Path) -> list[str]:
                         f"(the loop the stop rule allows), got {budget!r}")
     routes = {entry["id"]: entry["route"] for entry in data.get("provider_patterns", [])
               if entry["category"].startswith("PROVIDER_")}
-    for pattern_id in ("A", "B", "C", "E"):
+    for pattern_id in ("A", "B", "C", "D", "E", "F"):
         if routes.get(pattern_id) != "infrastructure":
             problems.append(f"{PATTERNS.relative_to(ROOT)}: provider row {pattern_id} must route to "
                             f"infrastructure, got {routes.get(pattern_id)!r}")

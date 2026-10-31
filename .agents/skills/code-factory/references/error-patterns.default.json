@@ -102,7 +102,7 @@
     {
       "id": "8",
       "category": "COMPILE_ERROR",
-      "patterns": ["error[E\\d+]", "^error: ", "cannot find", "failed to compile", "no member named"],
+      "patterns": ["error\\[E\\d+\\]", "^error: ", "cannot find", "failed to compile", "no member named"],
       "route": "coder"
     },
     {
@@ -160,7 +160,9 @@
     {
       "id": "16",
       "category": "TIMEOUT",
-      "patterns": ["timed?\\s*out", "timeout", "TimeoutExpired", "operation timed out"],
+      "patterns": [
+        "(?s)(?=.*(?:\\btest|pytest|unittest))(?=.*(?:timed?\\s*out|timeout|TimeoutExpired|operation timed out))"
+      ],
       "route": "planner"
     },
     {
@@ -231,7 +233,7 @@
       "id": "D",
       "category": "PROVIDER_MODEL",
       "patterns": ["model (not found|does not exist|not available|invalid.*model)"],
-      "route": "planner"
+      "route": "infrastructure"
     },
     {
       "id": "E",
@@ -256,7 +258,7 @@
         "invalid_request_error",
         "base_url.*not reachable"
       ],
-      "route": "planner"
+      "route": "infrastructure"
     }
   ],
   "retry_budgets": {

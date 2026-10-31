@@ -17,8 +17,10 @@ the orchestration flowchart of `SKILL.md`. Prose cannot be executed; a graph can
 test walks it, label-aware, in a REVIEW context:
 
   FLOW GUARD       from each review start node, a REVIEW context may not traverse an edge whose
-                   label explicitly scopes it to `implement/refactor`, and MUST reach a
-                   delivery/stop node instead of a write node.
+                   label explicitly scopes it to `implement/refactor`, nor the affirmative branch
+                   of a DECISION GATE whose own text scopes it to `implement or refactor`
+                   (`DOC{task_type: implement or refactor?}`), and MUST reach a delivery/stop node
+                   instead of a write node.
   DELIVERY GUARD   the delivery node `RD` exists, both `CRV0` labels point at it, its node text
                    names the report plus the generated follow-up task file, and `XR` (stop and ask
                    the owner) is fed by the `review/security_audit` acceptance-failure label.
@@ -31,6 +33,9 @@ test walks it, label-aware, in a REVIEW context:
   ACCEPTANCE-STOP  `verify_acceptance.py --help` lists `--task-type` and its own suite exists.
   NEGATIVE PROBE   the SAME guard, run over a copy of the tree with the PRE-FIX edges restored,
                    FAILS and names the forbidden node — the guard is not a tautology.
+  WRITE PROBE      the write-node guards are not tautologies either: un-gating the `DOC` decision
+                   gate drags `DOC2`/`VER1..VER3` into the review path and MUST be caught, and
+                   removing a condition from the Finish node's write MUST be caught.
 
 "Review start nodes" and their delivery requirement (`SKILL.md`):
   CRV0  the review-verdict node of a review task           -> must reach RD
@@ -40,15 +45,25 @@ test walks it, label-aware, in a REVIEW context:
         start with `No`
 Forbidden (write) targets: M (coder), K (backup), P (rollback into the coder), RCR (the
 implement/refactor rework loop), H/I/J (the plan-approval entry), PF/G/L (the pre-flight /
-implement entries that lead to the backup and the coder).
+implement entries that lead to the backup and the coder), and the whole documentation/version
+chain behind the `DOC` gate: DOC2 (the documenter) and VER1..VER3 (the version bump that writes
+`VERSION`).
+Conditional (gated) writes: `Y` (Finish) is reached by EVERY run, a review included, and it does
+write — so it cannot be forbidden, it must be GATED: each of its project writes is pinned as a
+condition a review run cannot satisfy, and the FLOW GUARD's result (not one changing node on the
+review path) is what keeps those conditions false.
 
 WHAT THIS GUARD CANNOT SEE (honest limits):
-  - It reads labels and node ids, not prose: a node inside a traversed branch that EDITS a file
-    without being in the forbidden set (the version bump `VER1..VER3` under `DOC -->|Yes| DOC2`
-    writes `VERSION`) is invisible to it. The version rule is guarded by `test_factory_rules.py`.
+  - It reads labels and node texts, not prose, and it cannot EXECUTE a condition: a conditional
+    write node is pinned by its gate PHRASING ("if structure/stack/entry points changed", "if the
+    task requires it"). An editor who rewrote Finish's write as unconditional would drop that
+    phrase — which the WRITE PROBE forces the guard to catch — but an editor who kept the phrase
+    and contradicted it in a later sentence would not be caught. The write nodes themselves
+    (M/K/P/RCR/H/I/J/PF/G/L/DOC2/VER1..VER3) are forbidden outright, so they need no such reading.
   - A label that names no task type is traversed: `approve`/`request_changes` on `CRV0` name no
     task type, and blocking them would make the delivery unreachable. Only an explicit
-    `implement/refactor` scope is treated as "not a review path".
+    `implement/refactor` scope — in the label or in the text of the decision gate it leaves — is
+    treated as "not a review path".
   - The `rework list` qualifier is checked per markdown paragraph, and inside a fenced diagram the
     whole diagram is one paragraph — a node label is not a sentence. The diagram itself is guarded
     by the FLOW GUARD, which is stricter and label-aware.
@@ -97,7 +112,29 @@ FORBIDDEN = {
     "PF": "the pre-flight entry that leads to the backup and the coder",
     "G": "the implement entry node",
     "L": "the implement (auto) entry node that leads to pre-flight, backup and the coder",
+    "DOC2": "starts factory-documenter, which edits the project's documentation and doc-comments",
+    "VER1": "opens the version-bump chain (suggest) that ends in the VERSION write of VER3",
+    "VER2": "validates the version bump that VER3 then writes",
+    "VER3": "applies version_manager.py bump|set + sync and commits it — it writes VERSION",
 }
+
+# `Y` (Finish) is reached by EVERY run, a review included, so it cannot be forbidden — it must be
+# shown to be GATED instead. Each entry maps the node to the conditions its project writes are
+# spelled under: a review run changes nothing, so every one of them stays false. The guard pins the
+# PHRASING (it cannot execute a condition) and the FLOW GUARD proves no changing node is reachable,
+# which is what makes the conditions false. `test_factory_rules.py` guards the canonical version
+# rule; here the question is only whether a review path can WRITE.
+CONDITIONAL_WRITE = {
+    "Y": ("Finish, the run's exit: it must not write the project unconditionally",
+          ("if structure/stack/entry points changed", "if the task requires it")),
+}
+
+# A decision gate whose own text scopes the decision to `implement or refactor`: its affirmative
+# branch IS the write flow. `DOC{task_type: implement or refactor?}` carries a bare `Yes` label, so
+# without this rule the walk reads that `Yes` as neutral and drags the documenter and the version
+# bump into every review path.
+IMPLEMENT_GATE_RE = re.compile(r"task_type:\s*implement or refactor", re.IGNORECASE)
+AFFIRMATIVE_LABEL = "yes"
 
 
 class Start(NamedTuple):
@@ -243,13 +280,35 @@ def blocks_implement(label: str | None) -> bool:
     return label is not None and IMPLEMENT_SCOPE in label.lower()
 
 
+def node_texts(block: str) -> dict[str, str]:
+    """node id -> its bracketed text (to the end of its line); the first definition wins.
+
+    The text is needed for the DECISION GATES: `DOC{task_type: implement or refactor?}` scopes its
+    own `Yes` branch to the write flow, and a label alone cannot say so. A real node is written
+    `ID[...]`, a decision gate `ID{...}`.
+    """
+    texts: dict[str, str] = {}
+    for match in re.finditer(r"\b([A-Z][A-Z0-9]*)[\[{]", block):
+        end = block.find("\n", match.end())
+        texts.setdefault(match.group(1),
+                         block[match.end():] if end == -1 else block[match.end():end])
+    return texts
+
+
+def gate_blocks_implement(text: str | None, label: str | None) -> bool:
+    """True when the label is the affirmative branch of a gate scoped to `implement or refactor`."""
+    if text is None or label is None or not IMPLEMENT_GATE_RE.search(text):
+        return False
+    return label.strip().lower().startswith(AFFIRMATIVE_LABEL)
+
+
 def edge_text(source: str, label: str | None, target: str) -> str:
     """The edge as the diagram writes it — a bare edge has no label to print."""
     return f"{source} --> {target}" if label is None else f"{source} -->|{label}| {target}"
 
 
-def walk_review(edges: dict[str, list[tuple[str | None, str]]], first_hops: list[tuple[str, str | None, str]]
-                ) -> dict[str, tuple[str, str | None]]:
+def walk_review(edges: dict[str, list[tuple[str | None, str]]], first_hops: list[tuple[str, str | None, str]],
+                texts: dict[str, str]) -> dict[str, tuple[str, str | None]]:
     """BFS in a REVIEW context: node -> (incoming source, incoming label) of the BFS tree."""
     reached: dict[str, tuple[str, str | None]] = {}
     queue: deque[str] = deque()
@@ -261,6 +320,8 @@ def walk_review(edges: dict[str, list[tuple[str | None, str]]], first_hops: list
         node = queue.popleft()
         for label, target in edges.get(node, ()):
             if target in reached or blocks_implement(label):
+                continue
+            if gate_blocks_implement(texts.get(node), label):
                 continue
             reached[target] = (node, label)
             queue.append(target)
@@ -286,51 +347,98 @@ def audit_flow(path: Path) -> list[str]:
     """Walk every review start node and report everything that leaves the report-only path."""
     edges, block, first = read_flow(path)
     lines = edge_lines(block, first)
+    texts = node_texts(block)
     where = display(path)
     errors: list[str] = []
+    gated_seen: set[str] = set()
 
     for start in START_NODES:
-        # The start restriction: only the labels that belong to this start node are entered, and a
-        # label scoping itself to implement/refactor is not a review path in the first place — that
-        # is what lets `X` follow `No, review/security_audit` and ignore `No, implement/refactor`.
-        hops = [(start.name, label, target)
-                for label, target in edges.get(start.name, [])
-                if start.takes(label) and not blocks_implement(label)]
-        if not hops:
-            errors.append(f"review start {start.name}: {where}: no traversable edge out of "
-                          f"{start.name} ({start.why}) — the delivery cannot be reached at all")
+        found, seen = audit_start(start, edges, lines, texts, where)
+        errors.extend(found)
+        gated_seen |= seen
+
+    if not gated_seen:
+        # A conditional-write node no review path reaches would make the pinning above vacuous.
+        errors.append(f"{where}: no review path reaches any gated write node "
+                      f"({', '.join(sorted(CONDITIONAL_WRITE))}) — the write gate is unchecked")
+    return errors
+
+
+def audit_start(start: Start, edges: dict[str, list[tuple[str | None, str]]],
+                lines: dict[tuple[str, str | None, str], int], texts: dict[str, str],
+                where: str) -> tuple[list[str], set[str]]:
+    """(violations of one review start node, the gated write nodes its path reaches)."""
+    # The start restriction: only the labels that belong to this start node are entered, and a
+    # label scoping itself to implement/refactor is not a review path in the first place — that is
+    # what lets `X` follow `No, review/security_audit` and ignore `No, implement/refactor`.
+    hops = [(start.name, label, target)
+            for label, target in edges.get(start.name, [])
+            if start.takes(label) and not blocks_implement(label)]
+    if not hops:
+        return [f"review start {start.name}: {where}: no traversable edge out of "
+                f"{start.name} ({start.why}) — the delivery cannot be reached at all"], set()
+
+    reached = walk_review(edges, hops, texts)
+    errors = _intruder_errors(start, reached, lines, where)
+    errors.extend(conditional_write_errors(start.name, reached, texts, where))
+    if not any(node in reached for node in start.delivery):
+        errors.append(f"review start {start.name}: {where}: reaches no delivery/stop node "
+                      f"({' or '.join(start.delivery)}) — {start.why}; reached set: "
+                      f"{sorted(reached)}")
+    return errors, {node for node in reached if node in CONDITIONAL_WRITE}
+
+
+def _intruder_errors(start: Start, reached: dict[str, tuple[str, str | None]],
+                     lines: dict[tuple[str, str | None, str], int], where: str) -> list[str]:
+    """The forbidden write nodes this start node reaches, one line each plus the reached set."""
+    intruders = sorted(node for node in reached if node in FORBIDDEN)
+    if not intruders:
+        return []
+    # The reached set is printed ONCE per start node: the offending path of every intruder is on
+    # its own line below, the set is what shows an editor which branch was entered.
+    errors = [f"review start {start.name}: {where}: the reached set {sorted(reached)} holds "
+              f"{len(intruders)} forbidden write node(s) ({', '.join(intruders)}) — {start.why}"]
+    for node in intruders:
+        source, label = reached[node]
+        lineno = lines.get((source, label, node))
+        at = f"{where}:{lineno}" if lineno else f"{where}: (no edge line for {node})"
+        errors.append(
+            f"review start {start.name}: {at}: forbidden node {node} — {FORBIDDEN[node]}; "
+            f"entered by {edge_text(source, label, node)}; "
+            f"path: {' -> '.join(path_to(reached, start.name, node))}")
+    return errors
+
+
+def conditional_write_errors(start: str, reached: dict[str, tuple[str, str | None]],
+                             texts: dict[str, str], where: str) -> list[str]:
+    """A reached write node that is not forbidden must spell out the conditions of its writes.
+
+    `Y` writes the project — the report, AGENTS.md, documentation, the commit — in EVERY run, so
+    forbidding it would forbid the Finish phase itself. What the rule requires is that a review run
+    cannot satisfy its conditions: they are pinned here, and the FLOW GUARD's other half (not one
+    changing node on this path) is what keeps them false.
+    """
+    errors: list[str] = []
+    for node, (why, gates) in CONDITIONAL_WRITE.items():
+        if node not in reached:
             continue
-
-        reached = walk_review(edges, hops)
-        intruders = sorted(node for node in reached if node in FORBIDDEN)
-        if intruders:
-            # The reached set is printed ONCE per start node: the offending path of every intruder
-            # is on its own line below, the set is what shows an editor which branch was entered.
-            errors.append(
-                f"review start {start.name}: {where}: the reached set {sorted(reached)} holds "
-                f"{len(intruders)} forbidden write node(s) ({', '.join(intruders)}) — {start.why}")
-        for node in intruders:
+        text = (texts.get(node) or "").lower()
+        missing = [gate for gate in gates if gate.lower() not in text]
+        if missing:
             source, label = reached[node]
-            lineno = lines.get((source, label, node))
-            at = f"{where}:{lineno}" if lineno else f"{where}: (no edge line for {node})"
             errors.append(
-                f"review start {start.name}: {at}: forbidden node {node} — {FORBIDDEN[node]}; "
-                f"entered by {edge_text(source, label, node)}; "
-                f"path: {' -> '.join(path_to(reached, start.name, node))}")
-
-        if not any(node in reached for node in start.delivery):
-            errors.append(
-                f"review start {start.name}: {where}: reaches no delivery/stop node "
-                f"({' or '.join(start.delivery)}) — {start.why}; reached set: {sorted(reached)}")
+                f"review start {start}: {where}: conditional write node {node} — {why}; its write "
+                f"is not gated in its own text: missing {missing}; reached by "
+                f"{edge_text(source, label, node)}")
     return errors
 
 
 def check_flow_guard() -> tuple[list[str], list[str]]:
     """The REVIEW context rule itself, then the walk over the real flowchart."""
     errors: list[str] = []
-    # Pin the three-case context model: inverting `blocks_implement` would turn the guard into the
-    # opposite guard (it would forbid the review path and allow the write path) and the walk alone
-    # could still look green on some future diagram.
+    # Pin the four-case context model: inverting `blocks_implement`/`gate_blocks_implement` would
+    # turn the guard into the opposite guard (it would forbid the review path and allow the write
+    # path) and the walk alone could still look green on some future diagram.
     for label, blocked, why in (
         (None, False, "a bare edge carries no scope and is part of every branch"),
         ("request_changes, review/security_audit", False,
@@ -341,6 +449,20 @@ def check_flow_guard() -> tuple[list[str], list[str]]:
         if blocks_implement(label) != blocked:
             errors.append(f"{display(Path(__file__))}: the REVIEW context model is inverted for "
                           f"label {label!r} — {why}")
+    # The DECISION-GATE half of the same model: `Yes` out of a gate scoped to `implement or
+    # refactor` is the write flow, `No (review/security_audit)` and a gate with no such scope are
+    # traversable.
+    for text, label, blocked, why in (
+        ("task_type: implement or refactor?", "Yes", True,
+         "the affirmative branch of an implement/refactor gate is the write path"),
+        ("task_type: implement or refactor?", "No (review/security_audit)", False,
+         "the negative branch of that gate names the review flow"),
+        ("All criteria met?", "Yes", False,
+         "a gate with no implement/refactor scope carries no write scope"),
+    ):
+        if gate_blocks_implement(text, label) != blocked:
+            errors.append(f"{display(Path(__file__))}: the REVIEW context model is inverted for "
+                          f"label {label!r} out of {text!r} — {why}")
     errors.extend(audit_flow(SKILL))
     return [], errors
 
@@ -656,6 +778,53 @@ def check_negative_probe(tmp: Path) -> tuple[list[str], list[str]]:
     return notes, errors
 
 
+# The two mutations that must make the WRITE-NODE guards bite. Each is applied to its own copy of
+# the shipped diagram: `(fixture name, [(current text, mutated text)], needles the violations must
+# name, the guard the fixture proves)`.
+WRITE_PROBES = (
+    ("ungated-documenter", (("DOC{task_type: implement or refactor?}", "DOC{Documentation step?}"),),
+     ("DOC2", "VER3"),
+     "un-gating the DOC decision gate drags the documenter and the version bump into review paths"),
+    ("ungated-finish", (("Regenerate AGENTS.md if structure/stack/entry points changed",
+                         "Regenerate AGENTS.md"),),
+     ("conditional write node Y",),
+     "Finish's AGENTS.md write states no condition, so a review run would regenerate the project"),
+)
+
+
+def check_write_probes(tmp: Path) -> tuple[list[str], list[str]]:
+    """The write-node guards must FAIL on an ungated graph — otherwise they certify nothing."""
+    errors: list[str] = []
+    notes: list[str] = []
+    for name, mutations, needles, why in WRITE_PROBES:
+        tree = tmp / f"probe-{name}"
+        probe_skill = tree / ".agents" / "skills" / "code-factory" / "SKILL.md"
+        probe_skill.parent.mkdir(parents=True, exist_ok=True)
+        text = SKILL.read_text(encoding="utf-8")
+        for current, mutated in mutations:
+            count = text.count(current)
+            if count != 1:
+                errors.append(f"{display(SKILL)}: the write probe {name!r} cannot be built: "
+                              f"{current!r} occurs {count} times — {why}")
+                break
+            text = text.replace(current, mutated)
+        else:
+            probe_skill.write_text(text, encoding="utf-8")
+            caught = audit_flow(probe_skill)
+            missing = [needle for needle in needles
+                       if not any(needle in message for message in caught)]
+            if not caught:
+                errors.append(f"{display(probe_skill)}: {why} — and the guard still PASSES, so it "
+                              "would not notice")
+            elif missing:
+                errors.append(f"{display(probe_skill)}: {why} — but the guard does not report "
+                              f"{', '.join(missing)}: {caught[0]}")
+            else:
+                notes.append(f"{name} probe: {len(caught)} violation(s) on the mutated graph, "
+                             f"naming {', '.join(needles)}")
+    return notes, errors
+
+
 # =============================================================================================
 def main() -> int:
     use_utf8_output()
@@ -666,6 +835,7 @@ def main() -> int:
         ("generator-contract", lambda: _with_tmp(check_generator)),
         ("acceptance-stop", check_acceptance_stop),
         ("negative-probe", lambda: _with_tmp(check_negative_probe)),
+        ("write-node-probe", lambda: _with_tmp(check_write_probes)),
     ]
 
     failed = 0
@@ -689,8 +859,10 @@ def main() -> int:
               "guaranteed by the shipped files", file=sys.stderr)
         return 1
     print(f"PASS - `review-report-only` holds in {len(cases)} checks: no review verdict reaches a "
-          "write node, the delivery is the report plus the generated fix-tasks file, the retired "
-          "promise is gone, the unmet criterion stops the owner, and the pre-fix graph IS caught")
+          "write node (the documenter and the version bump are forbidden, and Finish's writes are "
+          "gated), the delivery is the report plus the generated fix-tasks file, the retired "
+          "promise is gone, the unmet criterion stops the owner, and both the pre-fix graph and an "
+          "ungated graph ARE caught")
     return 0
 
 

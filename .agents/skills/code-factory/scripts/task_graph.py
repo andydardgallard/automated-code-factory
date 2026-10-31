@@ -21,7 +21,10 @@ Commands:
   sha <file>                        # sha256 of a file (checkpoint/resume)
   verify-sha <file> <expected>      # exit 0 when the file's sha256 matches <expected>
 
-Default tasks dir: `.code-factory/state/tasks`. Exit code 0 = success, 1 = refused/failed.
+Default tasks dir: `.code-factory/state/tasks`. Exit code 0 = success, 1 = refused/failed — a
+malformed task file (unparseable JSON, a scalar or array document, a field of the wrong type) is one
+such failure: a single `error: ...` line naming the file and the problem, never a traceback, and a
+graph holding one malformed file is refused as a whole instead of being half-read.
 
 Every subcommand accepts an OPTIONAL `--repo <root>` (a synonym: `--root`; accepted before or
 after the subcommand) — the resolved repo_path of the run. When it is given, the RELATIVE paths of
@@ -95,15 +98,37 @@ def validate_id(task_id: str, what: str = "task id") -> str:
 
 
 def read_task(path: pathlib.Path) -> dict:
+    """One task file, validated: (a dict with `TASK_FIELDS` of the documented TYPES).
+
+    Every malformed shape — unparseable JSON, a scalar/array document, a missing field, a field of
+    the wrong type — becomes a `GraphError` (exit 1, one line, no traceback). The type check comes
+    BEFORE any membership test: `f in data` on a decoded scalar raised `TypeError` and crashed every
+    command that loads the graph, so a single `bad.json` containing `1` took the whole graph down.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise GraphError(f"cannot read task file {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise GraphError(f"task file {path} must hold one JSON object with the field(s) "
+                         f"{', '.join(TASK_FIELDS)}, but it holds {type(data).__name__} "
+                         f"{data!r}")
     missing = [f for f in TASK_FIELDS if f not in data]
     if missing:
         raise GraphError(f"task file {path} is missing field(s): {', '.join(missing)}")
-    if data["status"] not in STATUSES:
-        raise GraphError(f"task file {path} has unknown status {data['status']!r}")
+    if not isinstance(data["id"], str) or not isinstance(data["title"], str):
+        raise GraphError(f"task file {path} must carry 'id' and 'title' as strings, got "
+                         f"id={data['id']!r} title={data['title']!r}")
+    if not isinstance(data["status"], str) or data["status"] not in STATUSES:
+        raise GraphError(f"task file {path} has unknown status {data['status']!r} "
+                         f"(expected one of: {', '.join(STATUSES)})")
+    if data["owner"] is not None and not isinstance(data["owner"], str):
+        raise GraphError(f"task file {path} must carry 'owner' as a string or null, got "
+                         f"{data['owner']!r}")
+    if not isinstance(data["blockedBy"], list) \
+            or not all(isinstance(dep, str) for dep in data["blockedBy"]):
+        raise GraphError(f"task file {path} must carry 'blockedBy' as a list of task ids, got "
+                         f"{data['blockedBy']!r}")
     return data
 
 

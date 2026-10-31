@@ -15,6 +15,8 @@ Covers the User Sovereignty contract:
     form (`git checkout .` is a whole-tree discard → HARD_DENY outside scope), and an ambiguous
     operand with a path separator (`git checkout src/a.py`, `git checkout feature/x`) CONFIRMs,
     while a plain branch switch (`git checkout main`, `git checkout -b feature`) stays ALLOW;
+    a ref flag never blinds the gate — `git checkout --detach HEAD .` still restores `.` from HEAD
+    (same scope route, never ALLOW), while `git checkout --detach main` stays ALLOW;
     a push whose DESTINATION is `HEAD` (`git push origin HEAD`, `@`, `+HEAD`) is that same
     unprovable default-branch push — HEAD is whatever is checked out — so it CONFIRMs, never
     ALLOWs, while `HEAD:feature/x` (proven non-default) keeps its ALLOW;
@@ -301,6 +303,26 @@ def main() -> int:
         res = gate("--action", "git reset --hard HEAD~1", "--scope", "src")
         expect(res.returncode == 0,
                f"a ref reset stays ALLOW: {res.returncode} {res.stdout!r}")
+
+        # 11e. A ref flag does not license a path-restoring form: `git checkout --detach HEAD .`
+        #      still reads the operands after the ref as PATHS and restores them from HEAD, so the
+        #      ref-flag shortcut must not turn it into an ALLOW. The same command without a
+        #      trailing pathspec (`git checkout --detach main`, probe 11) stays ALLOW.
+        #      hitl exit code / auto exit code: 1 = HARD_DENY, 2 = CONFIRM (auto: allowed with
+        #      an assumption, never a plain ALLOW).
+        for action, hitl, auto in (("git checkout --detach HEAD .", 1, 1),
+                                   ("git checkout --detach HEAD -- .", 1, 1),
+                                   ("git checkout --detach HEAD src/a.py", 2, 0),
+                                   ("git checkout --detach HEAD other/a.py", 1, 1)):
+            for mode, want in (("hitl", hitl), ("auto", auto)):
+                res = gate("--action", action, "--scope", "src", "--mode", mode)
+                expect(res.returncode == want,
+                       f"{action!r} in {mode} must exit {want}: {res.returncode} {res.stdout!r}")
+                expect("decision: ALLOW\n" not in res.stdout,
+                       f"{action!r} must never be ALLOW: {res.stdout!r}")
+        res = gate("--action", "git checkout --detach HEAD .")
+        expect(res.returncode != 0 and "decision: ALLOW\n" not in res.stdout,
+               f"git checkout --detach HEAD . without a scope must never be ALLOW: {res.stdout!r}")
 
         # 12. A destructive command hidden behind `&&` is still found.
         res = gate("--action", "echo start && git push origin main", "--scope", "src")

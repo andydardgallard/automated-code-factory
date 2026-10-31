@@ -303,7 +303,9 @@ def validate(repo: pathlib.Path, v: str) -> tuple[bool, list[str]]:
     readme = repo / "README.md"
     if readme.is_file():
         text = readme.read_text(encoding="utf-8")
-        title_ok = bool(re.search(rf"#\s+.*?\s+v{v}\s*$", text, flags=re.M))
+        # `re.escape(v)`: the version is a LITERAL here. Unescaped, its dots match any character
+        # and a near-miss title (`v12x1x0` for VERSION 12.1.0) would pass as consistent.
+        title_ok = bool(re.search(rf"#\s+.*?\s+v{re.escape(v)}\s*$", text, flags=re.M))
         footer_ok = f"Current version: **{v}**" in text
         if not title_ok:
             problems.append("README.md: title does not match VERSION")

@@ -8,7 +8,8 @@ end-to-end CLI round-trip (`snapshot` + `check`) to pin the documented invocatio
 LANGUAGE-AWARE doc classifier (a `#define`/`#include` is CODE in the C family, a `#` comment is
 documentation in shell/python; `;`/`%`/`--` count only where they are comments), and covers
 `check --derive` against a scratch git repository: an undeclared changed file fails the run,
-identical declared/derived lists pass, and a non-git --repo degrades with exit 2.
+an undeclared untracked file fails it too while an ignored one stays out of scope, identical
+declared/derived lists pass, and a non-git --repo degrades with exit 2.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -242,6 +243,7 @@ def main() -> int:
         git("config", "user.name", "Self Test")
         (grepo / "docs" / "d.md").write_text("old\n", encoding="utf-8")
         (grepo / "src" / "app.py").write_text("# doc\nx = 1\n", encoding="utf-8")
+        (grepo / ".gitignore").write_text("build/\n", encoding="utf-8")
         git("add", ".")
         git("commit", "-m", "base")
         gbase = root / "gbase"
@@ -274,6 +276,28 @@ def main() -> int:
                            encoding="utf-8", errors="replace")
         expect(r.returncode == 0,
                f"--derive must read a non-ASCII path unquoted: {r.returncode} {r.stderr!r}")
+        # 21c. Regression (C15): the derived set includes UNTRACKED (`??`) files, ignored (`!!`)
+        #      ones stay out of scope. Before the fix `??` was skipped, so a documenter could
+        #      create a new source/config/test file with real code, leave it out of --files, and
+        #      --derive never submitted it to check().
+        (grepo / "build").mkdir()
+        (grepo / "build" / "out.py").write_text("x = 1\n", encoding="utf-8")  # ignored -> out of scope
+        (grepo / "src" / "sneaky.py").write_text("dangerous = 1\n", encoding="utf-8")
+        declared = ["docs/d.md", "src/app.py", unicode_rel]
+        r = subprocess.run([sys.executable, str(script), "check", "--repo", str(grepo),
+                            "--baseline", str(gbase), "--files", *declared, "--derive"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        expect(r.returncode != 0 and "src/sneaky.py" in r.stderr and "build/out.py" not in r.stderr,
+               f"--derive must report an undeclared untracked file and skip an ignored one: "
+               f"{r.returncode} {r.stderr!r}")
+        r = subprocess.run([sys.executable, str(script), "check", "--repo", str(grepo),
+                            "--baseline", str(gbase), "--files", *declared, "src/sneaky.py",
+                            "--derive"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        expect(r.returncode != 0 and "src/sneaky.py" in r.stderr,
+               f"a declared new file with code must still fail the doc-only gate: "
+               f"{r.returncode} {r.stderr!r}")
+        (grepo / "src" / "sneaky.py").unlink()
         # Degrade path: --repo is not a git repository -> exit 2 with a message, no traceback.
         r = subprocess.run([sys.executable, str(script), "check", "--repo", str(root),
                             "--baseline", str(base), "--files", "docs/README.md", "--derive"],
@@ -330,6 +354,33 @@ def main() -> int:
             "int f(void)\n{\n/* new doc */\nreturn 1;\n}\n", encoding="utf-8")
         expect(vd.check(root, base, ["src/span.c"]) == [],
                "changing a comment-only block comment line must still pass")
+
+        # 26. Regression (C14): a Python docstring line is documentation only when nothing but
+        #     whitespace sits OUTSIDE its triple-quoted spans — `"""doc"""; safe = 1` carries
+        #     executable code after the closing delimiter and is therefore a CODE line. Before the
+        #     fix any line starting with a triple quote counted as documentation, so the value after
+        #     the docstring could be edited freely (the finding's exact exploit).
+        expect(vd._doc_mask(['"""doc"""; safe = 1']) == [False],
+               "code after a single-line docstring must be a code line")
+        expect(vd._doc_mask(['x = 1; """doc"""']) == [False],
+               "code before a single-line docstring must be a code line")
+        expect(vd._doc_mask(['"""doc"""']) == [True],
+               "a line holding only a docstring stays documentation")
+        expect(vd._doc_mask(['"""', "doc", '""" + x']) == [True, True, False],
+               "code on the closing line of a docstring must be a code line")
+        expect(vd._doc_mask(["'''doc'''; safe = 1"]) == [False],
+               "the same holds for the ''' delimiter")
+
+        # 27. End-to-end: changing the value assigned AFTER a docstring on the same line is a code
+        #     change and must be rejected.
+        (root / "src" / "ds.py").write_text('def f():\n    """doc"""; safe = 1\n',
+                                            encoding="utf-8")
+        vd.snapshot(root, base, ["src/ds.py"])
+        (root / "src" / "ds.py").write_text('def f():\n    """doc"""; dangerous = 1\n',
+                                            encoding="utf-8")
+        errs = vd.check(root, base, ["src/ds.py"])
+        expect(any(e.startswith("src/ds.py: code line changed:") for e in errs),
+               f"changing code after a docstring must fail: {errs}")
 
     print("PASS - documentation validator allows only documentation-only changes.")
     return 0

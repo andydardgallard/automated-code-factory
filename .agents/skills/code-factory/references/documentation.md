@@ -47,9 +47,11 @@ python .agents/skills/code-factory/scripts/validate_documentation.py check \
 ```
 
 After the plain `check` passes, run it once more with `--derive`: the validator then recomputes
-the changed TRACKED file set itself from `git -C <repo> status --porcelain` and FAILS when a
-changed file is missing from `--files` — the declared list is not the authority on what was
-touched (when git cannot answer, the mode degrades with a message and exit 2, never a traceback).
+the changed file set itself from `git -C <repo> status --porcelain` — modified TRACKED files PLUS
+untracked (`??`) new ones, ignored (`!!`) entries excluded — and FAILS when a changed file is
+missing from `--files`: a brand-new undeclared source file is as much an edit as a modified one,
+so the declared list is not the authority on what was touched (when git cannot answer, the mode
+degrades with a message and exit 2, never a traceback).
 
 The validator checks, deterministically (stdlib only):
 

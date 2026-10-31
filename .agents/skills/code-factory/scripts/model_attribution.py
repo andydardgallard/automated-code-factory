@@ -738,8 +738,10 @@ def compare_claims(claims: dict[str, str], roles: dict[str, dict],
     """Compare the pipeline's claims with what the wire served: (comparison, lines, flags).
 
     Statuses (the artifact's `comparison` mapping):
-      `match`      the wire served exactly the claimed model (an `unused` claim with no evidence
-                   also matches — the claim and the wire agree the role did not run);
+      `match`      the wire served EXACTLY the claimed model — the served canonical set equals the
+                   singleton claimed set, so a role served with the claim AND a fallback model is a
+                   mismatch, not a match (an `unused` claim with no evidence also matches — the
+                   claim and the wire agree the role did not run);
       `mismatch`   the wire served another model — INCLUDING an `unused` claim whose role left
                    evidence, which is flagged in `flags.unused_but_wired` and never accepted;
       `degraded`   the session exists but this role left no model evidence;
@@ -782,7 +784,13 @@ def compare_claims(claims: dict[str, str], roles: dict[str, dict],
             lines.append(f"{role}: unverified (claimed but no wire agent) -- the claim is empty")
             continue
         served = (roles.get(role) or {}).get("models_served") or {}
-        if canonical(claimed) in {canonical(alias) for alias in served}:
+        # The served canonical set must EQUAL the singleton claimed set: a role the wire served
+        # with the claimed model AND a substituted/fallback one is a mismatch, because "did this
+        # role ever run the claimed model" is not the question — "did it run exactly that model" is.
+        # Two spellings of one model (`k3` / `kimi-k3`) canonicalize to one element, so the
+        # comparison is about models, not about alias strings.
+        served_set = {canonical(alias) for alias, count in served.items() if count}
+        if served_set == {canonical(claimed)}:
             comparison[role] = "match"
             lines.append(f"{role}: match (claimed={claimed} wire=[{evidence}])")
         else:

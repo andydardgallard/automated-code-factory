@@ -372,6 +372,34 @@ def main() -> int:
                "both case-variant directories must be scanned on a case-preserving platform, "
                f"got {manifests}")
 
+    # 28. README title validation compares VERSION LITERALLY: the version used to be interpolated
+    #     straight into a regular expression, so its dots matched ANY character and a near-miss
+    #     title such as `v12x1x0` was accepted as consistent with VERSION 12.1.0.
+    for near_miss in ("# Autonomous Code Factory v12x1x0",
+                      "# Autonomous Code Factory v12-1-0"):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            build_clean_repo(root)
+            (root / "README.md").write_text(
+                f"<!-- code-factory-version: 12.1.0 -->\n{near_miss}\n\n"
+                f"Current version: **12.1.0**\n", encoding="utf-8")
+            code, _out, err = run_validate(root)
+            expect(code == 1, f"a near-miss README title {near_miss!r} must fail validate: {err!r}")
+            expect("title does not match VERSION" in err,
+                   f"the failure must name the title axis: {err!r}")
+            expect("footer does not match VERSION" not in err,
+                   f"the footer IS correct here and must not be reported: {err!r}")
+    #     ...the exact title stays accepted (the escape must not break the true match).
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        build_clean_repo(root)
+        (root / "README.md").write_text(
+            "<!-- code-factory-version: 12.1.0 -->\n# Autonomous Code Factory v12.1.0\n\n"
+            "Current version: **12.1.0**\n", encoding="utf-8")
+        code, out, err = run_validate(root)
+        expect(code == 0 and "PASS" in out,
+               f"the exact README title must still pass validate: {err!r}")
+
     # 17. stdlib-only contract (no third-party imports).
     src = pathlib.Path(vm.__file__).read_text(encoding="utf-8")
     imported = set(re.findall(r"^(?:import|from)\s+([A-Za-z0-9_]+)", src, flags=re.M))

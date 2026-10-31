@@ -10,7 +10,7 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.19.0 — clean code is now standing practice: two permanent skill-base skills
+Factory v12.19.1 — clean code is now standing practice: two permanent skill-base skills
 (`clean-code-discipline` — the writing discipline; `clean-code-metrics` — the three metric gates:
 CRAP below 10, duplication rank 0.8 removed, surviving mutants killed / dead code deleted, with
 the tool-safety warnings and the get-uml-viewer installer ban), registered in the manifest with
@@ -18,11 +18,20 @@ all five pinned source revisions via `skill_base.py`'s new `--revision` / `--ext
 SOURCE@REVISION` (multi-source `sources` list; offline pin re-verification; `-` hash). The
 reviewer holds every change to the gates through the standing `## 2.2 Metric gates` section of
 code-review.md (numbered-gate citations; "not measured + why" never blocks); coder/gui-expert
-carry the discipline as standing practice. The suite is green end to end (45 PASS / 0 FAIL of 45
-self-tests), the memory gates run clean. Open backlog: 1 — the 26 findings (17 critical) of self-review
-20261031-d2f6fea6, handed over as `.code-factory/review/fix-tasks.yaml` (report-only; nothing was
-edited).
-Latest run: review 20261031-d2f6fea6 (report-only factory self-review, skill-consistency focus) —
+carry the discipline as standing practice. All 26 findings of self-review 20261031-d2f6fea6 are
+closed: 25 fixed with regression vaccines (new FX group, 15 probes biting on base 33b8ed84), the
+advisor-side finding dispositioned as a false positive with the root-cause wording (Advisor =
+judge-side model) fixed across all canonical carriers. The suite is green end to end
+(45 PASS / 0 FAIL of 45 self-tests), the memory gates run clean. Open backlog: 0 (52 items closed
+with evidence; 2 info debts carried: module-vaccine fragility to newer shared-module assertions,
+historical RV/BL/PR/RF/NM groups claimed by attribution).
+Latest run: implement 20261031-dd7ffa0e (fix-tasks.yaml — the 26 self-review findings, hitl, plan
+approved with 0 rejections) — reviewer calibration discharged blind (7/7, P/R 1.000) before the
+gate; review iteration 1 request_changes (vaccination escape weakened the guard; residual
+Advisor-secondary prose), both reworked, iteration 2 approve zero findings; acceptance SUCCESS
+(11/11 verify MET, regression pass, ledger FRESH). Version 12.19.0 -> 12.19.1 (patch, matrix +
+reviewer).
+Previous run: review 20261031-d2f6fea6 (report-only factory self-review, skill-consistency focus) —
 26 merged findings over 3 shards, 27/27 quotes verified, run acceptance SUCCESS 5/5.
 Previous run: implement (run_id 20261031-6dfd0921, task.yaml "clean-code discipline + metric
 gates", hitl, plan approved with 0 rejections) — the new §2.2 gates dogfooded on the run's own
@@ -127,7 +136,7 @@ unrequested 18-file rework was rolled back).
 Version type: the deterministic matrix proposed `patch`; the code reviewer overrode it to `minor`
 because a new canonical rule, two flow nodes, three scripts, a summary field and a record kind are
 additive, not breaking.
-Open backlog: 0 items (51 closed with evidence) — the §7 calibration obligation, the red suite
+Open backlog: 0 items (52 closed with evidence) — the §7 calibration obligation, the red suite
 and the 12 review findings were all closed by run 20261026-2ea2eb55 (v12.17.0, see above); the
 deployer `start.sh` guard now also has a network-gated behavioural test. The `test_run_id.py`
 line-ending debt stays CLOSED: the id is platform-neutral.

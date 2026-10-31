@@ -5,6 +5,43 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.19.0] — 2026-10-31
+
+### Added
+- **Clean-code discipline as standing factory practice**: two permanent skills in the skill base —
+  `clean-code-discipline` (the writing discipline: first make it work, then make it right, then
+  follow practice — smallest edit, data shape before logic, failing test first, root cause over
+  guard, subtract before you add, boundary discipline) and `clean-code-metrics` (the three metric
+  gates: CRAP below 10 per function, duplication ranked 0.8 or above removed, surviving mutants
+  killed / dead code deleted — with the mandatory tool-safety warnings: the measuring tools can
+  install packages on their own initiative and a shell-string coverage command is executed through
+  a shell, so neither may happen unattended; uml-viewer's `get-uml-viewer` installer is never
+  executed). Written in the factory's own words from the five pinned unclebob sources, registered
+  in `skill-base/manifest.json` with source, content hash and pinned revisions.
+- **Standing reviewer gates**: `references/code-review.md` gains `## 2.2 Metric gates` — the
+  reviewer holds every change to the three numbered gates, language-agnostic; a gate whose tool is
+  unavailable is reported "not measured + why", never silently skipped, never a blocker; findings
+  cite the gate number. `coder.md`/`gui-expert.md` reference the discipline skill as standing
+  practice; `code-reviewer.md` enumerates §2.2.
+- `skill_base.py`: `--revision HEX` on `resolve`/`hash`/`record` (pinned git revisions: the
+  manifest records the exact revision the skill was generated from, verified against the
+  checked-out content; an unreachable or tampered pin is refused, offline reuse verifies the
+  cached tree against a clean clone), repeatable `--extra-source SOURCE[@REVISION]` (multi-source
+  skills: the entry carries a `sources` list with per-source hash and pinned revision; top-level
+  `source`/`sha256` stay the primary source for backward compatibility), and `-` as the "compute
+  it" hash. Pinned by `test_skill_base_pinned.py` (offline, loopback git fixtures).
+- `test_clean_code_skill.py`: the self-test pinning the whole deliverable (skill contract, gate
+  wording, safety warnings, manifest provenance, role wiring) — 6/6 checks fail on the pre-fix
+  tree (vaccination).
+
+### Fixed
+- Reviewer re-calibrated after the checklist edit (mandatory §7 trigger): 7/7 verdict accuracy,
+  macro P/R 1.000, recorded in `skill-base/golden-set/calibration-log.md` (run 20261031-6dfd0921).
+- Review iteration 1 (4 major + 1 minor) reworked: extra-source parsing made unambiguous
+  (`@` separator — a hex URL query can no longer be misread as a revision), offline pinned reuse
+  no longer trusts cache metadata alone, `check_manifest`/`cmd_record` split below the complexity
+  gate; final verdict approve.
+
 ## [12.18.0] — 2026-10-26
 
 ### Added

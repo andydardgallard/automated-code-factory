@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.18.0 -->
+<!-- code-factory-version: 12.19.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -632,6 +632,28 @@ follow_up items.
 freshness is determined by the SHA256 hash of the source; management is done by the `factory-skill-manager` subagent
 and the `scripts/skill_base.py` script. Skills enter the subagents' dynamic context via a
 deterministic matrix (see `references/reference-docs.md`).
+
+The base also carries two permanent clean-code skills (recorded in `skill-base/manifest.json` with
+their pinned source revisions; they need no `reference_docs` entry in a task):
+
+- `clean-code-discipline` — the writing discipline every code-writing role works under: three
+  ordered phases (first make it work, then make it right, then follow practice) and named,
+  checkable rules ("one decision, one place", "smallest edit", "data shape before logic", "failing
+  test first", "root cause over guard", "subtract before you add", "boundary discipline"). The
+  roles `factory-coder` and `factory-gui-expert` reference it as standing practice, and the
+  reviewer may cite a rule by name in a finding.
+- `clean-code-metrics` — the three metric gates the reviewer applies to every change: complexity vs
+  test coverage (**CRAP below 10**), duplication (a pair ranked **0.8 or above** is removed) and
+  test strength (cover the uncovered, kill surviving mutants, delete dead code). It also carries the
+  safety warnings of the optional measuring tools: they CAN install packages on their own initiative
+  and a coverage command given as a shell string is executed through a shell — so neither may happen
+  unattended, and only the argument-vector form is passed to them.
+
+In the reviewer reference these gates are the standing `## 2.2 Metric gates` section of
+`.agents/skills/code-factory/references/code-review.md`: each gate is reported as measured, or as
+"not measured + why", before the findings, and a missing tool is neither a silent pass nor a reason
+to reject the change. Neither skill installs, vendors or executes anything from its source
+repositories.
 
 `reference_docs[].path` may also be a PUBLIC http(s) URL, so the `{path, skill}` task schema is
 unchanged: `skill_base.py resolve` classifies the source deterministically as a local path, an HTTP(S)

@@ -1180,3 +1180,54 @@ unfinished:
     reason: the plain documentation-only check passed on exactly the 5 declared doc files; derive would need the run's commit to exist first — tooling limitation, not a documentation gap
     severity: info
     follow_up: false
+
+## 2026-10-31T18:20:00+03:00 — clean-code discipline + metric gates as standing factory practice: v12.19.0
+
+title: Clean code is a named, registered, checkable discipline — two permanent skill-base skills, a standing reviewer gates section (code-review.md §2.2), and pinned multi-source provenance in the skill-base manifest
+project: repo
+timestamp: 2026-10-31T18:20:00+03:00
+run_id: 20261031-6dfd0921
+branch: task/clean-code-20261031-6dfd0921
+commit: v12.19.0 (one commit: the changed/created files, VERSION/CHANGELOG/AGENTS.md header, this record and the summary)
+task_type: implement
+goal: deliver a reusable clean-code skill pair into skill-base (discipline from ub-mode; metric gates from crapper/dryer/mutator/uml-viewer, all five pinned), registered by the factory's own script with source + content hash, wire the three gates into the reviewer's standing checklist, keep the suite green, and prove both business scenarios (dogfooded review of this run; a messy-module review citing numbered gates)
+changed_files: 10 tracked files — skill_base.py (--revision/--extra-source/`-` hash, @ separator, offline pin verification, helper splits), code-review.md (new standing ## 2.2 Metric gates), coder.md/gui-expert.md/code-reviewer.md (standing skill references), skill-base/manifest.json (two entries, five pinned revisions), skill-base/golden-set/calibration-log.md (new calibration record), .agents/README.md + AGENTS.md (skill documentation), VERSION/CHANGELOG [verified: git diff --stat against base 34b7a46 and .code-factory/manifest.json]
+created_files: skill-base/skills/clean-code-discipline/SKILL.md, skill-base/skills/clean-code-metrics/SKILL.md, .agents/skills/code-factory/scripts/test_skill_base_pinned.py (91 checks, offline loopback git fixtures), .agents/skills/code-factory/scripts/test_clean_code_skill.py (6 checks, 6/6 fail on the base commit); .code-factory/ artifacts otherwise [verified: git status and the temp-clone vaccination run of test_clean_code_skill.py]
+results: integration=PASS (test_skill_base, test_skill_base_pinned 91, test_remote_reference_docs 115, test_clean_code_skill, test_prompt_structure, test_flow_contracts, test_factory_rules — all green after the last source edit) [verified: .code-factory/logs/test-results.md]; regression=PASS (45 self-test files: 45 PASS / 0 FAIL, up from the 43/0 baseline) [verified: .code-factory/logs/regression.md vs .code-factory/logs/baseline.md]; business=PASS (scenario 1 dogfooded: this run's review judged the diff against the three gates — gate 1 measured by reading and it BIT (4 major + 1 minor findings incl. two real bugs), gate 2/3 reported not measured + why; scenario 2: the deliberately messy fixture review cited a numbered gate in every one of its 4 findings) [verified: .code-factory/logs/code-review.md, .code-factory/logs/biztest/messy-review.json]; review=approve — iteration 1 request_changes (0 critical, 4 major, 1 minor: hex-query misparsed as a revision, offline pin trusting cache metadata, missing docs, check_manifest CC 26, cmd_record CC 13), all reworked with regression tests; iteration 2 approve, 3 minor (one doc reversal fixed after approval with the reviewer's own wording, two borderline-CC debts carried) [verified: .code-factory/logs/review-iteration-1.json and review-iteration-2.json, verify_quotes.py 4/7 verified — the 3 untrusted quotes are the fixed findings whose quoted text the fixes replaced]; acceptance=SUCCESS, 3/3 verify criteria MET, 2 derived, regression=pass, ledger FRESH [verified: verify_acceptance.py exit 0, .code-factory/state/acceptance.md, .code-factory/state/evidence.json]; models=match (main kimi-code/k3, analyzer k3.1-pro, coder deepseek-flash, reviewer k3.1-pro, documenter deepseek-flash cross-checked against the session wire) [verified: model_attribution.py exit 0, .code-factory/state/model-attribution.json]
+decisions: the metric gates are STANDING reviewer checklist (code-review.md §2.2), language-agnostic rules with optional tools — a gate that cannot be measured is reported "not measured + why", never silently skipped, never a blocker (owner decision at the clarity gate) [verified: .code-factory/state/plan.md owner-decisions section, the §2.2 text in the diff]; the skill-base manifest records PINNED provenance: skill_base.py gained --revision (clone+checkout+verify, refuse unreachable or tampered pins, offline reuse re-verified against a clean clone) and repeatable --extra-source SOURCE@REVISION with a per-source `sources` list — top-level source/sha256 stay the primary for backward compatibility [verified: test_skill_base_pinned.py 91 checks PASS, skill_base.py list output in .code-factory/logs/skill-base-list.json]; the extra-source separator became `@` (not `=`) after the reviewer caught a hex URL query being misparsed as a revision — an unreleased option refined within the same run [verified: .code-factory/logs/review-iteration-2.json disposition 1]; the §7 calibration obligation fired on the checklist edit and was discharged blind at 7/7 verdict accuracy, macro P/R 1.000 [verified: .code-factory/logs/reviewer-calibration.md, calibrate_reviewer.py status exit 0 after scoring]; version type = minor by the deterministic matrix (suggest --new-field), validated by the reviewer [verified: version_manager.py suggest/validate exit 0]
+assumptions: the business_tests of the task were executed as written — scenario 1 dogfooded on this run's own review+report, scenario 2 on a purpose-built messy fixture under .code-factory/logs/biztest/ (run artifact, never committed); the five source clones under .code-factory/sources/ are run artifacts too, never executed and never committed
+models_used: main=kimi-code/k3; analyzer=kimi-code/k3.1-pro (2 parallel briefings); coder=deepseek-flash (4 packages: two skills, skill_base extension, self-test, rework); reviewer=kimi-code/k3.1-pro (7 golden calibration passes, messy-fixture review, 2 diff iterations, version validation); documenter=deepseek-flash; planner, tester, gui_expert, diagnostician, advisor, security_auditor, skill_manager, refactorer=unused
+factory_version: 12.19.0
+unfinished:
+  - item: validate_documentation.py --derive cannot separate the documenter's own edits from the run's pre-existing change set while the whole diff is uncommitted, so the derive check reports the coder/main-agent files as undeclared
+    reason: carried — the plain documentation-only check passed on exactly the 2 declared doc files; derive would need the run's commit to exist first — tooling limitation, not a documentation gap
+    severity: info
+    follow_up: false
+  - item: borderline complexity in the run's own new code — skill_base.py _supervised_clone/resolve_source (estimated CC 11/10) and four check_* helpers of test_clean_code_skill.py (estimated CC 11-14) sit at or slightly above the CRAP-10 gate even at full coverage
+    reason: NEW — reviewer iteration-2 minor findings; the verdict is approve and no critical finding is open, so the run accepts them as debt instead of a third review iteration
+    severity: info
+    follow_up: false
+
+## 2026-10-31 — Factory self-review (report-only)
+
+project: repo
+title: Factory self-review — skill consistency (report-only)
+timestamp: 2026-10-31T15:45:00+03:00
+branch: task/clean-code-20261031-6dfd0921
+commit: 52ef383
+run_id: 20261031-d2f6fea6
+factory_version: 12.19.0
+task_type: review
+goal: Full detailed review of the factory itself with special attention to skill consistency; the owner redirected scope from farukon_v3.1.0 to the factory repo at the clarity gate.
+changed_files: none — report-only review, no source/test/config/doc/data file edited [verified: git status shows only .code-factory/, memory/, task_review.yaml]
+created_files: .code-factory run artifacts (state/, logs/, review/fix-tasks.yaml, report.md, report_code_changes.md) [verified: .code-factory/]
+results: integration=not-run regression=pass business=not-run review=request_changes | run acceptance SUCCESS 5/5 verify MET [verified: .code-factory/state/acceptance.md exit 0]; 26 merged findings (critical 17, major 6, minor 3) over 3 shards, 27/27 quotes verified verbatim [verified: .code-factory/logs/code-review-merged.json]; baseline green 48/48 exit 0 incl. full self-test suite and the three deterministic gates [verified: .code-factory/logs/baseline.md]; follow-up task generated [verified: .code-factory/review/fix-tasks.yaml]
+decisions: scope redirected to the factory repo with owner approval; task file repo_path updated to "." and re-parsed, state/task.yaml + state/task.json kept in sync [verified: .code-factory/state/task.json]; report-only guarantee kept — no source/test/config/doc/data file edited, deliverables are the report + fix-tasks.yaml [verified: git status shows only .code-factory/ + memory/ + task_review.yaml changes]; reviewer calibration gate passed before the reviewers ran [verified: calibrate_reviewer.py status exit 0]
+assumptions: none
+models_used: main=kimi-code/k3; reviewer=kimi-code/k3.1-pro (3 shards); other roles not delegated (report-only review); models_warning: coder/tester/gui_expert vs advisor share the deepseek family (task matrix authoritative); model attribution DEGRADED for non-delegated roles only (no wire evidence), main+reviewer match [verified: .code-factory/state/model-attribution.json]
+
+unfinished:
+  - item: 26 review findings (17 critical) of run 20261031-d2f6fea6
+    reason: report-only review never edits the project; the findings are handed over as .code-factory/review/fix-tasks.yaml for the owner to schedule as an implement task
+    severity: critical
+    follow_up: true

@@ -41,7 +41,10 @@ Your job:
    code, unreadable code, inefficient code, unsafe/panic-prone code, duplication, documentation,
    artifacts/commit hygiene). If the task carries a `user_story`, verify the diff actually serves
    its WHO/WHAT/WHY — a change that satisfies the plan but not the user story is a correctness
-   finding.
+   finding. The standing metric gates of `references/code-review.md` §2.2 are part of the same pass:
+   complexity vs coverage (CRAP below 10), duplication (rank 0.8 or above removed) and test strength
+   (uncovered covered, surviving mutants killed, dead code deleted) — report each gate as measured or
+   as **not measured + why**, never silently skipped and never a blocker by itself.
 4. Run the project's formatter/linter in check-only mode if one exists (e.g. `cargo fmt --check`,
    `cargo clippy`, `ruff check`, `eslint`, `gofmt -l`). Report violations, do not fix them.
 5. Classify each finding by severity (critical/major/minor/nit). The boundary is defined in

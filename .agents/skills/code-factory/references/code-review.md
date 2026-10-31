@@ -187,6 +187,42 @@ python .agents/skills/code-factory/scripts/verify_quotes.py --claims claims.json
   silently accepted. The same check covers the shard-merged verdict (§1.1) and the
   Diagnostician/Advisor findings (`error-routing.md`), which quote the archived logs the same way.
 
+## 2.2 Metric gates
+
+Three gates stand on EVERY change, in whatever language the target project uses. They are RULES the
+reviewer applies, not tools it must run: walk them in order and record one result per gate — the
+measured number, or **not measured** with the reason — before the findings of §3.
+
+1. **Complexity vs test coverage (gate 1)** — every function the change adds or edits stays below
+   **CRAP 10** (`CRAP = CC^2 x (1 - coverage)^3 + CC`; a function the coverage report does not
+   mention counts as 0%). A function at CRAP 10 or above is a violation: split it, test it, or
+   both — say which.
+2. **Duplication (gate 2)** — a duplicate pair ranked **0.8 or above** must be removed: extract the
+   shared structure or delete the weaker copy, and report both locations and the score.
+3. **Test strength (gate 3)** — cover the uncovered lines and branches the change leaves behind, add
+   or tighten the assertion that kills each surviving mutant, and delete dead code: dead code is not
+   untested code, it is removed.
+
+The gates judge the CHANGE, not untouched legacy code (the scope of §1): a change may not make
+complexity, duplication or test weakness worse, and must bring what it touches under the gates. A
+gate violation takes its severity from §3 — the gate number never upgrades it — so only a violation
+that §3 classes as critical blocks acceptance.
+
+**Measuring is optional, reporting is not.** When no measuring tool exists for the project's stack,
+the same rules are judged by reading the code: count the branch paths and ask whether a test
+exercises each, compare the new units by hand for the same shape, look for uncovered and unreachable
+branches. Every gate's status is still reported — in the verdict `summary` (§6), or as a nonblocking
+`minor`/`nit` finding when a location is needed — in the form "not measured + why" ("no coverage
+provider for this stack", "no mutation tool for this language"). A missing tool is a reporting
+problem: neither a silent pass nor a reason to reject the change.
+
+**Cite the gate.** A finding that breaks a gate names it by number — "gate 1 (complexity vs
+coverage): CRAP 24", "gate 2 (duplication) 0.85" — next to the verbatim quote of §2.1, instead of a
+vague opinion. The standing practice behind the gates lives in
+`skill-base/skills/clean-code-metrics/SKILL.md` (the three gates and the safe handling of their
+measuring tools) and `skill-base/skills/clean-code-discipline/SKILL.md` (the writing rules a finding
+may also cite by name).
+
 ## 3. Severity & verdict
 
 Classify every finding by severity:

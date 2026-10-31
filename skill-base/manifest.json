@@ -33,6 +33,56 @@
       ],
       "source_type": "http_git",
       "resolved_revision": "2777fa05b296cdb51507e6fd33ae05c06fe0b9e7"
+    },
+    "clean-code-discipline": {
+      "name": "clean-code-discipline",
+      "source": "https://github.com/unclebob/ub-mode.git",
+      "sha256": "807fc8a876f54fd3ed42026e189964f55c8e540879df59d9e4e09f1d14317cbe",
+      "created_at": "2026-10-31T13:52:26+00:00",
+      "last_used": "2026-10-31T13:52:26+00:00",
+      "task_ids": [
+        "20261031-6dfd0921"
+      ],
+      "source_type": "http_git",
+      "resolved_revision": "57a8bdd28e45ed41900ace0bafa2ff76dd9ed70f"
+    },
+    "clean-code-metrics": {
+      "name": "clean-code-metrics",
+      "source": "https://github.com/unclebob/crapper.git",
+      "sha256": "36043672b0ac85c0a90bb665856cc9af9c3a6fb17c814e2cc3ff7c26cdd3b849",
+      "created_at": "2026-10-31T13:52:43+00:00",
+      "last_used": "2026-10-31T13:52:43+00:00",
+      "task_ids": [
+        "20261031-6dfd0921"
+      ],
+      "source_type": "http_git",
+      "resolved_revision": "6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d",
+      "sources": [
+        {
+          "source": "https://github.com/unclebob/crapper.git",
+          "sha256": "36043672b0ac85c0a90bb665856cc9af9c3a6fb17c814e2cc3ff7c26cdd3b849",
+          "source_type": "http_git",
+          "resolved_revision": "6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d"
+        },
+        {
+          "source": "https://github.com/unclebob/dryer.git",
+          "sha256": "e72b6c6ffdaafd375f8213bd076638ffe67bde6f7ae3ccb8b6d284c1c5d2e200",
+          "source_type": "http_git",
+          "resolved_revision": "66ff6d21a42c04afcad89c78a80066176d1294b0"
+        },
+        {
+          "source": "https://github.com/unclebob/mutator.git",
+          "sha256": "cbd0e047175e789aa7350046d1d30e96f0d9096ee05d634fde7a7de99c3e9abb",
+          "source_type": "http_git",
+          "resolved_revision": "a5a0cb803b66e0cdb8bf471b3b08af701d424a41"
+        },
+        {
+          "source": "https://github.com/unclebob/uml-viewer.git",
+          "sha256": "30c773706adcfadad5ed88f7c0e227ace32589ae701ad8e39247ec627085b584",
+          "source_type": "http_git",
+          "resolved_revision": "f65dafe93b3cb1b4e6bb02dbe41503ed05bd9ebf"
+        }
+      ]
     }
   }
 }

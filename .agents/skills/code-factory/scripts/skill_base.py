@@ -14,10 +14,10 @@ path. The `{path, skill}` task schema is unchanged: a URL is simply a new kind o
 
 Usage (`--base` and `--repo` are TOP-LEVEL options, so they must precede the subcommand):
   python3 skill_base.py [--base skill-base] init
-  python3 skill_base.py [--base skill-base] [--repo <root>] resolve <path-or-url> [--offline]
-  python3 skill_base.py [--base skill-base] [--repo <root>] hash <path-or-url>
+  python3 skill_base.py [--base skill-base] [--repo <root>] resolve <path-or-url> [--revision <hex>] [--offline]
+  python3 skill_base.py [--base skill-base] [--repo <root>] hash <path-or-url> [--revision <hex>]
   python3 skill_base.py [--base skill-base] lookup <name> [--hash <hex>] # reuse|update|found|missing
-  python3 skill_base.py [--base skill-base] [--repo <root>] record <name> <source> <hash> [--resolved-hash <hex>] [--task-id <id>]
+  python3 skill_base.py [--base skill-base] [--repo <root>] record <name> <source> <hash|-> [--revision <hex>] [--extra-source SOURCE[@REVISION]] [--resolved-hash <hex>] [--task-id <id>]
   python3 skill_base.py [--base skill-base] list
 
 `resolve`, `hash` and `record` also accept the remote-source flags `--offline`, `--allow-stale`,
@@ -42,6 +42,31 @@ flag).
 recorded WITHOUT a second fetch. A materialization that no longer matches that digest is refused
 with exit 1 instead of being described by a diverging hash — re-run `resolve` and regenerate the
 skill in that case. Without the flag a URL is fetched first, exactly as before.
+
+A Git source can be PINNED to an exact revision with `--revision <hex>` (the full or abbreviated
+commit sha — never a branch or a tag, which move). After materializing, the cached copy is checked
+out at exactly that revision and the reported `sha256` is the digest of the CHECKED-OUT content,
+while `resolved_revision` records the pinned sha. A cached copy that is not at the requested
+revision is re-checked-out or re-cloned, never silently signed under the wrong sha; a revision the
+source cannot provide is exit 1 with an explicit message (offline, a revision other than the cached
+one cannot be produced — `--offline` cannot re-checkout). `--revision` is meaningful for a `.git`
+source ONLY: with a local path or an http document it is a usage error (exit 2).
+
+`--offline` reuses a cached tree only after it has been PROVED to be the cached revision: the
+exported tree is compared with the local clone the cache keeps (`<cache>/_clones/<key>`), offline
+and from local bytes only, and any difference — or a clone that cannot serve the comparison — is
+exit 1 instead of a signed copy that may no longer be what the revision names.
+
+`record` may describe a skill built from SEVERAL sources: `--extra-source SOURCE` (repeatable, a
+Git source optionally followed by `@REVISION` as in `SOURCE@<hex>`) materializes and hashes each
+one by the same rules, and the entry then carries a `sources` list — the positional source included
+— of `{source, sha256, source_type (remote only), resolved_revision (when pinned)}`. The revision
+separator is `@`, not `=` and never the `=` of a URL query (`?ref=abc1234`), so a hexadecimal query
+value can never be split off a source. The top-level `source`/`sha256` stay the positional source's
+values, so `lookup --hash` and `list` keep their meaning. Without `--extra-source` no `sources` key
+is written, and a re-record without it drops a `sources` list left by an earlier record, so an entry
+never describes sources that are not part of its latest record. With a pinned positional Git source
+the positional `hash` argument may be `-` (compute it from the materialization).
 
 `lookup` exits 1 for a missing skill (the reference_skills error contract). stdlib only.
 """
@@ -132,6 +157,10 @@ class SourceError(RuntimeError):
     """A remote source that cannot be classified, fetched or reused safely (a clear message)."""
 
 
+class UsageError(ValueError):
+    """A command-line combination argparse cannot express: usage + exit 2, never a traceback."""
+
+
 def _redact(source: str) -> str:
     """The source with any userinfo removed, so a rejected URL cannot leak a secret into a log."""
     try:
@@ -185,6 +214,39 @@ def classify_source(source: str) -> str:
         raise SourceError("reference_docs source looks like an ssh/scp Git URL, which needs "
                           f"credentials: only public http(s) sources are supported ({_redact(text)})")
     return "local"
+
+
+_HEX_REVISION = re.compile(r"^[0-9a-fA-F]{4,64}$")
+
+
+def pinned_revision(value: str | None) -> str | None:
+    """Validate a `--revision` value and return it normalized, or None when absent.
+
+    ONLY a hex commit sha (full or abbreviated) may pin a source: a branch or a tag name moves, so
+    pinning one would sign content that can change after the manifest was written.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if not _HEX_REVISION.match(text):
+        raise UsageError(f"--revision '{value}' is not a hex commit sha: a pinned revision must be "
+                         "the full or the abbreviated sha of the commit the skill was generated "
+                         "from (a branch or a tag can move, so it cannot pin anything)")
+    return text
+
+
+def require_git_source(source: str, revision: str | None, option: str) -> None:
+    """`--revision` is meaningful for a Git repository source only: else a usage error (exit 2)."""
+    if not revision:
+        return
+    kind = classify_source(source)
+    if kind == "http_git":
+        return
+    what = "a local path" if kind == "local" else "an http(s) document URL, not a Git repository"
+    raise UsageError(f"{option} pins a Git repository source (a public URL ending in .git): "
+                     f"{_redact(source)} is {what}, so no revision can be pinned for it")
 
 
 def canonical_url(source: str) -> str:
@@ -454,16 +516,21 @@ def _kill_clone(proc: subprocess.Popen) -> None:
 
 
 def _supervised_clone(source: str, tmp: pathlib.Path, *, max_bytes: int,
-                      timeout: float) -> tuple[int, str]:
-    """Run a shallow clone while its temporary tree is measured; abort at the cap or the deadline.
+                      timeout: float, full: bool = False) -> tuple[int, str]:
+    """Run a clone while its temporary tree is measured; abort at the cap or the deadline.
 
     Returns `(returncode, stderr)` of a clone that finished on its own. A clone that crosses
     `max_bytes` DURING the transfer (or the overall time limit) is killed, its partial content is
     removed and a `SourceError` carrying the explicit reason is raised — the limit is a transfer
     limit, not a check applied to whatever has already been downloaded.
+
+    `full` clones the whole history of every branch instead of a shallow single-branch HEAD: a
+    PINNED revision may be any commit of any branch, so it has to be present locally to be checked
+    out. The size cap and the time limit still supervise that (larger) transfer.
     """
-    args = ["clone", "--quiet", "--depth", "1", "--single-branch", "--no-tags",
-            "--no-recurse-submodules", source, str(tmp)]
+    args = ["clone", "--quiet", "--no-tags", "--no-recurse-submodules"]
+    args += ["--no-single-branch"] if full else ["--depth", "1", "--single-branch"]
+    args += [source, str(tmp)]
     deadline = time.monotonic() + timeout
     reason = ""
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err:
@@ -503,15 +570,17 @@ def _supervised_clone(source: str, tmp: pathlib.Path, *, max_bytes: int,
         return proc.returncode, err.read()
 
 
-def _clone_git(source: str, clone: pathlib.Path, *, max_bytes: int, timeout: float) -> str | None:
-    """Shallow, single-branch clone without submodules/tags; returns the resolved commit sha."""
+def _clone_git(source: str, clone: pathlib.Path, *, max_bytes: int, timeout: float,
+               full: bool = False) -> str | None:
+    """Clone without submodules/tags; returns the resolved commit sha of the checkout."""
     tmp = clone.with_name(clone.name + ".part")
     remove_tree(tmp)
     try:
         tmp.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise SourceError(f"cannot write the cache: {exc}") from exc
-    returncode, stderr = _supervised_clone(source, tmp, max_bytes=max_bytes, timeout=timeout)
+    returncode, stderr = _supervised_clone(source, tmp, max_bytes=max_bytes, timeout=timeout,
+                                           full=full)
     if returncode != 0:
         remove_tree(tmp)
         raise SourceError(f"git clone failed: {_first_line(stderr)}")
@@ -521,47 +590,187 @@ def _clone_git(source: str, clone: pathlib.Path, *, max_bytes: int, timeout: flo
         raise SourceError(f"the clone is larger than the {max_bytes} byte limit ({size} bytes); "
                           "the partial clone was removed")
     _replace_tree(tmp, clone)
-    revision = _git(["rev-parse", "HEAD"], cwd=clone, timeout=timeout)
-    sha = revision.stdout.strip() if revision.returncode == 0 else ""
+    return _git_head(clone, timeout=timeout)
+
+
+def _git_head(repo: pathlib.Path, *, timeout: float) -> str | None:
+    """The full sha the working tree of a clone is checked out at (None: no usable repository)."""
+    if not (repo / ".git").exists():
+        return None
+    result = _git(["rev-parse", "HEAD"], cwd=repo, timeout=timeout)
+    sha = result.stdout.strip() if result.returncode == 0 else ""
     return sha or None
 
 
+def _revision_matches(head: str | None, revision: str) -> bool:
+    """Whether a full HEAD sha and a possibly abbreviated revision denote the same commit."""
+    if not head or not revision:
+        return False
+    left, right = head.strip().lower(), revision.strip().lower()
+    return left == right or left.startswith(right) or right.startswith(left)
+
+
+def _clone_is_pinned(clone: pathlib.Path, revision: str, *, timeout: float) -> str | None:
+    """The clone's HEAD when it is ALREADY exactly the pinned revision (and clean), else None.
+
+    Reuse is allowed only for that exact revision: a cache checked out at another commit would
+    describe different bytes, and it is re-cloned/re-checked-out instead of being signed.
+    """
+    head = _git_head(clone, timeout=timeout)
+    if not _revision_matches(head, revision):
+        return None
+    status = _git(["status", "--porcelain", "--untracked-files=all"], cwd=clone, timeout=timeout)
+    if status.returncode != 0 or status.stdout.strip():
+        return None                      # a modified working tree is not the pinned content
+    return head
+
+
+def _checkout_pinned(clone: pathlib.Path, revision: str, *, timeout: float) -> str:
+    """Check out EXACTLY `revision` in the clone and return the full sha it resolved to.
+
+    The checkout is verified afterwards: content that is not the requested commit is never
+    exported, because the digest recorded in the manifest would then describe other bytes.
+    """
+    resolved = _git(["rev-parse", "--verify", f"{revision}^{{commit}}"], cwd=clone, timeout=timeout)
+    sha = resolved.stdout.strip() if resolved.returncode == 0 else ""
+    if not sha:
+        raise SourceError(
+            f"the pinned revision {revision} is not reachable in the source repository (it may be "
+            "on an unfetched branch, removed by a force-push, or mistyped): nothing was "
+            "materialized, so there is no content to sign")
+    if not _revision_matches(sha, revision):
+        raise SourceError(f"the pinned revision {revision} resolved to {sha}: refusing to "
+                          "materialize content other than the pinned commit")
+    checked = _git(["checkout", "--quiet", "--detach", sha], cwd=clone, timeout=timeout)
+    if checked.returncode != 0:
+        raise SourceError(f"cannot check out the pinned revision {revision}: "
+                          f"{_first_line(checked.stderr)}")
+    head = _git_head(clone, timeout=timeout)
+    if head != sha:
+        raise SourceError(f"after checking out {revision} the materialization is at "
+                          f"{head or 'an unknown revision'}: refusing to sign another revision")
+    return sha
+
+
+def _cached_git_materialization(source: str, tree: pathlib.Path, meta: dict,
+                                revision: str | None) -> Materialized:
+    """Reuse a cached Git tree ONLY when it is proved to be the cached revision — offline.
+
+    The cache metadata alone is not evidence: the exported tree is compared, from local bytes and
+    without network access, with the commit its own local clone holds for that revision, so bytes
+    changed after the export are refused instead of being signed under the pinned sha.
+    """
+    cached_revision = meta.get("resolved_revision")
+    if revision and not _revision_matches(cached_revision, revision):
+        raise SourceError(
+            f"the cached copy of {_redact(source)} is at revision "
+            f"{cached_revision or 'unknown'}, not the pinned {revision}: checking out another "
+            "revision needs the network, which --offline forbids — resolve it without "
+            "--offline first")
+    if not cached_revision:
+        raise SourceError(f"the cache metadata of {_redact(source)} records no revision, so the "
+                          "cached tree cannot be proved to be the content it claims — resolve it "
+                          "without --offline first")
+    _verify_cached_tree(source, tree, cached_revision)
+    return Materialized(source, "http_git", tree, resolved_revision=cached_revision,
+                        offline=True, stale=True)
+
+
+def _verify_local_clone(source: str, clone: pathlib.Path, revision: str, *, timeout: float) -> None:
+    """The local clone must hold `revision` and be exactly its content (index + worktree clean).
+
+    Without a clone whose committed content is the cached revision there is no local evidence to
+    compare the exported tree with, so the offline reuse is refused rather than trusted.
+    """
+    head = _git_head(clone, timeout=timeout)
+    if not _revision_matches(head, revision):
+        raise SourceError(
+            f"the cached copy of {_redact(source)} cannot be verified offline: its local clone "
+            f"({clone}) is at {head or 'an unknown revision'}, not the cached {revision}, so the "
+            "cached tree cannot be compared with what that revision names — resolve it without "
+            "--offline to rebuild the clone")
+    status = _git(["status", "--porcelain", "--untracked-files=all"], cwd=clone, timeout=timeout)
+    if status.returncode != 0 or status.stdout.strip():
+        raise SourceError(
+            f"the cached copy of {_redact(source)} cannot be verified offline: the local clone "
+            f"({clone}) no longer matches the content of {revision} (it is modified), so the "
+            "cached tree cannot be compared with that revision — resolve it without --offline")
+
+
+def _verify_cached_tree(source: str, tree: pathlib.Path, revision: str, *,
+                        timeout: float = FETCH_TIMEOUT_SECONDS) -> None:
+    """Prove the cached tree is the content of `revision` from LOCAL bytes only (no network).
+
+    The local clone beside the cache must hold `revision`; its exported tree is then compared with
+    the cached one. A difference, and a clone that cannot serve the comparison, refuse the
+    materialization — the metadata alone is never taken as evidence.
+    """
+    clone = tree.parent.parent / "_clones" / tree.name
+    _verify_local_clone(source, clone, revision, timeout=timeout)
+    candidate = tree.with_name(tree.name + ".verify")
+    remove_tree(candidate)
+    try:
+        _export_clean_tree(clone, candidate)
+        if hash_path(candidate) == hash_path(tree):
+            return
+    finally:
+        remove_tree(candidate)
+    raise SourceError(
+        f"the cached copy of {_redact(source)} no longer matches the content of {revision}: its "
+        f"tree {tree} was changed after it was exported, so it is not the pinned content — "
+        "resolve it without --offline to rebuild the cache")
+
+
 def _materialize_git(source: str, cache: pathlib.Path, *, max_bytes: int, timeout: float,
-                     offline: bool) -> Materialized:
+                     offline: bool, revision: str | None = None) -> Materialized:
     key = cache_key(source)
     tree = cache / "git" / key
     if offline:
         if not tree.is_dir():
             raise SourceError(f"there is no cached copy of {_redact(source)} under {cache}, so it "
                               "cannot be resolved offline")
-        meta = _load_meta(cache, key)
-        return Materialized(source, "http_git", tree, resolved_revision=meta.get("resolved_revision"),
-                            offline=True, stale=True)
-    revision = _clone_git(source, cache / "_clones" / key, max_bytes=max_bytes, timeout=timeout)
-    _export_clean_tree(cache / "_clones" / key, tree)
+        return _cached_git_materialization(source, tree, _load_meta(cache, key), revision)
+    clone = cache / "_clones" / key
+    if revision:
+        head = _clone_is_pinned(clone, revision, timeout=timeout)
+        if head is None:                 # not the pinned content yet: re-clone, then check out
+            _clone_git(source, clone, max_bytes=max_bytes, timeout=timeout, full=True)
+            head = _checkout_pinned(clone, revision, timeout=timeout)
+        _export_clean_tree(clone, tree)
+        _save_meta(cache, key, {"source": canonical_url(source), "source_type": "http_git",
+                                "resolved_revision": head, "fetched_at": _now()})
+        return Materialized(source, "http_git", tree, resolved_revision=head)
+    revision_sha = _clone_git(source, clone, max_bytes=max_bytes, timeout=timeout)
+    _export_clean_tree(clone, tree)
     _save_meta(cache, key, {"source": canonical_url(source), "source_type": "http_git",
-                            "resolved_revision": revision, "fetched_at": _now()})
-    return Materialized(source, "http_git", tree, resolved_revision=revision)
+                            "resolved_revision": revision_sha, "fetched_at": _now()})
+    return Materialized(source, "http_git", tree, resolved_revision=revision_sha)
 
 
 def resolve_source(source: str, *, repo: str | pathlib.Path | None = None,
                    cache: pathlib.Path | None = None, max_bytes: int = MAX_DOWNLOAD_BYTES,
                    timeout: float = FETCH_TIMEOUT_SECONDS, offline: bool = False,
-                   allow_stale: bool = False) -> Materialized:
+                   allow_stale: bool = False, revision: str | None = None) -> Materialized:
     """Classify and materialize a `reference_docs` source (local path or public URL).
 
     A local path is returned as it is (a relative one is resolved against `repo`). A remote source
     is fetched into the cache under `repo`. `offline` forbids network access entirely and
     `allow_stale` permits a cached copy after a failed fetch; ONLY those two flags yield a `stale`
-    result, so a cached copy is never passed off as checked remote content.
+    result, so a cached copy is never passed off as checked remote content. `revision` pins a Git
+    source to that exact commit (see the module docstring); it is meaningless for any other kind.
     """
     kind = classify_source(source)
     if kind == "local":
+        if revision:
+            raise UsageError(f"--revision pins a Git repository source: {_redact(source)} is a "
+                             "local path, so no revision can be pinned for it")
         return Materialized(source=str(source), source_type="local",
                             local_path=local_path_of(source, repo))
     cache_dir = cache if cache is not None else cache_root(repo)
     fetch = _materialize_git if kind == "http_git" else _materialize_http_doc
     options = {"max_bytes": max_bytes, "timeout": timeout}
+    if kind == "http_git" and revision:
+        options["revision"] = revision
     if offline:
         return fetch(source, cache_dir, offline=True, **options)
     try:
@@ -648,11 +857,15 @@ def cmd_hash(args) -> int:
 
     A relative local path goes through the same `--repo` anchor as `resolve` and `record`: the
     declared repository root decides which file is meant, never the process working directory.
+    `--revision` hashes the CHECKED-OUT content of a pinned Git source, not its HEAD.
     """
+    revision = pinned_revision(getattr(args, "revision", None))
+    require_git_source(args.path, revision, "--revision")
     if classify_source(args.path) == "local":
         print(hash_path(local_path_of(args.path, getattr(args, "repo", None))))
         return 0
-    materialized, digest = materialize_and_hash(args.path, **_source_options(args))
+    materialized, digest = materialize_and_hash(args.path, revision=revision,
+                                                **_source_options(args))
     if materialized.stale:
         print(f"stale: {args.path} was NOT fetched; the cached copy was hashed", file=sys.stderr)
     print(digest)
@@ -661,7 +874,10 @@ def cmd_hash(args) -> int:
 
 def cmd_resolve(args) -> int:
     """Print the local path and metadata of a materialized `reference_docs` source as JSON."""
-    materialized, digest = materialize_and_hash(args.source, **_source_options(args))
+    revision = pinned_revision(getattr(args, "revision", None))
+    require_git_source(args.source, revision, "--revision")
+    materialized, digest = materialize_and_hash(args.source, revision=revision,
+                                                **_source_options(args))
     if materialized.stale:
         print(f"stale: {_redact(args.source)} was NOT fetched; reusing the cached copy",
               file=sys.stderr)
@@ -694,7 +910,13 @@ def _divergent(source: str, expected: str, actual: str) -> SourceError:
         "the ones the skill was generated from — re-run resolve and regenerate the skill")
 
 
-def _record_source(args) -> tuple[str, str, dict]:
+def _record_metadata(materialized: Materialized) -> dict:
+    """The remote-only metadata a record stores beside a remote source's digest."""
+    return {"source_type": materialized.source_type,
+            "resolved_revision": materialized.resolved_revision}
+
+
+def _record_source(args, revision: str | None = None) -> tuple[str, str, dict]:
     """The manifest `source`, `sha256` and the remote-only metadata of a `record` call.
 
     A URL is materialized first, so the stored signature is the content signature of the fetched
@@ -703,65 +925,143 @@ def _record_source(args) -> tuple[str, str, dict]:
     `--resolved-hash <hex>` (the digest `resolve` reported) switches BOTH kinds to recording the
     already-resolved materialization: no second fetch happens, the materialization is verified
     against that digest, and a divergence is refused instead of being signed with another hash.
+
+    `revision` (a `--revision` of a Git source) makes the signature the digest of the CHECKED-OUT
+    content and lets the caller pass `-` as the hash: the digest is then simply computed, which is
+    the intended path and therefore carries no warning.
     """
     source = args.source
     kind = classify_source(source)
     repo = getattr(args, "repo", None)
     expected = getattr(args, "resolved_hash", None)
     if kind == "local":
-        if expected:
-            digest = hash_path(local_path_of(source, repo))
-            if digest != expected:
-                raise _divergent(source, expected, digest)
-            return source, digest, {}
-        return source, args.hash, {}
+        if not expected:
+            return source, args.hash, {}
+        return _already_resolved(source, local_path_of(source, repo), expected)
     if expected:
-        materialized = resolve_source(source, repo=repo, offline=True)
-        digest = hash_path(materialized.local_path)
-        if digest != expected:
-            raise _divergent(source, expected, digest)
-        return source, digest, {
-            "source_type": materialized.source_type,
-            "resolved_revision": materialized.resolved_revision,
-        }
-    materialized, digest = materialize_and_hash(source, **_source_options(args))
+        cached = resolve_source(source, repo=repo, offline=True, revision=revision)
+        return _already_resolved(source, cached.local_path, expected, _record_metadata(cached))
+    materialized, digest = materialize_and_hash(source, revision=revision, **_source_options(args))
     if materialized.stale:
         print(f"stale: {_redact(source)} was NOT fetched; the cached content was recorded",
               file=sys.stderr)
-    if args.hash and args.hash != digest:
+    if args.hash and args.hash != "-" and args.hash != digest:
         print(f"warning: the given hash {args.hash} is not the content hash {digest} of "
               f"{_redact(source)}; recording the content hash", file=sys.stderr)
-    return source, digest, {
-        "source_type": materialized.source_type,
-        "resolved_revision": materialized.resolved_revision,
-    }
+    return source, digest, _record_metadata(materialized)
+
+
+def _already_resolved(source: str, path: pathlib.Path, expected: str,
+                      metadata: dict | None = None) -> tuple[str, str, dict]:
+    """The digest of a materialization `resolve` already reported, refused when it diverged."""
+    digest = hash_path(path)
+    if digest != expected:
+        raise _divergent(source, expected, digest)
+    return source, digest, metadata or {}
+
+
+def _parse_extra_source(value: str) -> tuple[str, str | None]:
+    """Split `--extra-source SOURCE[@REVISION]` into its source and its pinned revision.
+
+    The separator is `@`, NOT `=`: an `=` belongs to a URL query (`?ref=abc1234`), so splitting on
+    it would turn a hexadecimal query value into a revision and corrupt the source. An `@` that
+    introduces a hex revision is the pin; a source without one is hashed as it is.
+    """
+    text = (value or "").strip()
+    if not text:
+        raise UsageError("--extra-source needs a source: SOURCE or SOURCE@REVISION")
+    source, separator, tail = text.rpartition("@")
+    if not separator or not _HEX_REVISION.match(tail.strip()):
+        return text, None
+    if not source.strip():
+        raise UsageError(f"--extra-source '{value}' names no source before the '@'")
+    return source.strip(), tail.strip()
+
+
+def _parse_extra_sources(args) -> list[tuple[str, str | None]]:
+    """Every `--extra-source` of a `record` call, parsed and checked (a usage error names it)."""
+    extras = [_parse_extra_source(value) for value in (getattr(args, "extra_source", None) or [])]
+    for extra_source, extra_revision in extras:
+        require_git_source(extra_source, extra_revision, "--extra-source")
+    return extras
+
+
+def _record_extra_source(source: str, revision: str | None, args) -> tuple[str, dict]:
+    """Materialize and hash ONE `--extra-source` by the same rules as the positional source."""
+    if classify_source(source) == "local":
+        return hash_path(local_path_of(source, getattr(args, "repo", None))), {}
+    materialized, digest = materialize_and_hash(source, revision=revision, **_source_options(args))
+    if materialized.stale:
+        print(f"stale: {_redact(source)} was NOT fetched; the cached content was recorded",
+              file=sys.stderr)
+    return digest, _record_metadata(materialized)
+
+
+def _source_object(source: str, digest: str, metadata: dict, pinned: bool) -> dict:
+    """One `sources` list item: the source, its digest and the remote/pinned metadata it has."""
+    record = {"source": source, "sha256": digest}
+    if metadata.get("source_type"):
+        record["source_type"] = metadata["source_type"]
+    if pinned and metadata.get("resolved_revision"):
+        record["resolved_revision"] = metadata["resolved_revision"]
+    return record
+
+
+def _sources_list(primary: tuple[str, str, dict], revision: str | None,
+                  extras: list[tuple[str, str | None]], args) -> list[dict] | None:
+    """The `sources` list of a multi-source record, or None when no `--extra-source` was given."""
+    if not extras:
+        return None
+    source, digest, extra = primary
+    sources = [_source_object(source, digest, extra, pinned=bool(revision))]
+    for extra_source, extra_revision in extras:
+        extra_digest, metadata = _record_extra_source(extra_source, extra_revision, args)
+        sources.append(_source_object(extra_source, extra_digest, metadata,
+                                      pinned=bool(extra_revision)))
+    return sources
+
+
+def _update_entry(existing: dict, values: dict, sources: list[dict] | None, task_id: str | None,
+                  now: str) -> None:
+    """Update an existing manifest entry to its latest record (the `sources` list included)."""
+    existing.update({**values, "last_used": now})
+    if sources is None:
+        existing.pop("sources", None)         # the entry describes its latest record only
+    else:
+        existing["sources"] = sources
+    if task_id and task_id not in existing.get("task_ids", []):
+        existing.setdefault("task_ids", []).append(task_id)
+
+
+def _new_entry(name: str, values: dict, sources: list[dict] | None, task_id: str | None,
+               now: str) -> dict:
+    """The manifest entry of a first record: timestamps, the task id and the optional sources."""
+    entry = {"name": name, "created_at": now, "last_used": now,
+             "task_ids": [task_id] if task_id else [], **values}
+    if sources is not None:
+        entry["sources"] = sources
+    return entry
 
 
 def cmd_record(args) -> int:
+    """Record one skill: its positional source, its optional pin and its extra sources."""
     base = pathlib.Path(args.base).resolve()
     manifest = load_manifest(base)
-    now = _now()
-    source, digest, extra = _record_source(args)
+    revision = pinned_revision(getattr(args, "revision", None))
+    require_git_source(args.source, revision, "--revision")
+    if args.hash == "-" and not revision:
+        raise UsageError("the hash '-' means 'compute it from the pinned materialization' and "
+                         "needs --revision")
+    extras = _parse_extra_sources(args)
+    source, digest, extra = _record_source(args, revision=revision)
+    sources = _sources_list((source, digest, extra), revision, extras, args)
+    values = {"source": source, "sha256": digest, **extra}
+    now, task_id = _now(), args.task_id
     existing = manifest["skills"].get(args.name)
     if existing:
-        existing.update({
-            "source": source,
-            "sha256": digest,
-            "last_used": now,
-            **extra,
-        })
-        if args.task_id and args.task_id not in existing.get("task_ids", []):
-            existing.setdefault("task_ids", []).append(args.task_id)
+        _update_entry(existing, values, sources, task_id, now)
     else:
-        manifest["skills"][args.name] = {
-            "name": args.name,
-            "source": source,
-            "sha256": digest,
-            "created_at": now,
-            "last_used": now,
-            "task_ids": [args.task_id] if args.task_id else [],
-            **extra,
-        }
+        manifest["skills"][args.name] = _new_entry(args.name, values, sources, task_id, now)
     save_manifest(base, manifest)
     print(json.dumps(manifest["skills"][args.name], ensure_ascii=False))
     return 0
@@ -800,6 +1100,9 @@ def main() -> int:
 
     ph = add_remote_options(add_repo(sub.add_parser("hash")))
     ph.add_argument("path", help="Local file/folder, an http(s) document URL or a Git URL (.git)")
+    ph.add_argument("--revision", metavar="HEX",
+                    help="Pin a Git source to this exact commit sha (full or abbreviated): the "
+                         "printed digest then covers the CHECKED-OUT content")
 
     pl = sub.add_parser("lookup")
     pl.add_argument("name")
@@ -808,15 +1111,26 @@ def main() -> int:
     pr = add_remote_options(add_repo(sub.add_parser("record")))
     pr.add_argument("name")
     pr.add_argument("source", help="Canonical source of the skill: a local path OR a public URL")
-    pr.add_argument("hash", help="Content hash (for a URL: the digest of the resolved materialization)")
+    pr.add_argument("hash", help="Content hash (for a URL: the digest of the resolved "
+                                 "materialization; '-' computes it from a pinned materialization)")
     pr.add_argument("--resolved-hash", dest="resolved_hash", metavar="HEX",
                     help="Digest printed by `resolve`: record the ALREADY materialized content of a "
                          "URL without fetching it again, and refuse a divergent materialization")
+    pr.add_argument("--revision", metavar="HEX",
+                    help="Pin the positional Git source to this exact commit sha: the recorded "
+                         "digest covers the CHECKED-OUT content and resolved_revision records the pin")
+    pr.add_argument("--extra-source", dest="extra_source", action="append", metavar="SOURCE",
+                    help="Further source the skill was generated from (repeatable), optionally "
+                         "pinned as SOURCE@REVISION (a '@', never the '=' of a URL query); the "
+                         "entry then carries a `sources` list")
     pr.add_argument("--task-id")
 
     ps = add_remote_options(add_repo(sub.add_parser(
         "resolve", help="Materialize a source and print path + metadata as JSON")))
     ps.add_argument("source", help="Local path, http(s) document URL or Git URL (.git)")
+    ps.add_argument("--revision", metavar="HEX",
+                    help="Pin a Git source to this exact commit sha (full or abbreviated) and "
+                         "materialize exactly that revision")
 
     sub.add_parser("list")
 
@@ -831,6 +1145,10 @@ def main() -> int:
     }
     try:
         return handlers[args.cmd]()
+    except UsageError as exc:
+        # A combination argparse cannot express: usage + exit 2, never a traceback (ap.error exits).
+        ap.error(str(exc))
+        return 2
     except SourceError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

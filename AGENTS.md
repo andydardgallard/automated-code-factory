@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.18.0 -->
+<!-- code-factory-version: 12.19.0 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.
@@ -73,7 +73,13 @@ mandatory code review before acceptance.
 - `.agents/agents/` — the factory's main agent (Markdown `code-factory.md`) and subagents
   (`sub-agents/analyzer|planner|coder|gui-expert|tester|diagnostician|advisor|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
 - `VERSION` — single source of truth for the factory version (one line X.Y.Z)
-- `skill-base/` — persistent skill base from `reference_docs`/`reference_skills` (optional)
+- `skill-base/` — persistent skill base from `reference_docs`/`reference_skills` (optional); it
+  always holds the two clean-code skills — `clean-code-discipline` (the writing discipline: make it
+  work, then make it right, then follow practice, with named checkable rules) and `clean-code-metrics`
+  (the reviewer's three metric gates: CRAP below 10, duplication rank 0.8 removed, surviving mutants
+  killed) — cited as standing practice by `coder`/`gui-expert` and applied by the reviewer through
+  `references/code-review.md` §2.2; both are pinned in `skill-base/manifest.json` and install, vendor
+  or execute nothing.
 - `.agents/README.md` — the full factory usage manual
 - `prepare_factory.sh` — one-action project preparation (creates the `start.sh` launcher)
 - `prepare_factory.cmd` / `prepare_factory.ps1` — the same on Windows without Git Bash (entry point

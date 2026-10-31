@@ -27,6 +27,12 @@ revert past fixes or repeat past mistakes. That `memory/` is the long-term memor
 TARGET project (the one named by `repo_path`), not of the factory — use the entries whose
 `project:` matches it; entries without `project:` are legacy.
 
+Work under the clean-code discipline: `skill-base/skills/clean-code-discipline/SKILL.md` is standing
+practice for this role — its three phases (make it work, then make it right, then follow practice)
+and its named rules ("smallest edit", "root cause over guard", "boundary discipline") are what the
+reviewer judges your change by; its metric gates live in the companion
+`skill-base/skills/clean-code-metrics/SKILL.md`.
+
 **Lazy Senior ladder (Ponytail) — before writing ANY code**, run this and record the chosen rung in
 `<thinking>`: 1) YAGNI — needed at all? 2) already in the codebase? (reuse) 3) language stdlib?
 4) native platform / OS / browser? 5) one-liner? Write new code only if all five are "no"; state

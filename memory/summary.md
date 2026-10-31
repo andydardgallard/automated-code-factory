@@ -10,15 +10,25 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.18.0 — the two defects of run 20261026-a65b9a6e are closed: an unavailable
-task-named model now STOPS the run (canonical rule `model-unavailable-stop`, SKILL.md nodes
-MS/VMS/RDM — hitl asks the owner, auto FAILED, the SAME model retried within infrastructure
-budget 3, substitution and main-agent role execution forbidden, a models_used role outside
-`model_matrix.ROLES` is a run error, never DEGRADED), and Phase 0 parses the original task
-deterministically first (`task_parser.py` → `state/task.json`; `business_tests` and multi-line
-`|` criteria survive verbatim; a malformed task gets an actionable line-numbered error, never
-"unreadable"). The suite is green end to end (43 PASS / 0 FAIL of 43 self-tests, 41 vaccines),
-the memory gates run clean and the backlog is EMPTY (open: 0, 51 closed with evidence).
+Factory v12.19.0 — clean code is now standing practice: two permanent skill-base skills
+(`clean-code-discipline` — the writing discipline; `clean-code-metrics` — the three metric gates:
+CRAP below 10, duplication rank 0.8 removed, surviving mutants killed / dead code deleted, with
+the tool-safety warnings and the get-uml-viewer installer ban), registered in the manifest with
+all five pinned source revisions via `skill_base.py`'s new `--revision` / `--extra-source
+SOURCE@REVISION` (multi-source `sources` list; offline pin re-verification; `-` hash). The
+reviewer holds every change to the gates through the standing `## 2.2 Metric gates` section of
+code-review.md (numbered-gate citations; "not measured + why" never blocks); coder/gui-expert
+carry the discipline as standing practice. The suite is green end to end (45 PASS / 0 FAIL of 45
+self-tests), the memory gates run clean and the backlog is EMPTY (open: 0).
+Latest run: implement (run_id 20261031-6dfd0921, task.yaml "clean-code discipline + metric
+gates", hitl, plan approved with 0 rejections) — the new §2.2 gates dogfooded on the run's own
+diff: review iteration 1 request_changes (4 major + 1 minor, incl. two real bugs — a hex URL
+query misparsed as an extra-source revision, and offline pinned reuse trusting cache metadata
+only), all reworked with regression tests; iteration 2 approve with 3 minor (a reversed
+doc-warning sentence fixed after approval; two borderline-CC debts carried as info). The §7
+calibration fired on the checklist edit and was discharged blind at 7/7 accuracy, P/R 1.000.
+Acceptance SUCCESS (3/3 verify criteria MET, 2 derived, regression pass, ledger FRESH); models
+match the session wire. Version 12.18.0 -> 12.19.0 (minor, matrix + reviewer).
 Latest run: implement (run_id 20261026-838dc245, task_factory_hardening.yaml, hitl) — the new
 gate dogfooded itself: attribution FAILED the run on a real matrix violation (analyzer first ran
 on the default model), re-run on the task-named k3.1-pro and fixed. Review: request_changes in

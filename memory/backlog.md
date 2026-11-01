@@ -12,7 +12,7 @@ open:
   - item: Review factory workflow for dead paths after the Kimi Code upgrade (EnterPlanMode and similar)
     task_file: backlog_review_workflow_dead_paths.yaml
     task_type: review
-    status: done — run 20261101-e519a1da (report-only); 10 findings (3 critical) handed over as .code-factory/review/fix-tasks.yaml; subtask A premise about root docs refuted, subtask B confirmed with a non-vacuous check proposal
+    status: done — review run 20261101-e519a1da (report-only, 10 findings handed over as .code-factory/review/fix-tasks.yaml); findings implemented by run 20261101-7cbfae60 (v12.21.0): all 10 fixed with DP-1..DP-12 vaccines, portable-verify guidance added, suite 46/46, acceptance SUCCESS
     severity: warning
     follow_up: true
     why: |

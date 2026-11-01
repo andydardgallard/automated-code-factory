@@ -38,9 +38,9 @@ open:
         item: Validation gap — check_factory_rules.py reconciles only `factory-rule` blocks, so every flow statement outside those blocks (flowchart node descriptions, tool names, CLI modes) goes unchecked; propose a deterministic check and prove it is red on the current tree
 
   - item: Factory must enforce obvious variable/input validation in code it writes
-    task_file: (not written yet — queue entry only)
+    task_file: .code-factory/review/fix-tasks-input-validation.yaml
     task_type: implement
-    status: queued
+    status: ready
     severity: warning
     follow_up: true
     why: |

@@ -16,11 +16,21 @@ the golden-set calibration that discharges a due one and the append-only log it 
 agent instruction (Phase 8b) and the reference must carry the invocation too — a gate nobody runs
 protects nothing.
 
+The Advisor agreement gate is pinned the same way (flow nodes `ADR`/`ARO`): the Advisor's verdict is
+the AGREEMENT first and the recommended role only inside the `agree` edge, so the documented
+disagreement path — show both diagnoses in hitl, stop the fix loop and record it in `report.md` in
+auto — stays reachable in the flowchart an agent actually follows. Three routing/operator contracts
+follow the same rule: the §2 table may not keep a `WRONG_RESULTS` -> CODER row the JSON-first router
+never takes, the provider guide may not send model/format to PLANNER, and the operator manual must
+describe the executable HITL gate (the plan file plus `AskUserQuestion`) instead of the abstract
+`presents the plan for approval`.
+
 This test pins those strings — always against the REAL shipped file — and then proves the pins are
 not tautologies: each contract is broken on a throwaway copy in the way a careless future edit
 would break it (delete the command name, restore `open: 0`, drop the `Memory facts` heading, drop
 `repo_path` required, re-add `warning, not a blocker`, re-add `_validate_entry`, rename the
-calibration command), and the checker must FAIL on that copy.
+calibration command, re-branch the Advisor on its recommended role, re-add the dead routing rows,
+drop the question tool from the manual), and the checker must FAIL on that copy.
 
 Invariant: every command and every constraint pinned below is present in the shipped file, at the
 place where the mechanism lives (a flow node, a named section, a template block) — absence, or a
@@ -30,6 +40,7 @@ Exit code 0 = every contract holds and every probe is caught, 1 = a contract or 
 """
 from __future__ import annotations
 
+import collections
 import pathlib
 import re
 import shutil
@@ -45,6 +56,7 @@ AGENTS = "AGENTS.md"
 README = ".agents/README.md"
 BRIEFING = ".agents/skills/code-factory/references/handoff-briefing.md"
 PROVIDERS = ".agents/skills/code-factory/references/providers.md"
+ERROR_ROUTING = ".agents/skills/code-factory/references/error-routing.md"
 EXAMPLE_TASK = ".example.task.yaml"
 TASK_TEMPLATE = ".agents/skills/code-factory/assets/task-template.yaml"
 CHECK_MODEL = ".agents/skills/code-factory/scripts/check_factory_model.py"
@@ -54,18 +66,31 @@ RULEBOOK = ".agents/skills/code-factory/references/factory-rules.md"
 CODE_REVIEW = ".agents/skills/code-factory/references/code-review.md"
 
 # Every file a contract reads: a probe copies exactly these, then breaks one of them.
-FILES = (SKILL, CODE_FACTORY, AGENTS, README, BRIEFING, PROVIDERS, EXAMPLE_TASK, TASK_TEMPLATE,
-         CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK, CODE_REVIEW)
+FILES = (SKILL, CODE_FACTORY, AGENTS, README, BRIEFING, PROVIDERS, ERROR_ROUTING, EXAMPLE_TASK,
+         TASK_TEMPLATE, CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK, CODE_REVIEW)
 
 FINISH_NODE = "Y"      # `Y[Finish: ...]` — the only place compaction/attribution are invoked
 CODER_NODE = "M"       # `M[Implement: ...]` — the coder delegation and its briefing
 PREFLIGHT_NODE = "PF"  # `PF[Pre-flight: ...]` — where the model matrix is resolved
+
+# The Advisor gate: the agreement decision, and the role decision INSIDE `agree`.
+ADVISOR_NODE = "ADR"
+ADVISOR_ROLE_NODE = "ARO"
+ADVISOR_ROLE_EDGES = (("coder", "P"), ("ba", "P2"), ("planner", "P2"),
+                      ("infrastructure", "AI"), ("human", "U2"))
+# (mode, target, what the disagreement branch must do) of the two `disagree` edges.
+ADVISOR_DISAGREE_EDGES = (("hitl", "U2", "show both diagnoses to the user"),
+                          ("auto", "Y",
+                           "stop the fix loop and record the disagreement in report.md"))
 
 MERMAID_FENCE = "```mermaid"
 # `Y[body]` / `PF(body)` / `DOC{body}`; the leading class keeps an arrow or an edge label from
 # being read as part of a node id.
 NODE_RE = re.compile(r"(?:^|[\s>|])([A-Za-z][A-Za-z0-9_]*)\s*([\[\{\(])")
 CLOSING = {"[": "]", "{": "}", "(": ")"}
+# `ADR -->|agree| ARO{...}` / `ADR -->|disagree, hitl| U2`: source, optional label, raw target.
+EDGE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*)\s*-->\s*(?:\|([^|\n]*)\|)?\s*(\S.*)$")
+Edge = collections.namedtuple("Edge", "line source label target")
 
 FACTORY_RULE_BLOCK_RE = re.compile(
     r"<!--\s*factory-rule:[^>]*?begin\s*-->.*?<!--\s*factory-rule:[^>]*?end\s*-->", re.S)
@@ -177,6 +202,33 @@ def find_node(doc: Doc, node_id: str) -> tuple[int, str]:
         if ident == node_id:
             return line, body
     return 0, ""
+
+
+def flow_edges(doc: Doc) -> tuple[int, list["Edge"]]:
+    """(1-based line of the flow's first block line, every edge); 0 = no mermaid block.
+
+    An edge is read as `source -->|label| target`, the target being its LEADING identifier, so a
+    node definition (`P[Rollback: ...]`) and a bare reference (`P`) name the same node.
+    """
+    fence = next((i for i, line in enumerate(doc.lines) if line.strip() == MERMAID_FENCE), None)
+    if fence is None:
+        return 0, []
+    edges: list[Edge] = []
+    for offset, line in enumerate(doc.lines[fence + 1:]):
+        if line.strip() == "```":
+            break
+        match = EDGE_RE.match(line.strip())
+        if match:
+            target = re.match(r"[A-Za-z][A-Za-z0-9_]*", match.group(3))
+            edges.append(Edge(fence + 2 + offset, match.group(1),
+                              match.group(2).strip() if match.group(2) else None,
+                              target.group(0) if target else ""))
+    return fence + 2, edges
+
+
+def edges_from(doc: Doc, source: str) -> list["Edge"]:
+    """Every edge out of `source` in the flow."""
+    return [edge for edge in flow_edges(doc)[1] if edge.source == source]
 
 
 def open_zero_demands(body: str) -> list[str]:
@@ -514,31 +566,27 @@ def check_review_gate_budget(root: pathlib.Path) -> list[str]:
     """
     problems: list[str] = []
     skill = Doc.load(root, SKILL, problems)
-    fence = next((i for i, line in enumerate(skill.lines) if line.strip() == MERMAID_FENCE), None)
-    if fence is None:
+    first, flow = flow_edges(skill)
+    if not flow:
         problems.append(f"{SKILL}:1: no ```mermaid flow — the reviewer gate cannot be wired")
         return problems
-    edges: list[tuple[int, str]] = []
-    for offset, line in enumerate(skill.lines[fence + 1:]):
-        if line.strip() == "```":
-            break
-        if re.match(r"\s*RCR\s*-->", line):
-            edges.append((fence + 2 + offset, line.strip()))
+    edges = edges_from(skill, "RCR")
     if not edges:
-        problems.append(f"{SKILL}:{fence + 2}: no edges out of RCR — the review-gate policy has "
+        problems.append(f"{SKILL}:{first}: no edges out of RCR — the review-gate policy has "
                         "no routing at all")
         return problems
-    for line, edge in edges:
-        if re.fullmatch(r"RCR\s*-->\s*M", edge):
-            problems.append(f"{SKILL}:{line}: an unconditional `RCR --> M` edge restarts coding "
-                            "even when the reviewer budget is exhausted with critical findings "
-                            "open — split RCR into retry / stop (hitl) / conditional-pass (auto)")
+    for edge in edges:
+        if edge.label is None and edge.target == "M":
+            problems.append(f"{SKILL}:{edge.line}: an unconditional `RCR --> M` edge restarts "
+                            "coding even when the reviewer budget is exhausted with critical "
+                            "findings open — split RCR into retry / stop (hitl) / "
+                            "conditional-pass (auto)")
     required = (("budget not exhausted", "M"),
                 ("budget exhausted, hitl", "U2"),
                 ("budget exhausted, auto", "W"))
     for label, target in required:
-        if not any(label in edge and edge.endswith(f"| {target}") for _line, edge in edges):
-            problems.append(f"{SKILL}:{edges[0][0]}: RCR needs a `{label}` edge to {target} — "
+        if not any(label in (edge.label or "") and edge.target == target for edge in edges):
+            problems.append(f"{SKILL}:{edges[0].line}: RCR needs a `{label}` edge to {target} — "
                             "the bounded review gate (rule `review-gate-policy`) must route the "
                             "exhausted-budget case away from the coder")
     return problems
@@ -601,6 +649,140 @@ def check_reviewer_calibration(root: pathlib.Path) -> list[str]:
     return problems
 
 
+# --------------------------------------------------------------------------------------------
+# J. The Advisor gate branches on agreement first
+# --------------------------------------------------------------------------------------------
+def check_advisor_agreement(root: pathlib.Path) -> list[str]:
+    """`ADR` must ask about the AGREEMENT; the recommended role is chosen inside the `agree` edge.
+
+    The finding this pins: `ADR` branched straight on the Advisor's `recommended_role`, so the
+    documented disagreement path (`agreement: disagree` -> the user in hitl, stop the fix loop and
+    record it in `report.md` in auto) was unreachable in the flowchart an agent follows — the
+    contract in `code-factory.md` and the picture had drifted apart.
+    """
+    problems: list[str] = []
+    skill = Doc.load(root, SKILL, problems)
+    first, flow = flow_edges(skill)
+    if not flow:
+        problems.append(f"{SKILL}:1: no ```mermaid flow — the Advisor agreement gate cannot be "
+                        "checked")
+        return problems
+    line, body = find_node(skill, ADVISOR_NODE)
+    if not body:
+        problems.append(f"{SKILL}:{first}: no Advisor decision node `{ADVISOR_NODE}{{...}}`")
+        return problems
+    if "agreement" not in body.lower():
+        problems.append(f"{SKILL}:{line}: `{ADVISOR_NODE}` must branch on the Advisor's AGREEMENT "
+                        f"(`{ADVISOR_NODE}{{Advisor agreement?}}`), not on its recommended role — "
+                        "otherwise `agreement: disagree` never stops the retries")
+    adr = edges_from(skill, ADVISOR_NODE)
+    agree = next((edge for edge in adr if edge.label == "agree"), None)
+    if agree is None or agree.target != ADVISOR_ROLE_NODE:
+        problems.append(f"{SKILL}:{line}: `{ADVISOR_NODE}` must keep the `agree` edge to "
+                        f"`{ADVISOR_ROLE_NODE}` — the recommended role is chosen only when the "
+                        "Advisor agrees with the Diagnostician")
+    else:
+        roles = {(edge.label, edge.target) for edge in edges_from(skill, ADVISOR_ROLE_NODE)}
+        for label, target in ADVISOR_ROLE_EDGES:
+            if (label, target) not in roles:
+                problems.append(f"{SKILL}:{agree.line}: `{ADVISOR_ROLE_NODE}` must keep the "
+                                f"`{label}` edge to {target} — an agreed route still has to reach "
+                                "its role")
+    for mode, target, what in ADVISOR_DISAGREE_EDGES:
+        edge = next((candidate for candidate in adr
+                     if (candidate.label or "").startswith(f"disagree, {mode}")), None)
+        if edge is None or edge.target != target:
+            problems.append(f"{SKILL}:{line}: `{ADVISOR_NODE}` needs the `disagree, {mode}` edge "
+                            f"to {target} — on disagreement the flow must {what}")
+        elif mode == "auto" and "report.md" not in (edge.label or ""):
+            problems.append(f"{SKILL}:{edge.line}: the auto disagreement edge must record the "
+                            "disagreement in report.md")
+    for edge in adr:
+        if edge.target in {"P", "P2", "AI"}:
+            problems.append(f"{SKILL}:{edge.line}: `{ADVISOR_NODE} --> {edge.target}` routes "
+                            "straight to a role — a role may only be chosen behind the `agree` "
+                            "edge")
+    return problems
+
+
+# --------------------------------------------------------------------------------------------
+# K. The routing prose carries no route the router cannot take
+# --------------------------------------------------------------------------------------------
+def check_routing_prose(root: pathlib.Path) -> list[str]:
+    """§2 must not keep a WRONG_RESULTS -> CODER row and the provider guide may not say PLANNER.
+
+    The findings these pin: the JSON-first router sends EVERY WRONG_RESULTS match (its pattern
+    contains `regression`) to DIAGNOSTICIAN, so the "with regression" -> CODER row was an operator
+    instruction the factory cannot execute; and the authoritative provider rows D/F route
+    PROVIDER_MODEL / PROVIDER_FORMAT to INFRASTRUCTURE, so `model/format → PLANNER` advertised a
+    second, wrong retry path.
+    """
+    problems: list[str] = []
+    routing = Doc.load(root, ERROR_ROUTING, problems)
+    documented = 0
+    for lineno, line in enumerate(routing.lines, start=1):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 3 or not cells[0].upper().startswith("WRONG_RESULTS"):
+            continue
+        documented += 1
+        if cells[1].upper() != "DIAGNOSTICIAN":
+            problems.append(f"{ERROR_ROUTING}:{lineno}: every WRONG_RESULTS match routes to "
+                            "DIAGNOSTICIAN under JSON-first classification (the `regression` "
+                            f"alternative belongs to the same row) — `{cells[0]} | {cells[1]}` "
+                            "advertises a route the router never takes")
+    if not documented:
+        problems.append(f"{ERROR_ROUTING}:1: §2 carries no WRONG_RESULTS row — the wrong-results "
+                        "route must stay documented")
+
+    providers = Doc.load(root, PROVIDERS, problems)
+    if "model/format" not in providers.text:
+        problems.append(f"{PROVIDERS}:1: the provider guide no longer routes `model/format` — "
+                        "provider failures must stay documented")
+    for lineno, line in enumerate(providers.lines, start=1):
+        if re.search(r"model/format\s*→\s*PLANNER", line):
+            problems.append(f"{PROVIDERS}:{lineno}: `model/format → PLANNER` is a dead route — "
+                            "provider rows D/F send PROVIDER_MODEL / PROVIDER_FORMAT to "
+                            "INFRASTRUCTURE (config repair, no code rollback)")
+    return problems
+
+
+# --------------------------------------------------------------------------------------------
+# L. The operator manual describes the executable HITL gate
+# --------------------------------------------------------------------------------------------
+README_GATE_TOKENS = ((".code-factory/state/plan.md", "name the plan file the user decides on"),
+                      ("AskUserQuestion", "name the tool that asks the decision"),
+                      ("approve, revise, or reject",
+                       "state the three answers the user actually chooses"))
+
+
+def check_readme_approval(root: pathlib.Path) -> list[str]:
+    """The `hitl` bullet must describe the gate the carriers execute, not "present the plan".
+
+    The finding this pins: `.agents/README.md` said the factory "presents the plan for approval",
+    while flow node I, Phase 3 and planning-guide §6 keep the plan in `.code-factory/state/plan.md`
+    and ask via `AskUserQuestion` — the operator manual drifted from the mechanism a reader follows.
+    """
+    problems: list[str] = []
+    readme = Doc.load(root, README, problems)
+    line, bullet = next(((start, text) for start, text in readme.paragraphs()
+                         if "**hitl (default)**" in text), (0, ""))
+    if not bullet:
+        problems.append(f"{README}:1: the `hitl (default)` bullet is gone — the operator manual "
+                        "no longer describes the interactive mode")
+        return problems
+    for needle, what in README_GATE_TOKENS:
+        if needle not in bullet:
+            problems.append(f"{README}:{line}: the `hitl` bullet must {what} ({needle!r}) — the "
+                            "manual has to describe the executable gate, not the plan abstractly")
+    if "presents the plan for approval" in bullet:
+        problems.append(f"{README}:{line}: `presents the plan for approval` is the retired "
+                        "abstract wording — the gate is the plan file plus an explicit question")
+    return problems
+
+
 SECTIONS = (
     ("A", "the Finish node wires the memory mechanisms", check_finish_node),
     ("B", "the precedent index is built by the flow", check_precedent_index),
@@ -611,6 +793,9 @@ SECTIONS = (
     ("G", "the destructive-action gate is run by the flow", check_destructive_action_gate),
     ("H", "the reviewer gate is bounded", check_review_gate_budget),
     ("I", "the reviewer calibration gate runs before the reviewer", check_reviewer_calibration),
+    ("J", "the Advisor gate branches on agreement first", check_advisor_agreement),
+    ("K", "the routing prose carries no dead route", check_routing_prose),
+    ("L", "the operator manual describes the executable HITL gate", check_readme_approval),
 )
 
 
@@ -734,6 +919,27 @@ PROBES = (
      ((CODE_FACTORY, "calibrate_reviewer.py status --repo <resolved repo_path>",
        "calibrate_reviewer.py inspect --repo <resolved repo_path>"),),
      "calibrate_reviewer.py status"),
+    ("J: the role decision is put back in front of the agreement gate", check_advisor_agreement,
+     ((SKILL, "    ADR -->|agree| ARO{Advisor recommended role}\n    ARO -->|coder| P\n",
+       "    ADR -->|coder| P\n"),),
+     "`agree` edge to `ARO`"),
+    ("J: the auto disagreement branch is deleted", check_advisor_agreement,
+     ((SKILL, "    ADR -->|disagree, auto: stop the fix loop and record the disagreement in "
+              "report.md| Y\n", ""),),
+     "disagree, auto"),
+    ("K: the WRONG_RESULTS-to-CODER row comes back", check_routing_prose,
+     ((ERROR_ROUTING, "| WRONG_RESULTS | DIAGNOSTICIAN | deep analysis needed |",
+       '| WRONG_RESULTS (without "regression") | DIAGNOSTICIAN | deep analysis needed |\n'
+       '| WRONG_RESULTS (with "regression") | CODER | code changed behavior incorrectly |'),),
+     "WRONG_RESULTS (with"),
+    ("K: the provider guide routes model/format to PLANNER again", check_routing_prose,
+     ((PROVIDERS, "model/format → INFRASTRUCTURE (repair the alias",
+       "model/format → PLANNER (fix the alias"),),
+     "model/format → PLANNER"),
+    ("L: the operator manual loses the question tool", check_readme_approval,
+     ((README, "user explicitly via `AskUserQuestion` whether to approve",
+       "user whether to approve"),),
+     "AskUserQuestion"),
 )
 
 
@@ -773,8 +979,10 @@ def main() -> int:
           f"by the flow and described as a build product; the briefing carries the memory facts; "
           f"the templates agree with the rulebook; the model precedence has one voice; the memory "
           f"contract has one implementation; the reviewer calibration gate runs BEFORE the "
-          f"reviewer in the flow, the agent and the reference — and all {caught} deliberately "
-          f"broken copies were caught.")
+          f"reviewer in the flow, the agent and the reference; the Advisor gate branches on "
+          f"agreement before it names a role; the routing prose carries no route the router "
+          f"cannot take; the operator manual describes the executable HITL gate — and all "
+          f"{caught} deliberately broken copies were caught.")
     return 0
 
 

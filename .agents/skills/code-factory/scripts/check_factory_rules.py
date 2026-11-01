@@ -17,6 +17,14 @@ canonical wordings are single lines, so CRLF files compare equal). Rules may add
 REQUIRED_MARKERS — sentences that must survive inside the canonical block, so a gate cannot be
 watered down by rewriting the rulebook and all carriers at once.
 
+A marked block covers only the rule's canonical sentence, so the WORKFLOW PROSE around it — Mermaid
+node wording, tool names, the order of an approval step — escapes that check. `check_workflow_prose`
+closes that gap for the three carriers of the HITL approval gate (SKILL.md, code-factory.md,
+planning-guide.md): it reads their FULL text, rejects the dead `EnterPlanMode` tool anywhere, and
+requires each approval section to name `.code-factory/state/plan.md` and `AskUserQuestion` BEFORE it
+waits for the answer. A missing or unreadable carrier is a named problem of the report, never a
+traceback.
+
 Usage:
   python3 check_factory_rules.py [--rule <id>] [--root <path>]
 
@@ -50,6 +58,16 @@ REQUIRED_MARKERS = {
     "model-unavailable-stop": ("STOPS", "NEVER substitutes", "`ROLES`"),
 }
 
+# Kimi Code ships no `EnterPlanMode` tool (plan mode is user-only, Shift-Tab or /plan): an
+# instruction to call it is a dead call an agent would follow straight into a tool error.
+FORBIDDEN_TOOL = "EnterPlanMode"
+# What every approval section must present to the user BEFORE it waits for the answer: the plan
+# file the user is deciding on, and the tool that asks the decision.
+APPROVAL_TOKENS = (".code-factory/state/plan.md", "AskUserQuestion")
+# The wait/revision step of an approval section. Case-insensitive and wording-tolerant on purpose:
+# this pass judges the ORDER of the gate, not the exact sentence a carrier chose.
+APPROVAL_WAIT_RE = re.compile(r"wait for (the )?(answer|approval)", re.I)
+
 
 @dataclasses.dataclass(frozen=True)
 class Rule:
@@ -63,6 +81,37 @@ class Rule:
 def markers(rule_id: str) -> tuple[str, str]:
     return (f"<!-- factory-rule: {rule_id} begin -->",
             f"<!-- factory-rule: {rule_id} end -->")
+
+
+@dataclasses.dataclass(frozen=True)
+class ApprovalSection:
+    """One HITL approval section: the carrier and the span of prose the gate is read from."""
+
+    carrier: str
+    name: str
+    section_re: re.Pattern[str]   # names the section body as group "body"
+
+
+# The three carriers of the HITL approval gate. Each section is the prose a reader (or an agent)
+# actually follows, so its step order is a contract: present the plan file, ask via AskUserQuestion,
+# THEN wait.
+APPROVAL_SECTIONS = (
+    ApprovalSection(
+        carrier=".agents/skills/code-factory/SKILL.md",
+        name="flowchart node I",
+        section_re=re.compile(r"^ *H --> I\[(?P<body>[^\]]*)\]", re.M),
+    ),
+    ApprovalSection(
+        carrier=".agents/agents/code-factory.md",
+        name="Phase 3 approval step",
+        section_re=re.compile(r"^### Phase 3[^\n]*\n(?P<body>.*?)(?=^#{2,3} |\Z)", re.M | re.S),
+    ),
+    ApprovalSection(
+        carrier=".agents/skills/code-factory/references/planning-guide.md",
+        name="section 6 (present the plan)",
+        section_re=re.compile(r"^## 6\.[^\n]*\n(?P<body>.*?)(?=^## |\Z)", re.M | re.S),
+    ),
+)
 
 
 def extract_block(text: str, rule_id: str) -> str | None:
@@ -137,6 +186,62 @@ def check_rule(root: pathlib.Path, rule: Rule) -> list[str]:
     return problems
 
 
+def dead_tool_problems(carrier: str, text: str) -> list[str]:
+    """Every line of `text` that names the dead tool, as a `file:line` problem."""
+    return [f"{carrier}:{number}: names the dead tool {FORBIDDEN_TOOL!r}, which Kimi Code does not "
+            "provide; the approval gate writes the plan file and asks via AskUserQuestion"
+            for number, line in enumerate(text.splitlines(), 1) if FORBIDDEN_TOOL in line]
+
+
+def approval_problems(section: ApprovalSection, text: str) -> list[str]:
+    """The section must exist, state its wait step, and name both approval tokens before it."""
+    match = section.section_re.search(text)
+    if match is None:
+        return [f"{section.carrier}: the HITL approval section ({section.name}) is missing"]
+    body = match.group("body")
+    wait = APPROVAL_WAIT_RE.search(body)
+    problems: list[str] = []
+    if wait is None:
+        problems.append(f"{section.carrier}: the {section.name} states no wait step "
+                        f"({APPROVAL_WAIT_RE.pattern!r}), so the user is never waited for")
+    limit = wait.start() if wait else len(body)
+    for token in APPROVAL_TOKENS:
+        at = body.find(token)
+        if at < 0:
+            problems.append(f"{section.carrier}: the {section.name} does not name {token!r} before "
+                            "the wait step")
+        elif at >= limit:
+            problems.append(f"{section.carrier}: the {section.name} names {token!r} only AFTER the "
+                            "wait step; the approval gate must present the plan and ask the user "
+                            "before it waits")
+    return problems
+
+
+def check_workflow_prose(root: pathlib.Path) -> list[str]:
+    """Validate the approval prose of the workflow carriers, outside their factory-rule blocks.
+
+    `check_rule()` reduces a carrier to one marked block, so the flowchart node text, the tool
+    names and the step order around it were never validated. This pass reads the FULL text of the
+    three carriers: a dead tool anywhere is rejected, and every approval section must present
+    `.code-factory/state/plan.md` and `AskUserQuestion` before it waits for the answer. A missing or
+    unreadable carrier is reported as its own problem instead of raising.
+    """
+    problems: list[str] = []
+    texts: dict[str, str] = {}
+    for carrier in dict.fromkeys(section.carrier for section in APPROVAL_SECTIONS):
+        try:
+            texts[carrier] = (root / carrier).read_text(encoding="utf-8")
+        except OSError as exc:
+            problems.append(f"{carrier}: workflow prose is unreadable ({exc.strerror or exc}), so "
+                            "its HITL approval section cannot be checked")
+            continue
+        problems.extend(dead_tool_problems(carrier, texts[carrier]))
+    for section in APPROVAL_SECTIONS:
+        if section.carrier in texts:
+            problems.extend(approval_problems(section, texts[section.carrier]))
+    return problems
+
+
 def check(root: pathlib.Path, rule_ids: list[str]) -> tuple[int, list[str], int]:
     """Return (how many rules were checked, problems, how many carrier blocks were compared)."""
     try:
@@ -161,6 +266,9 @@ def check(root: pathlib.Path, rule_ids: list[str]) -> tuple[int, list[str], int]
     for rule in rules:
         checked_carriers += len(rule.carriers)
         problems.extend(check_rule(root, rule))
+    # The marked blocks do not cover the workflow prose around them: the approval gate is validated
+    # by its own pass, always, in addition to the per-rule reconciliation.
+    problems.extend(check_workflow_prose(root))
     return len(rules), problems, checked_carriers
 
 
@@ -191,7 +299,7 @@ def main(argv: list[str]) -> int:
     root = pathlib.Path(args.root).resolve() if args.root else ROOT
     checked_rules, problems, carriers = check(root, args.rule)
     if problems:
-        print(f"FAIL - {len(problems)} factory-rule discrepancy(ies) under {root}:")
+        print(f"FAIL - {len(problems)} factory-rule/workflow discrepancy(ies) under {root}:")
         for problem in problems:
             print(f"  - {problem}")
         return 1

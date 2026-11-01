@@ -10,23 +10,24 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.20.0 — the factory now enforces purpose-fitted input validation on itself: the
-28th canonical rule `input-validation` (4 carriers; 29 rules / 94 byte-identical blocks)
-requires range / zero-legitimacy / overflow-safe conversions and casts for every NEW or
-changed input and forbids blanket rules; the deterministic advisory gate
-`check_input_validation.py` scans the run's diff for new inputs without validation
-(Rust config structs + Python argparse/click in v1), proven by `test_input_validation_gate.py`
-(30 checks, farukon-shaped fixtures, non-vacuous pass) and pinned by vaccine V-iv-gate; the
-reviewer counts a NEW unguarded input path as severity >= major and the golden set holds 9
-cases (calibration 9/9, P/R 1.000). The suite is green end to end (46 PASS / 0 FAIL of 46
-self-test files), the memory gates run clean.
-Latest run: implement 20261101-81600b39 (fix-tasks-input-validation.yaml, hitl, plan approved
-with 0 rejections) — review iterations 1-2 request_changes (5+2 major, all reworked), owner
-authorized iteration 3 -> approve zero findings; acceptance SUCCESS (1/1 verify MET,
-regression pass, ledger FRESH). Version 12.19.1 -> 12.20.0 (minor, matrix + reviewer).
-Open backlog: 3 (1 critical follow_up — the 10 findings of review 20261101-e519a1da; 1 info
-follow_up — the criterion-4 authoring flaw; 1 warning follow_up — validate_documentation.py
---derive scope conflict; plus 2 info debts carried with follow_up=false: module-vaccine
+Factory v12.21.0 — the combined backlog is closed: the dead EnterPlanMode calls are gone from
+all three approval carriers (the HITL gate is `plan.md` + `AskUserQuestion` in SKILL.md node I,
+code-factory.md Phase 3 and planning-guide.md §6), the Advisor agreement gate is real (ADR/ARO
+flowchart split + agreement-branched main-agent step), the dead WRONG_RESULTS->CODER and
+MODEL/FORMAT->PLANNER routes are deleted, `check_factory_rules.py` validates workflow prose
+outside factory-rule blocks (`check_workflow_prose`), `test_prompt_structure.py` pins the Kimi
+2.4.1 tool inventory / CLI contracts / plan-approval contract, portable-verify guidance lands in
+the task template and planning guide (no POSIX single-quoted git pathspecs), and
+`validate_documentation.py --derive` excludes the orchestrator's pre-DOC2 scope via stateful
+`--baseline-files` (`path=sha256`, `baseline` subcommand; a name-only exemption is a usage
+error). Every fix is vaccinated: 75/75 vaccines bite (12 new DP probes on base f4b4892). The
+suite is green end to end (46 PASS / 0 FAIL of 46 self-test files), the memory gates run clean.
+Latest run: implement 20261101-7cbfae60 (task_combined_backlog.yaml, hitl, plan approved with 0
+rejections) — review iteration 1 request_changes (1 critical: name-only baseline exemption; 1
+minor: unreachable block), reworked, iteration 2 approve zero findings; acceptance SUCCESS
+(6/6 verify MET, regression pass, ledger FRESH). Version 12.20.0 -> 12.21.0 (minor, matrix +
+reviewer).
+Open backlog: 0 follow_up items; 2 info debts carried with follow_up=false (module-vaccine
 fragility, historical RV/BL/PR/RF/NM attribution).
 Previous state: factory v12.19.1 — clean code is now standing practice: two permanent skill-base skills
 (`clean-code-discipline` — the writing discipline; `clean-code-metrics` — the three metric gates:
@@ -48,7 +49,7 @@ acceptance 5/6 verify MET, criterion 4 FAILED-by-authoring (cmd.exe-mangled path
 condition itself holds — owner decision pending). Model attribution PASS.
 Open backlog: 2 (1 critical follow_up — the 10 findings of this review; 1 info follow_up — the
 criterion-4 authoring flaw; plus 2 info debts carried with follow_up=false: module-vaccine
-fragility, historical RV/BL/PR/RF/NM attribution; 52 items closed with evidence).
+fragility, historical RV/BL/PR/RF/NM attribution; 55 items closed with evidence).
 Previous run: implement 20261031-dd7ffa0e (fix-tasks.yaml — the 26 self-review findings, hitl, plan
 approved with 0 rejections) — reviewer calibration discharged blind (7/7, P/R 1.000) before the
 gate; review iteration 1 request_changes (vaccination escape weakened the guard; residual
@@ -160,7 +161,7 @@ unrequested 18-file rework was rolled back).
 Version type: the deterministic matrix proposed `patch`; the code reviewer overrode it to `minor`
 because a new canonical rule, two flow nodes, three scripts, a summary field and a record kind are
 additive, not breaking.
-Open backlog: 0 items (52 closed with evidence) — the §7 calibration obligation, the red suite
+Open backlog: 0 items (55 closed with evidence) — the §7 calibration obligation, the red suite
 and the 12 review findings were all closed by run 20261026-2ea2eb55 (v12.17.0, see above); the
 deployer `start.sh` guard now also has a network-gated behavioural test. The `test_run_id.py`
 line-ending debt stays CLOSED: the id is platform-neutral.

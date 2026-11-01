@@ -21,11 +21,8 @@ it is broken — is §1.2.
 The JSON and the tables below agree row for row. Two rows that used to be quirks are now real
 predicates: row 8 matches Rust error codes (`error[E0308]`) with the brackets escaped, and row 16
 carries the test-context predicate the route has always documented, so a test timeout reaches
-PLANNER while every other timeout reaches row 17's CODER. Two left-overs stay documented as they
-are: row 18 keeps unescaped parentheses in `Traceback (most recent call last)`, so they form a
-group, and the §2 nuance `WRONG_RESULTS (with "regression")` → CODER does NOT apply under
-JSON-first classification — row 2 of the snapshot matches any WRONG_RESULTS (its pattern contains
-`regression`) and routes it to DIAGNOSTICIAN, and the JSON is authoritative over the §2 table.
+PLANNER while every other timeout reaches row 17's CODER. One left-over is documented as it is:
+row 18 keeps unescaped parentheses in `Traceback (most recent call last)`, so they form a group.
 
 Match the combined error output (stdout + stderr) against these patterns IN ORDER — more
 specific first. First match wins.
@@ -194,8 +191,7 @@ After classification, decide who retries:
 
 | Category | Route to | What happens |
 |----------|----------|--------------|
-| WRONG_RESULTS (without "regression") | DIAGNOSTICIAN | deep analysis needed |
-| WRONG_RESULTS (with "regression") | CODER | code changed behavior incorrectly |
+| WRONG_RESULTS | DIAGNOSTICIAN | deep analysis needed |
 | INFRASTRUCTURE | auto-fix | run the auto-fix command, then re-run verification |
 | COMPILE_ERROR / LINK_ERROR | CODER | coder fixes code with the error output |
 | MISSING_FILE | BA | BA re-studied configs incorrectly |

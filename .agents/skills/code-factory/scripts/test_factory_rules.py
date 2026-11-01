@@ -22,7 +22,13 @@ verifies both halves of the contract:
     carrier with one extra clause fails as "differs", a carrier without the block fails as
     "missing", a duplicated block is rejected too, watering the gate down in ALL carriers at once
     is still caught (the rulebook keeps the canonical wording), an unknown rule id fails and a
-    missing rulebook fails instead of silently passing.
+    missing rulebook fails instead of silently passing;
+  - the WORKFLOW PROSE pass bites as well: every throwaway root carries the three HITL approval
+    carriers (SKILL.md, code-factory.md, planning-guide.md), a clean copy passes, and each of a
+    stale flowchart node (`EnterPlanMode` injected into node I), a stale tool name in the Phase 3
+    prose, a missing approval token and a REORDERED approval step (plan file + `AskUserQuestion`
+    moved after the wait) FAILS while every factory-rule block still matches; a deleted carrier is
+    a named problem, never a traceback.
 
 Negative checks always run on tempdir copies, never on the real documents.
 
@@ -50,6 +56,17 @@ GATE_CARRIERS = (
     ".agents/skills/code-factory/SKILL.md",
     ".agents/skills/code-factory/references/code-review.md",
 )
+# The three carriers of the HITL approval gate whose PROSE (flowchart node, tool names, step order)
+# is validated by the workflow-prose pass: a temp root must ship all three, as the real one does.
+SKILL = ".agents/skills/code-factory/SKILL.md"
+AGENT_DOC = ".agents/agents/code-factory.md"
+PLANNING_GUIDE = ".agents/skills/code-factory/references/planning-guide.md"
+WORKFLOW_CARRIERS = (SKILL, AGENT_DOC, PLANNING_GUIDE)
+# The tool the Kimi Code CLI does not ship: an approval prose that names it is a dead call.
+DEAD_TOOL = "EnterPlanMode"
+# A prose failure must not be masked by a rule-block failure: each of these phrases marks a
+# rule-block problem in the checker's report.
+BLOCK_PROBLEM_MARKS = ("differs from", "missing, duplicated")
 # The root AGENTS.md is a hand-authored MAP, not a carrier: it must NOT quote any rule (that is how
 # it grew past the size gate) and must keep a pointer line for every rule it relies on.
 AGENTS = "AGENTS.md"
@@ -117,18 +134,42 @@ def canonical_block(text: str, rule_id: str) -> str:
 
 
 def make_tree(dst: pathlib.Path) -> list[pathlib.Path]:
-    """(Re)build a throwaway root: the rulebook plus the review-gate carriers, byte-identical."""
+    """(Re)build a throwaway root: the rulebook plus every document both passes read, as shipped.
+
+    Returns the review-gate carrier copies (the workflow approval carriers are copied too, but not
+    returned: they are mutated by path, not by index).
+    """
     if dst.exists():
         shutil.rmtree(dst)
     (dst / RULEBOOK).parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / RULEBOOK, dst / RULEBOOK)
-    copies = []
-    for carrier in GATE_CARRIERS:
+    for carrier in dict.fromkeys((*GATE_CARRIERS, *WORKFLOW_CARRIERS)):
         target = dst / carrier
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / carrier, target)
-        copies.append(target)
-    return copies
+    return [dst / carrier for carrier in GATE_CARRIERS]
+
+
+def mutate(tree: pathlib.Path, carrier: str, old: str, new: str) -> None:
+    """Replace ONE occurrence of `old` in a carrier copy — the stale prose a test must catch."""
+    path = tree / carrier
+    text = path.read_text(encoding="utf-8")
+    expect(old in text, f"the mutation target {old!r} is not in {carrier} any more: update the test")
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def expect_workflow_failure(result: subprocess.CompletedProcess[str], carrier: str,
+                            detail: str, reason: str) -> None:
+    """The run failed on the PROSE of `carrier` (`detail` in the report), not on a rule block."""
+    expect(result.returncode == 1, f"{reason}: the checker must exit 1, got {result.stdout!r}")
+    expect("Traceback" not in result.stdout + result.stderr,
+           f"{reason}: a prose failure must be reported, not raised: {result.stderr!r}")
+    expect(carrier in result.stdout, f"{reason}: the carrier must be named: {result.stdout!r}")
+    expect(detail in result.stdout, f"{reason}: the reason must be named: {result.stdout!r}")
+    for mark in BLOCK_PROBLEM_MARKS:
+        expect(mark not in result.stdout,
+               f"{reason}: every factory-rule block still matches, only the prose is stale: "
+               f"{result.stdout!r}")
 
 
 def main() -> int:
@@ -266,6 +307,58 @@ def main() -> int:
         expect("cannot read" in nowhere.stdout,
                f"the unreadable rulebook must be reported: {nowhere.stdout!r}")
 
+        # 4f. the workflow-prose pass: a clean copy of all three approval carriers passes (the
+        #     marked blocks and the prose are both consistent).
+        make_tree(tree)
+        prose_ok = run("--root", str(tree), "--rule", RULE)
+        expect(prose_ok.returncode == 0,
+               f"a clean tree must pass the workflow-prose pass too: {prose_ok.stdout!r}")
+
+        # 4f-i. a stale flowchart node: the dead tool injected into node I fails on the prose.
+        make_tree(tree)
+        mutate(tree, SKILL, "Wait for the answer.", f"Then call {DEAD_TOOL}. Wait for the answer.")
+        stale_node = run("--root", str(tree), "--rule", RULE)
+        expect_workflow_failure(stale_node, SKILL, "dead tool", "a dead tool in flowchart node I")
+        expect(DEAD_TOOL in stale_node.stdout,
+               f"the dead tool must be named: {stale_node.stdout!r}")
+
+        # 4f-ii. a stale tool name in the Phase 3 prose: the plan is presented by a tool Kimi Code
+        #        does not ship, so the approval gate would hit a dead call.
+        make_tree(tree)
+        mutate(tree, AGENT_DOC, "ask explicitly via `AskUserQuestion`",
+               f"present it via the `{DEAD_TOOL}` tool")
+        stale_tool = run("--root", str(tree), "--rule", RULE)
+        expect_workflow_failure(stale_tool, AGENT_DOC, "dead tool",
+                                "a dead tool in the Phase 3 approval prose")
+
+        # 4f-iii. a missing approval step: the approval section no longer names the question tool.
+        make_tree(tree)
+        mutate(tree, PLANNING_GUIDE, "`AskUserQuestion` whether to approve",
+               "the user whether to approve")
+        no_question = run("--root", str(tree), "--rule", RULE)
+        expect_workflow_failure(no_question, PLANNING_GUIDE, "does not name",
+                                "an approval section that asks nothing")
+
+        # 4f-iv. a REORDERED approval step: both names are still there, but only after the wait —
+        #        the user is asked after being waited for, which is not an approval gate.
+        make_tree(tree)
+        mutate(tree, PLANNING_GUIDE,
+               "HITL: write `.code-factory/state/plan.md`, present it to the user, and ask "
+               "explicitly via\n`AskUserQuestion` whether to approve, revise, or reject it. Wait "
+               "for the answer.",
+               "HITL: Wait for the answer, then write `.code-factory/state/plan.md` and ask via\n"
+               "`AskUserQuestion` whether to approve, revise, or reject it.")
+        reordered = run("--root", str(tree), "--rule", RULE)
+        expect_workflow_failure(reordered, PLANNING_GUIDE, "only AFTER the wait step",
+                                "an approval step moved after the wait")
+
+        # 4f-v. a missing carrier is a named problem of the report, never a traceback.
+        make_tree(tree)
+        (tree / PLANNING_GUIDE).unlink()
+        absent = run("--root", str(tree), "--rule", RULE)
+        expect_workflow_failure(absent, PLANNING_GUIDE, "unreadable",
+                                "a deleted workflow carrier")
+
     # 5. stdlib-only contract (no third-party imports).
     source = TOOL.read_text(encoding="utf-8")
     imported = set(re.findall(r"^(?:import|from)\s+([A-Za-z0-9_]+)", source, flags=re.M))
@@ -274,9 +367,11 @@ def main() -> int:
 
     print(f"PASS - the rulebook declares {len(registry)} rules, every rule has resolvable carriers, "
           f"check_factory_rules.py keeps {RULE} byte-identical in {len(GATE_CARRIERS)} documents "
-          "while catching drift, deletion, duplication and a gate watered down everywhere, and the "
-          f"root {AGENTS} is a POINTER map: {len(AGENTS_POINTER_RULES)} rules referenced, no quote "
-          "copied, under the 32 KB size gate.")
+          "while catching drift, deletion, duplication and a gate watered down everywhere, the "
+          f"workflow-prose pass catches a dead {DEAD_TOOL} in all {len(WORKFLOW_CARRIERS)} "
+          "approval carriers plus a missing or reordered approval step while every rule block still "
+          f"matches, and the root {AGENTS} is a POINTER map: {len(AGENTS_POINTER_RULES)} rules "
+          "referenced, no quote copied, under the 32 KB size gate.")
     return 0
 
 

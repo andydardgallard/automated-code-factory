@@ -67,7 +67,21 @@ Work in two steps so the validator has a baseline to diff against:
 - **`check --derive` is the scope guard**: it recomputes the changed set from `git status` and fails
   when a changed file is missing from `--files`. Run it once after the plain `check` passes: your
   own list is not the authority on what you touched — the repository is. A file you changed but did
-  not declare is a violation, not a footnote.
+  not declare is a violation, not a footnote. The orchestrator hands you `--baseline-files`, the
+  `path=sha256hex` state of the run's own pre-DOC2 change set, captured from the manifest before you
+  start with `validate_documentation.py baseline --repo <root> --files <pre-DOC2 paths>`; pass it
+  through unchanged so those files are excluded from the undeclared comparison — and only while
+  their content still is the captured one, so any file YOU edit there is still reported:
+  ```bash
+  python .agents/skills/code-factory/scripts/validate_documentation.py check \
+    --repo <repository root from the briefing> \
+    --baseline <repository root from the briefing>/.code-factory/docs_baseline \
+    --files <rel-path> [<rel-path> ...] --derive --baseline-files <pre-DOC2 path=state> [...]
+  ```
+  The baseline scopes the undeclared comparison ONLY: you still declare every file you edit, a
+  protected file you edit and declare still fails, and an edit that changes a baseline file's
+  content is an undeclared change like any other. When the briefing names no baseline, run
+  `--derive` without the option — never invent a baseline of your own.
 - If it still fails after the retry → do NOT keep editing. Record a `documentation_debt` item in
   your report (with the validator's error) and return; the main agent will log it in the run
   report and the factory continues. The factory must never fail because of documentation.

@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.20.0 -->
+<!-- code-factory-version: 12.21.0 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.
@@ -24,7 +24,9 @@ mandatory code review before acceptance.
   `factory_preflight.py` (environment probe), `action_gate.py` (destructive actions),
   `task_graph.py` (on-disk task graph), `log_tail.py` (tail of a long log), `repo_stats.py`
   (code-based analyses), `project_fingerprint.py`, `memory_project.py`, `version_manager.py`,
-  `check_factory_rules.py` (reconciling the rulebook with its carriers: `factory-rule` blocks byte-for-byte),
+  `check_factory_rules.py` (reconciling the rulebook with its carriers: `factory-rule` blocks byte-for-byte,
+  plus the workflow prose around them in the three approval-gate carriers — a dead plan-mode tool
+  name or a step that puts the wait before the plan file and the explicit question),
   `check_english_only.py` (English-only gate over what the repository ships (`git ls-files`, like
   `project_fingerprint.py`): fails on any Cyrillic left outside the exceptions `CHANGELOG.md`,
   `memory/`, `task*.yaml`, `.code-factory/`, `.git/` — with `memory/` exempt as HISTORY only: the
@@ -280,7 +282,11 @@ mandatory code review before acceptance.
 - **Documentation**: after every successful implement/refactor, the
   `factory-documenter` subagent (secondary) is invoked — it updates only doc comments and `.md` files; validator
   `validate_documentation.py` with a budget of 1 retry, whose `--derive` scope guard recounts the
-  changed files from git and includes untracked new ones, so an undeclared file fails the check;
+  changed files from git and includes untracked new ones, so an undeclared file fails the check —
+  and excludes the orchestrator-supplied `--baseline-files` set (the manifest's files captured before
+  DOC2 as `path=sha256hex` by `validate_documentation.py baseline`), so the run's own changes do not
+  fail the documenter — while an undeclared edit that changes a baseline file's content (protected
+  ones included) still does;
   not invoked for review/security_audit.
 - Rule `documentation`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## documentation`).
 

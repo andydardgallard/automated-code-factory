@@ -209,10 +209,10 @@ it looks: only the SECOND planner is affected, the first planner keeps its matri
 Provider-side failures (auth 401/403, rate limit 429, upstream 5xx, unknown model, malformed
 request) are integrated into the deterministic router — see `references/error-routing.md` §1.1.
 Auth/rate/upstream → INFRASTRUCTURE auto-fix (repair the provider config, no code rollback);
-model/format → PLANNER (fix the alias → provider mapping). Budget: INFRASTRUCTURE=3. For a model
-the task NAMES, the infrastructure route is config-repair plus wait-and-retry of the SAME model
-within that budget 3, and then stop-and-ask (§5, rule `model-unavailable-stop`): substituting
-another model is never an infrastructure auto-fix.
+model/format → INFRASTRUCTURE (repair the alias → provider mapping or provider config, with no code
+rollback). Budget: INFRASTRUCTURE=3. For a model the task NAMES, the infrastructure route is
+config-repair plus wait-and-retry of the SAME model within that budget 3, and then stop-and-ask
+(§5, rule `model-unavailable-stop`): substituting another model is never an infrastructure auto-fix.
 
 ## 7. Backward compatibility
 

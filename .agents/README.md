@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.20.0 -->
+<!-- code-factory-version: 12.21.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -41,7 +41,7 @@ projects or creates projects from scratch.
 │       │   ├── test_factory_model.py       # self-test of the model scripts
 │       │   ├── memory_project.py           # project memory: init/name/check/compact/rename/backlog/compact-check/validate-fix-tasks
 │       │   ├── test_memory_project.py      # self-test of the project memory script
-│       │   ├── check_factory_rules.py      # reconciliation of rulebook and carriers: factory-rule blocks byte-for-byte
+│       │   ├── check_factory_rules.py      # reconciliation of rulebook and carriers: factory-rule blocks byte-for-byte + the approval-gate workflow prose outside them
 │       │   ├── test_factory_rules.py       # self-test of the rule reconciliation
 │       │   ├── check_english_only.py       # English-only gate: no Cyrillic left in the tracked files outside the exceptions CHANGELOG.md/memory/task*.yaml/.code-factory — memory/ only as HISTORY (the memory pass scans the new v2 records + summary.md; --no-memory is the escape)
 │       │   ├── test_check_english_only.py  # English-only gate self-test
@@ -396,7 +396,9 @@ NOT fix vulnerabilities itself (see `references/security-audit.md`).
 ## Modes
 
 - **hitl (default)** — the factory asks the user for the business scenario, the run
-  configs, and the expected business results, then presents the plan for approval.
+  configs, and the expected business results, then writes `.code-factory/state/plan.md` and asks the
+  user explicitly via `AskUserQuestion` whether to approve, revise, or reject it, waiting for the
+  answer.
 - **auto** — the factory makes reasonable assumptions (recording them in the plan as assumptions) and
   works without questions.
 
@@ -618,8 +620,14 @@ fix or visually validate a browser-based Web GUI, and is invisible for every oth
 invokes the `factory-documenter` subagent (secondary model). It takes the list of changed files
 from `.code-factory/manifest.json` and brings the documentation in line with the code — only
 doc comments and `.md` files, never code/tests/configs. The result is checked by the built-in
-validator `scripts/validate_documentation.py` (budget 1 retry); on exhaustion the debt
-is recorded in the run report and the factory continues. It is not invoked for `review`/`security_audit`.
+validator `scripts/validate_documentation.py` (budget 1 retry); before DOC2 the orchestrator
+captures the manifest's files as `path=sha256hex` entries (`validate_documentation.py baseline
+--repo <root> --files <pre-DOC2 paths>`) and passes them as `--baseline-files`, so the validator's
+`--derive` scope guard excludes the run's own pre-DOC2 scope from the undeclared-file comparison
+only while each file's content still is the captured one — an undeclared documenter edit to a
+baseline file (protected ones included) and any undeclared/untracked documenter edit still fail. On
+exhaustion the debt is recorded in the run report and the factory continues. It is not invoked for
+`review`/`security_audit`.
 <!-- factory-rule: documentation begin -->
 **Documentation (canonical wording):** after every successful `implement`/`refactor` the main agent invokes the `factory-documenter` subagent (secondary) with the run's manifest; it updates ONLY doc comments and `.md` files and never code, tests or configs. It validates its work with `scripts/validate_documentation.py` with a budget of 1 retry; when the budget is exhausted, the documentation debt is recorded in the run report and the factory continues. Documentation is not invoked for `review`/`security_audit`.
 <!-- factory-rule: documentation end -->

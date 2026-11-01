@@ -183,6 +183,33 @@ those sections well formed and one task per line.
 - Derive verification commands from the stack config files (Cargo.toml, pyproject.toml,
   package.json, go.mod...) — do NOT guess package names from folder names.
 
+### Portable verify commands
+
+A `verify` command (in the task's `acceptance_criteria` and in each plan task's `verification:`)
+is executed FOR REAL through a shell — cmd.exe on Windows, /bin/sh on POSIX — so it must be
+runnable via the shell the pre-flight probe found. `scripts/factory_preflight.py` reports the
+real environment (the python command, the bash/sh path, the OS) in
+`.code-factory/state/preflight.json`; author the command against what it reports, not against the
+terminal the plan happened to be written in.
+
+- A git pathspec must NOT rely on POSIX single quotes: cmd.exe passes the quote characters
+  through, the pathspec matches nothing, and git exits 128 although the condition actually holds.
+- Prefer bash-safe double-quoted forms; put a non-trivial check into a small script (exit 0 =
+  pass) instead of a long one-line pipeline full of quoting.
+
+Good (portable — passes on Windows cmd.exe, /bin/sh and bash):
+
+```
+git diff --quiet HEAD -- "prepare_factory.cmd" "prepare_factory.ps1"
+```
+
+Non-portable (the same intent, single-quoted pathspecs: exit 128 on Windows though the diff is
+empty):
+
+```
+git diff --quiet HEAD -- 'prepare_factory.cmd' 'prepare_factory.ps1'
+```
+
 ## 5. Business-test definition (HITL mode — mandatory)
 
 In HITL mode you MUST ask the user (via `AskUserQuestion`, max 4 questions per call) before
@@ -204,8 +231,9 @@ task description, and write them into the plan marked as **assumptions**.
 
 ## 6. Present the plan
 
-HITL: write the plan file, call `EnterPlanMode`, then `ExitPlanMode`. The user may approve,
-reject or revise. On revision, update the plan and re-present.
+HITL: write `.code-factory/state/plan.md`, present it to the user, and ask explicitly via
+`AskUserQuestion` whether to approve, revise, or reject it. Wait for the answer. On revision,
+update the plan and re-present.
 
 Count every rejection in `retry_counters.plan_rejections` of `.code-factory/state/pipeline.yaml`.
 The FIRST rejection sends the plan back to §4 — re-plan in the same context and re-present. The

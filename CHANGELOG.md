@@ -5,6 +5,8 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.21.0] — 2026-11-01
+
 ## [12.20.0] — 2026-11-01
 
 ## [12.19.1] — 2026-10-31

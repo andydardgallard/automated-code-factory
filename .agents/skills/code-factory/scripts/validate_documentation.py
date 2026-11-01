@@ -16,11 +16,17 @@ Checks that the documenter touched ONLY documentation:
      a line that carries code after (or before) a triple-quoted span is a code line.
 
 Usage:
-  python3 validate_documentation.py check --repo <root> --baseline <dir> --files f1 f2 ... [--derive]
+  python3 validate_documentation.py check --repo <root> --baseline <dir> --files f1 f2 ... \
+      [--derive [--baseline-files path=sha256hex ...]]
   python3 validate_documentation.py snapshot --repo <root> --baseline <dir> --files f1 f2 ...
+  python3 validate_documentation.py baseline --repo <root> --files f1 f2 ...
 
 `snapshot` copies the listed files into <dir> preserving relative paths (the documenter runs it
 BEFORE editing). `check` compares the current files against that snapshot.
+
+`baseline` prints the state the orchestrator has to capture BEFORE the documenter starts: one
+`<path>=<sha256hex>` line per existing file, `<path>=-` for a file that does not exist (a deletion
+the run already made). Its output is exactly the `--baseline-files` input.
 
 The doc-line classifier is LANGUAGE-AWARE: a leading `#` counts as a comment only in the languages
 where it is one (shell/python/ruby/...), never in the C family (a changed `#define`/`#include` is a
@@ -34,6 +40,23 @@ missing from `--files` (an edit to, or a brand-new, unlisted source/test/config 
 When git is unavailable or <repo> is not a git repository the mode degrades with a message and
 exit code 2 (never a traceback).
 
+`--derive --baseline-files <path>=<sha256hex>` names the run's OWN changes WITH their state,
+captured by the orchestrator BEFORE the documenter started (on an implement run: the manifest's
+changed+created files, plus anything else git reports as already changed; the `baseline` subcommand
+prints exactly the entries to pass). A baseline path is exempted from the UNDECLARED-file comparison
+ONLY while the file still is in the state that was captured: its current sha256 must equal the
+recorded one (`-` records an absent file). An entry whose file changed since capture is NOT
+exempted — an undeclared documenter edit to a file the run had already touched therefore fails
+exactly like an undeclared edit to a file it had not, protected files included. That comparison and
+nothing else is scoped: the explicit `--files` documentation-only checks are untouched, so a declared
+protected file still fails. The baseline is orchestrator-supplied, never documenter-chosen.
+The option is only meaningful with `--derive` (using it alone is a usage error, exit 2). Every entry
+must be `<repository-relative path>=<state>`: separators are normalized, duplicates dropped, and a
+blank, absolute (POSIX root, Windows drive, UNC share) or `..`-escaping entry is rejected with exit 2.
+A name-only entry (no `=`) is a usage error too — name-only exemption is exactly the hole the content
+hash closes — as is a malformed hash (not 64 hex characters) or one path given two different hashes.
+An EMPTY list is legitimate — a run may have no pre-DOC2 changes.
+
 Exit code 0 = PASS, 1 = FAIL (each violation printed to stderr), 2 = the deriving mode could not
 run (git unavailable / not a repository). stdlib only.
 """
@@ -41,7 +64,9 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -343,6 +368,124 @@ def derive_changed_files(root: pathlib.Path) -> tuple[list[str], str]:
     return changed, ""
 
 
+def _is_absolute(rel: str) -> bool:
+    """True for a POSIX root path, a Windows drive path or a UNC share (already `/`-normalized)."""
+    return (rel.startswith("/")                       # `/x` and `//server/share`
+            or (len(rel) > 1 and rel[1] == ":" and rel[0].isalpha()))   # `C:/x`
+
+
+def normalize_path_list(values: list[str]) -> tuple[list[str], list[str]]:
+    """Normalize an orchestrator-supplied repository-relative path list.
+
+    Returns `(paths, problems)`: `paths` are forward-slash, `./`-free and deduplicated (input order
+    kept); `problems` names every entry the caller must reject. An EMPTY list is legitimate and
+    yields no problem — a run may have no pre-DOC2 changes, and a blanket "must not be empty" rule
+    would reject that real case. An entry is rejected when it is blank, absolute (POSIX root, a
+    Windows drive letter, a UNC share) or carries a `..` segment: the baseline decides which files
+    escape the undeclared-file comparison, so a malformed entry is a usage error, never a silent
+    no-op, and `..` is refused outright rather than resolved, because resolving it would make the
+    option's meaning depend on the cwd.
+    """
+    paths: list[str] = []
+    problems: list[str] = []
+    for raw in values:
+        rel = raw.strip().replace("\\", "/")          # Windows and POSIX spellings compare equal
+        if not rel:
+            problems.append(f"{raw!r} is an empty path")
+            continue
+        if _is_absolute(rel):
+            problems.append(f"{raw} is absolute (the list must be repository-relative)")
+            continue
+        parts = [p for p in rel.split("/") if p not in ("", ".")]
+        if ".." in parts:
+            problems.append(f"{raw} escapes the repository (`..` segment)")
+            continue
+        norm = "/".join(parts)
+        if not norm:
+            problems.append(f"{raw!r} is an empty path")
+            continue
+        if norm not in paths:                          # dedupe, keep the first spelling
+            paths.append(norm)
+    return paths, problems
+
+
+# A baseline entry is `<path>=<state>`: the sha256 of the file's content at capture time, or this
+# sentinel for a file that did not exist then (a deletion the run had already made). An exemption
+# may therefore never be granted by NAME alone.
+BASELINE_ABSENT = "-"
+_SHA256_RE = re.compile(r"\A[0-9a-fA-F]{64}\Z")
+
+
+def baseline_state(root: pathlib.Path, rel: str) -> str:
+    """The state a baseline entry records for `rel` NOW: its sha256, `-`, or "" when unreadable.
+
+    "" is never a valid recorded state, so an unreadable file can never match any entry and is never
+    exempted — an unverifiable state is not an unchanged one.
+    """
+    target = root / rel
+    if not target.is_file():
+        return BASELINE_ABSENT
+    try:
+        return hashlib.sha256(target.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def parse_baseline_entries(values: list[str]) -> tuple[dict[str, str], list[str]]:
+    """Parse orchestrator-supplied `<path>=<sha256hex>` (or `<path>=-`) baseline entries.
+
+    Returns `(entries, problems)`: `entries` maps a repository-relative path to the state captured
+    before DOC2, `problems` names every entry the caller must reject. The hash is what makes the
+    exemption sound — a path that was already changed pre-DOC2 is exempted only while its content is
+    STILL the captured one, so an undeclared documenter edit there cannot hide behind the name. A
+    name-only entry is therefore a usage error, not a silent "exempt forever". An entry is rejected
+    when it carries no `=`, when its path is blank/absolute/`..`-escaping (see
+    `normalize_path_list`), when its state is neither 64 hex characters nor the `-` sentinel, and
+    when it contradicts an earlier hash for the same path. An EMPTY list is legitimate.
+    """
+    entries: dict[str, str] = {}
+    problems: list[str] = []
+    for raw in values:
+        rel, sep, state = raw.strip().rpartition("=")
+        if not sep:
+            problems.append(f"{raw!r} carries no content state (expected "
+                            f"<path>=<sha256hex>): a name-only exemption would hide an undeclared "
+                            "edit to a file the run changed before DOC2")
+            continue
+        paths, path_problems = normalize_path_list([rel])
+        if path_problems:
+            problems.extend(path_problems)
+            continue
+        norm, state = paths[0], state.strip()
+        if state != BASELINE_ABSENT and not _SHA256_RE.match(state):
+            problems.append(f"{raw!r}: the state must be a sha256 (64 hex characters) or "
+                            f"{BASELINE_ABSENT!r} for an absent file")
+            continue
+        state = state.lower()
+        if norm in entries and entries[norm] != state:
+            problems.append(f"{raw!r} contradicts the earlier state recorded for {norm}")
+            continue
+        entries.setdefault(norm, state)
+    return entries, problems
+
+
+def baseline_entries(root: pathlib.Path, files: list[str]) -> tuple[list[str], list[str]]:
+    """Render the `<path>=<state>` entries of `files` as the orchestrator must capture them.
+
+    Returns `(entries, problems)`; a file whose state cannot be read becomes a problem instead of an
+    entry, because a baseline nobody can verify must not be passed off as captured.
+    """
+    entries: list[str] = []
+    problems: list[str] = []
+    for rel in files:
+        state = baseline_state(root, rel)
+        if not state:
+            problems.append(f"{rel} cannot be read (the baseline must describe a verifiable state)")
+            continue
+        entries.append(f"{rel}={state}")
+    return entries, problems
+
+
 def use_utf8_output() -> None:
     """Force UTF-8 on stdout/stderr so the help survives being piped or redirected.
 
@@ -375,15 +518,48 @@ def main() -> int:
                                  "edits plus untracked new ones, ignored excluded) from "
                                  "`git -C <repo> status --porcelain` and FAIL when a changed file "
                                  "is missing from --files (exit 2 when git cannot answer)")
+            sp.add_argument("--baseline-files", nargs="*", metavar="PATH=STATE", default=None,
+                            help="Repository-relative files the run changed BEFORE the documenter "
+                                 "started, WITH the state captured then: `path=sha256hex`, or "
+                                 "`path=-` for a file absent at capture (the `baseline` subcommand "
+                                 "prints exactly these entries). A path is exempted from the "
+                                 "--derive undeclared-file comparison ONLY while its current state "
+                                 "equals the recorded one; the --files documentation-only checks are "
+                                 "unaffected. Requires --derive; a name-only entry is a usage "
+                                 "error; an empty list is legitimate")
+
+    sp = sub.add_parser("baseline")
+    sp.add_argument("--repo", default=".", help="Project root (default: cwd)")
+    sp.add_argument("--files", nargs="+", required=True,
+                    help="Files the run changed before the documenter starts (the pre-DOC2 manifest "
+                         "set); their `path=state` entries are printed, one per line")
 
     args = ap.parse_args()
     root = pathlib.Path(args.repo).resolve()
+
+    if args.cmd == "baseline":
+        rels, path_problems = normalize_path_list(args.files)
+        if path_problems:
+            ap.error("--files: " + "; ".join(path_problems))
+        entries, entry_problems = baseline_entries(root, rels)
+        if entry_problems:
+            ap.error("--files: " + "; ".join(entry_problems))
+        for entry in entries:
+            print(entry)
+        return 0
+
     baseline = pathlib.Path(args.baseline).resolve()
 
     if args.cmd == "snapshot":
         snapshot(root, baseline, args.files)
         print(f"PASS - snapshot of {len(args.files)} file(s) saved to {baseline}")
         return 0
+
+    if args.baseline_files is not None and not args.derive:
+        ap.error("--baseline-files requires --derive (it only scopes the derived changed set)")
+    recorded, entry_problems = parse_baseline_entries(args.baseline_files or [])
+    if entry_problems:
+        ap.error("--baseline-files: " + "; ".join(entry_problems))
 
     errors = check(root, baseline, args.files)
     if args.derive:
@@ -393,6 +569,14 @@ def main() -> int:
             return 2
         declared = {pathlib.PurePath(f).as_posix() for f in args.files}
         for rel in sorted(set(changed) - declared):
+            if rel in recorded:
+                # A baseline path is exempt only while it still IS what the orchestrator captured:
+                # an undeclared documenter edit changes the state, so the name cannot hide it.
+                if baseline_state(root, rel) == recorded[rel]:
+                    continue
+                errors.append(f"{rel}: changed in the repository but not declared via --files, and "
+                              "modified since the pre-DOC2 baseline was captured")
+                continue
             errors.append(f"{rel}: changed in the repository but not declared via --files")
     if errors:
         print("FAIL - documentation validation:", file=sys.stderr)

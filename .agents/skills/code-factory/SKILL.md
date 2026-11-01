@@ -3,7 +3,7 @@ name: code-factory
 description: Autonomous code factory that accepts business tasks in plain language from non-technical users, analyzes the project, plans changes, asks only business-logic questions, obtains plan approval, then implements code and runs integration / regression / business tests with deterministic error routing and LLM diagnosis on failure, checkpoint/resume, and rollback, plus a mandatory code-review gate before acceptance, finally validating acceptance criteria. Works with any programming language or combination of languages. Use when the user says "run the code factory", "solve this business task", "implement this feature", "fix this bug", "build this project", "review this code", or provides a business task file (task.yaml) / description.
 type: flow
 ---
-<!-- code-factory-version: 12.20.0 -->
+<!-- code-factory-version: 12.21.0 -->
 
 # Code Factory
 
@@ -108,7 +108,7 @@ flowchart TD
     TT -->|security_audit| SA[Security audit flow: detect artifact types, run only the relevant checks with factory-security-auditor (read-only) over the same shards — repo_inventory.py shards --tracked --max-lines 20000 over the TRACKED tree → parallel auditors → merge_findings.py — write reports + a generated fix-task file. No code change and no auto-fixing. See references/security-audit.md.]
     SA --> W
     G -->|hitl| H[Business test definition: ask the user via AskUserQuestion for 1 a concrete business scenario (user story), 2 which configs and input data to run, 3 expected business results. Only business-logic questions. Store answers in the plan.]
-    H --> I[Present the full plan for approval: write it to the plan file and call EnterPlanMode then ExitPlanMode. Wait for approval or revision comments. Count every rejection in retry_counters.plan_rejections of .code-factory/state/pipeline.yaml.]
+    H --> I[Present the full plan for approval: keep it in .code-factory/state/plan.md and ask the user explicitly via AskUserQuestion whether to approve, revise, or reject it. Wait for the answer. Count every rejection in retry_counters.plan_rejections of .code-factory/state/pipeline.yaml.]
     I --> J{Plan approved?}
     J -->|Revise - first rejection| F
     J -->|Revise - second rejection| PC[Plan committee: launch a SECOND independent factory-planner subagent (sub-agents/planner.md) from a CONTRASTING model family (planner = kimi-k3, second planner = deepseek-flash) to build an alternative plan for the same task and the user's accumulated comments; it never sees the rejected plan.]
@@ -156,12 +156,15 @@ flowchart TD
     DR -->|planner| P2
     DR -->|infrastructure| AI
     DR -->|human| ADV[Escalation step three: run the factory-advisor subagent (a judge-side model, budget advisor=1) with a self-contained briefing — the task, files by path, what was tried and why it failed, acceptance criteria. It returns the machine-read agreement (agree|disagree with the Diagnostician's route), root_cause, recommended_role, recommended_action and confidence, logged to .code-factory/logs/diagnostic.md.]
-    ADV --> ADR{Advisor recommendation}
-    ADR -->|coder| P
-    ADR -->|ba| P2
-    ADR -->|planner| P2
-    ADR -->|infrastructure| AI
-    ADR -->|human| U2[Show the user the diagnosis and ask how to proceed.]
+    ADV --> ADR{Advisor agreement?}
+    ADR -->|agree| ARO{Advisor recommended role}
+    ARO -->|coder| P
+    ARO -->|ba| P2
+    ARO -->|planner| P2
+    ARO -->|infrastructure| AI
+    ARO -->|human| U2[Show the user both diagnoses and ask how to proceed.]
+    ADR -->|disagree, hitl| U2
+    ADR -->|disagree, auto: stop the fix loop and record the disagreement in report.md| Y
     U2 --> V2{User decision}
     V2 -->|fix code| M
     V2 -->|revise plan| F
@@ -188,7 +191,7 @@ flowchart TD
     X -->|No, review/security_audit| XR[Stop and ask the owner: show the unmet criterion and keep the tree untouched — because a review/security_audit run changes nothing, a criterion that needs a code change is an authoring error of the task (canonical rule review-report-only: every verify: criterion must hold on the unmodified tree), never a rework order, and it is recorded in pending_decision of pipeline.yaml.]
     XR --> Y
     X -->|Yes| DOC{task_type: implement or refactor?}
-    DOC -->|Yes| DOC2[Documentation: invoke factory-documenter (secondary) with .code-factory/manifest.json; update only doc-comments and .md files; validator validate_documentation.py with retry budget 1; on exhaustion — the documentation debt goes into the run report, the factory continues.]
+    DOC -->|Yes| DOC2[Documentation: invoke factory-documenter (secondary) with .code-factory/manifest.json; update only doc-comments and .md files; validator validate_documentation.py with retry budget 1 — BEFORE DOC2 the orchestrator captures the manifest's changed_files + created_files as path=sha256hex entries with validate_documentation.py baseline and passes them as --baseline-files, so --derive excludes the run's own pre-DOC2 scope from the undeclared-file comparison only while each file's content still is the captured one: an undeclared documenter edit to a baseline file (protected ones included) and any undeclared/untracked documenter edit still fail; on exhaustion — the documentation debt goes into the run report, the factory continues.]
     DOC2 --> VER1[Version — step 1: deterministic matrix version_manager.py --repo <deployment root> suggest → propose the type major|minor|patch|none with an explanation. VERSION lives at the DEPLOYMENT ROOT, so this --repo is the deployment root — a documented exception, NOT blindly the resolved repo_path when that is a subdirectory of it]
     VER1 --> VER2[Version — step 2: the code reviewer validates the proposed type, may override it with an explanation (never from scratch)]
     VER2 --> VER3[Version — step 3: apply version_manager.py --repo <deployment root> bump|set + sync, validate exit 0; commit with the prefix v<version>: in the same commit as the changes. --repo is the DEPLOYMENT ROOT, the documented exception — VERSION lives at the deployment root, not at a resolved repo_path that is a subdirectory of it]
@@ -345,9 +348,14 @@ Rules that always apply:
 - **Documentation (factory-documenter)**: after every successful `implement` or `refactor` run,
   the main agent invokes the `factory-documenter` subagent (secondary model) with the run
   manifest; it updates ONLY doc-comments and `.md` files, never code/tests/configs, and validates
-  its work with `scripts/validate_documentation.py` (retry budget 1). If validation is exhausted,
-  the documentation debt is recorded in the run report and the factory continues. It is skipped
-  for `review` and `security_audit`.
+  its work with `scripts/validate_documentation.py` (retry budget 1). Before DOC2 the orchestrator
+  captures the manifest's files as `path=sha256hex` entries (`validate_documentation.py baseline
+  --repo <root> --files <pre-DOC2 paths>`) and passes them as `--baseline-files`, so `--derive`
+  excludes the run's own pre-DOC2 scope from the undeclared-file comparison — only while each file's
+  content still is the captured one, so an undeclared edit to a baseline file, protected ones
+  included, and any undeclared/untracked documenter edit still fail. If validation is exhausted, the
+  documentation debt is recorded in the run report
+  and the factory continues. It is skipped for `review` and `security_audit`.
 <!-- factory-rule: documentation begin -->
 **Documentation (canonical wording):** after every successful `implement`/`refactor` the main agent invokes the `factory-documenter` subagent (secondary) with the run's manifest; it updates ONLY doc comments and `.md` files and never code, tests or configs. It validates its work with `scripts/validate_documentation.py` with a budget of 1 retry; when the budget is exhausted, the documentation debt is recorded in the run report and the factory continues. Documentation is not invoked for `review`/`security_audit`.
 <!-- factory-rule: documentation end -->

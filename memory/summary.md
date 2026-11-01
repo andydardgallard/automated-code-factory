@@ -18,14 +18,20 @@ all five pinned source revisions via `skill_base.py`'s new `--revision` / `--ext
 SOURCE@REVISION` (multi-source `sources` list; offline pin re-verification; `-` hash). The
 reviewer holds every change to the gates through the standing `## 2.2 Metric gates` section of
 code-review.md (numbered-gate citations; "not measured + why" never blocks); coder/gui-expert
-carry the discipline as standing practice. All 26 findings of self-review 20261031-d2f6fea6 are
-closed: 25 fixed with regression vaccines (new FX group, 15 probes biting on base 33b8ed84), the
-advisor-side finding dispositioned as a false positive with the root-cause wording (Advisor =
-judge-side model) fixed across all canonical carriers. The suite is green end to end
-(45 PASS / 0 FAIL of 45 self-tests), the memory gates run clean. Open backlog: 0 (52 items closed
-with evidence; 2 info debts carried: module-vaccine fragility to newer shared-module assertions,
-historical RV/BL/PR/RF/NM groups claimed by attribution).
-Latest run: implement 20261031-dd7ffa0e (fix-tasks.yaml — the 26 self-review findings, hitl, plan
+carry the discipline as standing practice. The suite is green end to end
+(45 PASS / 0 FAIL of 45 self-test files; 46 including the .sh env test), the memory gates run clean.
+Latest run: review 20261101-e519a1da (report-only — dead workflow paths after the Kimi Code
+2.4.1 upgrade) — 10 merged findings over 3 shards (critical 3: the EnterPlanMode dead call in
+SKILL.md:111 / code-factory.md:259 / planning-guide.md:192; major 6 incl. two dead error routes,
+the unreachable Advisor-disagree branch and the check_factory_rules.py validation gap with a
+non-vacuous test_prompt_structure.py extension proposal; minor 1), 10/10 quotes verified, handed
+over as .code-factory/review/fix-tasks.yaml; subtask-A premise about root docs refuted; run
+acceptance 5/6 verify MET, criterion 4 FAILED-by-authoring (cmd.exe-mangled pathspecs; the
+condition itself holds — owner decision pending). Model attribution PASS.
+Open backlog: 2 (1 critical follow_up — the 10 findings of this review; 1 info follow_up — the
+criterion-4 authoring flaw; plus 2 info debts carried with follow_up=false: module-vaccine
+fragility, historical RV/BL/PR/RF/NM attribution; 52 items closed with evidence).
+Previous run: implement 20261031-dd7ffa0e (fix-tasks.yaml — the 26 self-review findings, hitl, plan
 approved with 0 rejections) — reviewer calibration discharged blind (7/7, P/R 1.000) before the
 gate; review iteration 1 request_changes (vaccination escape weakened the guard; residual
 Advisor-secondary prose), both reworked, iteration 2 approve zero findings; acceptance SUCCESS
@@ -80,7 +86,7 @@ gates themselves: the reviewer-budget loop (SKILL.md `RCR --> M` is unconditiona
 accepted as FRESH (evidence_ledger.py), any pre-fix failure counted as a vaccine
 (test_vaccination.py), code sharing a line with a block comment accepted by
 validate_documentation.py, SUCCESS without a ledger (verify_acceptance.py), and a swallowed
-launcher-backup failure (prepare_factory.ps1). Baseline: 35 PASS / 3 FAIL of 38 self-tests
+launcher-backup failure (prepare_factory.ps1). Baseline then: 35 PASS / 3 FAIL; the suite now
 (test_model_precedence.py — the reconfigured CLI config lacks a contrasting [secondary_model];
 test_vaccination.py — 1 of 24 vaccines no longer bites; test_windows_scripts.py — the base-commit
 negation probe is stale), so acceptance ended FAILURE with regression=fail.
@@ -93,7 +99,7 @@ is closed with a test that fails on the pre-fix code, verified by one executed c
 default matrix satisfies generator != judge again and `model_matrix.py resolve` exits 0 on an
 unpinned task. `run_id` hashes CRLF→LF-normalized bytes, the hashed task fixture's line endings are
 pinned, and `project_fingerprint.py` no longer hides tracked dot-directories. The self-test suite is
-green END TO END for the first time: 38 files, 38 PASS, 0 SKIP, 0 FAIL — `test_vaccination.py` now
+green END TO END: 45 files, 45 PASS, 0 SKIP, 0 FAIL — `test_vaccination.py` now
 resolves its base commit from git and proves its 24 vaccines instead of skipping. Review gate:
 request_changes on iteration 1 (2 major + 4 minor + 1 nit, all reworked and re-proved) then
 approve; acceptance SUCCESS with 40/40 criteria MET, ledger FRESH; models match the session wire
@@ -103,7 +109,7 @@ Previous run: review (run_id 20261025-4df00efd, task.yaml "full pre-publication 
 report-only, nothing edited (`git diff --quiet HEAD` exit 0). Six shards over the whole TRACKED
 tree (134 files, 43 866 lines): 35 merged findings, 0 critical, 10 major, 24 minor, 1 nit, 46/46
 quotes verified verbatim, verdict `request_changes` recorded as `results.review=` and handed over
-as `.code-factory/review/fix-tasks.yaml` (35 items). Proof side: 38 self-tests 37 PASS / 1
+as `.code-factory/review/fix-tasks.yaml` (35 items). Proof side then: the suite 37 PASS / 1
 documented SKIP / 0 FAIL, 12 end-to-end gates green on the unmodified tree
 (`.code-factory/logs/e2e-gates.md`), and the reviewer re-calibrated blind on the 7 golden cases at
 7/7 verdict accuracy, recall 1.000, precision 0.929 (the §7 obligation the v12.15.0 prompt edit had
@@ -142,8 +148,8 @@ deployer `start.sh` guard now also has a network-gated behavioural test. The `te
 line-ending debt stays CLOSED: the id is platform-neutral.
 Rulebook: 27 rules, 86 carriers, byte-identical (`check_factory_rules.py` exit 0 — AGENTS.md now
 points at the rulebook instead of carrying 24 verbatim blocks). Memory owner:
-repo, declared with `project_id` (the repository identity, not the folder name). Self-tests: 38
-files — 38 pass, 0 SKIP, 0 fail (green end to end; see the latest run above).
+repo, declared with `project_id` (the repository identity, not the folder name). Self-tests: 45
+files — 45 pass, 0 SKIP, 0 fail (green end to end; see the latest run above).
 
 ## Key decisions
 - The long-term memory `memory/` belongs to ONE target project (`repo_path`); the field

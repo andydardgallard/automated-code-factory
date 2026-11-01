@@ -1274,3 +1274,38 @@ unfinished:
     reason: carried — reconstructing durable per-vaccine claim lists for those releases is a separate task, flagged by the coder
     severity: info
     follow_up: false
+
+## 2026-11-01T12:45:00+03:00 — Review: dead workflow paths after the Kimi Code 2.4.1 upgrade (report-only)
+
+title: Dead-path review found 10 findings (3 critical — the EnterPlanMode dead call in 3 carriers; Advisor-disagreement branch unreachable; 2 dead error routes; validation gap confirmed with a non-vacuous check proposal); subtask-A premise about root docs refuted
+project: repo
+timestamp: 2026-11-01T12:45:00+03:00
+run_id: 20261101-e519a1da
+branch: main (report-only review — no feature branch, no product commit)
+commit: none (report-only review — the run commits no product files)
+task_type: review
+goal: find every dead path/dead instruction in the factory workflow after the Kimi Code 2.4.1 upgrade (EnterPlanMode and similar), verify the HITL approval gate description, inventory the validation gap outside factory-rule blocks, deliver a report + follow-up task file; change nothing
+changed_files: none in the product — report-only guarantee kept [verified: git diff HEAD -- . ':!.code-factory' ':!memory' exits 0 with an empty diff under bash; git status shows only the untracked task file and memory/ updates]
+created_files: none tracked; .code-factory/ run artifacts only (code-review.md, code-review-merged.json, review/fix-tasks.yaml, report.md, acceptance.md, evidence.json) [verified: git status]
+results: integration=not-run regression=pass business=not-run review=request_changes | acceptance 5/6 verify MET, 1 FAILED-by-authoring (see pending_decision) [verified: .code-factory/state/acceptance.md]; 10 merged findings (critical 3, major 6, minor 1) over 3 shards, 10/10 quotes verified verbatim [verified: .code-factory/logs/code-review-merged.json, .code-factory/logs/quotes-report.json]; regression 46 PASS / 0 FAIL of 46 self-tests, ledger regression=pass FRESH [verified: .code-factory/logs/regression.md, .code-factory/state/evidence.json]; follow-up task generated [verified: .code-factory/review/fix-tasks.yaml]; EnterPlanMode confirmed dead in exactly 3 carriers — SKILL.md:111, code-factory.md:259, planning-guide.md:192 — and the real approval gate (state/plan.md + explicit AskUserQuestion) never lost [verified: .code-factory/logs/code-review.md]
+decisions: subtask A premise REFUTED — AGENTS.md/.agents/README.md/README.md carry zero plan-mode mechanics (independent full reads + grep), only .agents/README.md:397 gets a minor wording-alignment finding [verified: .code-factory/logs/findings-shard-2.json, .code-factory/logs/code-review.md]; subtask B CONFIRMED — check_factory_rules.py:131 reconciles only factory-rule blocks; flowchart node wording, tool names and CLI contracts uncovered; proposed extension of test_prompt_structure.py proven non-vacuous (prototype gate exits 1 on the current tree naming all 3 carriers, 0 after the proposed fixes) [verified: .code-factory/logs/findings-shard-1.json]; model_matrix.py initially exited 1 on a default-matrix gui_expert-vs-reviewer family collision — resolved by pinning models.gui_expert=deepseek-flash in the STATE task copies only (role never delegated in a review run) [verified: .code-factory/state/task.yaml, model_matrix.py resolve exit 0]
+assumptions: Kimi Code 2.4.1 tool inventory taken from the live running session (kimi --version = 2.4.1), matching the task's documented fact about plan mode [inferred — session tool list, consistent with the owner's cited docs]
+models_used: main=kimi-code/k3; reviewer=kimi-code/k3.1-pro (3 shards; all 3 died at launch with provider_error "Connection error", classified per model-unavailable-stop, infrastructure retry 1/3 with the SAME named model via resume — all completed); other roles not delegated (report-only review); models_warning: task-matrix family collisions coder/tester/gui_expert vs advisor (deepseek), task matrix authoritative; model attribution PASS — main and reviewer both match the session wire [verified: .code-factory/state/model-attribution.json exit 0]
+factory_version: 12.19.1
+unfinished:
+  - item: 10 review findings (3 critical) of run 20261101-e519a1da — EnterPlanMode dead call in SKILL.md:111 / code-factory.md:259 / planning-guide.md:192; dead WRONG_RESULTS->CODER and MODEL/FORMAT->PLANNER routes; unreachable Advisor-disagree branch; check_factory_rules.py validation gap + non-vacuous test_prompt_structure.py extension proposal; .agents/README.md:397 wording
+    reason: report-only review never edits the project; the findings are handed over as .code-factory/review/fix-tasks.yaml for the owner to schedule as an implement task
+    severity: critical
+    follow_up: true
+  - item: acceptance criterion 4 of the review task ("no product file changed") is authored with single-quoted git pathspecs that Windows cmd.exe mangles (verify exits 128) although the condition itself holds (bash exit 0, empty diff)
+    reason: carried — re-authoring the criterion is the owner's decision (pending_decision in pipeline.yaml); a review run never fixes task authoring itself
+    severity: info
+    follow_up: true
+  - item: module-kind vaccines remain fragile to newer assertions in shared test modules overtaking a vaccine's declared first-failure signature
+    reason: carried — unchanged since 20261031-dd7ffa0e; converting every remaining module vaccine to probes is a separate hardening task
+    severity: info
+    follow_up: false
+  - item: historical vaccine groups RV/BL/PR/RF/NM are claimed by attribution because their per-run disposition artifacts predated the claims grammar
+    reason: carried — unchanged since 20261031-dd7ffa0e; reconstructing durable per-vaccine claim lists is a separate task
+    severity: info
+    follow_up: false

@@ -63,6 +63,19 @@ code fix, replayed against `FX_BASE_SHA`, so the fixes being shipped now are pro
 the run started from. Its claim is the disposition the run itself wrote — `FX-1..FX-15`, one item per
 fix, each naming its vaccine — so a fix without a bite cannot be dispositioned as done.
 
+The `DP` group is THIS run's own change set (run 20261101-7cbfae60): the ten findings of the
+report-only review that preceded it — the dead `EnterPlanMode` gate in three carriers, the Advisor
+agreement gate in the agent document and the flowchart, two dead routing rows, the workflow-prose
+pass of the rule reconciler, the extended prompt-structure pins and the operator manual's approval
+wording — plus the portable-verify guidance and the `--baseline-files` scope exclusion. Every one
+of them is a FOCUSED probe replayed against `DP_BASE_SHA`, because the modules the fixes touched
+(`test_flow_contracts.py`, `test_prompt_structure.py`, `test_factory_rules.py`,
+`test_validate_documentation.py`) each bundle SEVERAL of these vaccines: a whole-module run would
+abort at its first failing check on the pre-fix tree and validate its neighbours by accident. The
+probes reuse those modules' own published check functions (`check_advisor_agreement`,
+`check_routing_prose`, `check_readme_approval`, `check_plan_approval`, `normalize_path_list`), so a
+renamed or removed check becomes a red here instead of a silently narrower proof.
+
 `V-review-verdict-distinction` has no test module: its check is the local probe below, which reads
 the canonical `factory-rule` blocks from the root it is pointed at — the same function serves both
 runs, so the block that is absent at the base commit fails there and passes here.
@@ -157,6 +170,10 @@ FX_BASE_SHA = "33b8ed84bb0bf5517475e57d5a153a6e835bfdd7"
 # self-test are new files of the run, so the `IV` vaccine is replayed against the commit whose tree
 # holds neither of them — the self-test must be red there for its own first reason.
 IV_BASE_SHA = "b72b5e0177690d1c5e5ea0d5f6c9e14311cf3c17"
+# The pre-fix HEAD of THIS run's own change set (run 20261101-7cbfae60 started from it): every `DP`
+# vaccine is replayed against that commit, so the fixes being shipped now are proven against the
+# tree the run started from — never against an older release's base.
+DP_BASE_SHA = "f4b48920705a53e1329addaa7847d0cfc35b8369"
 
 # The four kinds of focused check a vaccine can name (see the module docstring).
 MODULE = "module"
@@ -177,10 +194,11 @@ PROBE_FIXTURES = ("test_chrome_devtools_mcp.py", "test_memory_project.py",
 # review follow-up group, `CC` the 12.19 clean-code release and `FX` THIS run's own fixes: a release
 # whose vaccines were only ever replayed against an older base proves nothing about the change set
 # being shipped now.
-EXPECTED_GROUPS = (("RV", 20), ("BL", 8), ("PR", 18), ("RF", 15), ("NM", 2), ("CC", 6), ("FX", 15))
+EXPECTED_GROUPS = (("RV", 20), ("BL", 8), ("PR", 18), ("RF", 15), ("NM", 2), ("CC", 6), ("FX", 15),
+                   ("DP", 12))
 # The id prefix that tags a registered vaccine with its group. The five historical groups below
 # carry no tag (their vaccines are the release-wide `V-memory-*`, `V-model-*`, ... entries).
-GROUP_TAGS = {"RF": "V-rf-", "NM": "V-nm-", "CC": "V-cc-", "FX": "V-fx-"}
+GROUP_TAGS = {"RF": "V-rf-", "NM": "V-nm-", "CC": "V-cc-", "FX": "V-fx-", "DP": "V-dp-"}
 # Groups whose per-run disposition artifact is NOT kept anywhere a clone can read: `.code-factory/`
 # is gitignored, so their item texts are gone. Their vaccines are still attributable by tag (RF/NM)
 # or by the shared historical release base (RV/BL/PR), and that attribution is what keeps the
@@ -882,6 +900,245 @@ for flag in ("--revision", "--extra-source"):
                              "registration of the 12.19 release is missing")
 '''
 
+# --------------------------------------------------------------------------------------------
+# THIS RUN's (DP) focused probes: one defect each, replayed against DP_BASE_SHA. The fixes of the
+# review follow-up are spread over four self-test modules that each bundle several of them, so a
+# whole-module run would abort at its FIRST failing check and validate its neighbours by accident.
+# Every probe re-executes exactly one defect — a carrier's prose, or one published check of the
+# module the fix extended — and reads the tree it is pointed at (cwd = that tree's scripts dir).
+# --------------------------------------------------------------------------------------------
+PROBE_DP_PLAN_AGENT = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+rel = ".agents/agents/code-factory.md"
+text = (root / rel).read_text(encoding="utf-8")
+dead = [number for number, line in enumerate(text.splitlines(), 1) if "EnterPlanMode" in line]
+if dead:
+    raise AssertionError(f"{rel}: Phase 3 must not call EnterPlanMode — Kimi Code 2.4.1 ships no "
+                         f"plan-mode entry tool, so an agent following the phase instruction hits a "
+                         f"dead call before the approval gate (lines {dead})")
+phase = text.split("### Phase 3", 1)[1].split("\\n### ", 1)[0]
+for needle in (".code-factory/state/plan.md", "AskUserQuestion", "WAIT for the answer"):
+    if needle not in phase:
+        raise AssertionError(f"{rel}: Phase 3 must keep the executable approval gate "
+                             f"({needle!r} is missing)")
+'''
+
+PROBE_DP_PLAN_SKILL = '''\
+import pathlib, re
+root = pathlib.Path(".").resolve().parents[3]
+rel = ".agents/skills/code-factory/SKILL.md"
+text = (root / rel).read_text(encoding="utf-8")
+dead = [number for number, line in enumerate(text.splitlines(), 1) if "EnterPlanMode" in line]
+if dead:
+    raise AssertionError(f"{rel}: flow node I must not call EnterPlanMode — Kimi Code 2.4.1 has no "
+                         f"plan-mode entry tool, so the flowchart an agent follows hits a dead call "
+                         f"before the HITL approval gate (lines {dead})")
+node = re.search(r"^\\s*H\\s*-->\\s*I\\[(.*)\\]\\s*$", text, re.M)
+body = node.group(1) if node else ""
+for needle in (".code-factory/state/plan.md", "AskUserQuestion"):
+    if needle not in body:
+        raise AssertionError(f"{rel}: flow node I must keep the plan in .code-factory/state/plan.md "
+                             f"and ask via AskUserQuestion ({needle!r} is missing)")
+'''
+
+PROBE_DP_PLAN_GUIDE = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+rel = ".agents/skills/code-factory/references/planning-guide.md"
+text = (root / rel).read_text(encoding="utf-8")
+dead = [number for number, line in enumerate(text.splitlines(), 1)
+        if "EnterPlanMode" in line or "ExitPlanMode" in line]
+if dead:
+    raise AssertionError(f"{rel}: section 6 must not call the plan-mode tools — plan mode is "
+                         f"USER-only (Shift-Tab or /plan), so the approval step is the plan file "
+                         f"plus an explicit question (lines {dead})")
+section = text.split("\\n## 6.", 1)[1].split("\\n## ", 1)[0]
+for needle in (".code-factory/state/plan.md", "AskUserQuestion"):
+    if needle not in section:
+        raise AssertionError(f"{rel}: section 6 must present the plan file and ask via "
+                             f"AskUserQuestion ({needle!r} is missing)")
+'''
+
+PROBE_DP_ADVISOR_AGENT = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+rel = ".agents/agents/code-factory.md"
+text = (root / rel).read_text(encoding="utf-8")
+start = text.find("4. **Advisor**")
+step = text[start:text.find("\\n5. **Human**", start)] if start >= 0 else ""
+if not step:
+    raise AssertionError(f"{rel}: the escalation ladder must keep the Advisor step")
+for needle in ("on `agreement: agree`", "on `agreement: disagree`, do not retry"):
+    if needle not in step:
+        raise AssertionError(f"{rel}: the Advisor step must branch on the AGREEMENT before it "
+                             f"routes ({needle!r} is missing), otherwise a disagreeing Advisor is "
+                             "turned into a blind retry of its recommended role")
+if "reroute by `recommended_role`" in step:
+    raise AssertionError(f"{rel}: the Advisor step still reroutes solely by `recommended_role` — "
+                         "the documented human/auto disagreement path stays unreachable")
+'''
+
+PROBE_DP_ADVISOR_FLOW = '''\
+import sys
+sys.path.insert(0, ".")
+import test_flow_contracts as t
+problems = t.check_advisor_agreement(t.ROOT)
+if problems:
+    raise AssertionError("the flowchart must branch on the Advisor's AGREEMENT before it names a "
+                         f"role (ADR -->|agree| ARO, ADR -->|disagree, hitl/auto|): {problems[0]}")
+'''
+
+PROBE_DP_ROUTE_WRONG_RESULTS = '''\
+import sys
+sys.path.insert(0, ".")
+import test_flow_contracts as t
+problems = [p for p in t.check_routing_prose(t.ROOT) if p.startswith(t.ERROR_ROUTING)]
+if problems:
+    raise AssertionError("error-routing §2 must not keep a WRONG_RESULTS -> CODER row the "
+                         f"JSON-first router never takes: {problems[0]}")
+'''
+
+PROBE_DP_ROUTE_PROVIDER = '''\
+import sys
+sys.path.insert(0, ".")
+import test_flow_contracts as t
+problems = [p for p in t.check_routing_prose(t.ROOT) if p.startswith(t.PROVIDERS)]
+if problems:
+    raise AssertionError("the provider guide must not send model/format to PLANNER — provider rows "
+                         f"D/F route it to INFRASTRUCTURE: {problems[0]}")
+'''
+
+PROBE_DP_WORKFLOW_PROSE = '''\
+import pathlib, shutil, sys, tempfile
+root = pathlib.Path(".").resolve().parents[3]
+sys.path.insert(0, ".")
+import check_factory_rules as c
+gate = getattr(c, "check_workflow_prose", None)
+if gate is None:
+    raise AssertionError("check_workflow_prose is missing: a marked factory-rule block covers only "
+                         "the rule's canonical sentence, so a dead tool name, a stale flowchart node "
+                         "or a reordered approval step in the workflow PROSE around it escapes every "
+                         "existing check")
+clean = gate(root)
+if clean:
+    raise AssertionError("the shipped approval carriers must pass the workflow-prose pass: "
+                         f"{clean[0]}")
+found = []
+with tempfile.TemporaryDirectory() as td:
+    tree = pathlib.Path(td) / "repo"
+    for section in c.APPROVAL_SECTIONS:
+        target = tree / section.carrier
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / section.carrier, target)
+    skill = tree / c.APPROVAL_SECTIONS[0].carrier
+    text = skill.read_text(encoding="utf-8")
+    skill.write_text(text.replace("Wait for the answer.",
+                                  f"Then call {c.FORBIDDEN_TOOL}. Wait for the answer.", 1),
+                     encoding="utf-8")
+    found = gate(tree)
+if not any(c.FORBIDDEN_TOOL in problem for problem in found):
+    raise AssertionError("a dead tool injected into flow node I must be reported by the "
+                         f"workflow-prose pass, got {found!r} — a pass that cannot fail is no gate")
+'''
+
+PROBE_DP_PROMPT_PINS = '''\
+import pathlib, sys
+root = pathlib.Path(".").resolve().parents[3]
+sys.path.insert(0, ".")
+import test_prompt_structure as t
+tools = set(getattr(t, "KIMI_2_4_1_TOOLS", ()))
+problems = []
+if "AskUserQuestion" not in tools or "EnterPlanMode" in tools:
+    problems.append("the pinned Kimi Code 2.4.1 tool set must carry AskUserQuestion and must not "
+                    "carry EnterPlanMode")
+problems.extend(t.check_plan_approval(root))
+problems.extend(t.check_tool_vocabulary(root))
+problems.extend(t.check_cli_vocabulary(root))
+if problems:
+    raise AssertionError("the tool/CLI/approval pins must hold on the shipped carriers — without "
+                         "them a dead tool name, an invented flag or a plan-mode approval step "
+                         f"returns unnoticed: {problems[0]}")
+'''
+
+PROBE_DP_README_GATE = '''\
+import sys
+sys.path.insert(0, ".")
+import test_flow_contracts as t
+problems = t.check_readme_approval(t.ROOT)
+if problems:
+    raise AssertionError("the operator manual's hitl bullet must describe the executable gate it "
+                         f"documents (plan file + AskUserQuestion): {problems[0]}")
+'''
+
+PROBE_DP_PORTABLE_VERIFY = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+template = ".agents/skills/code-factory/assets/task-template.yaml"
+guide = ".agents/skills/code-factory/references/planning-guide.md"
+required = ((template, "factory_preflight.py"), (template, "preflight.json"),
+            (template, "pathspec"), (template, "single quotes"),
+            (guide, "### Portable verify commands"), (guide, "preflight.json"),
+            (guide, "cmd.exe"), (guide, "single quotes"))
+texts = {}
+for rel, needle in required:
+    if rel not in texts:
+        texts[rel] = (root / rel).read_text(encoding="utf-8")
+    if needle not in texts[rel]:
+        raise AssertionError(f"{rel}: the portable-verify guidance must name {needle!r} — a verify "
+                             "command runs through the shell the pre-flight probe found (cmd.exe on "
+                             "Windows), so a POSIX single-quoted git pathspec exits 128 although "
+                             "the condition holds")
+'''
+
+PROBE_DP_BASELINE_FILES = '''\
+import subprocess, sys, tempfile, pathlib
+sys.path.insert(0, ".")
+import validate_documentation as vd
+parse = getattr(vd, "parse_baseline_entries", None)
+if parse is None:
+    raise AssertionError("--baseline-files has no content state: a name-only exemption exempts an "
+                         "already-changed file forever, so an undeclared edit to (even a protected) "
+                         "baseline file is invisible — the exemption must be by path AND sha256")
+digest = "a" * 64
+if parse([f"a/b.md={digest}"]) != ({"a/b.md": digest}, []):
+    raise AssertionError("a baseline entry must be <path>=<sha256hex>")
+backslash = chr(92)
+if parse([f"a{backslash}b.md={digest.upper()}"]) != ({"a/b.md": digest}, []):
+    raise AssertionError("the baseline must unify separators and lowercase the recorded state")
+if parse(["a/b.md"])[1] == []:
+    raise AssertionError("a name-only baseline entry must be a usage error — name-only exemption is "
+                         "exactly the hole the content state closes")
+if parse([]) != ({}, []):
+    raise AssertionError("an EMPTY baseline list is legitimate input — it excludes nothing")
+escaped = [entry for entry in ("/abs/x.md", "C:/repo/x.md", "../outside.md", "docs/../../x.md", "")
+           if not parse([entry + "=" + digest])[1]]
+if escaped:
+    raise AssertionError(f"a blank, absolute or `..`-escaping baseline entry must be rejected: "
+                         f"{escaped!r}")
+malformed = [entry for entry in (f"x.md={'a' * 63}", f"x.md={'a' * 65}", "x.md=nothex")
+             if not parse([entry])[1]]
+if malformed:
+    raise AssertionError(f"a malformed state must be rejected: {malformed!r}")
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    (root / "kept.md").write_text("old\\n", encoding="utf-8")
+    kept = vd.baseline_state(root, "kept.md")
+    entries, problems = parse([f"kept.md={kept}"])
+    if problems or entries.get("kept.md") != kept:
+        raise AssertionError(f"a captured state must round-trip: {entries!r} {problems!r}")
+    (root / "kept.md").write_text("new\\n", encoding="utf-8")
+    if vd.baseline_state(root, "kept.md") == kept:
+        raise AssertionError("a file changed after capture must stop matching its recorded state — "
+                             "otherwise an undeclared edit to it hides behind the baseline name")
+help_text = subprocess.run([sys.executable, "validate_documentation.py", "check", "--help"],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace").stdout
+if "--baseline-files" not in help_text:
+    raise AssertionError("--baseline-files must be discoverable in `check --help` — an option the "
+                         "orchestrator cannot find is one it cannot pass")
+'''
+
 # The 12.19 release's own finding list: (id, what the release delivered, the vaccine that proves it
 # bites on CLEAN_CODE_BASE_SHA). The release left no per-run disposition file that survives in a
 # clone, so the claim lives here and is cross-checked two-way against REGISTRY exactly like the
@@ -1052,6 +1309,33 @@ REGISTRY: tuple[Vaccine, ...] = (
     Vaccine("V-iv-gate", MODULE, "test_input_validation_gate.py",
             r"FAIL - 1\. a new Rust config field with no validation is caught: an unvalidated new "
             r"field must exit 1", IV_BASE_SHA),
+    # ---- DP: THIS run's own change set (run 20261101-7cbfae60), replayed against DP_BASE_SHA -----
+    # One focused probe per disposed finding. The prose carriers and the four extended self-test
+    # modules bundle several of these, so each probe re-executes exactly one defect.
+    Vaccine("V-dp-plan-agent", PROBE, PROBE_DP_PLAN_AGENT,
+            r"Phase 3 must not call EnterPlanMode", DP_BASE_SHA),
+    Vaccine("V-dp-plan-flow-node", PROBE, PROBE_DP_PLAN_SKILL,
+            r"flow node I must not call EnterPlanMode", DP_BASE_SHA),
+    Vaccine("V-dp-plan-guide", PROBE, PROBE_DP_PLAN_GUIDE,
+            r"section 6 must not call the plan-mode tools", DP_BASE_SHA),
+    Vaccine("V-dp-advisor-agent", PROBE, PROBE_DP_ADVISOR_AGENT,
+            r"the Advisor step must branch on the AGREEMENT", DP_BASE_SHA),
+    Vaccine("V-dp-advisor-flow", PROBE, PROBE_DP_ADVISOR_FLOW,
+            r"the flowchart must branch on the Advisor's AGREEMENT", DP_BASE_SHA),
+    Vaccine("V-dp-route-wrong-results", PROBE, PROBE_DP_ROUTE_WRONG_RESULTS,
+            r"error-routing §2 must not keep a WRONG_RESULTS -> CODER row", DP_BASE_SHA),
+    Vaccine("V-dp-route-provider", PROBE, PROBE_DP_ROUTE_PROVIDER,
+            r"the provider guide must not send model/format to PLANNER", DP_BASE_SHA),
+    Vaccine("V-dp-workflow-prose", PROBE, PROBE_DP_WORKFLOW_PROSE,
+            r"check_workflow_prose is missing", DP_BASE_SHA),
+    Vaccine("V-dp-prompt-pins", PROBE, PROBE_DP_PROMPT_PINS,
+            r"the tool/CLI/approval pins must hold on the shipped carriers", DP_BASE_SHA),
+    Vaccine("V-dp-readme-gate", PROBE, PROBE_DP_README_GATE,
+            r"the operator manual's hitl bullet must describe the executable gate", DP_BASE_SHA),
+    Vaccine("V-dp-portable-verify", PROBE, PROBE_DP_PORTABLE_VERIFY,
+            r"the portable-verify guidance must name", DP_BASE_SHA),
+    Vaccine("V-dp-baseline-files", PROBE, PROBE_DP_BASELINE_FILES,
+            r"--baseline-files has no content state", DP_BASE_SHA),
 )
 
 # `- RV-12: fixed: ... | vaccine: V-memory-identity` — one item per finding, never wrapped. The id

@@ -46,6 +46,14 @@ DEFAULT_FILES = (
     ".agents/skills/code-factory/SKILL.md",
     ".agents/skills/code-factory/references/code-review.md",
 )
+# The three carriers of the HITL approval gate whose PROSE (flowchart node, tool names, step order)
+# is validated by the checker's workflow-prose pass: a temp root must ship all three, as the real
+# one does, or that pass reports the fixture as unreadable instead of the rule under test.
+WORKFLOW_CARRIERS = (
+    ".agents/agents/code-factory.md",
+    ".agents/skills/code-factory/SKILL.md",
+    ".agents/skills/code-factory/references/planning-guide.md",
+)
 REQUIRED_MARKERS = ("unverified_review", "conditional pass", "hitl", "auto")
 
 
@@ -61,18 +69,21 @@ def check(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def make_tree(dst: pathlib.Path) -> list[pathlib.Path]:
-    """A throwaway root with the rulebook plus byte-identical copies of the four documents."""
+    """A throwaway root with the rulebook plus byte-identical copies of the four documents.
+
+    The workflow-prose carriers are copied too: the checker always validates their prose, so a
+    fixture root without them fails as unreadable. They are not returned — the negative checks
+    mutate the review-gate carriers by index.
+    """
     if dst.exists():
         shutil.rmtree(dst)
     (dst / RULEBOOK).parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / RULEBOOK, dst / RULEBOOK)
-    copies = []
-    for name in DEFAULT_FILES:
+    for name in dict.fromkeys((*DEFAULT_FILES, *WORKFLOW_CARRIERS)):
         target = dst / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / name, target)
-        copies.append(target)
-    return copies
+    return [dst / name for name in DEFAULT_FILES]
 
 
 def main() -> int:

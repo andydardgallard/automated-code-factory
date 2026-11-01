@@ -257,8 +257,9 @@ The `task_type` selects the planning mode:
 
 ### Phase 3 — Business tests + approval
 - HITL: ask the user via `AskUserQuestion` for (1) the concrete business scenario/user story,
-  (2) which configs and input data to run, (3) expected business results. Then present the plan
-  via `EnterPlanMode` + `ExitPlanMode` and WAIT for approval. On revision, update the plan and
+  (2) which configs and input data to run, (3) expected business results. Then keep the plan in
+  `.code-factory/state/plan.md`, present it to the user, and ask explicitly via `AskUserQuestion`
+  whether to approve, revise, or reject it; WAIT for the answer. On revision, update the plan and
   re-present; on APPROVAL the run continues with Phase 4 (pre-flight) — an approval is a decision,
   not an environment probe, so pre-flight still runs before the backup and the implement phases.
   Count every rejection in `retry_counters.plan_rejections` of
@@ -545,9 +546,15 @@ results, acceptance evidence.
 **Documentation (implement/refactor only)**: after acceptance, if `task_type` is `implement` or
 `refactor`, launch the `factory-documenter` subagent (secondary model) with the run manifest
 (`.code-factory/manifest.json`). It updates ONLY doc-comments and `.md` files and validates with
-`scripts/validate_documentation.py` (retry budget 1). If validation is exhausted, record the
-documentation debt in `report.md` and continue — the factory never fails because of docs. For
-`review`/`security_audit` this step is skipped. Log `models_used.documenter`.
+`scripts/validate_documentation.py` (retry budget 1); BEFORE DOC2 the orchestrator captures the
+manifest's `changed_files` + `created_files` as `path=sha256hex` entries (plus `path=-` for a file
+absent then) with `validate_documentation.py baseline --repo <repo> --files <those paths>` and passes
+them as `--baseline-files`, so `--derive` excludes the run's own pre-DOC2 scope from the
+undeclared-file comparison while a file whose content changed after the capture — an undeclared
+documenter edit there, protected files included — still fails, as do undeclared and untracked
+documenter edits elsewhere. If validation is exhausted, record the documentation debt in `report.md`
+and continue — the factory never fails because of docs. For `review`/`security_audit` this step is
+skipped. Log `models_used.documenter`.
 <!-- factory-rule: documentation begin -->
 **Documentation (canonical wording):** after every successful `implement`/`refactor` the main agent invokes the `factory-documenter` subagent (secondary) with the run's manifest; it updates ONLY doc comments and `.md` files and never code, tests or configs. It validates its work with `scripts/validate_documentation.py` with a budget of 1 retry; when the budget is exhausted, the documentation debt is recorded in the run report and the factory continues. Documentation is not invoked for `review`/`security_audit`.
 <!-- factory-rule: documentation end -->
@@ -679,7 +686,9 @@ On ANY failure, do NOT roll back immediately. Follow `references/error-routing.m
    failed, acceptance criteria, constraints) and no edits. It returns the machine-read
    `agreement` (`agree | disagree` with the Diagnostician's route), its own `root_cause`,
    `recommended_role`, `recommended_action`, `confidence`; append the advisor section to
-   `.code-factory/logs/diagnostic.md` and reroute by `recommended_role`.
+   `.code-factory/logs/diagnostic.md`; on `agreement: agree`, rerun the recommended role once
+   with the combined context, and on `agreement: disagree`, do not retry: show both diagnoses to
+   the user in hitl, or stop the fix loop and record the disagreement in report.md in auto.
 5. **Human**: if the Advisor or the Diagnostician recommends human (or a permission error
    occurred), ask the user how to proceed.
 6. **FAILED**: only when all budgets are exhausted — stop with a full report.
@@ -799,7 +808,13 @@ write `.code-factory/report_code_changes.md` (next to it) via
     `scripts/check_factory_model.py --repo <resolved repo_path>`.
 13. **Documentation + versioning** — after every successful `implement`/`refactor` run: (a) invoke
     `factory-documenter` (secondary) on the run manifest, docs only, `validate_documentation.py`
-    with retry budget 1, debt recorded on exhaustion; (b) choose the version type by the
+    with retry budget 1 — BEFORE DOC2 capture the manifest's `changed_files` + `created_files` as
+    `path=sha256hex` entries with `validate_documentation.py baseline --repo <resolved repo_path>
+    --files <those paths>` and pass `--derive --baseline-files <the captured entries>`, so the
+    derived scope excludes the run's own pre-DOC2 changes (only while their content still is the
+    captured one) while undeclared/untracked documenter edits, and edits that change a baseline
+    file's content, still fail — and the debt recorded on exhaustion; (b) choose the version type by
+    the
     deterministic `version_manager.py --repo <deployment root> suggest` matrix, have the reviewer
     validate/override it, apply with `version_manager.py --repo <deployment root> bump`/`set` +
     `sync` and require `validate` exit 0, and commit the version change in the same commit (message

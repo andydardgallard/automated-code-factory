@@ -23,6 +23,15 @@ one byte after `.strip()` (CRLF-safe because the canonical wordings are single l
 carriers stay byte-identical to the block below — when a rule changes, it changes HERE first and
 the carriers are re-synced in the same commit.
 
+A marked block covers only the canonical SENTENCE of a rule, so the workflow prose around it — a
+Mermaid node description, the name of a tool a step invokes, the order of an approval step — would
+escape that check. The same script therefore also reads the FULL text of the three carriers of the
+HITL approval gate (`SKILL.md`, `.agents/agents/code-factory.md`,
+`references/planning-guide.md`): a plan-mode tool the CLI does not ship is reported as the dead
+instruction it is, and each approval section must present `.code-factory/state/plan.md` and ask the
+user through `AskUserQuestion` BEFORE it waits for the answer. A missing or unreadable carrier is a
+named problem of the report, never a traceback.
+
 ```bash
 python .agents/skills/code-factory/scripts/check_factory_rules.py                  # all rules
 python .agents/skills/code-factory/scripts/check_factory_rules.py --rule <id>      # one rule

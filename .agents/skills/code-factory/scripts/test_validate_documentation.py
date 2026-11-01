@@ -9,7 +9,15 @@ LANGUAGE-AWARE doc classifier (a `#define`/`#include` is CODE in the C family, a
 documentation in shell/python; `;`/`%`/`--` count only where they are comments), and covers
 `check --derive` against a scratch git repository: an undeclared changed file fails the run,
 an undeclared untracked file fails it too while an ignored one stays out of scope, identical
-declared/derived lists pass, and a non-git --repo degrades with exit 2.
+declared/derived lists pass, and a non-git --repo degrades with exit 2. A final regression case
+simulates an implement run whose own test/config/unknown-kind files are already changed before the
+documenter starts: `--baseline-files` excludes that orchestrator-supplied pre-DOC2 set from the
+undeclared-file comparison only, and only while the file still is in the state captured then — a
+`path=sha256hex` entry whose file changed after capture is NOT exempted, so an undeclared edit to an
+already-changed (even protected) file cannot hide behind its name (declared documenter edits pass,
+undeclared ones and explicitly declared protected files still fail, and the option's input boundary
+rejects name-only, absolute/`..`/blank and bad-hash entries and use without `--derive` with exit 2).
+The `baseline` subcommand is the producer of exactly those entries.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -381,6 +389,186 @@ def main() -> int:
         errs = vd.check(root, base, ["src/ds.py"])
         expect(any(e.startswith("src/ds.py: code line changed:") for e in errs),
                f"changing code after a docstring must fail: {errs}")
+
+        # 28. Regression (--derive scope conflict, mutually unsatisfiable modes): an implement run
+        #     has ALREADY changed test/config/unknown-kind files before the documenter starts.
+        #     `--derive` recomputes the changed set from git, so those files were reported as
+        #     "changed but not declared" no matter what the documenter declared — protected and
+        #     unknown kinds failed unconditionally. `--baseline-files` names that pre-DOC2 set WITH
+        #     its captured state (`path=sha256hex`, produced by the `baseline` subcommand) and
+        #     excludes it from the UNDECLARED comparison only: the documenter's declared .md edit
+        #     passes, an undeclared documenter edit and an explicitly declared protected file still
+        #     fail, and so does an undeclared edit to a baseline-listed file whose content changed
+        #     after the baseline was captured (the name alone never exempts). On the pre-fix script
+        #     the option does not exist at all (argparse exit 2), so every "must pass" assertion
+        #     below fails there.
+        irepo = root / "irepo"
+        for sub in ("docs", "scripts", "config", "patches"):
+            (irepo / sub).mkdir(parents=True)
+        run_files = ["scripts/test_run.py", "config/settings.yaml", "patches/fix.patch"]
+
+        def igit(*args: str) -> None:
+            subprocess.run(["git", "-C", str(irepo), *args], check=True, capture_output=True)
+
+        igit("init")
+        igit("config", "user.email", "test@example.com")
+        igit("config", "user.name", "Self Test")
+        base_docs = {"docs/guide.md": "old guide\n", "docs/extra.md": "old extra\n"}
+        base_run = {
+            "scripts/test_run.py": "# base test\nassert 1\n",
+            "config/settings.yaml": "a: 1\n",
+            "patches/fix.patch": "--- a\n+++ b\n",
+        }
+        for rel, text in {**base_docs, **base_run}.items():
+            (irepo / rel).write_text(text, encoding="utf-8")
+        igit("add", ".")
+        igit("commit", "-m", "base")
+        ibase = root / "ibase"
+        vd.snapshot(irepo, ibase, ["docs/guide.md"])          # the documenter's target, pre-edit
+        # the implement run's own changes (captured before DOC2) ...
+        (irepo / "scripts" / "test_run.py").write_text("# new test\nassert 2\n", encoding="utf-8")
+        (irepo / "config" / "settings.yaml").write_text("a: 2\n", encoding="utf-8")
+        (irepo / "patches" / "fix.patch").write_text("--- c\n+++ d\n", encoding="utf-8")
+
+        def capture(*paths: str) -> list[str]:
+            """The orchestrator's pre-DOC2 capture: `baseline` prints one `path=state` per file."""
+            r = subprocess.run([sys.executable, str(script), "baseline", "--repo", str(irepo),
+                                "--files", *paths], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace")
+            entries = r.stdout.split()
+            expect(r.returncode == 0 and len(entries) == len(paths),
+                   f"the baseline subcommand must print one path=state entry per file: "
+                   f"{r.returncode} {r.stdout!r} {r.stderr!r}")
+            return entries
+
+        run_entries = capture(*run_files)
+        for entry in run_entries:
+            rel, _, state = entry.partition("=")
+            expect(state == vd.baseline_state(irepo, rel),
+                   f"the captured baseline must carry the file's current state: {entry!r}")
+        # ... plus the documenter's own declared edit.
+        (irepo / "docs" / "guide.md").write_text("new guide\n", encoding="utf-8")
+
+        def icheck(*extra: str) -> subprocess.CompletedProcess:
+            return subprocess.run([sys.executable, str(script), "check", "--repo", str(irepo),
+                                   "--baseline", str(ibase), "--files", "docs/guide.md", *extra],
+                                  capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace")
+
+        r = icheck("--derive")
+        expect(r.returncode != 0 and "scripts/test_run.py" in r.stderr,
+               f"--derive without a baseline must still fail on the run's own files: "
+               f"{r.returncode} {r.stderr!r}")
+        r = icheck("--derive", "--baseline-files", *run_entries)
+        expect(r.returncode == 0,
+               f"--baseline-files must exclude the pre-DOC2 run files from the derive comparison: "
+               f"{r.returncode} {r.stderr!r}")
+        # Windows separators name the same files (normalized), and duplicates are harmless.
+        backslashed = [entry.replace("/", "\\") for entry in run_entries]
+        r = icheck("--derive", "--baseline-files", *backslashed, run_entries[0])
+        expect(r.returncode == 0,
+               f"--baseline-files must normalize separators and deduplicate: "
+               f"{r.returncode} {r.stderr!r}")
+        # An EMPTY baseline list is legitimate input; it excludes nothing, so the run's own files
+        # are still reported (an empty list must never be a silent "skip everything").
+        r = icheck("--derive", "--baseline-files")
+        expect(r.returncode != 0 and "scripts/test_run.py" in r.stderr,
+               f"an empty --baseline-files list must be legal and exclude nothing: "
+               f"{r.returncode} {r.stderr!r}")
+        # A documenter edit that is neither declared nor part of the baseline still fails.
+        (irepo / "docs" / "extra.md").write_text("undeclared doc edit\n", encoding="utf-8")
+        r = icheck("--derive", "--baseline-files", *run_entries)
+        expect(r.returncode != 0 and "docs/extra.md" in r.stderr,
+               f"--baseline-files must not hide an undeclared documenter edit: "
+               f"{r.returncode} {r.stderr!r}")
+        (irepo / "docs" / "extra.md").write_text(base_docs["docs/extra.md"], encoding="utf-8")
+        # A protected file the documenter DECLARES still fails, baseline or not: the option scopes
+        # the undeclared comparison only, it never whitelists an explicit --files declaration.
+        r = subprocess.run([sys.executable, str(script), "check", "--repo", str(irepo),
+                            "--baseline", str(ibase), "--files", "config/settings.yaml",
+                            "--derive", "--baseline-files", *run_entries],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        expect(r.returncode != 0 and "PROTECTED" in r.stderr,
+               f"a declared protected file must fail even when it is in --baseline-files: "
+               f"{r.returncode} {r.stderr!r}")
+        # 29. Regression (name-only exemption hid a documenter edit): a baseline path is exempt
+        #     ONLY while its content is still the captured one. An UNDECLARED edit to a file the
+        #     run had already changed before DOC2 — here a PROTECTED one — must therefore fail, and
+        #     the exemption must come back once the file is restored to its captured state.
+        (irepo / "config" / "settings.yaml").write_text("a: 3\n", encoding="utf-8")
+        r = icheck("--derive", "--baseline-files", *run_entries)
+        expect(r.returncode != 0 and "config/settings.yaml" in r.stderr
+               and "modified since the pre-DOC2 baseline was captured" in r.stderr,
+               f"an undeclared edit to a baseline-listed file must still fail: "
+               f"{r.returncode} {r.stderr!r}")
+        (irepo / "config" / "settings.yaml").write_text("a: 2\n", encoding="utf-8")
+        r = icheck("--derive", "--baseline-files", *run_entries)
+        expect(r.returncode == 0,
+               f"a baseline-listed file restored to its captured state must be exempted again: "
+               f"{r.returncode} {r.stderr!r}")
+        # A documenter DELETION of a baseline-listed file is a change of its state too.
+        (irepo / "patches" / "fix.patch").unlink()
+        r = icheck("--derive", "--baseline-files", *run_entries)
+        expect(r.returncode != 0 and "patches/fix.patch" in r.stderr,
+               f"a baseline-listed file deleted after capture must not be exempted: "
+               f"{r.returncode} {r.stderr!r}")
+        (irepo / "patches" / "fix.patch").write_text("--- c\n+++ d\n", encoding="utf-8")
+        # The `-` sentinel records a file that was ABSENT at capture: it exempts an absence only,
+        # never a file that appeared afterwards.
+        expect(capture("patches/gone.patch") == ["patches/gone.patch=-"],
+               "an absent baseline file must be recorded as `-`")
+        (irepo / "patches" / "gone.patch").write_text("--- e\n+++ f\n", encoding="utf-8")
+        r = icheck("--derive", "--baseline-files", *(run_entries + ["patches/gone.patch=-"]))
+        expect(r.returncode != 0 and "patches/gone.patch" in r.stderr,
+               f"an absent-file baseline entry must not exempt a file created later: "
+               f"{r.returncode} {r.stderr!r}")
+        (irepo / "patches" / "gone.patch").unlink()
+        # Input boundary: a name-only entry is a usage error — name-only exemption is exactly the
+        # hole the content state closes — and so are a bad state, a contradictory duplicate, an
+        # absolute path, a `..` escape and a blank entry (exit 2, never a traceback).
+        for bad in ("docs/guide.md",
+                    "docs/guide.md=" + "a" * 63, "docs/guide.md=" + "z" * 64,
+                    "docs/guide.md=" + "a" * 64 + "=x",
+                    str((irepo / "docs" / "guide.md").resolve()) + "=" + "a" * 64,
+                    "C:/repo/docs/guide.md=" + "a" * 64,
+                    "../outside.md=" + "a" * 64, "docs/../../x.md=" + "a" * 64, ""):
+            r = icheck("--derive", "--baseline-files", bad)
+            expect(r.returncode == 2 and "error:" in r.stderr and "Traceback" not in r.stderr,
+                   f"--baseline-files must reject {bad!r} with exit 2: "
+                   f"{r.returncode} {r.stderr!r}")
+        r = icheck("--derive", "--baseline-files", "docs/guide.md=" + "a" * 64,
+                   "docs/guide.md=" + "b" * 64)
+        expect(r.returncode == 2 and "contradicts" in r.stderr,
+               f"two different states for one baseline path must exit 2: "
+               f"{r.returncode} {r.stderr!r}")
+        # Input boundary: --baseline-files without --derive is a usage error (exit 2).
+        r = icheck("--baseline-files", "docs/guide.md=" + "a" * 64)
+        expect(r.returncode == 2 and "--derive" in r.stderr and "Traceback" not in r.stderr,
+               f"--baseline-files without --derive must exit 2: {r.returncode} {r.stderr!r}")
+        # Input boundary: the producer rejects a path it cannot verify (absolute/`..`/unreadable).
+        r = subprocess.run([sys.executable, str(script), "baseline", "--repo", str(irepo),
+                            "--files", "../outside.md"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        expect(r.returncode == 2 and "error:" in r.stderr and "Traceback" not in r.stderr,
+               f"the baseline subcommand must reject an escaping path: "
+               f"{r.returncode} {r.stderr!r}")
+        # Unit: normalization keeps order, unifies separators, drops duplicates and `./`.
+        expect(vd.normalize_path_list(["a\\b.md", "a/b.md", "./c.md"]) == (["a/b.md", "c.md"], []),
+               "normalize_path_list must unify separators and deduplicate")
+        expect(vd.normalize_path_list([]) == ([], []), "an empty baseline list is legitimate")
+        expect(vd.parse_baseline_entries([]) == ({}, []),
+               "an empty baseline list is legitimate for the state parser too")
+        expect(vd.parse_baseline_entries(["a\\b.md=" + "A" * 64])
+               == ({"a/b.md": "a" * 64}, []),
+               "parse_baseline_entries must normalize separators and lowercase the state")
+        r = subprocess.run([sys.executable, str(script), "check", "--help"],
+                           capture_output=True, text=True)
+        expect(r.returncode == 0 and "--baseline-files" in r.stdout,
+               f"--baseline-files must be discoverable in --help: {r.stdout[:400]!r}")
+        r = subprocess.run([sys.executable, str(script), "baseline", "--help"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        expect(r.returncode == 0 and "path=state" in r.stdout,
+               f"the baseline subcommand must be discoverable in --help: {r.stdout[:400]!r}")
 
     print("PASS - documentation validator allows only documentation-only changes.")
     return 0

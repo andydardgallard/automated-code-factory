@@ -53,6 +53,41 @@ missing from `--files`: a brand-new undeclared source file is as much an edit as
 so the declared list is not the authority on what was touched (when git cannot answer, the mode
 degrades with a message and exit 2, never a traceback).
 
+**`--baseline-files` scopes `--derive` to the documenter's own work.** On an `implement`/`refactor`
+run the tree is already dirty when DOC2 starts — the run's own tests, configs and patches are
+changed before the documenter touches anything — so a bare `--derive` would report the coder's
+files as undeclared and make the two modes mutually unsatisfiable. The **orchestrator** therefore
+CAPTURES the state of the manifest's files BEFORE DOC2 (the run's `changed_files` +
+`created_files`, plus anything else git already reports) and passes it. The capture is a
+deterministic one-liner — the `baseline` subcommand prints one entry per file:
+
+```bash
+python .agents/skills/code-factory/scripts/validate_documentation.py baseline \
+  --repo <resolved repo_path> --files <pre-DOC2 rel-path> ... > .code-factory/docs_baseline_entries
+```
+
+Each printed entry is `<path>=<sha256hex>` (or `<path>=-` for a file that was absent at capture,
+i.e. a deletion the run had already made), and the same entries go to `check`:
+
+```bash
+python .agents/skills/code-factory/scripts/validate_documentation.py check \
+  --repo <resolved repo_path> --baseline <resolved repo_path>/.code-factory/docs_baseline \
+  --files <rel-path> ... --derive --baseline-files <the captured path=state entries>
+```
+
+A baseline path is excluded from the undeclared-file comparison ONLY while the file still IS in the
+captured state — the current sha256 must equal the recorded one. An entry whose file changed after
+the capture is **not** exempted, so an undeclared documenter edit to a file the run had already
+touched fails exactly like an edit to one it had not, protected files included. That comparison and
+nothing else is scoped: the documenter still declares every file it edits, and an explicitly declared
+protected file still fails. The documenter never chooses its own baseline; it only passes through
+what the orchestrator hands it. Every entry must be `<repository-relative path>=<state>`
+(separators normalized, duplicates dropped); a name-only entry without the state is a usage error
+(name-only exemption is exactly the hole the hash closes), as are a blank, absolute or
+`..`-escaping path, a malformed hash (not 64 hex characters) and two different states for one path —
+all exit 2. An empty list is legitimate, and using the option without `--derive` is a usage error
+too.
+
 The validator checks, deterministically (stdlib only):
 
 1. every touched file is a documentation target (`.md` or a source file whose diff vs the

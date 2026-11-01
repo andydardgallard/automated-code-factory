@@ -1,0 +1,6 @@
+# The same new config input, done right: `stall_patience: usize` is added and `validate()` gains a
+# purpose-fitted `== 0` rejection with the sibling style and error message, so the zero value is
+# rejected deliberately rather than by a blanket rule and no input path is left unchecked. Nothing
+# else in the diff is a defect, so a perfect reviewer approves and reports nothing.
+verdict: approve
+severities: []

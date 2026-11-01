@@ -5,7 +5,7 @@ tokens, stdlib only).
 
 Two halves:
 
-1. The SHIPPED golden set (`skill-base/golden-set/`) is data, so it is checked like code: seven
+1. The SHIPPED golden set (`skill-base/golden-set/`) is data, so it is checked like code: nine
    case directories with `diff.patch` + `expected.yaml`, the expected values from the calibration
    brief, every `expected.yaml` consistent with the severity/verdict policy (approve <=> no
    critical/major), and every `diff.patch` a 10-40 line unified diff whose hunk headers agree with
@@ -45,6 +45,8 @@ TOOL = SCRIPTS / "calibrate_reviewer.py"
 GOLDEN_EXPECTED = {
     "clean-refactor": ("approve", []),
     "deleted-test": ("request_changes", ["major"]),
+    "missing-input-validation": ("request_changes", ["major"]),
+    "purpose-fitted-validation-ok": ("approve", []),
     "missing-error-handling": ("request_changes", ["major"]),
     "nit-naming": ("approve", []),
     "secret-in-code": ("request_changes", ["critical"]),
@@ -355,7 +357,8 @@ def check_real_golden_set() -> None:
         res = run("score", "--golden", str(GOLDEN), "--results", str(results), "--out", str(out))
         expect(res.returncode == 0, f"scoring the golden set must exit 0: {res.stderr!r}")
         report = out.read_text(encoding="utf-8")
-        expect("verdict accuracy: 7/7 (100.0%)" in report, f"accuracy: {report!r}")
+        n = len(GOLDEN_EXPECTED)
+        expect(f"verdict accuracy: {n}/{n} (100.0%)" in report, f"accuracy: {report!r}")
         expect("macro precision (severity): 1.000" in report
                and "macro recall (severity): 1.000" in report, f"macro metrics: {report!r}")
         expect("## Mismatches" not in report, f"a perfect run has no mismatches: {report!r}")
@@ -630,7 +633,7 @@ def main() -> int:
     expect(imported <= allowed, f"calibrate_reviewer must be stdlib-only, imports={imported}")
 
     print("PASS - calibrate_reviewer.py scores the golden set deterministically (verdict accuracy, "
-          "macro precision/recall, exit 0 for data, exit 2 for incomplete runs), the 7 shipped "
+          "macro precision/recall, exit 0 for data, exit 2 for incomplete runs), the 9 shipped "
           "golden cases match the calibration brief, and `status` turns section 7 into a "
           "deterministic gate: a reviewer-prompt edit and the 5-run interval both fail loudly "
           "until the calibration is recorded in the append-only log.")

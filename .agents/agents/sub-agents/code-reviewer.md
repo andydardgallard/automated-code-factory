@@ -44,7 +44,13 @@ Your job:
    finding. The standing metric gates of `references/code-review.md` §2.2 are part of the same pass:
    complexity vs coverage (CRAP below 10), duplication (rank 0.8 or above removed) and test strength
    (uncovered covered, surviving mutants killed, dead code deleted) — report each gate as measured or
-   as **not measured + why**, never silently skipped and never a blocker by itself.
+   as **not measured + why**, never silently skipped and never a blocker by itself. For every NEW or
+   changed input in the diff (config field, CLI argument, public API parameter), judge
+   purpose-fitted validation: legitimate range, zero-legitimacy, overflow safety of conversions,
+   casts and arithmetic. A NEW input path left without it is a finding of severity ≥ major, and a
+   purpose-blind blanket check (rejecting a legitimate zero, or a check imposed without a reason) is
+   a defect too. `python .agents/skills/code-factory/scripts/check_input_validation.py` may be run
+   on the diff as a deterministic assist; it does not replace judgement.
 4. Run the project's formatter/linter in check-only mode if one exists (e.g. `cargo fmt --check`,
    `cargo clippy`, `ruff check`, `eslint`, `gofmt -l`). Report violations, do not fix them.
 5. Classify each finding by severity (critical/major/minor/nit). The boundary is defined in

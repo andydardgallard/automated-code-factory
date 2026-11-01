@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.19.1 -->
+<!-- code-factory-version: 12.20.0 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.
@@ -33,6 +33,8 @@ mandatory code review before acceptance.
   `check_translation_structure.py` (translation skeleton comparator: a translated file may change its
   text, never its structure — headings, list items, code fences, `factory-rule` markers, definitions,
   CLI arguments; `--allow-added-rule <id>` admits a deliberately added rulebook rule),
+  `check_input_validation.py` (deterministic diff gate: scans the run's diff for newly added inputs
+  with no accompanying purpose-fitted validation),
   `run_id.py` (the run's run_id: `gen` from task.yaml / `check` — artifacts without run_id),
   `error_router.py` (JSON-first error classification: `classify`/`merge`),
   `calibrate_reviewer.py` (reviewer golden-set calibration: precision/recall/accuracy; `status`
@@ -66,8 +68,10 @@ mandatory code review before acceptance.
   `test_provider_stop.py` pin the `model-unavailable-stop` rule, its four carriers and the
   provider-failure branch of the flow; `test_review_report_only.py` pins
   the report-only review routing, `test_security_audit_guarantee.py` pins the audit's guarantee,
-  `test_flow_contracts.py` pins the wiring that lives in prose, and `test_vaccination.py` proves
-  every fix of this release bites (its check fails on the pre-fix tree).
+  `test_flow_contracts.py` pins the wiring that lives in prose, `test_input_validation_gate.py`
+  proves the input-validation gate bites (bad/good fixtures + the rule's prose carriers), and
+  `test_vaccination.py` proves every fix of this release bites (its check fails on the pre-fix
+  tree).
   Every argparse script reconfigures stdout/stderr to UTF-8 itself (`stream.reconfigure(encoding="utf-8",
   errors="replace")` under try/except), so `--help` and error messages with non-ASCII characters
   do not crash with `UnicodeEncodeError` on a console with a legacy code page (cp1251/cp866); the argparse
@@ -211,6 +215,7 @@ mandatory code review before acceptance.
 
 - Rule `review-gate-policy`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## review-gate-policy`).
 - Rule `review-report-only`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## review-report-only`).
+- Rule `input-validation`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## input-validation`).
 - Rule `shard-protocol`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## shard-protocol`).
 
 - **Verified acceptance**: criteria with `verify` are executed for real (`scripts/verify_acceptance.py`

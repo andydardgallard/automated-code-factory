@@ -1,0 +1,7 @@
+# New config input without purpose-fitted validation: `stall_patience: usize` is added to a serde
+# struct whose sibling fields (`batch_size`, `retry_delay_ms`) are each rejected when 0 in
+# `validate()`, yet the new field gets no check of its own. An unvalidated new input path is a
+# major defect (`references/code-review.md` §2 item 13), so the reviewer must request changes and
+# report exactly `major` — the missing `stall_patience > 0` check, not a nit.
+verdict: request_changes
+severities: [major]

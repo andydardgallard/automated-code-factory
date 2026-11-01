@@ -98,6 +98,19 @@ Never silently skip missing inputs — the factory must not guess that the task 
 - If the task needs new skills/scripts/plugins/tools inside the project (e.g., a test-data
   generator, a plotting script for the business report), plan them as deliverables too.
 
+### Input-validation analysis
+
+For EVERY new or changed input (config field, CLI argument, public API parameter) the plan states:
+
+- the input and its type;
+- the validation decision fitted to its PURPOSE — its legitimate range, its zero-legitimacy (may
+  this value be 0?), and the overflow of its conversions, casts and arithmetic — or the explicit
+  reason why no validation is needed;
+- the business-test consequence: which behavior the validation protects.
+
+Blanket mechanical rules ("validate everything" / "trust all input") are forbidden; an unjustified
+check is a defect like a missing one.
+
 ## 4. DAG plan template
 
 Write `.code-factory/state/plan.md` with the high-level structure below, PLUS a DAG task
@@ -132,6 +145,8 @@ those sections well formed and one task per line.
 - Integration: <tests for changed modules>
 - Regression: <full suite command; baseline in logs/baseline.md>
 - Business: <scenario, configs, expected results — filled below>
+- Input boundaries: <range, zero-legitimacy and overflow cases for each new input — each becomes
+  its own test task>
 
 ## Business tests
 - Scenario: <user story, e.g., "Run strategy on CNY-3.23.txt">

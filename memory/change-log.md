@@ -1309,3 +1309,42 @@ unfinished:
     reason: carried — unchanged since 20261031-dd7ffa0e; reconstructing durable per-vaccine claim lists is a separate task
     severity: info
     follow_up: false
+
+## 2026-11-01T16:30:00+03:00 — Factory enforces purpose-fitted input validation (rule input-validation + deterministic gate)
+
+title: Factory must enforce intelligent variable/input validation in the code it writes
+project: repo
+timestamp: 2026-11-01T16:30:00+03:00
+run_id: 20261101-81600b39
+branch: feature/input-validation-gate-20261101
+commit: v12.20.0 (one commit: the changed files, VERSION/AGENTS.md header sync, this record and the summary)
+task_type: implement
+goal: the factory itself must catch a missing or purpose-blind validation of every NEW/changed input it ships (config field, CLI argument, public API parameter) — typed by purpose (range, zero-legitimacy, overflow of conversions and casts), never a blanket rule; an unjustified check counts as a defect like a missing one (owner finding from farukon_v3.1.0/20261101-85052459, memory/backlog.md item 2)
+changed_files: 27 files — references/factory-rules.md (28th canonical rule input-validation), SKILL.md + .agents/agents/code-factory.md + references/code-review.md (byte-identical carriers, 29 rules / 94 blocks), references/planning-guide.md (§3 Input-validation analysis), sub-agents planner/coder/gui-expert/code-reviewer/tester.md, references/verification-strategy.md, skill-base/skills/clean-code-discipline/SKILL.md (3 named boundary rules), NEW scripts check_input_validation.py + test_input_validation_gate.py, test_vaccination.py (V-iv-gate vaccine + V-rf-c4 suite-evolution claim), test_calibrate_reviewer.py (9 cases, dynamic count), 2 golden cases, AGENTS.md + .agents/README.md (map/script lists), VERSION/CHANGELOG.md/README.md (12.20.0 sync) [verified: git diff --cached --name-only HEAD, .code-factory/manifest.json]
+created_files: .agents/skills/code-factory/scripts/check_input_validation.py, .agents/skills/code-factory/scripts/test_input_validation_gate.py, skill-base/golden-set/cases/missing-input-validation/, skill-base/golden-set/cases/purpose-fitted-validation-ok/ [verified: git status]
+results: integration=PASS (test_input_validation_gate.py 30 checks exit 0; gate flags the farukon-shaped fixture missing-validation: stall_patience exit 1 and accepts the purpose-fitted one exit 0 with detection asserted) [verified: .code-factory/logs/business-tests.md]; regression=PASS (46 self-test files: 46 PASS / 0 FAIL on the final tree) [verified: .code-factory/logs/test-results.md vs baseline 45/45 .code-factory/logs/baseline.md]; business=MATCH (farukon scenario proven deterministically, exit 0 non-vacuous via module-API detection + == 99 mutation) [verified: .code-factory/logs/business-tests.md]; review=approve — iteration 1 request_changes (5 major + 1 minor: no vaccine, multiline argparse skipped, `->`/keyword imprecision, choices= unrecognized, serde default-fn treated as zero, vacuous negative probes), iteration 2 request_changes (2 major: == 0 not zero-reject classified, vacuous corrected-golden exit 0), iteration 3 (owner-authorized past budget 2) approve with zero findings [verified: .code-factory/logs/code-review.md]; acceptance=SUCCESS, 1/1 verify criterion MET (test_flow_contracts.py), 3 derived, regression=pass, ledger FRESH [verified: verify_acceptance.py exit 0, .code-factory/state/acceptance.md, .code-factory/state/evidence.json]; reviewer calibration was DUE (prompt edit) and discharged blind on 9 golden cases: 9/9 verdict accuracy, macro P/R 1.000 [verified: .code-factory/logs/reviewer-calibration.md, calibrate_reviewer.py status exit 0]; 63/63 vaccines bite incl. the new V-iv-gate on base b72b5e0 [verified: test_vaccination.py exit 0]
+decisions: the deterministic gate is a reviewer/tester ADVISORY over the run's diff, v1 scope Rust config structs + Python argparse/click, documented bias to over-report (a declaration inside a string literal, e.g. the self-test's own fixtures, is reported) [verified: check_input_validation.py docstring]; model_matrix.py initially exited 1 (default-matrix gui_expert vs task reviewer, family kimi) — resolved by pinning models.gui_expert=deepseek-flash in the STATE task copies only, role never delegated [verified: .code-factory/state/task.yaml, model_matrix.py resolve exit 0]; the vaccine base was hijacked when the run's pre-flight overwrote .code-factory/state/git-head.txt with the current HEAD — test_vaccination.py interprets it as the RELEASE commit and replays its parent; the file was deleted so the pinned BASE_SHA fallback (fb43f2a) resolves, restoring the green suite; lesson: git-head.txt is a release artifact, not a pre-flight record [verified: .code-factory/logs/vaccination-rerun4.log exit 0]; version type = minor by the deterministic matrix (suggest --new-field), validated by the reviewer [verified: version_manager.py suggest/validate exit 0, code-review.md]
+assumptions: none — hitl, plan approved with 0 rejections; the owner authorized review iteration 3 when the reviewer budget (2) ended with 2 open majors
+models_used: main=kimi-code/k3; analyzer=kimi-code/k3.1-pro (2 parallel); coder=deepseek-flash (6 wave-1 + 2 wave-2 + 2 rework passes); reviewer=kimi-code/k3.1-pro (9 blind golden calibrations + 3 diff iterations + version validation); documenter=deepseek-flash; planner, tester, gui_expert, diagnostician, advisor=unused (plan authored by main, tests run by main/coders); models_warning: task-matrix family collisions coder/tester/gui_expert vs advisor (deepseek), task matrix authoritative, no substitution
+factory_version: 12.20.0
+unfinished:
+  - item: 10 review findings (3 critical) of run 20261101-e519a1da — EnterPlanMode dead call in SKILL.md:111 / code-factory.md:259 / planning-guide.md:192; dead WRONG_RESULTS->CODER and MODEL/FORMAT->PLANNER routes; unreachable Advisor-disagree branch; check_factory_rules.py validation gap + non-vacuous test_prompt_structure.py extension proposal; .agents/README.md:397 wording
+    reason: carried — this run implemented backlog item 2 (input validation); the dead-paths findings wait in .code-factory/review/fix-tasks.yaml for the owner to schedule as a separate implement task
+    severity: critical
+    follow_up: true
+  - item: acceptance criterion 4 of the review task ("no product file changed") is authored with single-quoted git pathspecs that Windows cmd.exe mangles (verify exits 128) although the condition itself holds (bash exit 0, empty diff)
+    reason: carried — re-authoring the criterion is the owner's decision (still pending); unchanged by this run
+    severity: info
+    follow_up: true
+  - item: validate_documentation.py --derive is mutually unsatisfiable on an implement run touching tests/configs: the derived scope lumps the implement run's own files with the documenter's, so protected/unknown kinds fail unconditionally
+    reason: carried — the documenter's own edits passed plain check (exit 0); the --derive scope separation is a validator hardening task of its own
+    severity: warning
+    follow_up: true
+  - item: module-kind vaccines remain fragile to newer assertions in shared test modules overtaking a vaccine's declared first-failure signature (one more conversion this run: V-rf-c4)
+    reason: carried — unchanged since 20261031-dd7ffa0e; converting every remaining module vaccine to probes is a separate hardening task
+    severity: info
+    follow_up: false
+  - item: historical vaccine groups RV/BL/PR/RF/NM are claimed by attribution because their per-run disposition artifacts predated the claims grammar
+    reason: carried — unchanged since 20261031-dd7ffa0e; reconstructing durable per-vaccine claim lists is a separate task
+    severity: info
+    follow_up: false

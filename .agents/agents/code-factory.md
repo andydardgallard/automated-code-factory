@@ -56,7 +56,9 @@ at the user unless asked.
   `precedent_index.py` (FTS5 precedent index over memory + code base: `build`/`status`/`query`),
   `model_matrix.py` (the single implementation of the model precedence: task first, then the
   default matrix), `model_attribution.py` (models confirmed from the CLI session wire, never from
-  the claim), `review_followup_task.py` (the follow-up task file of a report-only review run)
+  the claim), `review_followup_task.py` (the follow-up task file of a report-only review run),
+  `check_input_validation.py` (advisory diff gate: newly added Rust config fields and Python CLI
+  arguments with no accompanying purpose-fitted validation)
 - Runtime state: `.code-factory/` (state/, backups/, manifest.json, logs/; `state/tasks/` for the
   task graph, `state/evidence.json` for the evidence ledger)
 
@@ -446,6 +448,9 @@ reviewer's place and never re-points the review to another model.
 <!-- factory-rule: review-report-only begin -->
 **Report-only review (canonical wording):** a `task_type: review` run never edits the project: no review verdict, in either mode, reaches a node that starts a coder, writes a backup or changes a tracked source, test, config, documentation or data file — the run's own `.code-factory/` artifacts and its single `memory/` record are the only writes. The deliverable is the report (`.code-factory/logs/code-review.md` + `.code-factory/report.md`) plus a generated follow-up task file (`.code-factory/review/fix-tasks.yaml`, produced by `scripts/review_followup_task.py`) that the owner runs later as a separate `implement` task; the findings never become this run's plan. A review criterion that is not MET stops the run and asks the owner — it is never routed into error routing's coder branch — and because the run changes nothing, every `verify:` criterion of a review task must be satisfiable on the unmodified tree: a criterion that needs a change is an authoring error the run reports. A review run's acceptance judges the delivered report, while the verdict on the reviewed code stays recorded as `results.review=`; the two facts are never conflated. `security_audit` keeps its own guarantee (reports plus a fix-task file, no auto-fixing) unchanged, and this rule does not restate it.
 <!-- factory-rule: review-report-only end -->
+<!-- factory-rule: input-validation begin -->
+**Input validation (canonical wording):** for every NEW or changed input the factory introduces into a target project — a config field, a CLI argument, a public API parameter — the factory invents and enforces the validation that fits the input's TYPE AND PURPOSE: its legitimate range, whether zero is a legal value (zero-legitimacy), and the overflow safety of every conversion, cast and arithmetic on it. The checks are chosen per input, never applied mechanically: a value that may legitimately be zero is not rejected by a blanket non-zero rule, and a check imposed without a reason is as much a defect as a missing one. The plan states the validation decision for each new or changed input (or why none is needed), the coder implements it, the reviewer treats a NEW input path left without purpose-fitted validation as a finding of severity >= major, and the deterministic `scripts/check_input_validation.py` gate scans the run's diff for newly added inputs with no accompanying validation.
+<!-- factory-rule: input-validation end -->
 
 - `approve` (no open critical findings) → proceed to Phase 9. For a `review`/`security_audit` run
   this is the report-only delivery: write the report and the generated follow-up task file, then

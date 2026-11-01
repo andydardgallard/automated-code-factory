@@ -153,6 +153,10 @@ CLEAN_CODE_BASE_SHA = "34b7a468fe6036ba58e2848a3cfc85921797bc09"
 # every `FX` vaccine is replayed against it, so the change set being shipped now is proven against
 # the tree it started from instead of riding on an older release's proof.
 FX_BASE_SHA = "33b8ed84bb0bf5517475e57d5a153a6e835bfdd7"
+# The pre-fix HEAD of THIS run's own input-validation gate: `check_input_validation.py` and its
+# self-test are new files of the run, so the `IV` vaccine is replayed against the commit whose tree
+# holds neither of them — the self-test must be red there for its own first reason.
+IV_BASE_SHA = "b72b5e0177690d1c5e5ea0d5f6c9e14311cf3c17"
 
 # The four kinds of focused check a vaccine can name (see the module docstring).
 MODULE = "module"
@@ -979,8 +983,11 @@ REGISTRY: tuple[Vaccine, ...] = (
             r"the memory CHECK line must print the verdict plus a WARN count", RUN_BASE_SHA),
     Vaccine("V-rf-c2", PROBE, PROBE_MEMORY_SYNTHETIC_BACKFILL,
             r"a synthetic backfilled run_id/factory_version must be valid", RUN_BASE_SHA),
+    # The second claim is suite evolution, not the fix: on the pre-fix tree the shipped golden
+    # set is smaller than the current module's GOLDEN_EXPECTED, so the module fails there first.
     Vaccine("V-rf-c4", STRUCTURAL, "test_calibrate_reviewer.py",
-            r"AttributeError: module 'calibrate_reviewer' has no attribute 'REVIEWER_PROMPT_FILES'",
+            r"(?:AttributeError: module 'calibrate_reviewer' has no attribute "
+            r"'REVIEWER_PROMPT_FILES'|golden cases are \[)",
             RUN_BASE_SHA),
     Vaccine("V-rf-c6", PROBE, PROBE_AGENTS_SIZE_GATE,
             r"AGENTS\.md (?:needs a size gate|is \d+ bytes — over the)", RUN_BASE_SHA),
@@ -1039,6 +1046,12 @@ REGISTRY: tuple[Vaccine, ...] = (
             r"--derive must include an undeclared untracked file", FX_BASE_SHA),
     Vaccine("V-fx-title-escape", PROBE, PROBE_FX_TITLE_ESCAPE,
             r"a near-miss README title must be refused", FX_BASE_SHA),
+    # ---- IV: THIS run's own fix (the input-validation gate + its self-test), replayed against
+    # IV_BASE_SHA. Both files are introduced by the run, so the pre-fix tree has no gate module at
+    # all and the self-test's FIRST check must fail there with exactly that reason.
+    Vaccine("V-iv-gate", MODULE, "test_input_validation_gate.py",
+            r"FAIL - 1\. a new Rust config field with no validation is caught: an unvalidated new "
+            r"field must exit 1", IV_BASE_SHA),
 )
 
 # `- RV-12: fixed: ... | vaccine: V-memory-identity` — one item per finding, never wrapped. The id

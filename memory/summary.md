@@ -10,7 +10,25 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.19.1 — clean code is now standing practice: two permanent skill-base skills
+Factory v12.20.0 — the factory now enforces purpose-fitted input validation on itself: the
+28th canonical rule `input-validation` (4 carriers; 29 rules / 94 byte-identical blocks)
+requires range / zero-legitimacy / overflow-safe conversions and casts for every NEW or
+changed input and forbids blanket rules; the deterministic advisory gate
+`check_input_validation.py` scans the run's diff for new inputs without validation
+(Rust config structs + Python argparse/click in v1), proven by `test_input_validation_gate.py`
+(30 checks, farukon-shaped fixtures, non-vacuous pass) and pinned by vaccine V-iv-gate; the
+reviewer counts a NEW unguarded input path as severity >= major and the golden set holds 9
+cases (calibration 9/9, P/R 1.000). The suite is green end to end (46 PASS / 0 FAIL of 46
+self-test files), the memory gates run clean.
+Latest run: implement 20261101-81600b39 (fix-tasks-input-validation.yaml, hitl, plan approved
+with 0 rejections) — review iterations 1-2 request_changes (5+2 major, all reworked), owner
+authorized iteration 3 -> approve zero findings; acceptance SUCCESS (1/1 verify MET,
+regression pass, ledger FRESH). Version 12.19.1 -> 12.20.0 (minor, matrix + reviewer).
+Open backlog: 3 (1 critical follow_up — the 10 findings of review 20261101-e519a1da; 1 info
+follow_up — the criterion-4 authoring flaw; 1 warning follow_up — validate_documentation.py
+--derive scope conflict; plus 2 info debts carried with follow_up=false: module-vaccine
+fragility, historical RV/BL/PR/RF/NM attribution).
+Previous state: factory v12.19.1 — clean code is now standing practice: two permanent skill-base skills
 (`clean-code-discipline` — the writing discipline; `clean-code-metrics` — the three metric gates:
 CRAP below 10, duplication rank 0.8 removed, surviving mutants killed / dead code deleted, with
 the tool-safety warnings and the get-uml-viewer installer ban), registered in the manifest with
@@ -146,10 +164,10 @@ Open backlog: 0 items (52 closed with evidence) — the §7 calibration obligati
 and the 12 review findings were all closed by run 20261026-2ea2eb55 (v12.17.0, see above); the
 deployer `start.sh` guard now also has a network-gated behavioural test. The `test_run_id.py`
 line-ending debt stays CLOSED: the id is platform-neutral.
-Rulebook: 27 rules, 86 carriers, byte-identical (`check_factory_rules.py` exit 0 — AGENTS.md now
-points at the rulebook instead of carrying 24 verbatim blocks). Memory owner:
-repo, declared with `project_id` (the repository identity, not the folder name). Self-tests: 45
-files — 45 pass, 0 SKIP, 0 fail (green end to end; see the latest run above).
+Rulebook: 29 rules, 94 carriers, byte-identical (`check_factory_rules.py` exit 0 — AGENTS.md now
+points at the rulebook instead of carrying verbatim blocks). Memory owner:
+repo, declared with `project_id` (the repository identity, not the folder name). Self-tests: 46
+files — 46 pass, 0 SKIP, 0 fail (green end to end; see the latest run above).
 
 ## Key decisions
 - The long-term memory `memory/` belongs to ONE target project (`repo_path`); the field

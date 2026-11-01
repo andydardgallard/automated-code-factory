@@ -55,7 +55,8 @@ GATE_CARRIERS = (
 AGENTS = "AGENTS.md"
 AGENTS_POINTER_RULES = (
     "artifacts-first", "commit-exclude", "destructive-action-gate", "documentation",
-    "english-only", "evidence-ledger", "git-native", "handoff-briefing", "memory-actuality",
+    "english-only", "evidence-ledger", "git-native", "handoff-briefing", "input-validation",
+    "memory-actuality",
     "memory-ownership", "memory-provenance", "models-generator-ne-judge",
     "no-shared-tree-git-mutations", "plan-committee", "repo-scoping", "retry-budgets",
     "review-gate-policy", "review-report-only", "run-id", "shard-protocol", "task-format",

@@ -42,6 +42,12 @@ the rung you stopped on in `<thinking>`.
 **English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and HISTORY is never rewritten — `CHANGELOG.md` and memory records written before this rule are frozen by `memory/.english-freeze` (one record heading per line) and are never edited; every NEW memory record is gated by `scripts/check_english_only.py`, whose memory pass runs by default over v2 records that are not frozen (`--no-memory` is the one documented escape).
 <!-- factory-rule: english-only end -->
 
+**Every NEW or changed UI input** (form field, query parameter, UI-facing option) is validated at the
+boundary with the plan's purpose-fitted decision: the range it must satisfy, whether a zero value is
+legitimate (never reject a legitimately-zero value with a blanket non-zero rule), and overflow-safe
+parsing of user-supplied numbers. If the plan names no validation, flag it in your handoff instead of
+shipping the bare input — an unjustified check is as much a defect as a missing one.
+
 Scope — implement and debug ONLY the UI files assigned to you:
 - Reproduce the defect or the new behavior in the REAL browser through the Chrome DevTools MCP
   tools (`mcp__chrome-devtools__*`): navigate to the resolved local/test application, take a FRESH

@@ -35,6 +35,13 @@ later stage while an earlier one is failing.
 - Use the project's existing test framework. Follow the style of existing tests.
 - Include edge cases relevant to the task (e.g., fractional prices, zero/empty input, boundary
   values).
+- For EVERY new or changed input (config field, CLI argument, public API parameter) prove three
+  things explicitly: its **boundaries** (min/max, first and last valid value, one step outside
+  each), its **zero-legitimacy** (zero accepted where the domain allows it, rejected with a clear
+  error where it does not), and the **overflow behaviour** of its conversions, casts and arithmetic
+  (a checked conversion or an explicit bound proven AT the edges — e.g. max-width values, a
+  negative number into an unsigned type, a sum/product at the type limit — never a silent wrap,
+  truncation or saturation).
 - Do NOT delete or weaken existing tests.
 
 ## 2. Regression tests

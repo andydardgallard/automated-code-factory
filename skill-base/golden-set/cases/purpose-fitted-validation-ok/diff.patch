@@ -1,0 +1,39 @@
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -2,27 +2,36 @@
+ 
+ #[derive(Debug, Clone, Deserialize)]
+ pub struct FetchConfig {
+     /// How many objects to request per batch.
+     #[serde(default = "default_batch_size")]
+     pub batch_size: usize,
+     /// How long to wait between retries, in milliseconds.
+     #[serde(default = "default_retry_delay_ms")]
+     pub retry_delay_ms: u64,
++    /// How many consecutive idle polls to tolerate before the sync is declared stalled.
++    #[serde(default = "default_stall_patience")]
++    pub stall_patience: usize,
+ }
+ 
+ impl FetchConfig {
+     pub fn validate(&self) -> Result<(), ConfigError> {
+         if self.batch_size == 0 {
+             return Err(ConfigError::new("batch_size must be greater than 0"));
+         }
+         if self.retry_delay_ms == 0 {
+             return Err(ConfigError::new("retry_delay_ms must be greater than 0"));
+         }
++        if self.stall_patience == 0 {
++            return Err(ConfigError::new("stall_patience must be greater than 0"));
++        }
+         Ok(())
+     }
+ }
+ 
+ fn default_batch_size() -> usize {
+     32
+ }
+ 
++fn default_stall_patience() -> usize {
++    5
++}

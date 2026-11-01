@@ -27,6 +27,13 @@ and its named rules ("smallest edit", "root cause over guard", "boundary discipl
 reviewer judges your change by; its metric gates live in the companion
 `skill-base/skills/clean-code-metrics/SKILL.md`.
 
+**Every NEW or changed input** (config field, CLI argument, public API parameter) gets the plan's
+validation decision at the boundary: the purpose-fitted range, whether a zero value is legitimate
+(never reject a legitimately-zero value with a blanket non-zero rule), and overflow-safe
+conversions/casts/arithmetic on user-supplied numbers. If the plan names no validation for a new
+input, flag it in your result instead of silently adding the bare field — an unjustified check is
+as much a defect as a missing one.
+
 **Lazy Senior ladder (Ponytail) — before writing ANY code**, run this and record the chosen rung in
 `<thinking>`: 1) YAGNI — needed at all? 2) already in the codebase? (reuse) 3) language stdlib?
 4) native platform / OS / browser? 5) one-liner? Write new code only if all five are "no"; state

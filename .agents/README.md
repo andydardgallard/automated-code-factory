@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.19.1 -->
+<!-- code-factory-version: 12.20.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -63,6 +63,8 @@ projects or creates projects from scratch.
 │       │   ├── test_review_followup_task.py # review follow-up task generator self-test
 │       │   ├── test_review_report_only.py  # report-only review guard (the review verdict reaches no write node)
 │       │   ├── test_security_audit_guarantee.py # security_audit keeps its own guarantee, not duplicated
+│       │   ├── check_input_validation.py   # deterministic diff gate: NEW inputs (Rust config fields, Python CLI args) added without purpose-fitted validation
+│       │   ├── test_input_validation_gate.py # input-validation gate self-test (bad/good fixtures + prose carriers)
 │       │   ├── test_flow_contracts.py      # the wiring that lives in prose (Finish, index, briefing, templates)
 │       │   ├── test_vaccination.py         # every fix bites: fails on the pre-fix tree, passes here
 │       │   ├── test_prompt_structure.py    # self-test: append-only prompt structure
@@ -446,8 +448,8 @@ existing path, data corruption, security, a weakened check); major leaves a
 NEW path unprotected or loses test coverage without replacement; one root cause — one finding. §7 requires
 periodic calibration of the reviewer on the golden set (`scripts/calibrate_reviewer.py`): after every
 edit of the reviewer prompt and at least once per 5 review runs, with soft thresholds of verdict
-accuracy 100% and macro precision ≥ 0.8 (run 20260923-3540d5dc: accuracy 7/7, macro precision
-1.000, recall 1.000; previous run 20260923-bcbe68b3: macro precision 0.619 → 0.857). The obligation
+accuracy 100% and macro precision ≥ 0.8 (the 9-case set, run 20261101-81600b39: verdict accuracy
+9/9, macro precision 1.000, recall 1.000 — the two input-validation cases included). The obligation
 is ENFORCED, not remembered: `calibrate_reviewer.py status --repo <resolved repo_path>` compares the
 current reviewer-prompt digest and the current run count with the last `calibration:` line of
 `skill-base/golden-set/calibration-log.md` — exit 0 = the record is still current, exit 1 =

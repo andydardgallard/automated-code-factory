@@ -160,9 +160,20 @@ For every file in scope, assess:
 12. **Evidence quotes** — every finding carries a verbatim quote of the code or log it refers to
     (file:line + exact fragment). An unquoted finding is UNTRUSTED and must not influence the
     verdict — see §2.1.
+13. **Purpose-fitted validation of every new or changed input** — for every NEW or changed input
+    in the diff (a config field, a CLI argument, a public API parameter), verify that validation
+    fitting its TYPE AND PURPOSE exists: the legitimate range, whether zero is a legal value
+    (zero-legitimacy), and the overflow safety of every conversion, cast and arithmetic on it. A
+    bare type is not validation, and a purpose-blind blanket check that rejects a legitimate value
+    (a non-zero rule over a value that may legally be zero) is a defect of the same weight. The
+    deterministic helper `scripts/check_input_validation.py` (it scans the run's diff) assists but
+    does not replace judgement — see the canonical rule below.
 <!-- factory-rule: vaccination begin -->
 **Vaccination (canonical wording):** a bug found AFTER the task's acceptance first gets a regression test that reproduces it (the test fails on the current code), and only then the fix. A fix without a reproducing test is not accepted, and the test itself stays in the suite as a vaccine against recurrence. The code reviewer checks that every post-acceptance fix has such a test and counts its absence as a finding of severity ≥ major.
 <!-- factory-rule: vaccination end -->
+<!-- factory-rule: input-validation begin -->
+**Input validation (canonical wording):** for every NEW or changed input the factory introduces into a target project — a config field, a CLI argument, a public API parameter — the factory invents and enforces the validation that fits the input's TYPE AND PURPOSE: its legitimate range, whether zero is a legal value (zero-legitimacy), and the overflow safety of every conversion, cast and arithmetic on it. The checks are chosen per input, never applied mechanically: a value that may legitimately be zero is not rejected by a blanket non-zero rule, and a check imposed without a reason is as much a defect as a missing one. The plan states the validation decision for each new or changed input (or why none is needed), the coder implements it, the reviewer treats a NEW input path left without purpose-fitted validation as a finding of severity >= major, and the deterministic `scripts/check_input_validation.py` gate scans the run's diff for newly added inputs with no accompanying validation.
+<!-- factory-rule: input-validation end -->
 
 ## 2.1 Evidence: verbatim quotes (P0.6)
 
@@ -243,6 +254,7 @@ calibration error exactly like missing a real defect — it blocks acceptance wi
 Examples on that boundary:
 - a deleted test with nothing replacing it — lost coverage, not a crash or a security issue → **major**;
 - a new network call with no error handling and no status check — a new path, not a broken existing one → **major**;
+- a NEW input path left without purpose-fitted validation (range / zero-legitimacy / overflow of conversions and casts) — a new path left unguarded → **severity ≥ major**; a blanket check that rejects a legitimate value (e.g. zero) is likewise a defect;
 - a validation relaxed on an existing path (`<= 0` → `< 0`, `raise` → `return None`) — the existing check is weakened → **critical**;
 - a committed credential or an injected query — security of existing behaviour → **critical**.
 

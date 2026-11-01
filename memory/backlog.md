@@ -40,7 +40,7 @@ open:
   - item: Factory must enforce obvious variable/input validation in code it writes
     task_file: .code-factory/review/fix-tasks-input-validation.yaml
     task_type: implement
-    status: ready
+    status: done — run 20261101-81600b39 (v12.20.0): canonical rule `input-validation` (29 rules / 94 carriers), advisory diff gate check_input_validation.py + 30-check self-test + vaccine V-iv-gate, reviewer severity >= major for unguarded NEW input paths, golden set 9 cases (calibration 9/9), suite 46/46, acceptance SUCCESS
     severity: warning
     follow_up: true
     why: |

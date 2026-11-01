@@ -29,7 +29,10 @@ matches it (entries without `project:` are legacy).
 
 Responsibilities in order:
 1. Integration tests — write/run focused tests for the changed modules (project's own test
-   framework and style).
+   framework and style). For EVERY new or changed input, write the boundary, zero-legitimacy and
+   overflow cases the plan's input-validation analysis decided, including the refusal path:
+   invalid input must produce a clear error — never a silent clamp, a default substitution or a
+   degenerate run.
 2. Regression tests — run the FULL existing test suite with the canonical command and compare
    with the baseline in .code-factory/logs/baseline.md.
 3. Business tests — build/run the program with the configs and input data from the plan

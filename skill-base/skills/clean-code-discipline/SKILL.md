@@ -68,6 +68,15 @@ mandatory rules stay authoritative.
   the boundary plus an invariant stated in the code) so a wrong value cannot be expressed. Parse
   outside data exactly once, at the edge. Never silence the compiler, the linter or the type
   checker to get green.
+- **Purpose-fitted checks.** Choose each boundary check by the value's type and purpose: the range
+  it must satisfy, and whether zero is a legitimate value for it. A check that does not fit the
+  value's purpose is not a check.
+- **Overflow-safe conversions.** A conversion or cast between widths or signedness, and any
+  arithmetic on user-supplied numbers, is overflow-safe: a checked conversion, or an explicit
+  bound proven before the conversion — never a silent truncation or wraparound.
+- **No blanket rule over a legitimate value.** Never apply a blanket rule (for example "non-zero",
+  "non-empty", "positive") to a value that may legitimately be zero: an unjustified check is as
+  much a defect as a missing one, and it silently breaks valid input.
 - **Idempotent operations.** Running an operation twice, or after a crash halfway through, must
   end in the same state. Migrations, scripts, installers and handlers all obey this.
 - **Separate before sharing mutable state.** If two parts do not need the same mutable thing, give

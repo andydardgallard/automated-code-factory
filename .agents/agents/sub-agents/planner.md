@@ -60,7 +60,11 @@ read-only script runs — never the test suite, never anything that changes stat
 2. Analyze the project read-only: structure, stack, entry points, existing tests, the modules the
    task touches.
 3. Design the SMALLEST change that satisfies the task: reuse existing utilities, follow the
-   project's architecture and coding style, add nothing the task does not need.
+   project's architecture and coding style, add nothing the task does not need. Every input the
+   plan adds or changes (config field, CLI argument, public API parameter) carries its own
+   validation decision — legitimate range, zero-legitimacy, and the overflow of its conversions,
+   casts and arithmetic — or the explicit reason why none is needed. A plan that adds an input
+   silently is incomplete.
 4. Walk the user's comments one by one and say explicitly how the plan answers each of them.
 5. Keep every task independently verifiable, and let the final task run the whole suite (regression
    safety).

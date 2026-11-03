@@ -1382,3 +1382,38 @@ unfinished:
     reason: carried — unchanged since 20261031-dd7ffa0e; reconstructing durable per-vaccine claim lists is a separate task
     severity: info
     follow_up: false
+
+## 2026-11-03T20:45:00+03:00 — Conditional factory-farukon-expert role + Farukon MCP integration (full gui-expert analogy)
+
+title: Add a farukon-expert subagent (drives the farukon platform via the farukon MCP server), full analogy with gui-expert
+project: repo
+timestamp: 2026-11-03T20:45:00+03:00
+run_id: 20261103-236f69e8
+branch: farukon-expert-20261103
+commit: v12.22.0 (one commit: the changed files, VERSION/CHANGELOG/README sync, this record and the summary)
+task_type: implement
+goal: a coder-class factory-farukon-expert subagent that develops/operates the Farukon platform only through the 8 farukon MCP tools, with conditional applicability, a models.farukon_expert task key, role-registry/routing/briefing/docs wiring and deterministic checks
+changed_files: 34 files — NEW scripts/farukon_mcp.py (decide/merge-config/probe/validate-config) + test_farukon_mcp.py (298 assertions) + references/farukon-mcp.md + sub-agents/farukon-expert.md; model_matrix.py/model_attribution.py (ROLES/alias), factory_preflight.py (--farukon delegated probe), error_router.py + error-patterns.default.json + error-routing.md (F1/F2 rows, implemented match order), SKILL.md + code-factory.md (routing, MS edge, models), tester.md/advisor.md, handoff-briefing/providers/verification-strategy/reference-docs/factory-rules (carriers), AGENTS.md/.agents/README.md/README.md, assets/task-template.yaml + .example.task.yaml, test_model_precedence/test_flow_contracts/test_error_router/test_factory_preflight/test_vaccination/test_no_role_substitution/test_provider_stop/test_model_attribution/test_clean_code_skill/test_run_id (pins), VERSION/CHANGELOG/README (12.22.0 sync) [verified: git diff --cached --name-only, .code-factory/manifest.json]
+created_files: farukon-expert.md, farukon-mcp.md, farukon_mcp.py, test_farukon_mcp.py [verified: git status]
+results: integration=PASS (test_farukon_mcp 298 assertions; probe green vs the real platform) [verified: .code-factory/logs/factory-suite.log]; regression=PASS (47/47 self-test files after every rework round, 4 full runs) [verified: .code-factory/logs/factory-suite.log vs baseline .code-factory/logs/baseline.md]; business=MATCH (Scenario A helpers green; Scenario B real MCP session by factory-farukon-expert: build+replay start+connector_state+bounded stop, instance rt-760-0; independent tester ACCEPTANCE PASS 6/6, instance rt-760-1) [verified: farukon repo .code-factory/logs/farukon/20261103-236f69e8/, .code-factory/logs/business-tests.md]; review=request_changes iterations 1-4 (9 -> 3 -> 3 -> 1+2 findings, all closed with failing-first pins), iteration 5 request_changes with 0 critical / 2 major / 3 minor left OPEN by owner decision (review loop acknowledged as converging heuristic-finding cycle; findings carried to the next task) [verified: .code-factory/logs/code-review.md, reviewer outputs]; acceptance=SUCCESS, 2/2 verify criteria MET, 2 derived (both backed by real artifacts), regression=pass, ledger FRESH [verified: verify_acceptance.py exit 0, .code-factory/state/acceptance.md]; platform fix (owner-approved non-goal relaxation): farukon_mcp v3.4.1 accepts/echoes MCP protocol 2025-11-25, platform commit 17b3366d, platform regression 451/0 [verified: platform git log, tester regression]; documentation validated (plain + --derive exit 0) [verified: documenter validation log]; model attribution DEGRADED for analyzer/planner only (their delegations predated the CLI restart; no wire in this session), all in-session roles match the wire [verified: .code-factory/state/model-attribution.json]
+decisions: the MCP protocol mismatch (CLI requests 2025-11-25, server answered only <=2025-06-18) was fixed on the SERVER side per owner decision ("CLI is never modified") — echo-negotiation in farukon_mcp, committed as platform v3.4.1 [verified: platform commit 17b3366d]; the run resumed from the checkpoint of the previous session (same run_id) instead of restarting [verified: .code-factory/state/pipeline.yaml]; review iterations 3-5 were owner-authorized beyond the budget of 2, then the owner stopped the loop with 5 non-critical findings carried [verified: AskUserQuestion answers]; version type = minor, validated by the reviewer twice [verified: reviewer outputs, version_manager bump/sync/validate exit 0]; the pre-DOC2 doc baseline was initially captured with an incomplete scope and re-captured — with the 8 doc files already post-DOC2 (harmless here: all declared, doc-only proven by snapshot; recorded as a process note) [verified: documenter retry log]
+assumptions: the machine-local untracked .kimi-code/mcp.json farukon registration in the factory repo STAYS (it is what lets the CLI spawn the platform MCP server); test_factory_preflight step 13 was made environment-independent for exactly this reason
+models_used: main=kimi-code/k3; coder=deepseek-flash (rounds 1-4 + platform fix via briefing); farukon_expert=deepseek-flash (agent-1, real MCP session); tester=deepseek-flash (agent-2, ACCEPTANCE PASS); reviewer=kimi-code/k3.1-pro (5 iterations); documenter=deepseek-flash; analyzer/planner=kimi-code/k3.1-pro (previous session, no wire); models_warning: KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL unset (secondary split inactive); task-matrix family collisions coder/tester/gui_expert/farukon_expert vs advisor (deepseek) — task matrix authoritative, no substitution; attribution DEGRADED for analyzer/planner (wire lost on CLI restart)
+factory_version: 12.22.0
+unfinished:
+  - item: 5 open review findings of iteration 5 (0 critical): generic identity terms (integration/runtime) activate unrelated tasks; handshake timeout args lack finite validation (float("inf") defeats the bounded contract); CC of decide_applicability (~21) and validate_config (~20) above gate 1; the deliberately duplicated ~70-line JSON text-surgery shared with chrome_devtools_mcp.py (reviewer wants a shared module, the duplication was a documented standalone-deployment decision)
+    reason: carried — the owner stopped the review loop ("next task"); a review cycle on a heuristic classifier converges too slowly, findings wait for a dedicated implement task
+    severity: warning
+    follow_up: true
+  - item: platform anomaly found by specialist+tester: replay stop reports workspace_saved:false (temp per-instance dir never created, os error 3) — cosmetic, lifecycle clean; belongs to the farukon_v3.1.0 project's own backlog
+    reason: carried — out of this repo's scope; recorded here for visibility, fix in the platform project
+    severity: info
+    follow_up: true
+  - item: module-kind vaccines remain fragile to newer assertions in shared test modules overtaking a vaccine's declared first-failure signature
+    reason: carried — unchanged since 20261031-dd7ffa0e; converting every remaining module vaccine to probes is a separate hardening task
+    severity: info
+    follow_up: false
+  - item: historical vaccine groups RV/BL/PR/RF/NM are claimed by attribution because their per-run disposition artifacts predated the claims grammar
+    reason: carried — unchanged since 20261031-dd7ffa0e; reconstructing durable per-vaccine claim lists is a separate task
+    severity: info
+    follow_up: false

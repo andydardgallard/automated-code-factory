@@ -1,5 +1,5 @@
-# Autonomous Code Factory v12.21.0
-<!-- code-factory-version: 12.21.0 -->
+# Autonomous Code Factory v12.22.0
+<!-- code-factory-version: 12.22.0 -->
 
 An autonomous code-writing factory for the **Kimi Code CLI** (0.34+, Node).
 
@@ -33,6 +33,10 @@ green-field) — the stack is detected automatically.
 - **Conditional Web GUI path** — the `factory-gui-expert` subagent implements and debugs a Web UI in
   a real browser through Chrome DevTools MCP (pinned release, deployed by `prepare_factory`); the
   `factory-tester` independently proves the final scenario
+- **Conditional Farukon platform path** — the `factory-farukon-expert` subagent builds, runs, tests
+  and debugs the Farukon trading platform through the `farukon` MCP server (the `farukon_mcp` crate
+  of the target repo, deployed by `prepare_factory`); the `factory-tester` independently replays the
+  final scenario, read-only in stage 1
 - **Remote `reference_docs`** — a public http(s) document or Git-repository URL becomes a reusable
   skill, with the same deterministic reuse/update as a local document
 
@@ -43,12 +47,15 @@ green-field) — the stack is detected automatically.
 │   ├── README.md                    # full factory manual
 │   ├── skills/code-factory/         # flow skill (SKILL.md) + references + scripts
 │   │   ├── references/chrome-devtools-mcp.md  # conditional browser path (Chrome DevTools MCP)
+│   │   ├── references/farukon-mcp.md          # conditional platform path (Farukon MCP)
 │   │   ├── scripts/chrome_devtools_mcp.py     # browser-path decide/merge-config/probe (stdlib)
-│   │   ├── scripts/test_chrome_devtools_mcp.py, scripts/test_remote_reference_docs.py  # self-tests
+│   │   ├── scripts/farukon_mcp.py             # platform-path decide/merge-config/probe (stdlib)
+│   │   ├── scripts/test_chrome_devtools_mcp.py, scripts/test_farukon_mcp.py  # self-tests
+│   │   ├── scripts/test_remote_reference_docs.py  # self-test (remote reference_docs)
 │   │   ├── assets/chrome-devtools.mcp.json    # managed MCP server definition (pinned release)
 │   │   ├── assets/chrome-devtools-smoke.html  # opt-in real-Chrome smoke fixture
 │   │   └── assets/task-template.yaml # business task template
-│   └── agents/                      # main agent + subagents (sub-agents/gui-expert.md included)
+│   └── agents/                      # main agent + subagents (sub-agents/gui-expert.md, sub-agents/farukon-expert.md included)
 ├── AGENTS.md                        # context for Kimi agents
 ├── CHANGELOG.md                     # version history (SemVer)
 ├── prepare_factory.sh               # deploy the factory into a project (1 command)
@@ -156,7 +163,10 @@ authentication, without breaking already connected models. Endpoints, configs, a
 Recommended mapping: primary (reasoning) — main/planner, analyzer, diagnostician,
 reviewer; secondary (fast) — coder, tester; the Web GUI specialist `factory-gui-expert`
 (`models.gui_expert`) is generator-side and takes a secondary model when its MCP/media capabilities
-suffice, with complex visual analysis delegated to a read-only primary role.
+suffice, with complex visual analysis delegated to a read-only primary role. The Farukon platform
+specialist `factory-farukon-expert` (`models.farukon_expert`) is generator-side in exactly the same
+sense: a secondary model is enough for routine platform work, and the used model is logged as
+`models_used.farukon_expert`.
 
 ## Web GUI and Chrome DevTools MCP (conditional)
 
@@ -187,6 +197,49 @@ startup) are reported through the existing INFRASTRUCTURE route — rows I1–I4
 MET: the pre-flight (`factory_preflight.py --web-gui`) reports the browser path usable only for a
 REAL deployment — a valid `.kimi-code/mcp.json` plus the pinned vendored entry it launches on disk —
 so an undeployed repository sees the exact missing capability instead of a template-derived pass.
+
+## Farukon platform and the Farukon MCP path (conditional)
+
+The factory's only trading-platform MCP, and a conditional capability: it exists for tasks that
+develop, build, run, test or debug the Farukon trading platform, and is invisible for every other
+task. `farukon_mcp.py decide` is deterministic and carries a reason (never a model call): the
+repository must HOST the platform (`farukon_mcp/Cargo.toml`, a `farukon_mcp` workspace member, or an
+existing `farukon` entry in `.kimi-code/mcp.json`) AND the task scope must operate it — an identity
+term AND an operation term bound to the platform, no occurrence of that operation bound to a
+documentation/media object, and a weighted score of at least `SCOPE_APPLICABLE_SCORE` (3); either
+condition alone keeps the role OFF, and an explicit exclusion phrase in the task text always wins.
+The recorded reason names the identity and operation terms it matched, the operation terms discarded
+as bound to another subject, the score and the host signals, so the decision is auditable.
+Only then does `factory-farukon-expert` implement, build, run and debug the ASSIGNED platform files
+through the `mcp__farukon__*` tools (eight operations: build, cargo test, start, stop, connector
+state, portfolio snapshot, message log, web health), while `factory-tester` independently replays the
+FINAL scenario after the last code change and owns the acceptance evidence in
+`.code-factory/logs/farukon/<run_id>/` — the specialist never issues a final PASS for its own work.
+Platform failures and review rework use the EXISTING coder route and `retry_counters.coder`; analyzer,
+planner, diagnostician and reviewer stay read-only, and only the specialist and the tester receive the
+platform tools. Stage 1 is read-only by design: `order_capable` is false, no order path exists, replay
+is the preferred mode for evidence, and every start gets a bounded stop. A non-Farukon task never
+invokes the specialist, starts the server or requires a Rust toolchain to succeed.
+
+The managed `farukon` stdio server (`cargo run --quiet -p farukon_mcp --`, `cwd` = the absolute,
+normalized platform root, because the workspace must resolve from the platform repository) is merged
+into the target project's `.kimi-code/mcp.json` by `farukon_mcp.py merge-config`, and only when the
+project really hosts the platform: the helper refuses a repository that is not a platform root, so an
+unrelated project never receives a server it cannot launch. The merge inserts only the
+`mcpServers.farukon` member and is idempotent — every other server and setting is preserved
+byte-for-byte, an equal entry is reported `unchanged`, and an existing DIFFERENT `farukon` entry is
+reported and preserved instead of overwritten. `prepare_factory` deliberately does NOT register this
+server for every prepared project (that would break the conditional applicability above); it deploys
+the whole skill tree, and the platform path is configured where it applies. Missing capabilities
+(`cargo`/toolchain, a repository that is not a platform root, a missing or invalid managed config,
+MCP startup) are reported through the existing INFRASTRUCTURE route — rows F1–F2 of
+`references/error-routing.md` — and the affected platform criteria stay explicitly UNVERIFIED, never
+MET. The pre-flight (`factory_preflight.py --farukon`) appends a nested `farukon` capability block
+without building anything and without starting the server; its verdict is the delegated probe's own
+(`usable` only when the probe agrees, `degraded` when a capability is missing or the probe itself
+could not run — an exception is reported as `probe_error` and is never `not_applicable`). The opt-in
+`farukon_mcp.py probe --check-mcp-start` performs a bounded JSON-RPC handshake only when it is asked
+for, and reports the `protocol_version` the server answers rather than a version of its own.
 
 ## Remote reference_docs (public URLs)
 
@@ -220,4 +273,4 @@ change to the beginning or middle of a prompt invalidates the cache.
 Versioning follows [Semantic Versioning](https://semver.org/). The [`VERSION`](./VERSION)
 file is the single source of truth — all other version mentions are synced from it by
 `scripts/version_manager.py`. Change history is in
-[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.21.0**.
+[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.22.0**.

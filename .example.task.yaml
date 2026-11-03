@@ -159,7 +159,7 @@ acceptance_criteria:
 # continues). A role the matrix does NOT name takes its model from the factory's
 # default matrix (the CLI config's `default_model` / `[secondary_model]`, selected by
 # the role's `model_preference: primary|secondary`), where the generator≠judge rule IS
-# enforced: a same-family coder/tester/gui_expert vs reviewer/diagnostician/advisor
+# enforced: a same-family coder/tester/gui_expert/farukon_expert vs reviewer/diagnostician/advisor
 # pair is an ERROR naming the fix (widen `[secondary_model]` or pin `models.<role>`).
 # Any provider families are supported: deepseek, qwen, kimi/moonshot and others.
 # When a Kimi model (e.g. kimi-k3) or Qwen is specified, the factory automatically
@@ -170,6 +170,7 @@ acceptance_criteria:
 #   planner: deepseek-v4-pro
 #   coder: kimi-k3
 #   gui_expert: deepseek-v4-flash   # Web GUI specialist (generator-side, secondary-class model)
+#   farukon_expert: deepseek-v4-flash  # Farukon platform specialist (generator-side, secondary-class model)
 #   tester: qwen-max
 #   diagnostician: deepseek-v4-pro
 #   reviewer: deepseek-v4-pro

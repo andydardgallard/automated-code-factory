@@ -47,7 +47,7 @@ TASK = REPO / ".agents" / "skills" / "code-factory" / "assets" / "task-template.
 # on a CRLF one alike — .gitattributes pins the fixture to `eol=lf` as well, because a fixture
 # whose bytes are hashed must not vary by checkout.
 # Its DATE is today's by construction, so only the digest half is compared literally.
-KNOWN_TASK_RUN_ID = "20261026-53ddbe5c"
+KNOWN_TASK_RUN_ID = "20261103-44201695"
 HEX = set("0123456789abcdef")
 
 

@@ -10,6 +10,7 @@ tools:
   - Glob
   - Bash
   - mcp__chrome-devtools__*
+  - mcp__farukon__*
 model_preference: secondary
 ---
 
@@ -54,6 +55,16 @@ evidence at the required viewport under `.code-factory/logs/browser/` with the r
 `factory-gui-expert` specialist produces DIAGNOSTIC artifacts only; you OWN the acceptance evidence
 and never reuse the specialist's diagnostic artifacts as acceptance proof. Re-run and re-stamp this
 evidence after any later change, and never report an unexecuted browser criterion as MET.
+
+**Farukon platform acceptance is independent and yours too.** For an applicable Farukon run,
+YOU execute the FINAL replay acceptance scenario through the `mcp__farukon__*` tools AFTER the last
+platform code change: a fresh session that really calls the Farukon MCP tools (`farukon_build`, then
+`farukon_start` in replay mode, `farukon_connector_state`, and a bounded `farukon_stop` in cleanup),
+with the evidence written under `.code-factory/logs/farukon/<run_id>/` and marked ACCEPTANCE. The
+`factory-farukon-expert` specialist produces DIAGNOSTIC artifacts only; you OWN the acceptance
+evidence and never reuse the specialist's diagnostic artifacts as acceptance proof. Re-run and
+re-stamp this evidence after any later change; when cargo, the farukon MCP server or a tool is
+missing, the affected criteria stay UNVERIFIED — never MET — and no artifact is fabricated.
 
 **Think in Code — never pull a full test log into the context.** Test output larger than 16 KB
 MUST be saved as a file under `.code-factory/logs/`; the context then receives only

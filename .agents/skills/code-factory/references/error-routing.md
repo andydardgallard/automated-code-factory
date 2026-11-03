@@ -33,6 +33,8 @@ specific first. First match wins.
 | 2 | WRONG_RESULTS | `zero Total_Return\|no trades occurred\|all combinations produced identical\|expected .* but got\|regression\|no meaningful signals\|no nonzero\|zero return` | DIAGNOSTICIAN |
 | 3 | INFRASTRUCTURE | `Merge conflict in (target/|node_modules/|__pycache__/|build/|dist/)` | INFRASTRUCTURE (auto-fix) |
 | 4 | INFRASTRUCTURE | `(build artifacts|target/|node_modules/) (tracked|committed) in git` | INFRASTRUCTURE (auto-fix) |
+| F1 | FARUKON_TOOLCHAIN | `\bcargo'?\s*:\s*(command not found|not found|no such file or directory)\|\bcargo'?\s+is\s+not\s+recognized\|\bcargo\b[^\n]{0,40}was not found on PATH\|error:\s*linker\s+\S+\s+not found\|\brustup\b[^\n]{0,80}(error|failed|could not|not installed)\|\btoolchain\b[^\n]{0,60}(is not installed|not installed|failed to install|install failed)\|\brustc\b[^\n]{0,40}(command not found|not found|not recognized)` | INFRASTRUCTURE (auto-fix) |
+| F2 | FARUKON_MCP_STARTUP | `farukon[ _-]?mcp\b[^\n]{0,80}(failed to start|did not start|could not start|cannot start|exited|crash|abort|timed? out|timeout|not found|no such file|does not expose|closed stdin)\|(failed to start|did not start|could not start|start [^\n]{0,20}failed|cannot start|unable to start|failed to connect|could not connect|timed? out|timeout|exited unexpectedly|crash)[^\n]{0,60}farukon[ _-]?mcp\b\|\bmcp\b[^\n]{0,60}handshake[^\n]{0,60}(failed|timed? out|timeout|error|refused|no response)\|(no (initialize|tools/list) response|closed stdin before|answered (initialize|tools/list) with)[^\n]{0,120}(farukon|cargo run)\|\A(?![\s\S]*error\[E\d+\])[\s\S]*could not compile[^\n]{0,60}farukon[ _-]?mcp\|does not expose every Farukon tool` | INFRASTRUCTURE (auto-fix) |
 | I1 | BROWSER_TOOLCHAIN | `(node|npm|npx)'?\s*:\s*(command not found|not found|no such file or directory)\|'?(node|npm|npx)'?\s+is\s+not\s+recognized\|spawn\s+(node|npm|npx)\b[^\n]{0,20}(ENOENT|EACCES|failed)\|(node|npm|npx)\b[^\n]{0,20}was not found on PATH; a Web GUI run cannot start\|(node|npm|npx)\b[^\n]{0,20}was not found on PATH:[^\n]{0,60}the pinned chrome[- ]devtools[- ]mcp[^\n]{0,40}cannot be installed` | INFRASTRUCTURE (auto-fix) |
 | I2 | BROWSER_MISSING | `(chrome|chromium|google[- ]chrome|chrome[- ]for[- ]testing)\b[^\n]{0,60}(not found|not installed|is missing|could not be found|fails? to launch|failed to launch|does not exist|doesn't exist|no such file)\|(could not find|unable to find|cannot launch|failed to launch)\s+(the\s+)?(google\s+)?(chrome|chromium|chrome[- ]for[- ]testing)\|no\s+(google\s+)?chrome\s+(binary|executable|installation)` | INFRASTRUCTURE (auto-fix) |
 | I3 | MCP_STARTUP | `mcp\b[^\n]{0,60}(failed to start|failed to connect|could not start|cannot start|not initialized|startup (failed|error)|connection (refused|reset|failed)|disconnected|timed? out|no such server|unknown server)\|(failed to connect|could not connect|unable to connect|failed to start)[^\n]{0,40}\bmcp\b\|\bmcp\b[^\n]{0,40}server[^\n]{0,20}(crashed|exited unexpectedly)` | INFRASTRUCTURE (auto-fix) |
@@ -58,6 +60,25 @@ Notes:
 - Patterns are language-agnostic; add more regexes over time as new error families appear.
 - The "wrong business results" pattern (row 2) MUST be checked before generic assertion/compile
   patterns, because business markers may appear inside an assertion message.
+- Rows F1–F2 are the Farukon platform infrastructure family (Rust toolchain, Farukon MCP server
+  startup). They sit between the git-hygiene rows 3/4 and the browser rows I1–I4 ON PURPOSE: a
+  missing `cargo`, a `rustup` failure or a failed Farukon MCP startup is an environment problem, and
+  without that position a toolchain line would be stolen by `command not found` (PLANNER) or
+  `file not found` (BA) while a `farukon_mcp` handshake line would be claimed by the generic MCP row
+  I3. `scripts/test_error_router.py` pins both classifications with real-world wording samples
+  (including the lines `scripts/farukon_mcp.py` itself emits), the JSON↔table agreement of the two
+  cells, and the ordering.
+- A `farukon_mcp` COMPILE failure is split on purpose: `error: could not compile farukon_mcp` is
+  a build/toolchain problem of the managed server (row F2 → INFRASTRUCTURE) **only when the log
+  carries no Rust implementation error**, while a Rust error code inside the crate (`error[E0308]` in
+  `farukon_mcp/src/...`, a `FAILED` test line of `farukon_mcp::tests::…`, a panic) keeps the
+  COMPILE_ERROR / ASSERTION / RUNTIME_CRASH route to CODER — the rows never name a bare `error` or
+  `failed` next to the crate name for exactly that reason. Cargo's LAST line of a failed build is
+  always that `could not compile` summary, so a plain summary regex would steal every real
+  implementation failure: the row's alternative therefore carries a whole-log guard,
+  `\A(?![\s\S]*error\[E\d+\])…`, which refuses to match as soon as ANY `error[Exxxx]` appears in the
+  log. `scripts/test_error_router.py` pins both halves with a complete Cargo log containing
+  `error[E0308]` AND the final summary (it must reach row 8/CODER).
 - Rows I1–I4 are the browser/MCP infrastructure family (node/npm/npx, Chrome/Chrome for Testing,
   MCP startup, chrome-devtools-mcp launch). They sit between the git-hygiene rows 3/4 and the generic
   rows 5/7 ON PURPOSE: without that position a browser capability line would be stolen by
@@ -87,6 +108,12 @@ Notes:
   GUI role key and no separate GUI retry budget. Rows I1–I4 route environment/startup problems only,
   and the affected browser criteria stay UNVERIFIED in that case
   (`references/chrome-devtools-mcp.md` §6).
+- Farukon-expert IMPLEMENTATION and scenario FAILURES (a broken replay/fixture scenario, a failing
+  connector or platform behaviour, a test that asserts the wrong thing) are NOT infrastructure
+  either: they keep the existing CODER route and `retry_counters.coder` — there is no separate
+  Farukon role key and no separate Farukon retry budget, so the specialist's own budget is the
+  coder's. Rows F1–F2 route the Rust toolchain and the Farukon MCP startup/launch only, and when
+  they fire the affected Farukon criteria stay UNVERIFIED in that case.
 
 ## 1.1 Provider errors (Kimi / Qwen) — integrated into the same routing
 

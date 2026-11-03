@@ -1,7 +1,7 @@
 # Subagent Briefing (handoff template)
 
 The single briefing template the main agent uses when launching ANY subagent:
-`factory-analyzer`, `factory-coder`, `factory-gui-expert`, `factory-tester`,
+`factory-analyzer`, `factory-coder`, `factory-gui-expert`, `factory-farukon-expert`, `factory-tester`,
 `factory-diagnostician`, `factory-code-reviewer`, `factory-advisor`. The briefing is the subagent's
 only input: it does not see the main agent's dialog history and must not request it. Whatever did
 not make it into the briefing does not exist for the subagent.
@@ -11,6 +11,13 @@ role**: it implements and debugs the Web GUI files the briefing assigns, writes 
 gets the same constraints as `factory-coder` (§2 Constraints), and NEVER the no-edits suffix of §4.
 Its browser artifacts are diagnostic evidence — the acceptance evidence is produced by the tester
 (`references/verification-strategy.md` §3.1).
+
+`factory-farukon-expert` (`.agents/agents/sub-agents/farukon-expert.md`) is the same **coder-class
+execution role** for a Farukon platform task: it implements, builds, runs and debugs the platform
+files the briefing assigns, writes only those files, works ONLY through the `farukon` MCP tools, gets
+the same constraints as `factory-coder` (§2 Constraints), and NEVER the no-edits suffix of §4. Its
+MCP artifacts are diagnostic evidence — the acceptance evidence is produced by the tester
+(`references/verification-strategy.md` §3.2).
 
 Sources: `paseo` (handoff: a fixed template + files by path instead of pastes) and Kaggle 5-Day
 AI Agents Intensive, Day 2 (the concise-output contract: the subagent returns a digest and a link
@@ -98,10 +105,11 @@ stdlib-only (new dependencies are forbidden), the actual model (`model_preferenc
 environment interpreter (on Windows — `python`, `python3` may be absent), the ban on running the
 full test suite where the tester does that, and the no-edits suffix for analytical roles.
 
-The `factory-coder` and `factory-gui-expert` briefings always carry the ban on git mutations of the
-shared working tree in Constraints: `git stash` / `git reset` / `git checkout` / `git clean` are not performed on the
-shared tree; the base version of a file is viewed via `git show HEAD:<file>` or a separate temp
-clone — the tree is shared by the main agent and parallel subagents.
+The `factory-coder`, `factory-gui-expert` and `factory-farukon-expert` briefings always carry the ban
+on git mutations of the shared working tree in Constraints: `git stash` / `git reset` / `git
+checkout` / `git clean` are not performed on the shared tree; the base version of a file is viewed
+via `git show HEAD:<file>` or a separate temp clone — the tree is shared by the main agent and
+parallel subagents.
 
 <!-- factory-rule: no-shared-tree-git-mutations begin -->
 **No shared-tree git mutations (canonical wording):** subagents do NOT run `git stash`, `git reset`, `git checkout` or `git clean` on the run's shared working tree — it is shared by the main agent and other parallel subagents, and such operations create a race risk and the loss of others' changes. To prove a bug pre-existed or to view a file's base version, `git show HEAD:<file>` or a separate temp clone is used; only the main agent performs working-tree git mutations.
@@ -127,9 +135,9 @@ delete any file" — `analyzer`, `planner`, `code-reviewer`, `security-auditor`,
 `advisor` (the same list the canonical `handoff-briefing` rule names). A role without edit rights
 cannot "fix along the way" what it finds — it reports it in the handoff, and the main agent decides.
 For `advisor` this is additionally pinned by `disallowedTools: Write, Edit`.
-The editing roles (`coder`, `gui-expert`, `refactorer`, `tester`, `documenter`, `skill-manager`)
-receive the opposite: the exact file set they may touch, plus the `no-shared-tree-git-mutations`
-ban on this shared working tree.
+The editing roles (`coder`, `gui-expert`, `farukon-expert`, `refactorer`, `tester`, `documenter`,
+`skill-manager`) receive the opposite: the exact file set they may touch, plus the
+`no-shared-tree-git-mutations` ban on this shared working tree.
 
 ## 5. A mini-example of a filled-in briefing
 

@@ -125,13 +125,14 @@ business_tests:
 # The factory maps the provider from the model name and routes requests to the
 # correct endpoint with the right authentication (see references/providers.md).
 # A judge-side role (reviewer / diagnostician / advisor) should resolve to a model
-# family DIFFERENT from the generator side (coder / tester / gui_expert); if the
+# family DIFFERENT from the generator side (coder / tester / gui_expert / farukon_expert); if the
 # default matrix cannot guarantee that, pin the judge role here (e.g. `advisor`).
 # models:
 #   analyzer: deepseek-v4-flash
 #   planner: deepseek-v4-pro
 #   coder: kimi-k3
 #   gui_expert: deepseek-v4-flash   # Web GUI specialist (generator-side, secondary-class model)
+#   farukon_expert: deepseek-v4-flash  # Farukon platform specialist (generator-side, secondary-class model)
 #   tester: qwen-max
 #   diagnostician: deepseek-v4-pro
 #   reviewer: deepseek-v4-pro

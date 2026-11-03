@@ -17,7 +17,7 @@ This test pins it:
      router, the budget, the unknown-role error);
   B. every carrier quotes that block BYTE-IDENTICALLY exactly once;
   C. the SKILL.md flow carries the branch for EVERY named-role delegation:
-     - the provider-failure node MS is fed by the coder/gui_expert M, the analyzer E and SC, the
+     - the provider-failure node MS is fed by the coder/gui_expert/farukon_expert M, the analyzer E and SC, the
        planner F and PC, the tester N, Q and S, the reviewer CR and CR0, the diagnostician DG, the
        advisor ADV, the documenter DOC2 and the security auditor SA — each with a
        `provider error at delegation` edge — and its body names every role family as well as the
@@ -86,8 +86,8 @@ EDGE_RE = re.compile(r"^\s*([A-Za-z0-9_]+)\s*-->\s*(?:\|([^|\n]*)\|)?\s*([A-Za-z
 FAILURE_NODE = "MS"
 FAILURE_FROM = ("M", "E", "SC", "F", "PC", "N", "Q", "S", "CR", "CR0", "DG", "ADV", "DOC2", "SA")
 # The role families the branch must name in words, so the coverage is readable and not only drawn.
-ROLE_FRAGMENTS = ("analyzer", "planner", "coder", "gui_expert", "tester", "reviewer",
-                  "diagnostician", "advisor", "documenter", "security auditor")
+ROLE_FRAGMENTS = ("analyzer", "planner", "coder", "gui_expert", "farukon_expert", "tester",
+                  "reviewer", "diagnostician", "advisor", "documenter", "security auditor")
 # The ONLY legal destinations of the provider-failure node: the owner's decision (hitl) and the
 # terminal finish node (auto FAILED). No implementation/delivery/review node may follow a provider
 # refusal of a task-named model.
@@ -543,7 +543,7 @@ def main() -> int:
 
     print(f"PASS - the rule '{RULE}' is declared in {RULEBOOK} with its four carriers and quoted "
           f"byte-identically in every one of them; the SKILL.md flow routes a provider failure of "
-          f"ANY task-named role delegation (analyzer, planner, coder/gui_expert, tester, reviewer, "
+          f"ANY task-named role delegation (analyzer, planner, coder/gui_expert/farukon_expert, tester, reviewer, "
           f"diagnostician, advisor, documenter, security auditor — nodes M, E, SC, F, PC, N, Q, S, "
           f"CR, CR0, DG, ADV, DOC2, SA) into the stop branch, which only asks the owner (VMS), "
           f"re-resolves an owner-authorized matrix and retries the SAME role, or ends the run (auto "

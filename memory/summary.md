@@ -10,7 +10,30 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.21.0 — the combined backlog is closed: the dead EnterPlanMode calls are gone from
+Factory v12.22.0 — the conditional `factory-farukon-expert` role is live: a coder-class
+specialist that develops/operates the Farukon platform only through the 8 farukon MCP tools
+(decide = host signature AND identity+platform-bound operation AND score ≥ 3, subject binding
+against documentation/media objects; atomic redacted merge-config with symlink-escape refusal;
+fail-soft probe requiring a buildable member manifest and a working cargo; pre-flight --farukon
+delegates the verdict to the probe, a probe exception is degraded+UNVERIFIED, never
+not_applicable). The platform side was fixed per owner decision (the CLI is never modified):
+farukon_mcp v3.4.1 accepts/echoes MCP protocol 2025-11-25 (platform commit 17b3366d). Evidence
+on the real farukon_v3.1.0: helpers green, a real specialist MCP session (build + replay start +
+connector_state + bounded stop) and an independent tester ACCEPTANCE PASS 6/6; platform
+regression 451/0. The suite is green end to end (47 PASS / 0 FAIL of 47 self-test files,
+81/81 vaccines bite), the memory gates run clean.
+Latest run: implement 20261103-236f69e8 (task_farukon_expert_agent.yaml, hitl, plan approved with
+0 rejections, resumed across a CLI restart) — review iterations 1-4 request_changes (9 → 3 → 3 →
+1+2 findings, all closed with failing-first pins), iteration 5 request_changes with 0 critical /
+2 major / 3 minor left OPEN by owner decision (heuristic-classifier finding cycle stopped);
+acceptance SUCCESS (2/2 verify MET, 2 derived with real artifacts, regression pass, ledger
+FRESH); attribution DEGRADED for analyzer/planner only (wire lost on the CLI restart).
+Version 12.21.0 -> 12.22.0 (minor, matrix + reviewer).
+Open backlog: 2 follow_up items (the 5 open iteration-5 review findings; the platform
+workspace_saved:false anomaly — it belongs to the farukon_v3.1.0 project's own backlog); 2 info
+debts carried with follow_up=false (module-vaccine fragility, historical RV/BL/PR/RF/NM
+attribution); 55 items closed with evidence.
+Previous state: factory v12.21.0 — the combined backlog is closed: the dead EnterPlanMode calls are gone from
 all three approval carriers (the HITL gate is `plan.md` + `AskUserQuestion` in SKILL.md node I,
 code-factory.md Phase 3 and planning-guide.md §6), the Advisor agreement gate is real (ADR/ARO
 flowchart split + agreement-branched main-agent step), the dead WRONG_RESULTS->CODER and
@@ -22,12 +45,12 @@ the task template and planning guide (no POSIX single-quoted git pathspecs), and
 `--baseline-files` (`path=sha256`, `baseline` subcommand; a name-only exemption is a usage
 error). Every fix is vaccinated: 75/75 vaccines bite (12 new DP probes on base f4b4892). The
 suite is green end to end (46 PASS / 0 FAIL of 46 self-test files), the memory gates run clean.
-Latest run: implement 20261101-7cbfae60 (task_combined_backlog.yaml, hitl, plan approved with 0
+Run before: implement 20261101-7cbfae60 (task_combined_backlog.yaml, hitl, plan approved with 0
 rejections) — review iteration 1 request_changes (1 critical: name-only baseline exemption; 1
 minor: unreachable block), reworked, iteration 2 approve zero findings; acceptance SUCCESS
 (6/6 verify MET, regression pass, ledger FRESH). Version 12.20.0 -> 12.21.0 (minor, matrix +
 reviewer).
-Open backlog: 0 follow_up items; 2 info debts carried with follow_up=false (module-vaccine
+Open backlog then: 0 follow_up items; 2 info debts carried with follow_up=false (module-vaccine
 fragility, historical RV/BL/PR/RF/NM attribution).
 Previous state: factory v12.19.1 — clean code is now standing practice: two permanent skill-base skills
 (`clean-code-discipline` — the writing discipline; `clean-code-metrics` — the three metric gates:
@@ -165,10 +188,10 @@ Open backlog: 0 items (55 closed with evidence) — the §7 calibration obligati
 and the 12 review findings were all closed by run 20261026-2ea2eb55 (v12.17.0, see above); the
 deployer `start.sh` guard now also has a network-gated behavioural test. The `test_run_id.py`
 line-ending debt stays CLOSED: the id is platform-neutral.
-Rulebook: 29 rules, 94 carriers, byte-identical (`check_factory_rules.py` exit 0 — AGENTS.md now
+Rulebook: 29 rules, 96 carriers, byte-identical (`check_factory_rules.py` exit 0 — AGENTS.md now
 points at the rulebook instead of carrying verbatim blocks). Memory owner:
-repo, declared with `project_id` (the repository identity, not the folder name). Self-tests: 46
-files — 46 pass, 0 SKIP, 0 fail (green end to end; see the latest run above).
+repo, declared with `project_id` (the repository identity, not the folder name). Self-tests: 47
+files — 47 pass, 0 SKIP, 0 fail (green end to end; see the latest run above).
 
 ## Key decisions
 - The long-term memory `memory/` belongs to ONE target project (`repo_path`); the field

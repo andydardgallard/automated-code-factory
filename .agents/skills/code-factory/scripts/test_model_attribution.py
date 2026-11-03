@@ -545,6 +545,8 @@ def case_9_helpers(root: pathlib.Path) -> None:
     expect(ma.role_from_profile("factory-analyzer") == "analyzer", "prefix stripped")
     expect(ma.role_from_profile("factory-code-reviewer") == "reviewer", "code-reviewer -> reviewer")
     expect(ma.role_from_profile("factory-gui-expert") == "gui_expert", "gui-expert -> gui_expert")
+    expect(ma.role_from_profile("factory-farukon-expert") == "farukon_expert",
+           "farukon-expert -> farukon_expert")
     expect(ma.role_from_profile("factory-security-auditor") == "security_auditor",
            "security-auditor -> security_auditor")
     expect(ma.role_from_profile("factory-skill-manager") == "skill_manager",

@@ -162,6 +162,7 @@ Which subagents receive the resolved skill instructions in their dynamic context
 | planner | yes | always, if any skills exist |
 | coder | yes | always, if any skills exist |
 | gui-expert | yes | always, if any skills exist |
+| farukon-expert | yes | always, if any skills exist |
 | tester | conditional | only if a skill contains business criteria |
 | reviewer | yes | always, if any skills exist |
 | documenter | yes | always, if any skills exist |

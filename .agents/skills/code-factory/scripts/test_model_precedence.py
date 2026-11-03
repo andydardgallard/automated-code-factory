@@ -93,6 +93,7 @@ models:
   coder: deepseek-flash
   tester: kimi-k3
   gui_expert: deepseek-flash
+  farukon_expert: deepseek-flash
   refactorer: deepseek-flash
   reviewer: deepseek-flash
   diagnostician: kimi-code/k3
@@ -122,6 +123,7 @@ models:
   coder: deepseek-flash
   tester: deepseek-flash
   gui_expert: deepseek-flash
+  farukon_expert: deepseek-flash
   refactorer: deepseek-flash
   reviewer: kimi-code/k3
   diagnostician: kimi-code/k3
@@ -369,10 +371,15 @@ def case_9_precedence_text() -> None:
            f"the precedence must forbid substitution on a task collision: {text!r}")
     expect("error" in lowered, f"the default-matrix collision must be an error: {text!r}")
     # the API constants the other packages import.
-    expect(mm.GENERATOR_SIDE == ("coder", "tester", "gui_expert"),
-           f"GENERATOR_SIDE changed: {mm.GENERATOR_SIDE!r}")
+    # The EXACT role lists are pinned by the release that owns them (`V-fk-generator-side` for the
+    # Farukon generator side); this module only asserts the invariant that holds for every release:
+    # the two sides are disjoint, non-empty tuples of KNOWN roles.
+    expect(isinstance(mm.GENERATOR_SIDE, tuple) and mm.GENERATOR_SIDE,
+           f"GENERATOR_SIDE must be a non-empty tuple of roles: {mm.GENERATOR_SIDE!r}")
     expect(mm.JUDGE_SIDE == ("reviewer", "diagnostician", "advisor"),
            f"JUDGE_SIDE changed: {mm.JUDGE_SIDE!r}")
+    expect(not set(mm.GENERATOR_SIDE) & set(mm.JUDGE_SIDE),
+           f"a role cannot sit on both sides: {mm.GENERATOR_SIDE!r} / {mm.JUDGE_SIDE!r}")
     for role in set(mm.GENERATOR_SIDE) | set(mm.JUDGE_SIDE):
         expect(role in mm.ROLES, f"{role} must be a known role: {mm.ROLES!r}")
 

@@ -3,11 +3,13 @@
 Deterministic self-test for `error_router.py` (zero LLM tokens, stdlib only).
 
 `references/error-patterns.default.json` is the snapshot of the routing tables of
-`references/error-routing.md` (§1 rows 1-20 + §1.1 provider rows A-F); the router classifies a log
+`references/error-routing.md` (§1 rows 1-20 — including the Farukon infrastructure rows F1-F2 and
+the browser/MCP rows I1-I4 — + §1.1 provider rows A-F); the router classifies a log
 against them in array order ("first match wins") and lets a project override patterns through
 `.code-factory/state/error-patterns.json` (project-first merge, deduplicated by id).
 
-Covered here: the snapshot's shape and order (ids 1-20 + the browser/MCP infrastructure rows
+Covered here: the snapshot's shape and order (ids 1-20 + the Farukon infrastructure rows F1-F2 + the
+browser/MCP infrastructure rows
 I1-I4 + A-F, categories, routes, retry budgets),
 sample logs from the tables (WRONG_RESULTS must win over the generic assertion/compile rows, a
 provider `401` line is PROVIDER_AUTH), the unmatched fallback (diagnostician), the default+project
@@ -25,12 +27,18 @@ MISSING-NODE WORDING regressions (the line the Web GUI probe ACTUALLY emits is r
 `chrome_devtools_mcp.py` itself, and the line the INSTALLER ACTUALLY reports is produced by calling
 `vendor_install()` with only `node` absent — both produced, never hand-copied, and both must
 classify as row I1) with the row-I1 JSON to `references/error-routing.md` agreement, plus the
-stdlib-only import contract. Three routing regressions are pinned end to end: a normal Cargo error
+FARUKON ROWS F1-F2 — the Rust toolchain and the Farukon MCP startup wordings (two of them rendered
+from `farukon_mcp.py` itself, never hand-copied) classify as INFRASTRUCTURE, the rows sit before the
+browser rows and before every generic row, their documented cells agree with the JSON pattern for
+pattern, and a farukon-expert IMPLEMENTATION/scenario failure (a Rust error code, a FAILED test line,
+a panic — and a COMPLETE Cargo log that carries `error[E0308]` AND the final could-not-compile
+summary) still reaches the CODER routes — with the rows 8/16 JSON to `references/error-routing.md`
+agreement, plus the stdlib-only import contract. Three routing regressions are pinned end to end: a
+normal Cargo error
 `error[E0308]` reaches COMPILE_ERROR/CODER (row 8's brackets are escaped), a test-context timeout
 reaches TIMEOUT/PLANNER while every other timeout reaches TIMEOUT/CODER (rows 16/17 are no longer
 identical), and every `PROVIDER_*` row (D and F included) reaches INFRASTRUCTURE — as rule
-`model-unavailable-stop` requires — with the rows 8/16 JSON to `references/error-routing.md`
-agreement.
+`model-unavailable-stop` requires.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -55,6 +63,7 @@ TOOL = SCRIPTS / "error_router.py"
 DEFAULT = SCRIPTS.parent / "references" / "error-patterns.default.json"
 DOC = SCRIPTS.parent / "references" / "error-routing.md"     # the documented tables (§1)
 PROBE = SCRIPTS / "chrome_devtools_mcp.py"     # the Web GUI probe (read-only here)
+FARUKON_PROBE = SCRIPTS / "farukon_mcp.py"     # the Farukon probe (read-only here)
 
 # The invariant wording of the probe's missing-tool line — the tail that separates it from the
 # installer's own `{name} was not found on PATH` message further up the same file. Both are in the
@@ -109,6 +118,45 @@ def probe_missing_tool_message(tool: str = "node") -> str:
     raise AssertionError(f"no f-string with {PROBE_MISSING_TOOL_MARKER!r} in {PROBE}")
 
 
+def render_farukon_fstring(marker: str, values: dict[str, str]) -> str:
+    """Render the one f-string of `farukon_mcp.py` that carries `marker` (parsed, never copied).
+
+    The module-level string constants of the probe (`COMMAND`, `CRATE`, `SERVER_NAME`, …) are
+    supplied automatically, so an edit of a probe message re-renders the sample here and the routing
+    table has to keep up with it — the same discipline `probe_missing_tool_message` applies to the
+    Web GUI probe.
+    """
+    tree = ast.parse(FARUKON_PROBE.read_text(encoding="utf-8"))
+    consts: dict[str, str] = {}
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    consts[target.id] = node.value.value
+    merged = {**consts, **values}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            text = render_probe_fstring(node, merged)
+            if text and marker in text:
+                return text
+    raise AssertionError(f"no f-string with {marker!r} in {FARUKON_PROBE}")
+
+
+def farukon_missing_cargo_message() -> str:
+    """The EXACT line the Farukon probe emits when `cargo` is missing — rendered from its source."""
+    return render_farukon_fstring("was not found on PATH; the Farukon platform cannot be built", {})
+
+
+def farukon_handshake_timeout_message() -> str:
+    """The EXACT line the Farukon handshake emits when the server answers nothing — rendered."""
+    return render_farukon_fstring("no initialize response within", {
+        "int(first_response_timeout)": "1800",
+        "' '.join(command)": "cargo run --quiet -p farukon_mcp --",
+        "result['cwd']": "C:/farukon",
+    })
+
+
 def refuse_install(*_args, **_kwargs):
     """The injected runner of the installer regression: reaching npm at all is a test failure."""
     raise AssertionError("vendor_install must not run npm when a required tool is absent")
@@ -144,15 +192,22 @@ def installer_missing_node_message(absent: tuple[str, ...] = ("node",)) -> str:
     return lines[-1]
 
 
-# §1 rows 1-20 plus the browser/MCP infrastructure rows I1-I4, in table (match) order:
-# id, category, route to. I1-I4 sit between rows 4 and 5 ON PURPOSE — that position is what keeps a
-# browser capability line from being stolen by the generic `command not found` / `file not found`
-# rows (see the Notes of §1 in references/error-routing.md).
+# §1 rows 1-20 plus the Farukon infrastructure rows F1-F2 and the browser/MCP infrastructure rows
+# I1-I4, in table (match) order: id, category, route to. F1-F2 sit between rows 4 and I1, and I1-I4
+# between rows 4 and 5 ON PURPOSE — that position is what keeps a toolchain/browser capability line
+# from being stolen by the generic `command not found` / `file not found` rows (see the Notes of §1
+# in references/error-routing.md).
 EXPECTED = [
     ("1", "MISSING_INPUT", "human"),
     ("2", "WRONG_RESULTS", "diagnostician"),
     ("3", "INFRASTRUCTURE", "infrastructure"),
     ("4", "INFRASTRUCTURE", "infrastructure"),
+    # The Farukon platform infrastructure rows: the Rust toolchain (F1) and the Farukon MCP
+    # startup/launch (F2) sit BEFORE the browser rows and before every generic row, so a missing
+    # `cargo` is not stolen by `command not found` and a farukon_mcp handshake line is not claimed
+    # by the generic MCP row I3.
+    ("F1", "FARUKON_TOOLCHAIN", "infrastructure"),
+    ("F2", "FARUKON_MCP_STARTUP", "infrastructure"),
     ("I1", "BROWSER_TOOLCHAIN", "infrastructure"),
     ("I2", "BROWSER_MISSING", "infrastructure"),
     ("I3", "MCP_STARTUP", "infrastructure"),
@@ -186,6 +241,22 @@ EXPECTED_PROVIDERS = [
 BUDGETS = {"coder": 1, "ba": 2, "planner": 2, "diagnostician": 1, "advisor": 1,
            "infrastructure": 3, "reviewer": 2}
 
+# A REALISTIC complete Cargo log of a farukon_mcp IMPLEMENTATION failure: the compiler's own error
+# code first, then the final build summary. The summary is what row F2 used to steal; the log must
+# reach row 8 (COMPILE_ERROR / CODER) as a whole, because a summary follows EVERY failed build and
+# therefore says nothing about WHY the build failed.
+COMBINED_CARGO_LOG = (
+    "   Compiling farukon_mcp v0.1.0 (C:\\farukon\\farukon_mcp)\n"
+    "error[E0308]: mismatched types\n"
+    "   --> farukon_mcp\\src\\server.rs:12:9\n"
+    "    |\n"
+    " 12 |     let state = conn.state;\n"
+    "    |         ^^^^^ expected `ConnectorState`, found `String`\n"
+    "\n"
+    "For more information about this error, try `rustc --explain E0308`.\n"
+    "error: could not compile `farukon_mcp` (bin \"farukon_mcp\") due to 1 previous error\n"
+)
+
 # A log line -> the row of §1/§1.1 that must classify it.
 SAMPLES = [
     ("ModuleNotFoundError: No module named 'x'", "6", "MISSING_FILE", "ba"),
@@ -213,6 +284,42 @@ SAMPLES = [
     # reaches CODER. Identical rows would make the second branch unreachable (first match wins).
     ("pytest: test_inventory timed out after 30s", "16", "TIMEOUT", "planner"),
     ("Command 'make build' timed out after 600s", "17", "TIMEOUT", "coder"),
+    # Farukon platform INFRASTRUCTURE rows (§1 rows F1-F2): the Rust toolchain and the Farukon MCP
+    # startup. They must never be swallowed by the generic BAD_COMMAND/MISSING_FILE/COMPILE rows or
+    # by the generic MCP row I3, and they never reach the coder.
+    ("bash: cargo: command not found", "F1", "FARUKON_TOOLCHAIN", "infrastructure"),
+    ("'cargo' is not recognized as an internal or external command", "F1", "FARUKON_TOOLCHAIN",
+     "infrastructure"),
+    # The line the Farukon probe emits for a missing toolchain (rendered below from farukon_mcp.py).
+    (farukon_missing_cargo_message(), "F1", "FARUKON_TOOLCHAIN", "infrastructure"),
+    ("error: linker `link.exe` not found", "F1", "FARUKON_TOOLCHAIN", "infrastructure"),
+    ("error: rustup could not choose a version of cargo to run", "F1", "FARUKON_TOOLCHAIN",
+     "infrastructure"),
+    ("error: toolchain 'stable-x86_64-pc-windows-msvc' is not installed", "F1",
+     "FARUKON_TOOLCHAIN", "infrastructure"),
+    ("farukon_mcp: failed to start", "F2", "FARUKON_MCP_STARTUP", "infrastructure"),
+    # The exact handshake-failure wording `farukon_mcp.py` produces when the server answers nothing
+    # (rendered below from farukon_mcp.py) and the build wording cargo itself prints.
+    (farukon_handshake_timeout_message(), "F2", "FARUKON_MCP_STARTUP", "infrastructure"),
+    ("error: could not compile `farukon_mcp` (bin \"farukon_mcp\") due to 2 previous errors", "F2",
+     "FARUKON_MCP_STARTUP", "infrastructure"),
+    ("cannot start `cargo run --quiet -p farukon_mcp --` in C:\\farukon: FileNotFoundError", "F2",
+     "FARUKON_MCP_STARTUP", "infrastructure"),
+    ("MCP handshake timed out waiting for the initialize response", "F2", "FARUKON_MCP_STARTUP",
+     "infrastructure"),
+    # A farukon-expert IMPLEMENTATION/scenario failure is NOT infrastructure: a Rust error code, a
+    # failing test line and a panic inside the crate keep the existing CODER routes.
+    ("error[E0308]: mismatched types\n  --> farukon_mcp/src/server.rs:12:9", "8", "COMPILE_ERROR",
+     "coder"),
+    # …and Cargo's LAST line of a failed build is ALWAYS that `could not compile farukon_mcp`
+    # summary, so a realistic implementation failure carries BOTH. Row F2's compile-summary
+    # alternative is guarded by a whole-log negative lookahead: as soon as the log holds an
+    # `error[Exxxx]` implementation error, the summary is not a STARTUP problem and the log reaches
+    # row 8 (CODER) — before that guard it was stolen into infrastructure.
+    (COMBINED_CARGO_LOG, "8", "COMPILE_ERROR", "coder"),
+    ("test farukon_mcp::tests::replay ... FAILED", "19", "ASSERTION", "coder"),
+    ("thread 'farukon_mcp' panicked at src/main.rs:4", "18", "RUNTIME_CRASH", "coder"),
+    ("AssertionError: the farukon replay scenario produced no trades", "19", "ASSERTION", "coder"),
     # Browser/MCP INFRASTRUCTURE rows (§1 rows I1-I4): a missing capability is an environment
     # problem, not a code problem. It must never be swallowed by the generic BAD_COMMAND/MISSING_FILE
     # rows, and it never reaches the coder — the coder route stays the ONLY implementation route.
@@ -337,9 +444,9 @@ def main() -> int:
     got_providers = [(e["id"], e["category"], e["route"]) for e in doc["provider_patterns"]]
     expect(got_providers == EXPECTED_PROVIDERS, f"§1.1 provider rows A-F changed: {got_providers}")
     expect(doc["retry_budgets"] == BUDGETS, f"retry budgets: {doc['retry_budgets']}")
-    expect(len(er.match_order(doc)) == 30,
-           "24 §1 rows (1-20 plus the browser/MCP infrastructure rows I1-I4) + 6 provider rows "
-           "must be classified")
+    expect(len(er.match_order(doc)) == 32,
+           "26 §1 rows (1-20 plus the Farukon infrastructure rows F1-F2 and the browser/MCP "
+           "infrastructure rows I1-I4) + 6 provider rows must be classified")
     by_id = {entry["id"]: entry for entry in doc["patterns"]}
     expect(doc["patterns"][-1]["patterns"] == [], "the terminal UNKNOWN row carries no regex")
     expect(all(e["patterns"] for e in doc["patterns"][:-1]),
@@ -348,6 +455,34 @@ def main() -> int:
     # Note in §1: business-result markers may sit inside an assertion message.
     expect(ids.index("2") < ids.index("8") < ids.index("19"),
            "WRONG_RESULTS must be checked before the compile/assertion rows")
+    # Note in §1: the Farukon infrastructure rows sit BEFORE the browser rows and before EVERY
+    # generic row — the position is the whole point (a missing `cargo` must not be claimed by
+    # `command not found`, a farukon_mcp handshake line must not be claimed by I3, and a farukon_mcp
+    # `could not compile` line must not be claimed by the generic Rust compile row 8).
+    for early in ("F1", "F2"):
+        for later in ("I1", "I2", "I3", "I4", "5", "7", "8", "13", "17"):
+            expect(ids.index(early) < ids.index(later),
+                   f"row {early} must be matched before row {later}: {ids}")
+    for row in ("F1", "F2"):
+        expect(by_id[row]["route"] == "infrastructure",
+               f"row {row} must route to infrastructure: {by_id[row]}")
+    # Row F2's compile-summary alternative is GUARDED: Cargo prints `could not compile <crate>` after
+    # EVERY failed build, so an unguarded summary regex steals each real implementation failure. The
+    # guard is a whole-log negative lookahead on `error[Exxxx]`; a STARTUP-only log (no error code)
+    # still matches the summary and keeps the infrastructure route.
+    compile_summary = [p for p in by_id["F2"]["patterns"] if "could not compile" in p]
+    expect(len(compile_summary) == 1,
+           f"row F2 must keep exactly one compile-summary alternative: {compile_summary}")
+    summary_re = re.compile(compile_summary[0], er.FLAGS)
+    expect(summary_re.search("error: could not compile `farukon_mcp` (bin \"farukon_mcp\") due to 2 "
+                             "previous errors"),
+           "row F2 must still classify a build summary that carries no implementation error")
+    expect(not summary_re.search(COMBINED_CARGO_LOG),
+           "row F2 must NOT claim the build summary of a log that carries an error[Exxxx] "
+           "implementation error — that log belongs to the coder")
+    expect(not summary_re.search("error[E0432]: unresolved import\n"
+                                 "error: could not compile farukon_mcp"),
+           "row F2's guard must look at the whole log, not only at the lines after the summary")
     # Rows 16/17 are ONE routing rule split in two: row 16 carries the test-context predicate in a
     # single regex (a test token AND a timeout token), so a test timeout reaches PLANNER and every
     # other timeout falls through to row 17's CODER. Pinned here because two IDENTICAL rows would
@@ -394,6 +529,24 @@ def main() -> int:
            "row I1 of error-routing.md must list exactly the JSON patterns in order (a top-level "
            f"alternative is written `\\|`, an inner pipe stays raw): {documented.split(chr(92) + '|')!r} "
            f"!= {by_id['I1']['patterns']!r}")
+
+    #    The Farukon rows F1/F2 follow the same contract: the documented cell of each row splits into
+    #    exactly the JSON pattern list, in order. The documentation is what a maintainer edits, so a
+    #    cell that drifts from the snapshot would advertise a route the router cannot take.
+    for row_id in ("F1", "F2"):
+        farukon_row = next((line for line in doc_text.splitlines()
+                            if line.startswith(f"| {row_id} |")), None)
+        expect(farukon_row is not None, f"row {row_id} must keep its table row in {DOC}")
+        expect(farukon_row.startswith(f"| {row_id} | {by_id[row_id]['category']} |")
+               and farukon_row.rstrip().endswith("| INFRASTRUCTURE (auto-fix) |")
+               and farukon_row.count("`") == 2,
+               f"row {row_id} must keep its category, route and single pattern cell: "
+               f"{farukon_row!r}")
+        documented = farukon_row.split("`")[1]
+        expect(documented.split("\\|") == by_id[row_id]["patterns"],
+               f"row {row_id} of error-routing.md must list exactly the JSON patterns in order (a "
+               f"top-level alternative is written `\\|`, an inner pipe stays raw): "
+               f"{documented.split(chr(92) + '|')!r} != {by_id[row_id]['patterns']!r}")
 
     # 1b. Rows 8 and 16 are the two rows this suite once pinned as KNOWN QUIRKS (a character class
     #     instead of a Rust error-code regex; a timeout predicate that lived only in prose). Their
@@ -525,8 +678,8 @@ def main() -> int:
         expect(merged_ids[:2] == ["6", "L1"],
                f"project patterns must come first: {merged_ids}")
         expect(merged_ids.count("6") == 1, f"id 6 must be deduplicated: {merged_ids}")
-        expect(len(merged_ids) == 25,
-               f"2 learned + the 23 untouched defaults were expected: {merged_ids}")
+        expect(len(merged_ids) == 27,
+               f"2 learned + the 25 untouched defaults were expected: {merged_ids}")
         expect([e["id"] for e in merged["provider_patterns"]] == ["A", "B", "C", "D", "E", "F"],
                "the provider rows must all survive the merge")
         expect(merged["retry_budgets"] == {**BUDGETS, "coder": 5},
@@ -659,7 +812,7 @@ def main() -> int:
         merged = er.combine(er.load_document(learned, require_full=False), doc)
         merged_ids = [e["id"] for e in merged["patterns"]]
         expect(merged_ids[:2] == ["6", "P1"], f"learned entries must come first: {merged_ids}")
-        expect(len(merged_ids) == 25 and merged_ids.count("6") == 1,
+        expect(len(merged_ids) == 27 and merged_ids.count("6") == 1,
                f"a learned id must replace, not duplicate, its built-in row: {merged_ids}")
         expect([e["id"] for e in merged["provider_patterns"]]
                == [e["id"] for e in doc["provider_patterns"]],
@@ -784,9 +937,13 @@ def main() -> int:
     allowed = {"__future__", "argparse", "json", "pathlib", "re", "sys"}
     expect(imported <= allowed, f"error_router must be stdlib-only, imports={imported}")
 
-    print("PASS - error_router.py mirrors the error-routing tables (24 section-1 rows + 6 provider "
-          "rows, row I1 agreeing with the documented cell), classifies samples deterministically "
-          "(including the missing-Node wordings the Web GUI probe and the installer themselves emit), "
+    print("PASS - error_router.py mirrors the error-routing tables (26 section-1 rows, the Farukon "
+          "infrastructure rows F1-F2 included, + 6 provider "
+          "rows, rows I1/F1/F2 agreeing with the documented cells), classifies samples "
+          "deterministically "
+          "(including the missing-Node wordings the Web GUI probe and the installer themselves emit, "
+          "the missing-cargo and handshake-timeout wordings farukon_mcp.py emits, and the "
+          "farukon implementation failures that must stay on the coder route), "
           "merges the project-learned patterns over "
           "the defaults (project-first, both applied), falls back to the defaults with a warning "
           "when the learned file is unusable, merges byte-identically, anchors relative paths at "

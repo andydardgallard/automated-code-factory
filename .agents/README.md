@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.21.0 -->
+<!-- code-factory-version: 12.22.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -31,6 +31,7 @@ projects or creates projects from scratch.
 │       │   ├── handoff-briefing.md  # mandatory subagent briefing template (files by path)
 │       │   ├── reference-docs.md    # reference_docs/reference_skills: skill base + matrix
 │       │   ├── chrome-devtools-mcp.md  # conditional browser path: applicability, MCP config, evidence split, degradation
+│       │   ├── farukon-mcp.md       # conditional platform path: applicability, managed server/config, evidence split, stage-1 safety, degradation
 │       │   ├── factory-rules.md     # single rulebook of mandatory rules + carriers line
 │       │   └── error-patterns.default.json  # snapshot of the error-routing tables: defaults on which the project's project-learned overlay is layered
 │       ├── scripts/
@@ -76,6 +77,8 @@ projects or creates projects from scratch.
 │       │   ├── test_remote_reference_docs.py # remote reference_docs self-test (loopback HTTP + local/bare Git fixtures)
 │       │   ├── chrome_devtools_mcp.py      # conditional browser path: decide/discover-e2e/browser-matrix/vendor-install/merge-config/probe/validate-config
 │       │   ├── test_chrome_devtools_mcp.py # Chrome DevTools MCP helper self-test
+│       │   ├── farukon_mcp.py              # conditional platform path: decide, merge-config, probe (--check-mcp-start opt-in), validate-config
+│       │   ├── test_farukon_mcp.py         # Farukon MCP helper self-test (decide, merge, conflict exit 3, handshake, invariants)
 │       │   ├── version_manager.py          # single version source: get/bump/sync/validate/set/suggest
 │       │   ├── test_version_manager.py     # version script self-test (≥12 cases)
 │       │   ├── validate_mermaid.py         # structural Mermaid diagram validator
@@ -90,7 +93,7 @@ projects or creates projects from scratch.
 │       │   ├── test_repo_stats.py          # analyses self-test
 │       │   ├── log_tail.py                 # counters + tail of a long log (without pulling it into context)
 │       │   ├── test_log_tail.py            # log tail self-test
-│       │   ├── factory_preflight.py        # environment pre-flight (python/python3/py etc.; --web-gui adds the browser capability block)
+│       │   ├── factory_preflight.py        # environment pre-flight (python/python3/py etc.; --web-gui adds the browser capability block, --farukon the platform block)
 │       │   ├── test_factory_preflight.py   # pre-flight self-test
 │       │   ├── action_gate.py              # destructive actions: ALLOW/CONFIRM/HARD_DENY (shell wrappers classified by payload; mutating git stash → CONFIRM, `stash list/show` → ALLOW; a push whose destination is `HEAD`/`@` → CONFIRM, because HEAD is whatever branch is checked out)
 │       │   ├── test_action_gate.py         # action gate self-test (+ --help/usage under cp1251)
@@ -122,6 +125,7 @@ projects or creates projects from scratch.
         ├── planner.md               # subagent: independent alternative plan (committee, read-only)
         ├── coder.md                 # subagent: code implementation
         ├── gui-expert.md            # subagent: Web GUI implementation and browser debugging (Chrome DevTools MCP)
+        ├── farukon-expert.md        # subagent: Farukon platform implementation, build/run/debug (Farukon MCP)
         ├── tester.md                # subagent: tests and result verification
         ├── diagnostician.md         # subagent: deep error analysis (read-only)
         ├── advisor.md               # subagent: second opinion on an error after the Diagnostician
@@ -255,8 +259,8 @@ first access to the project. The same holds for the managed MCP configuration: t
 working interpreter an existing `.kimi-code/mcp.json` is left untouched, no new one is created (its
 managed entry launches a per-installation path only the helper derives) and the deployment reports
 the skip. The factory itself uses Python
-for the memory, version and browser-path scripts (`memory_project.py`, `version_manager.py`,
-`chrome_devtools_mcp.py`, etc.).
+for the memory, version, browser-path and platform-path scripts (`memory_project.py`,
+`version_manager.py`, `chrome_devtools_mcp.py`, `farukon_mcp.py`, etc.).
 
 The Windows launchers get CRLF on checkout regardless of the `core.autocrlf` setting: the `.cmd`
 and `.ps1` files are marked in `.gitattributes` as `text eol=crlf` (the same protection as
@@ -512,6 +516,16 @@ launch errors) are matched by the INFRASTRUCTURE rows I1–I4 of `references/err
 follow the existing infrastructure auto-fix path (budget 3), while a Web GUI implementation failure or
 review rework is handed to `factory-gui-expert`/`factory-coder` under the EXISTING coder route and
 `retry_counters.coder`. There is no GUI-specific `recommended_role` and no separate GUI retry budget.
+Farukon-platform routing works the same way and also adds no role and no budget: Rust-toolchain and
+Farukon MCP environment problems (`cargo` not found, a failed `rustup`/toolchain install, a Farukon MCP
+startup/launch or handshake failure, a `farukon_mcp` compile failure of the server crate) are matched
+by the INFRASTRUCTURE rows F1–F2 of `references/error-routing.md` — ordered BEFORE the generic rows, so
+a cargo/MCP failure never matches a code row — while a platform implementation failure or review
+rework is handed to `factory-farukon-expert`/`factory-coder` under the SAME coder route and
+`retry_counters.coder`. An error raised INSIDE the platform crate (`error[E0308]` in `farukon_mcp/src`,
+a `FAILED farukon_mcp::tests::…` line, a panic) deliberately keeps its COMPILE_ERROR / ASSERTION /
+RUNTIME_CRASH route to the coder. There is no Farukon-specific `recommended_role` and no separate
+Farukon retry budget.
 <!-- factory-rule: rollback-on-retry begin -->
 **Rollback before retry (canonical wording):** every test or build failure is first routed deterministically (`references/error-routing.md`), then the state is rolled back: files are restored from `.code-factory/backups/`, factory-created files are deleted, the git state is brought back to the recorded one. Only after the rollback is the error handed to the executing role — otherwise the retry runs on an already corrupted state. Infrastructure auto-fixes (environment, dependencies) do not roll back code.
 <!-- factory-rule: rollback-on-retry end -->
@@ -614,6 +628,89 @@ fix or visually validate a browser-based Web GUI, and is invisible for every oth
   fabricated. A non-Web-GUI run never invokes the specialist, launches Chrome or calls a browser tool,
   and does not need Node.js or Chrome to succeed.
 
+## Farukon platform and the Farukon MCP path (conditional)
+
+The factory's only trading-platform MCP, and a conditional capability: it exists for tasks that
+develop, build, run, test or debug the Farukon trading platform, and is invisible for every other task.
+Reference: `references/farukon-mcp.md`.
+
+- **Activation is deterministic and carries a REASON** (never a model call):
+  `farukon_mcp.py decide --task-file .code-factory/state/task.yaml --repo <resolved repo_path>`.
+  Applicability needs TWO independent conditions, and each one alone keeps the role OFF: the
+  repository HOSTS the platform (`farukon_mcp/Cargo.toml`, a `farukon_mcp` workspace member, or an
+  existing `farukon` entry in `.kimi-code/mcp.json`) AND the task scope names a platform OPERATION
+  (build/run/test/start/stop/debug, connectors, portfolio snapshot, message log, web health) BOUND to
+  the platform — weighted keyword scoring that needs both a platform IDENTITY term and an OPERATION
+  whose object is the platform, so the project's NAME alone never reaches it, task-file metadata such
+  as a `models.farukon_expert` model pin is not scope, an operation on another subject ("run the
+  parser test suite") stays out of scope and an operation on DOCUMENTATION ("run the documentation
+  build", even next to a Farukon README edit) does not count either — the operation must survive the
+  binding of every occurrence to a documentation/media object (`documentation`, `readme`, `doc`, …,
+  within three words), and the weighted score must reach `SCOPE_APPLICABLE_SCORE` (3). An
+  explicit exclusion phrase in the task text (`no mcp`, `without farukon`, `out of scope`) always wins;
+  a platform repository with an unrelated backend task — and a documentation-only task — stays
+  `not_applicable`, while a green-field platform task that names an operation still activates. The
+  decision and its reasons are recorded in the run plan/state: identity terms matched, operation terms
+  bound to the platform, the operation terms discarded as bound elsewhere, the score and the host
+  signals.
+- **Roles and evidence split**: `factory-farukon-expert` (coder-class) implements, builds, runs and
+  debugs the ASSIGNED platform files through the eight `mcp__farukon__*` tools and writes
+  SPECIALIST/DIAGNOSTIC artifacts under `.code-factory/logs/farukon/<run_id>/`; `factory-tester`
+  independently executes the FINAL replay scenario AFTER the last code change and owns the ACCEPTANCE
+  artifacts in the same directory, labelled and distinct from the specialist's. The specialist never
+  issues a final PASS for its own work. Only these two roles receive the `mcp__farukon__*` tools;
+  analyzer, planner, diagnostician and reviewer stay read-only, and `factory-coder` keeps non-platform
+  work without routine platform access. Platform implementation failures and review rework use the
+  EXISTING coder route and `retry_counters.coder` — no separate role, no separate retry budget and no
+  `farukon_expert` task field beyond the optional `models.farukon_expert` key.
+- **Server and configuration**: the server is named `farukon`, transported over stdio, launched as
+  `cargo run --quiet -p farukon_mcp --` with `cwd` = the ABSOLUTE, normalized platform root — the
+  workspace has to resolve from the platform repository, not from whichever directory the Kimi session
+  happens to use. `farukon_mcp.py merge-config --target <project>/.kimi-code/mcp.json` inserts only the
+  `mcpServers.farukon` member and is IDEMPOTENT: every unrelated byte survives, an equal entry is
+  reported `unchanged`, and an existing DIFFERENT `farukon` entry is preserved byte-for-byte and
+  reported as a conflict (exit 3) instead of being overwritten — resolve it explicitly and re-run.
+  `merge-config` refuses a `--repo` that is not a platform root, a `--target` that escapes the
+  repository (checked on the RESOLVED path, so a symlink/junction inside the repository that points
+  outside it is refused as well) and a config that is not valid JSON, so nothing is ever written for a
+  project where the command cannot work; the write itself is ATOMIC and a write that cannot happen is
+  the documented exit-1 error, never a traceback and never a partial file. `validate-config` (and
+  every diagnostic) names the offending KEY and the managed shape only — never a value an entry
+  supplies, because an MCP entry may carry credentials; `cwd` must be an ABSOLUTE path to an EXISTING
+  directory, and the probe additionally verifies that it is THIS platform root. `prepare_factory`
+  deploys the whole skill tree and deliberately does NOT
+  register this server for every prepared project — unconditional registration would contradict the
+  conditional applicability above; the platform path is configured where it applies. MCP configuration
+  takes effect in a NEW Kimi session; `/mcp` there shows the connection status. A HEADLESS run
+  (`kimi -p`) cannot answer the workspace-trust prompt, so a scripted platform session sets
+  `KIMI_CODE_TRUST_WORKSPACE=1` for that process only, after the reviewed config is in place.
+- **Stage-1 safety defaults**: the platform is read-only in stage 1 — `order_capable` is false and
+  there is NO order path, and no order-like call is ever issued or claimed. Live QUIK is connected only
+  when the task explicitly says `live` (replay is preferred for evidence), every start gets a bounded
+  stop in a `try/finally` and a leaked instance counts as a failure, secrets are redacted before any
+  evidence is written, and instance state, logs and snapshots stay run artifacts under
+  `.code-factory/logs/farukon/`, never committed into `memory/`.
+- **Pre-flight and degradation**: `farukon_mcp.py probe` (a WORKING cargo — present on PATH and
+  answering `--version`, since an unproven toolchain is not a build path — whether the repository
+  really is a Farukon platform root, the managed config entry whose `cwd` must be THIS platform root,
+  and — only with the opt-in `--check-mcp-start` — a bounded newline-delimited JSON-RPC handshake that
+  verifies all eight tools, up to 30 min for a cold cargo build, reporting the `protocol_version` the
+  SERVER answers rather than one of its own) is fail-soft: a missing or unproven
+  capability is DATA with a reason, never a crash, and it never changes the exit code of the run.
+  `factory_preflight.py --farukon` appends the same nested `farukon` capability block for an
+  applicable run without building anything and without starting the server (`--simulate-missing
+  <name>` forces one of `cargo`/`platform`/`mcp-config` to report missing); its `usable` verdict is
+  the delegated probe's own, so a registered `farukon` entry without a BUILDABLE crate is degraded,
+  never usable, and a probe that raises is degraded with `probe_error` recorded — an inspection that
+  could not run proves nothing, so it is never `not_applicable` and its criteria stay UNVERIFIED. A missing or incompatible capability is routed through the INFRASTRUCTURE rows F1–F2
+  of `references/error-routing.md` (cargo not found / platform not buildable, MCP connection/startup
+  failure including farukon_mcp launch errors) — no new role, no new budget; a Rust `error[Exxxx]` in
+  the log keeps the coder route even when the log also carries cargo's final `could not compile`
+  summary — and the affected platform criteria stay explicitly UNVERIFIED, never MET: no build output,
+  connector state, snapshot or acceptance artifact is ever fabricated. A non-Farukon run never invokes
+  the specialist, starts the server or calls a platform tool, and does not need cargo or a Rust
+  toolchain to succeed.
+
 ## Auto-documentation, debt, and version
 
 **Auto-documentation**: after every successful `implement`/`refactor` run, the factory
@@ -651,8 +748,8 @@ their pinned source revisions; they need no `reference_docs` entry in a task):
   ordered phases (first make it work, then make it right, then follow practice) and named,
   checkable rules ("one decision, one place", "smallest edit", "data shape before logic", "failing
   test first", "root cause over guard", "subtract before you add", "boundary discipline"). The
-  roles `factory-coder` and `factory-gui-expert` reference it as standing practice, and the
-  reviewer may cite a rule by name in a finding.
+  roles `factory-coder`, `factory-gui-expert` and `factory-farukon-expert` reference it as standing
+  practice, and the reviewer may cite a rule by name in a finding.
 - `clean-code-metrics` — the three metric gates the reviewer applies to every change: complexity vs
   test coverage (**CRAP below 10**), duplication (a pair ranked **0.8 or above** is removed) and
   test strength (cover the uncovered, kill surviving mutants, delete dead code). It also carries the
@@ -721,6 +818,12 @@ preferred for routine implementation when its MCP/media capabilities suffice, an
 logged as `models_used.gui_expert` in `pipeline.yaml`/`report.md`. Complex visual analysis may be
 delegated to a read-only primary role without making it the implementer — generator≠judge is preserved
 either way.
+The optional `models.farukon_expert` key names the model of the Farukon platform specialist
+`factory-farukon-expert` and behaves exactly like `models.gui_expert`: it is generator-side (so its
+family differs from the reviewer's), a secondary model is preferred for routine platform work, and the
+used model is logged as `models_used.farukon_expert` in `pipeline.yaml`/`report.md`. The key is the
+ONLY task-side switch for the role — whether the role runs at all is decided by the deterministic
+applicability check, never by the presence of the key.
 The only exception where the matrix is NOT applied is the committee's second planner (double plan
 rejection): the committee rule is stronger than the matrix, and its family is chosen deterministically —
 contrasting with the first planner (`references/providers.md` §5.2).
@@ -734,7 +837,7 @@ the run STOPS — it never degrades: see the canonical rule `model-unavailable-s
 `references/factory-rules.md` (carriers: SKILL.md, providers.md, code-review.md,
 `.agents/agents/code-factory.md`).
 <!-- factory-rule: models-generator-ne-judge begin -->
-**Models: task first, then the default matrix (canonical wording):** exactly two cases and no third. (a) When the task's `models:` matrix names a role, that exact model is used and is NEVER substituted: a generator/judge family collision is a WARNING naming both roles and both models, never a reason to swap. (b) When the task does not name the role, its model comes from the factory's DEFAULT MATRIX — the CLI config's `default_model` / `[secondary_model] default_model` selected by the role's `model_preference` — where the generator≠judge rule IS enforced: a same-family coder/tester/gui_expert versus reviewer/diagnostician/advisor pair with either side taken from the default matrix is an ERROR naming the fix (widen `[secondary_model]` or pin `models.<role>` in the task). (c) There is no third path: the main agent never picks a model on its own. The ONE exception is the plan committee's second planner, which always comes from a family contrasting the first planner. `scripts/model_matrix.py` is the single implementation of this precedence, `scripts/test_model_precedence.py` pins it, and the model actually served is confirmed by an ARTIFACT: `scripts/model_attribution.py` reads the CLI session wire and cross-checks `models_used`, a mismatch fails the run, and a missing wire is DEGRADED — never silently green. The secondary model works only with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`; otherwise the factory writes `models_warning` and continues on the primary. The actual role models are logged in `.code-factory/state/pipeline.yaml` (`models_used`) and in `report.md`.
+**Models: task first, then the default matrix (canonical wording):** exactly two cases and no third. (a) When the task's `models:` matrix names a role, that exact model is used and is NEVER substituted: a generator/judge family collision is a WARNING naming both roles and both models, never a reason to swap. (b) When the task does not name the role, its model comes from the factory's DEFAULT MATRIX — the CLI config's `default_model` / `[secondary_model] default_model` selected by the role's `model_preference` — where the generator≠judge rule IS enforced: a same-family coder/tester/gui_expert/farukon_expert versus reviewer/diagnostician/advisor pair with either side taken from the default matrix is an ERROR naming the fix (widen `[secondary_model]` or pin `models.<role>` in the task). (c) There is no third path: the main agent never picks a model on its own. The ONE exception is the plan committee's second planner, which always comes from a family contrasting the first planner. `scripts/model_matrix.py` is the single implementation of this precedence, `scripts/test_model_precedence.py` pins it, and the model actually served is confirmed by an ARTIFACT: `scripts/model_attribution.py` reads the CLI session wire and cross-checks `models_used`, a mismatch fails the run, and a missing wire is DEGRADED — never silently green. The secondary model works only with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`; otherwise the factory writes `models_warning` and continues on the primary. The actual role models are logged in `.code-factory/state/pipeline.yaml` (`models_used`) and in `report.md`.
 <!-- factory-rule: models-generator-ne-judge end -->
 
 Export the variable in the **same terminal** where `kimi` is launched, and **before** launching it.
@@ -745,7 +848,9 @@ Recommended role mapping:
 - primary (reasoning): main/planner, analyzer, diagnostician, reviewer;
 - secondary (fast): coder, tester; the Web GUI specialist `factory-gui-expert` is generator-side and
   may use a secondary model for routine UI implementation (`models.gui_expert`), with complex visual
-  analysis delegated to a read-only primary role;
+  analysis delegated to a read-only primary role; the Farukon platform specialist
+  `factory-farukon-expert` is generator-side in the same way and may use a secondary model for routine
+  platform work (`models.farukon_expert`);
 - planner-2 (committee on double rejection): a model from a family CONTRASTING with the planner
   (`sub-agents/planner.md`; `model_preference: secondary` is only a fallback), so that the second plan is
   truly independent rather than a retelling of the first.

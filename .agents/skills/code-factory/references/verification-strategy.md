@@ -196,6 +196,32 @@ of the user scenario runs in a real browser through the Chrome DevTools MCP tool
   criterion is reported UNVERIFIED (never MET) with an infrastructure diagnosis; no artifact is
   fabricated to fill the gap.
 
+### 3.2 Farukon platform business tests (Farukon tasks) — tester-owned acceptance
+
+When the task's Farukon path is applicable (`references/farukon-mcp.md`), the business test of the
+platform scenario runs through the `mcp__farukon__*` tools and is owned by `factory-tester`:
+
+- **Independence**: `factory-farukon-expert` may build, start a replay instance and debug during
+  implementation, but the FINAL replay scenario is executed by the tester AFTER the last code change
+  — never by the implementer, and never by reusing the specialist's diagnostic run as acceptance.
+- **Fresh session, real MCP calls**: the acceptance run is a new session that really calls the
+  Farukon MCP tools (build, replay start, connector state, bounded stop in a `try/finally`), not a
+  restatement of the specialist's transcript.
+- **Evidence location**: the artifacts live under the resolved repository's
+  `.code-factory/logs/farukon/<run_id>/` and carry the run_id — the scenario and its mode, the
+  actions, the expected/actual results, the tool answers (connector state, portfolio snapshot,
+  message log, health) and the stop confirmation. The specialist's files are marked
+  SPECIALIST/DIAGNOSTIC and stay distinct from the tester's ACCEPTANCE files; both sets are
+  referenced from `business-tests.md`, `test-results.md` and `report.md`.
+- **A snapshot alone is not proof of behavior**: acceptance needs the executed scenario and its
+  observed result; no order path is exercised (`order_capable` is false) and no live QUIK connection
+  is opened without an explicit task opt-in.
+- **FRESH/STALE applies** (§2.2): any code change after the replay run makes that evidence STALE —
+  the scenario is re-run and re-stamped, never carried forward.
+- **Degradation**: when cargo, the `farukon_mcp` build or the MCP server is missing, the platform
+  criterion is reported UNVERIFIED (never MET) with an infrastructure diagnosis
+  (`references/error-routing.md` §1 rows F1–F2); no artifact is fabricated to fill the gap.
+
 
 ## 4. Rollback mechanism (critical)
 
@@ -327,6 +353,7 @@ SUCCESS | FAILED
 | analyzer | <model from models_used> |
 | coder | ... |
 | gui_expert | ... (only when the Web GUI path applied) |
+| farukon_expert | ... (only when the Farukon path applied) |
 | tester | ... |
 | diagnostician | ... |
 

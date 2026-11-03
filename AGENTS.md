@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.21.0 -->
+<!-- code-factory-version: 12.22.0 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.
@@ -59,6 +59,17 @@ mandatory code review before acceptance.
   of the node-direct `chrome-devtools` server into `.kimi-code/mcp.json`, capability probe that is
   fail-soft overall but fail-closed on the vendored pin — an unreadable or unreviewed version is not
   usable),
+  `farukon_mcp.py` (conditional Farukon platform path: applicability `decide` — the repository HOSTS
+  the `farukon_mcp` crate AND the task text names a platform OPERATION bound to the platform (an
+  operation bound to a documentation/media object, identity vocabulary alone, task-file metadata and
+  a `models.farukon_expert` model pin never decide, and the weighted score must reach
+  `SCOPE_APPLICABLE_SCORE`), either condition alone
+  keeps the role off — idempotent, atomic merge-config of the stdio `farukon` server
+  (`cargo run --quiet -p farukon_mcp --`, `cwd` = the absolute platform root) into
+  `.kimi-code/mcp.json` with a different existing entry preserved as a conflict and
+  symlink-resolving `--target` confinement, fail-soft capability probe with the opt-in bounded
+  `--check-mcp-start` JSON-RPC handshake, and `validate-config` invariants — no diagnostic echoes a
+  value an MCP entry supplies),
   `task_parser.py` (deterministic stdlib task.yaml parser/validator for Phase 0: the full documented
   task schema incl. `business_tests` and multi-line `|` block scalars inside list items, verbatim
   texts, actionable line-numbered errors — exit 2 names the line and the fix, never a generic
@@ -70,7 +81,9 @@ mandatory code review before acceptance.
   `test_provider_stop.py` pin the `model-unavailable-stop` rule, its four carriers and the
   provider-failure branch of the flow; `test_review_report_only.py` pins
   the report-only review routing, `test_security_audit_guarantee.py` pins the audit's guarantee,
-  `test_flow_contracts.py` pins the wiring that lives in prose, `test_input_validation_gate.py`
+  `test_flow_contracts.py` pins the wiring that lives in prose, `test_farukon_mcp.py` pins the
+  Farukon MCP helper (decide/merge-config/probe/validate-config, including the opt-in handshake and
+  the exit-3 conflict), `test_input_validation_gate.py`
   proves the input-validation gate bites (bad/good fixtures + the rule's prose carriers), and
   `test_vaccination.py` proves every fix of this release bites (its check fails on the pre-fix
   tree).
@@ -79,13 +92,14 @@ mandatory code review before acceptance.
   do not crash with `UnicodeEncodeError` on a console with a legacy code page (cp1251/cp866); the argparse
   contract is unchanged: `--help` → exit 0, usage error → exit 2, no traceback.
 - `.agents/agents/` — the factory's main agent (Markdown `code-factory.md`) and subagents
-  (`sub-agents/analyzer|planner|coder|gui-expert|tester|diagnostician|advisor|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
+  (`sub-agents/analyzer|planner|coder|gui-expert|farukon-expert|tester|diagnostician|advisor|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
 - `VERSION` — single source of truth for the factory version (one line X.Y.Z)
 - `skill-base/` — persistent skill base from `reference_docs`/`reference_skills` (optional); it
   always holds the two clean-code skills — `clean-code-discipline` (the writing discipline: make it
   work, then make it right, then follow practice, with named checkable rules) and `clean-code-metrics`
   (the reviewer's three metric gates: CRAP below 10, duplication rank 0.8 removed, surviving mutants
-  killed) — cited as standing practice by `coder`/`gui-expert` and applied by the reviewer through
+  killed) — cited as standing practice by `coder`/`gui-expert`/`farukon-expert` and applied by the
+  reviewer through
   `references/code-review.md` §2.2; both are pinned in `skill-base/manifest.json` and install, vendor
   or execute nothing.
 - `.agents/README.md` — the full factory usage manual

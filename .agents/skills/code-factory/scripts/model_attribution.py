@@ -60,8 +60,9 @@ ALIAS NORMALISATION (the only two rules this script applies)
 ROLE RESOLUTION
 
   Per agent id: `state.json` `agents[id].labels.profileName` -> role (`factory-` prefix stripped,
-  `code-reviewer`->`reviewer`, `gui-expert`->`gui_expert`, `security-auditor`->`security_auditor`,
-  `skill-manager`->`skill_manager`, `main` stays `main`); when the state carries no profile, the
+  `code-reviewer`->`reviewer`, `gui-expert`->`gui_expert`, `farukon-expert`->`farukon_expert`,
+  `security-auditor`->`security_auditor`, `skill-manager`->`skill_manager`, `main` stays `main`);
+  when the state carries no profile, the
   parent wire's `subagent.spawned.subagentName` supplies it. Per role the script accumulates
   `models_served`, `tokens` (from `usage.record`), `errors` (by event type), `spawn_model` (the
   model the parent asked for) and the first/last event time.
@@ -159,6 +160,7 @@ UNUSED = "unused"
 # dash-to-underscore rule, so they are pinned here (the rest is `name.replace("-", "_")`).
 PROFILE_PREFIX = "factory-"
 ROLE_ALIASES = {"code-reviewer": "reviewer", "gui-expert": "gui_expert",
+                "farukon-expert": "farukon_expert",
                 "security-auditor": "security_auditor", "skill-manager": "skill_manager"}
 # Vendor family words folded off a version token by `canonical()` (`kimi-k3` -> `k3`).
 FAMILY_WORDS = ("kimi", "moonshot", "deepseek", "qwen", "dashscope")
@@ -253,8 +255,9 @@ def canonical(alias: str) -> str:
 def role_from_profile(name: str) -> str:
     """The factory role a sub-agent profile name stands for; "" when the name is empty.
 
-    `factory-code-reviewer` -> `reviewer`, `factory-gui-expert` -> `gui_expert`; the dash-to-
-    underscore rule covers most profiles and ROLE_ALIASES pins the ones it cannot.
+    `factory-code-reviewer` -> `reviewer`, `factory-gui-expert` -> `gui_expert`,
+    `factory-farukon-expert` -> `farukon_expert`; the dash-to-underscore rule covers most profiles
+    and ROLE_ALIASES pins the ones it cannot.
     """
     role = _text(name).lower()
     if role.startswith(PROFILE_PREFIX):

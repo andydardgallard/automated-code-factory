@@ -3,8 +3,9 @@
 Deterministic error router (stdlib only, zero LLM tokens) for the routing tables of
 `references/error-routing.md`.
 
-`references/error-patterns.default.json` is the machine-readable snapshot of those tables: section 1
-rows 1-24 (`patterns`) and section 1.1 provider rows A-F (`provider_patterns`), each entry
+`references/error-patterns.default.json` is the machine-readable snapshot of those tables: the
+section-1 rows 1-20 plus the Farukon infrastructure rows F1-F2 and the browser/MCP infrastructure
+rows I1-I4 (`patterns`) and section 1.1 provider rows A-F (`provider_patterns`), each entry
 `{id, category, patterns[], route}`. The ARRAY ORDER IS THE PRIORITY ("first match wins") and every
 regex is matched case-insensitively. A project LEARNS its own patterns in
 `.code-factory/state/error-patterns.json`: they are merged PROJECT-FIRST over the defaults
@@ -45,9 +46,14 @@ than silently writing a wrong union.
 Regexes are compiled with re.IGNORECASE (the tables are case-insensitive) and re.MULTILINE, so
 line-anchored patterns such as `^error: ` keep their meaning inside a multi-line log.
 
-Match order is section-1 rows 1-24 first, then section-1.1 provider rows A-F: that is the document's
-own order, and it keeps every non-provider log classified as before (e.g. `expected 500 but got 502`
-stays WRONG_RESULTS instead of being caught by the provider pattern `5\\d\\d`).
+Match order is the ARRAY ORDER of the snapshot, exactly as `references/error-routing.md` lays the
+table out: first the section-1 rows 1-4, then the Farukon infrastructure rows F1-F2, then the
+browser/MCP infrastructure rows I1-I4, then the remaining section-1 rows 5-20, and finally the
+section-1.1 provider rows A-F. The specialised rows sit BEFORE the generic ones ON PURPOSE ("first
+match wins"): a missing `cargo` must not be claimed by `command not found`, a browser capability line
+by `file not found`, and a farukon_mcp handshake line by the generic MCP row. Every non-provider log
+is still classified as before (e.g. `expected 500 but got 502` stays WRONG_RESULTS instead of being
+caught by the provider pattern `5\\d\\d`), because the provider rows come last.
 
 Exit codes: 0 = classified / merged / exported; 1 = the log cannot be read; 2 = the patterns JSON is
 unusable (broken JSON, missing keys, wrong types, invalid regex), the CLI was called wrongly, or the

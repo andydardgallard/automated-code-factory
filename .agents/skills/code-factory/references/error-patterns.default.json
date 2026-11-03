@@ -35,6 +35,33 @@
       "route": "infrastructure"
     },
     {
+      "id": "F1",
+      "category": "FARUKON_TOOLCHAIN",
+      "patterns": [
+        "\\bcargo'?\\s*:\\s*(command not found|not found|no such file or directory)",
+        "\\bcargo'?\\s+is\\s+not\\s+recognized",
+        "\\bcargo\\b[^\\n]{0,40}was not found on PATH",
+        "error:\\s*linker\\s+\\S+\\s+not found",
+        "\\brustup\\b[^\\n]{0,80}(error|failed|could not|not installed)",
+        "\\btoolchain\\b[^\\n]{0,60}(is not installed|not installed|failed to install|install failed)",
+        "\\brustc\\b[^\\n]{0,40}(command not found|not found|not recognized)"
+      ],
+      "route": "infrastructure"
+    },
+    {
+      "id": "F2",
+      "category": "FARUKON_MCP_STARTUP",
+      "patterns": [
+        "farukon[ _-]?mcp\\b[^\\n]{0,80}(failed to start|did not start|could not start|cannot start|exited|crash|abort|timed? out|timeout|not found|no such file|does not expose|closed stdin)",
+        "(failed to start|did not start|could not start|start [^\\n]{0,20}failed|cannot start|unable to start|failed to connect|could not connect|timed? out|timeout|exited unexpectedly|crash)[^\\n]{0,60}farukon[ _-]?mcp\\b",
+        "\\bmcp\\b[^\\n]{0,60}handshake[^\\n]{0,60}(failed|timed? out|timeout|error|refused|no response)",
+        "(no (initialize|tools/list) response|closed stdin before|answered (initialize|tools/list) with)[^\\n]{0,120}(farukon|cargo run)",
+        "\\A(?![\\s\\S]*error\\[E\\d+\\])[\\s\\S]*could not compile[^\\n]{0,60}farukon[ _-]?mcp",
+        "does not expose every Farukon tool"
+      ],
+      "route": "infrastructure"
+    },
+    {
       "id": "I1",
       "category": "BROWSER_TOOLCHAIN",
       "patterns": [

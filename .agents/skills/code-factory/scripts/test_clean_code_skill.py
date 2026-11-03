@@ -53,6 +53,7 @@ MANIFEST = pathlib.Path("skill-base/manifest.json")
 CODE_REVIEW = pathlib.Path(".agents/skills/code-factory/references/code-review.md")
 CODER = pathlib.Path(".agents/agents/sub-agents/coder.md")
 GUI_EXPERT = pathlib.Path(".agents/agents/sub-agents/gui-expert.md")
+FARUKON_EXPERT = pathlib.Path(".agents/agents/sub-agents/farukon-expert.md")
 CODE_REVIEWER = pathlib.Path(".agents/agents/sub-agents/code-reviewer.md")
 
 # The revisions this deliverable is pinned to (the task names them; the manifest must agree).
@@ -484,7 +485,7 @@ def check_wiring(root: pathlib.Path) -> tuple[list[str], list[str]]:
         if not errors:
             notes.append(f"{CODE_REVIEW.as_posix()}: `## 2.2 Metric gates` plus three numbered gates")
 
-    for rel in (CODER, GUI_EXPERT):
+    for rel in (CODER, GUI_EXPERT, FARUKON_EXPERT):
         body = read(root, rel, errors)
         if body is not None and DISCIPLINE_REF not in body:
             errors.append(f"{rel.as_posix()}: does not reference {DISCIPLINE_REF} — the role that "

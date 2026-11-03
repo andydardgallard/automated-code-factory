@@ -7,6 +7,7 @@ subagents:
   - factory-planner
   - factory-coder
   - factory-gui-expert
+  - factory-farukon-expert
   - factory-tester
   - factory-diagnostician
   - factory-advisor
@@ -38,6 +39,7 @@ at the user unless asked.
   - `references/code-review.md` — static quality gate: checklist, severity, verdict, rework task (before acceptance)
   - `references/providers.md` — model routing for Kimi (K3) and Qwen providers (Phase 4)
   - `references/chrome-devtools-mcp.md` — conditional Chrome DevTools MCP browser path: activation, managed server/config facts, specialist vs tester evidence split, safety defaults, degradation (Phases 0/1/4/5/8)
+  - `references/farukon-mcp.md` — conditional Farukon MCP platform path: activation, managed server/config facts, specialist vs tester evidence split, safety defaults, degradation (Phases 0/1/4/5/8)
   - `references/refactoring.md` — refactor task type: freeze functionality, 100% tests unchanged
   - `references/security-audit.md` — security_audit task type: adaptive full audit + fix-task file
   - `references/documentation.md` — factory-documenter: documentation methodology + validator (Finish phase)
@@ -64,12 +66,18 @@ at the user unless asked.
 
 Read the relevant reference file when you reach its phase. Keep your own context lean — delegate
 heavy work to subagents (`factory-analyzer`, `factory-planner`, `factory-coder`,
-`factory-gui-expert`, `factory-tester`, `factory-diagnostician`, `factory-advisor`,
-`factory-code-reviewer`) and accept only concise structured results. `factory-gui-expert` is the
-coder-class Web GUI specialist: it implements and debugs assigned UI files in a real browser when the
+`factory-gui-expert`, `factory-farukon-expert`, `factory-tester`, `factory-diagnostician`,
+`factory-advisor`, `factory-code-reviewer`) and accept only concise structured results.
+`factory-gui-expert` is the coder-class Web GUI specialist: it implements and debugs assigned UI
+files in a real browser when the
 task's Web GUI path applies (Phase 0/1 decision) and is never invoked on a non-Web-GUI run; the
 required `mcp__chrome-devtools__*` browser tools belong to `factory-gui-expert` and `factory-tester`
 ONLY — every other role receives no browser MCP tools.
+`factory-farukon-expert` is the coder-class Farukon platform specialist: it implements, builds, runs
+and debugs the assigned platform files through the `farukon` MCP server when the task's Farukon path
+applies (Phase 0/1 decision) and is never invoked on any other run; the `mcp__farukon__*` platform
+tools belong to `factory-farukon-expert` and `factory-tester` ONLY — every other role receives no
+Farukon MCP tools.
 Every delegation uses the MANDATORY briefing template
 `references/handoff-briefing.md` (Task / Context / relevant files BY PATH, never pasted content /
 current state / what was tried and why it failed / decisions / acceptance criteria / constraints),
@@ -136,6 +144,10 @@ exceptions that stay DEPLOYMENT-ROOT-scoped are `memory/` (the long-term memory)
 **Web GUI path (NO new task field)**: whether this task activates the browser capability (Chrome
 DevTools MCP + `factory-gui-expert`) is never a task field and never a mandatory requirement — it is
 decided from the task scope during analysis (Phase 1, `scripts/chrome_devtools_mcp.py decide`) and the
+decision with its reason is recorded in the plan/state, so the existing task format is untouched.
+**Farukon platform path (NO new task field)**: whether this task activates the Farukon platform
+capability (farukon MCP server + `factory-farukon-expert`) is likewise never a task field — it is
+decided from the task scope during analysis (Phase 1, `scripts/farukon_mcp.py decide`) and the
 decision with its reason is recorded in the plan/state, so the existing task format is untouched.
 **Stale task file**: when the launch directory holds a leftover `task.yaml` from a previous run and
 no new task was handed over, WARN the user and ask whether to re-run that stale task — the factory
@@ -227,6 +239,22 @@ EXISTING browser/E2E stack and its config
 specialist would own; `not_applicable` keeps the specialist, the browser tools and any Chrome/Node
 requirement off for the whole run. Reference: `references/chrome-devtools-mcp.md`.
 
+**Farukon platform applicability (conditional platform path)**: decide whether THIS task needs the
+Farukon path and record the decision WITH its reason in the plan/state —
+`python .agents/skills/code-factory/scripts/farukon_mcp.py decide --task-file
+.code-factory/state/task.yaml --repo <resolved repo_path>`. Applicability needs BOTH a repository
+that hosts the platform and a task scope that names a platform OPERATION (build/run/test, start/stop,
+connectors, portfolio snapshot, message log, web health) BOUND to the platform: the scope needs a
+platform IDENTITY and an operation whose object is the platform, so the project's NAME alone is never
+enough, a task-file metadata key (`models:`, `repo_path:`) is not scope, an operation on another
+subject ("run the parser test suite") and an operation on documentation ("run the documentation
+build") stay out of scope, a platform repository with an unrelated backend task stays
+`not_applicable`, and an explicit exclusion phrase in the task text always wins.
+The analyzer (read-only) also names which platform files a specialist would own, the replay business
+scenario the tester must execute after the last code change and the managed `farukon` MCP entry the
+repository carries; `not_applicable` keeps the specialist, the `mcp__farukon__*` tools and any
+cargo/toolchain requirement off for the whole run. Reference: `references/farukon-mcp.md`.
+
 **Repo-mismatch gate**: after analysis, verify that files, symbols, configs and data referenced
 by the task actually exist in the repo. If they are missing: in hitl mode STOP and ask the user
 for the missing pieces via `AskUserQuestion` (business language); in auto mode record the
@@ -242,6 +270,10 @@ the UI files owned by `factory-gui-expert`, the browser business scenario the te
 after the last code change, and the browser matrix DERIVED from the acceptance criteria
 (`chrome_devtools_mcp.py browser-matrix`, never assumed) — a required cross-browser matrix runs
 through the project's EXISTING E2E framework command.
+When the Farukon path is `applicable`, the plan additionally names the platform files owned by
+`factory-farukon-expert`, the replay business scenario the tester must execute after the last code
+change, and the managed `farukon` MCP entry (`farukon_mcp.py validate-config`, never assumed) — the
+plan never asks for an order path or a live-QUIK connection.
 The `task_type` selects the planning mode:
 - `implement` (default) — normal DAG plan.
 - `review` — Phase 2b (the whole-codebase review) runs FIRST and its plan is the review DELIVERY,
@@ -343,6 +375,19 @@ capability is DATA with a reason, never a crash: it goes through the EXISTING in
 (`references/error-routing.md` §1 rows I1–I4), the browser criteria of the task stay explicitly
 UNVERIFIED — never reported MET — and a `not_applicable` run never probes, never launches Chrome and
 never requires Node.js.
+**Farukon pre-flight (conditional)**: only when Phase 1 decided `applicable`, probe the platform
+capabilities into the same capability file
+(`python .agents/skills/code-factory/scripts/factory_preflight.py --farukon --repo <resolved repo_path>
+--out .code-factory/state/preflight.json`): cargo and its version, whether the repository really looks
+like a Farukon platform root, whether it holds a BUILDABLE `farukon_mcp` crate (a manifest on disk,
+not a bare workspace declaration) and the managed `farukon` MCP config entry, whose `cwd` must be THIS
+platform root (`scripts/farukon_mcp.py probe`, delegated). A missing or incompatible capability is
+DATA with a reason, never a crash: it goes through the EXISTING infrastructure route
+(`references/error-routing.md` §1 rows F1–F2), the platform criteria of the task stay explicitly
+UNVERIFIED — never reported MET — and a `not_applicable` run never probes cargo, never builds the
+server and never needs a Rust toolchain. The verdict is the delegated probe's own: `usable` only when
+it agrees, `degraded` when a capability is missing OR the probe itself raised (`probe_error` recorded)
+— a failed inspection proves nothing, so it is never read as `not_applicable`.
 **Run id**: every artifact written from here on carries the run's `run_id`
 (`python .agents/skills/code-factory/scripts/run_id.py gen --task .code-factory/state/task.yaml` if
 it has not been generated yet) — write it as the required `run_id` key of the checkpoint
@@ -382,6 +427,22 @@ role the implementer (generator ≠ judge is preserved). Implementation failures
 the EXISTING coder route and `retry_counters.coder`. The specialist never self-accepts: the final
 browser scenario belongs to `factory-tester` (Phase 8).
 
+**Farukon platform implementation (conditional)**: when the task's Farukon path is `applicable`, the
+platform files go to `factory-farukon-expert` (coder-class) instead of `factory-coder`: it
+implements, builds, runs and debugs the platform ONLY through the `farukon` MCP tools
+(`farukon_build`, `farukon_cargo_test`, `farukon_start`, `farukon_stop`, `farukon_connector_state`,
+`farukon_portfolio_snapshot`, `farukon_message_log`, `farukon_web_health` — no raw `cargo`/`curl`
+workaround) and leaves its DIAGNOSTIC artifacts under the resolved repository's
+`.code-factory/logs/farukon/<run_id>/`. Non-Farukon work stays with `factory-coder` (no routine
+platform access). Honor `models.farukon_expert` from the task and log
+`models_used.farukon_expert` into `pipeline.yaml` and `report.md` — the role is generator-side like
+`models.coder` (same family rule, `references/providers.md` §5.1) and its fallback is
+`model_preference: secondary`; the platform is a read-only stage-1 deployment, so there is NO order
+path and no live-QUIK connection without an explicit task opt-in, and every start gets a bounded
+stop. Implementation failures and review rework use the EXISTING coder route and
+`retry_counters.coder`. The specialist never self-accepts: the final replay scenario belongs to
+`factory-tester` (Phase 8).
+
 **Reference skills (dynamic context)**: if the task has `reference_docs`/`reference_skills`,
 resolve them into skills via the `factory-skill-manager` subagent + `scripts/skill_base.py`
 (see `references/reference-docs.md`), then append the resolved skill instructions to each
@@ -418,6 +479,15 @@ with a recorded justification — never Playwright MCP. The existing unit, integ
 stay mandatory; MCP does not replace them. On a missing Node/Chrome/MCP capability the affected
 browser criteria stay UNVERIFIED with an infrastructure diagnosis (`references/error-routing.md`
 §1 rows I1–I4) — never MET, and never silently skipped.
+**Farukon platform business tests (conditional, Farukon tasks)**: after the LAST code change,
+`factory-tester` INDEPENDENTLY executes the final replay scenario through the `mcp__farukon__*` tools
+in a fresh session with real MCP calls — build, replay start, connector state, bounded stop — and
+OWNS the ACCEPTANCE artifacts under the resolved repository's
+`.code-factory/logs/farukon/<run_id>/`, distinct from the specialist's DIAGNOSTIC set. The specialist
+never issues the PASS; any later change makes the evidence STALE, so the scenario is re-run and
+re-stamped (`references/verification-strategy.md` §3.2), and on a missing cargo/MCP capability the
+affected platform criteria stay UNVERIFIED with an infrastructure diagnosis
+(`references/error-routing.md` §1 rows F1–F2) — never MET, and never silently skipped.
 
 ### Phase 8b — Code review (mandatory gate)
 **Calibration gate first (deterministic, before any reviewer runs).** Invoke
@@ -658,6 +728,12 @@ On ANY failure, do NOT roll back immediately. Follow `references/error-routing.m
    infrastructure (`references/error-routing.md` §1 rows I1–I4): they repair the environment instead
    of rolling back code. There is NO GUI-specific role or budget — a GUI implementation or
    browser-test failure keeps the EXISTING `coder` route and `retry_counters.coder`.
+   Farukon cargo/MCP capability failures (cargo not found, a Farukon platform root that cannot be
+   built, MCP connection/startup failure, farukon_mcp launch errors) classify the same way as
+   infrastructure (`references/error-routing.md` §1 rows F1–F2, ordered before the generic rows):
+   they repair the environment instead of rolling back code, and there is NO Farukon-specific role
+   or budget — a platform implementation or replay-test failure keeps the EXISTING `coder` route and
+   `retry_counters.coder`.
    Record the error in `.code-factory/logs/errors.md` and update retry
    counters in `.code-factory/state/pipeline.yaml`. Feed the Diagnostician an error EXCERPT, never
    a whole log: read long logs with `scripts/log_tail.py` (counters + tail only).
@@ -745,7 +821,7 @@ write `.code-factory/report_code_changes.md` (next to it) via
    (`scripts/factory_preflight.py`) and record a `models_warning` in pipeline.yaml/report.md if it
    is not set.
 <!-- factory-rule: models-generator-ne-judge begin -->
-**Models: task first, then the default matrix (canonical wording):** exactly two cases and no third. (a) When the task's `models:` matrix names a role, that exact model is used and is NEVER substituted: a generator/judge family collision is a WARNING naming both roles and both models, never a reason to swap. (b) When the task does not name the role, its model comes from the factory's DEFAULT MATRIX — the CLI config's `default_model` / `[secondary_model] default_model` selected by the role's `model_preference` — where the generator≠judge rule IS enforced: a same-family coder/tester/gui_expert versus reviewer/diagnostician/advisor pair with either side taken from the default matrix is an ERROR naming the fix (widen `[secondary_model]` or pin `models.<role>` in the task). (c) There is no third path: the main agent never picks a model on its own. The ONE exception is the plan committee's second planner, which always comes from a family contrasting the first planner. `scripts/model_matrix.py` is the single implementation of this precedence, `scripts/test_model_precedence.py` pins it, and the model actually served is confirmed by an ARTIFACT: `scripts/model_attribution.py` reads the CLI session wire and cross-checks `models_used`, a mismatch fails the run, and a missing wire is DEGRADED — never silently green. The secondary model works only with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`; otherwise the factory writes `models_warning` and continues on the primary. The actual role models are logged in `.code-factory/state/pipeline.yaml` (`models_used`) and in `report.md`.
+**Models: task first, then the default matrix (canonical wording):** exactly two cases and no third. (a) When the task's `models:` matrix names a role, that exact model is used and is NEVER substituted: a generator/judge family collision is a WARNING naming both roles and both models, never a reason to swap. (b) When the task does not name the role, its model comes from the factory's DEFAULT MATRIX — the CLI config's `default_model` / `[secondary_model] default_model` selected by the role's `model_preference` — where the generator≠judge rule IS enforced: a same-family coder/tester/gui_expert/farukon_expert versus reviewer/diagnostician/advisor pair with either side taken from the default matrix is an ERROR naming the fix (widen `[secondary_model]` or pin `models.<role>` in the task). (c) There is no third path: the main agent never picks a model on its own. The ONE exception is the plan committee's second planner, which always comes from a family contrasting the first planner. `scripts/model_matrix.py` is the single implementation of this precedence, `scripts/test_model_precedence.py` pins it, and the model actually served is confirmed by an ARTIFACT: `scripts/model_attribution.py` reads the CLI session wire and cross-checks `models_used`, a mismatch fails the run, and a missing wire is DEGRADED — never silently green. The secondary model works only with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`; otherwise the factory writes `models_warning` and continues on the primary. The actual role models are logged in `.code-factory/state/pipeline.yaml` (`models_used`) and in `report.md`.
 <!-- factory-rule: models-generator-ne-judge end -->
 
 9. **Commit policy** — respect `commit_exclude` from the task: never commit matching files.

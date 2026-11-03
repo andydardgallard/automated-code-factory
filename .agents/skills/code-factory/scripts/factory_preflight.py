@@ -22,6 +22,7 @@ Probed capabilities (JSON, see `--out`):
 Usage:
   python factory_preflight.py [--out .code-factory/state/preflight.json] [--repo <root>]
   python factory_preflight.py --web-gui [--simulate-missing <name>] [--out ...] [--repo <root>]
+  python factory_preflight.py --farukon [--simulate-missing <name>] [--out ...] [--repo <root>]
 
 `--web-gui` is OPT-IN and meant only for a run whose task is an applicable Web GUI task: it appends
 a nested `web_gui` capability block (node/npm/npx versions, Chrome / Chrome for Testing presence,
@@ -29,9 +30,21 @@ MCP server start feasibility) by delegating to the sibling `chrome_devtools_mcp.
 fail-soft and timeout-guarded, so a missing browser capability is DATA carrying a reason and never
 changes the exit code (which stays python+git only). WITHOUT the flag the output schema and the
 exit-code contract are exactly what they were before the flag existed.
-`--simulate-missing <name>` (repeatable, only meaningful together with `--web-gui`) forces one
-capability to report missing (`node`, `npm`, `npx`, `chrome`, `chrome-for-testing`, `mcp-server`),
-so the degraded behavior is testable without touching the host.
+`--simulate-missing <name>` (repeatable, only meaningful together with `--web-gui` or `--farukon`)
+forces one capability to report missing (`node`, `npm`, `npx`, `chrome`, `chrome-for-testing`,
+`mcp-server` for the browser path; `cargo`, `platform`, `mcp-config` for the Farukon path), so the
+degraded behavior is testable without touching the host.
+
+`--farukon` is OPT-IN and meant only for a run whose task is an applicable Farukon task: it appends
+a nested `farukon` capability block (cargo present/version, whether the repository looks like a
+Farukon platform, whether the managed Farukon MCP config exists and validates against THIS root) by
+delegating to the sibling `farukon_mcp.py` probe logic WITHOUT a build and WITHOUT an MCP server
+start, with the verdict `usable` / `degraded` / `not_applicable`. The verdict is the delegated probe's
+OWN: `usable` only when that probe agrees, and `degraded` when a capability is missing OR the probe
+itself raises — an exception is recorded as `probe_error` and the capabilities report the failure,
+because an inspection that could not RUN is UNKNOWN, never evidence that the repository lacks the
+platform (so it is never `not_applicable`, and the affected criteria stay UNVERIFIED). Like the
+browser block it is fail-soft DATA and never changes the exit code.
 
 The browser path is only usable for a repository that REALLY has one deployed: with `--repo` the
 resolved repository's managed `.kimi-code/mcp.json` is threaded into the delegated probe, and
@@ -75,6 +88,14 @@ WEB_GUI_KEY = "web_gui"
 WEB_GUI_CAPABILITIES = ("node", "npm", "npx", "chrome", "chrome_for_testing", "mcp_server")
 WEB_GUI_PROBE_TIMEOUT = 10
 CHROME_HELPER = "chrome_devtools_mcp.py"
+# The conditional Farukon block: only `--farukon` appends it. Its three capabilities are collected
+# statically — no cargo build and no MCP server start — so a probe can never launch the platform.
+FARUKON_KEY = "farukon"
+FARUKON_CAPABILITIES = ("cargo", "platform", "mcp_config")
+FARUKON_HELPER = "farukon_mcp.py"
+FARUKON_USABLE = "usable"
+FARUKON_DEGRADED = "degraded"
+FARUKON_NOT_APPLICABLE = "not_applicable"
 # The managed MCP config of ONE project (machine-local, gitignored): the browser path of a run is
 # decided by the resolved repository's own deployment, never by the shipped template.
 MCP_CONFIG_RELPARTS = (".kimi-code", "mcp.json")
@@ -307,6 +328,150 @@ def collect_web_gui_capabilities(simulate_missing: list[str] | tuple[str, ...] =
     return block
 
 
+def _load_farukon_helper():
+    """The sibling `farukon_mcp.py` module, loaded by path (no package, no side effects).
+
+    The definition of "the Farukon platform is usable here" has ONE home — that script — so the
+    pre-flight must not re-implement the host signature or the managed-config invariants. Loading by
+    path keeps the probe independent of the caller's cwd and of `sys.path`.
+    """
+    helper_path = pathlib.Path(__file__).resolve().parent / FARUKON_HELPER
+    spec = importlib.util.spec_from_file_location("farukon_mcp", helper_path)
+    if spec is None or spec.loader is None:
+        raise OSError(f"cannot load {helper_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def capability_version(reason: str) -> str | None:
+    """The version token a delegated probe embeds in its reason (`cargo is available (cargo 1.75.0)`).
+
+    Best-effort by design: an unexpected reason shape yields null DATA instead of an error.
+    """
+    match = re.search(r"\(([^()]*)\)\s*$", reason or "")
+    if not match:
+        return None
+    return match.group(1).strip() or None
+
+
+def _farukon_platform_reason(helper, signals: dict, root: pathlib.Path) -> str:
+    details = [str(detail) for detail in signals.get("details") or []]
+    if signals.get("platform") is True:
+        return f"{root} hosts the Farukon platform ({'; '.join(details)})"
+    return (f"{root} does not host the Farukon platform: no "
+            f"{helper.CRATE_MANIFEST.as_posix()}, no {helper.CRATE} workspace member in the root "
+            f"Cargo.toml and no {helper.SERVER_NAME!r} entry in "
+            f"{helper.CONFIG_RELPATH.as_posix()}")
+
+
+def collect_farukon_capabilities(simulate_missing: list[str] | tuple[str, ...] = (),
+                                 repo: str | None = None) -> dict:
+    """Nested `farukon` block for an APPLICABLE Farukon run — delegated, static, fail-soft.
+
+    Delegates to `farukon_mcp.py`'s probe WITHOUT `check_mcp_start`, so nothing is built and no MCP
+    server is started: cargo, the repository's host signature and the managed config are checked
+    statically, and a missing piece is DATA with a reason (never a change of the exit code).
+    `simulate_missing` forces a capability to report missing without touching the host.
+
+    `repo` is the run's resolved repo_path and defaults to the caller's working directory — the same
+    default the rest of the run uses. The verdict is `not_applicable` when the repository does not
+    host the platform, `degraded` when it does but a capability is missing, when the delegated probe
+    refuses the platform path (a `farukon` config entry without a BUILDABLE crate does not make a
+    usable path) or when the probe itself could not RUN — a failed inspection is UNKNOWN, never proof
+    of absence — and `usable` only when the probe agrees.
+    """
+    root = pathlib.Path(os.path.abspath(str(repo) if repo else os.getcwd()))
+    block: dict = {"source": FARUKON_HELPER, "repo": str(root), "managed_config": None,
+                   "simulate_missing": sorted(simulate_missing)}
+    reported: dict[str, dict] = {}
+    # The delegated probe's OWN verdict, and the buildability it derives it from: a repository that
+    # carries a managed `farukon` entry but no buildable crate is unambiguous degraded, whatever the
+    # three reported capabilities say — `usable` is never computed here.
+    probe_usable = False
+    buildable: dict = {}
+    try:
+        helper = _load_farukon_helper()
+        config = root / helper.CONFIG_RELPATH
+        block["managed_config"] = str(config)
+        result = helper.probe_capabilities(root)
+        signals = result.get("host_signals") if isinstance(result.get("host_signals"), dict) else {}
+        capabilities = (result.get("capabilities")
+                        if isinstance(result.get("capabilities"), dict) else {})
+        cargo = capabilities.get("cargo") if isinstance(capabilities.get("cargo"), dict) else {}
+        config_cap = (capabilities.get("mcp_config")
+                      if isinstance(capabilities.get("mcp_config"), dict) else {})
+        buildable = (capabilities.get("farukon_mcp_buildable")
+                     if isinstance(capabilities.get("farukon_mcp_buildable"), dict) else {})
+        probe_usable = result.get("farukon_usable") is True
+        cargo_reason = str(cargo.get("reason") or "not reported by the probe")
+        reported = {
+            "cargo": {"present": cargo.get("present") is True,
+                      "version": capability_version(cargo_reason),
+                      "reason": cargo_reason},
+            "platform": {"present": signals.get("platform") is True,
+                         "version": None,
+                         "reason": _farukon_platform_reason(helper, signals, root)},
+            "mcp_config": {"present": config_cap.get("present") is True,
+                           "version": None,
+                           "reason": str(config_cap.get("reason")
+                                         or "not reported by the probe")},
+        }
+    except Exception as exc:       # a broken probe is DATA: never a failed pre-flight
+        block["probe_error"] = f"{type(exc).__name__}: {exc}"
+        for name in FARUKON_CAPABILITIES:
+            reported[name] = {"present": False, "version": None,
+                              "reason": f"the delegated probe failed: {block['probe_error']}"}
+    for name in simulate_missing:
+        if name in reported:
+            reported[name] = {
+                "present": False, "version": None,
+                "reason": (f"{name} is reported missing because --simulate-missing "
+                           f"{name.replace('_', '-')} forces a miss on this host")}
+    missing = [name for name in FARUKON_CAPABILITIES if not reported[name]["present"]]
+    if block.get("probe_error"):
+        #    A probe that could not RUN proves nothing about the repository: "the inspection failed"
+        #    is not "the repository lacks the platform", so this is degraded (and the criteria
+        #    unverified) rather than not_applicable — evaluating platform absence here would let an
+        #    applicable run skip the required degraded handling.
+        verdict, verdict_reason = FARUKON_DEGRADED, (
+            "the delegated farukon_mcp.py probe could not inspect this repository: "
+            + block["probe_error"] + " — the platform capabilities are UNKNOWN, not absent, so the "
+            "role may only work through the eight Farukon MCP tools and the affected criteria must "
+            "stay explicitly UNVERIFIED until the probe runs")
+    elif not reported["platform"]["present"]:
+        verdict, verdict_reason = FARUKON_NOT_APPLICABLE, (
+            "the farukon-expert role does not apply here: " + reported["platform"]["reason"])
+    elif missing:
+        verdict, verdict_reason = FARUKON_DEGRADED, (
+            "the repository hosts the Farukon platform but these capabilities are missing: "
+            + ", ".join(missing) + " — the role may only work through the eight Farukon MCP tools "
+            "and their criteria must stay explicitly UNVERIFIED until they are in place")
+    elif not probe_usable:
+        #    Every reported capability looks present, yet the delegated probe refuses the platform
+        #    path: that is a missing BUILDABLE crate (a config entry alone launches nothing) or
+        #    another invariant only the probe knows. It is degraded, never usable.
+        detail = str(buildable.get("reason") or "the delegated farukon_mcp.py probe does not report "
+                                                "the platform path as usable")
+        verdict, verdict_reason = FARUKON_DEGRADED, (
+            "the repository hosts the Farukon platform but the platform path is not usable: "
+            + detail + " — the role may only work through the eight Farukon MCP tools and their "
+            "criteria must stay explicitly UNVERIFIED until a buildable crate and its managed "
+            "config are in place")
+    else:
+        verdict, verdict_reason = FARUKON_USABLE, (
+            "cargo, a buildable platform crate, the platform host signature and the managed "
+            "Farukon MCP config are all in place")
+    block.update({
+        "capabilities": reported,
+        "missing": missing,
+        "farukon_usable": verdict == FARUKON_USABLE,
+        "verdict": verdict,
+        "verdict_reason": verdict_reason,
+    })
+    return block
+
+
 def write_json(path: pathlib.Path, data: dict) -> None:
     """Atomic write (temp file in the target directory + replace), UTF-8, LF endings."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -349,6 +514,21 @@ def format_summary(caps: dict, out: pathlib.Path) -> str:
             if not entry.get("present"):
                 lines.append(f"      reason: {entry.get('reason')}")
         lines.append(f"  web gui verdict: {block.get('verdict')}")
+    block = caps.get(FARUKON_KEY)
+    if isinstance(block, dict):
+        # Only with `--farukon`: the conditional platform capability class, one line per capability
+        # with the reason of every missing one — DATA that never changes the exit code.
+        lines.append("  farukon (conditional platform path):")
+        lines.append(f"    repo: {block.get('repo')}")
+        lines.append(f"    managed config: {block.get('managed_config') or 'not checked'}")
+        for name in FARUKON_CAPABILITIES:
+            entry = (block.get("capabilities") or {}).get(name) or {}
+            state = "present" if entry.get("present") else "missing"
+            version = f" {entry['version']}" if entry.get("version") else ""
+            lines.append(f"    {name}: {state}{version}")
+            if not entry.get("present"):
+                lines.append(f"      reason: {entry.get('reason')}")
+        lines.append(f"  farukon verdict: {block.get('verdict')}")
     lines.append(f"  capabilities: {out}")
     return "\n".join(lines)
 
@@ -368,13 +548,30 @@ def use_utf8_output() -> None:
             pass
 
 
-def canonical_web_gui_name(name: str, ap: argparse.ArgumentParser) -> str:
+def canonical_web_gui_name(name: str, ap: argparse.ArgumentParser,
+                           allowed: tuple[str, ...] = WEB_GUI_CAPABILITIES) -> str:
     """`node` / `chrome-for-testing` … -> the probe's own spelling; an unknown name is a usage error."""
     key = str(name).strip().lower().replace("-", "_")
-    if key not in WEB_GUI_CAPABILITIES:
-        ap.error(f"unknown --simulate-missing capability {name!r}; known: "
-                 + ", ".join(WEB_GUI_CAPABILITIES))
+    if key not in allowed:
+        ap.error(f"unknown --simulate-missing capability {name!r}; known: " + ", ".join(allowed))
     return key
+
+
+def simulated_capabilities(args: argparse.Namespace,
+                           ap: argparse.ArgumentParser) -> tuple[list[str], list[str]]:
+    """Split `--simulate-missing` into `(browser names, farukon names)` for the given flags.
+
+    A name is only accepted for a block the invocation actually asks for, so the flag keeps its
+    fail-loud contract: a misspelling or a name of the other block is a usage error, never a silently
+    ignored simulation.
+    """
+    allowed = ((WEB_GUI_CAPABILITIES if args.web_gui else ())
+               + (FARUKON_CAPABILITIES if args.farukon else ()))
+    if args.simulate_missing and not allowed:
+        ap.error("--simulate-missing requires --web-gui or --farukon")
+    keys = [canonical_web_gui_name(name, ap, allowed) for name in args.simulate_missing]
+    return ([key for key in keys if key in WEB_GUI_CAPABILITIES],
+            [key for key in keys if key in FARUKON_CAPABILITIES])
 
 
 def main() -> int:
@@ -390,18 +587,25 @@ def main() -> int:
                           "run whose task is an applicable Web GUI task; with --repo the block also "
                           "checks THAT repository's managed .kimi-code/mcp.json and its pinned "
                           "vendored entry, so the browser path is only usable for a real deployment"))
+    ap.add_argument("--farukon", action="store_true", dest="farukon",
+                    help=("OPT-IN: append the nested `farukon` capability block (cargo, whether the "
+                          "repository hosts the Farukon platform, the managed Farukon MCP config) — "
+                          "only for a run whose task is an applicable Farukon task; collected "
+                          "statically, without a cargo build and without an MCP server start, with "
+                          "the verdict usable/degraded/not_applicable"))
     ap.add_argument("--simulate-missing", action="append", default=[], metavar="NAME",
                     dest="simulate_missing",
-                    help=("with --web-gui: force one browser capability to report missing "
-                          f"({', '.join(WEB_GUI_CAPABILITIES)}); a dashed spelling is accepted too"))
+                    help=("with --web-gui or --farukon: force one capability to report missing "
+                          f"({', '.join(WEB_GUI_CAPABILITIES + FARUKON_CAPABILITIES)}); a dashed "
+                          "spelling is accepted too"))
     args = ap.parse_args()
-    if args.simulate_missing and not args.web_gui:
-        ap.error("--simulate-missing requires --web-gui")
-    args.simulate_missing = [canonical_web_gui_name(name, ap) for name in args.simulate_missing]
+    web_missing, farukon_missing = simulated_capabilities(args, ap)
 
     caps = collect_capabilities()
     if args.web_gui:
-        caps[WEB_GUI_KEY] = collect_web_gui_capabilities(args.simulate_missing, repo=args.repo)
+        caps[WEB_GUI_KEY] = collect_web_gui_capabilities(web_missing, repo=args.repo)
+    if args.farukon:
+        caps[FARUKON_KEY] = collect_farukon_capabilities(farukon_missing, repo=args.repo)
     out = anchored(args.out, args.repo)
     write_json(out, caps)
     print(format_summary(caps, out))

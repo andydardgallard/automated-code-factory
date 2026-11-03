@@ -25,12 +25,19 @@ never takes, the provider guide may not send model/format to PLANNER, and the op
 describe the executable HITL gate (the plan file plus `AskUserQuestion`) instead of the abstract
 `presents the plan for approval`.
 
+The conditional Farukon path is pinned the same way: every carrier of its Web GUI twin — the
+reference-file list, the specialist roster, the `--farukon` pre-flight probe, the routing sentence of
+the implement node, `models.farukon_expert` and its `models_used.farukon_expert` logging, the
+tester-owned replay acceptance and the infrastructure rows F1–F2 — must exist where the mechanism
+lives, and the reference file itself must state the safety and degradation defaults.
+
 This test pins those strings — always against the REAL shipped file — and then proves the pins are
 not tautologies: each contract is broken on a throwaway copy in the way a careless future edit
 would break it (delete the command name, restore `open: 0`, drop the `Memory facts` heading, drop
 `repo_path` required, re-add `warning, not a blocker`, re-add `_validate_entry`, rename the
 calibration command, re-branch the Advisor on its recommended role, re-add the dead routing rows,
-drop the question tool from the manual), and the checker must FAIL on that copy.
+drop the question tool from the manual, unwire the Farukon routing), and the checker must FAIL on
+that copy.
 
 Invariant: every command and every constraint pinned below is present in the shipped file, at the
 place where the mechanism lives (a flow node, a named section, a template block) — absence, or a
@@ -64,14 +71,17 @@ MEMORY = ".agents/skills/code-factory/scripts/memory_project.py"
 ENGLISH = ".agents/skills/code-factory/scripts/check_english_only.py"
 RULEBOOK = ".agents/skills/code-factory/references/factory-rules.md"
 CODE_REVIEW = ".agents/skills/code-factory/references/code-review.md"
+FARUKON_REF = ".agents/skills/code-factory/references/farukon-mcp.md"
+TESTER = ".agents/agents/sub-agents/tester.md"
 
 # Every file a contract reads: a probe copies exactly these, then breaks one of them.
 FILES = (SKILL, CODE_FACTORY, AGENTS, README, BRIEFING, PROVIDERS, ERROR_ROUTING, EXAMPLE_TASK,
-         TASK_TEMPLATE, CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK, CODE_REVIEW)
+         TASK_TEMPLATE, CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK, CODE_REVIEW, FARUKON_REF, TESTER)
 
 FINISH_NODE = "Y"      # `Y[Finish: ...]` — the only place compaction/attribution are invoked
 CODER_NODE = "M"       # `M[Implement: ...]` — the coder delegation and its briefing
 PREFLIGHT_NODE = "PF"  # `PF[Pre-flight: ...]` — where the model matrix is resolved
+ACCEPTANCE_NODE = "S"  # `S[Business tests: ...]` — where acceptance is owned by the tester
 
 # The Advisor gate: the agreement decision, and the role decision INSIDE `agree`.
 ADVISOR_NODE = "ADR"
@@ -783,6 +793,107 @@ def check_readme_approval(root: pathlib.Path) -> list[str]:
     return problems
 
 
+# --------------------------------------------------------------------------------------------
+# M. The conditional Farukon path is wired exactly where its Web GUI twin is
+# --------------------------------------------------------------------------------------------
+# (needle, what the carrier must say) of the IMPLEMENT node: the routing decision, the specialist,
+# the task-named model and the model that is logged.
+FARUKON_M_NODE_TOKENS = (
+    ("farukon_mcp.py decide", "route on the deterministic applicability decision"),
+    ("factory-farukon-expert", "name the specialist that does the work"),
+    ("models.farukon_expert", "honor the task-named role model"),
+    ("models_used.farukon_expert", "log the model actually used"),
+)
+# The agent instruction carries the same wiring one phase at a time; each entry is checked against
+# the whole document, because the phases are prose, not flow nodes.
+FARUKON_AGENT_TOKENS = (
+    ("  - factory-farukon-expert", "register the specialist as a subagent"),
+    ("references/farukon-mcp.md", "list the Farukon reference file"),
+    ("farukon_mcp.py decide", "decide applicability with the deterministic script"),
+    ("--farukon", "add the conditional `--farukon` pre-flight probe"),
+    ("models.farukon_expert", "honor the task-named role model"),
+    ("models_used.farukon_expert", "log the model actually used"),
+    ("mcp__farukon__*", "give the platform tools to the specialist and the tester"),
+    ("F1–F2", "route a cargo/MCP failure through the Farukon infrastructure rows"),
+)
+
+
+def check_farukon_wiring(root: pathlib.Path) -> list[str]:
+    """The Farukon twin of every GUI/chrome carrier, checked where the mechanism lives.
+
+    The finding this pins: a conditional specialist is only real when the flow ROUTES to it, the
+    pre-flight PROBES for it, the task key names its model, the model actually used is LOGGED and
+    the tester OWNS the acceptance. A reference file describing all of that while no node, phase or
+    role card mentions the role would be a capability nobody reaches.
+    """
+    problems: list[str] = []
+    skill = Doc.load(root, SKILL, problems)
+    prose = prose_only(skill)
+    for needle, what in (("references/farukon-mcp.md", "the Farukon reference file"),
+                         (".agents/agents/sub-agents/farukon-expert.md", "the specialist role card")):
+        if needle not in prose.text:
+            problems.append(f"{SKILL}:1: the reference-file list must name {what} ({needle!r})")
+    line, body = find_node(skill, PREFLIGHT_NODE)
+    if not body:
+        problems.append(f"{SKILL}:1: no pre-flight node `{PREFLIGHT_NODE}[...]` — the conditional "
+                        "Farukon probe has no phase to run in")
+    elif "--farukon" not in body:
+        problems.append(f"{SKILL}:{line}: an applicable Farukon run must add `--farukon` to the "
+                        "pre-flight probe (a capability nobody probes is a run that guesses)")
+    line, body = find_node(skill, CODER_NODE)
+    if not body:
+        problems.append(f"{SKILL}:1: no implement node `{CODER_NODE}[...]` — the Farukon path cannot "
+                        "be routed")
+    else:
+        for needle, what in FARUKON_M_NODE_TOKENS:
+            if needle not in body:
+                problems.append(f"{SKILL}:{line}: the implement node must {what} ({needle!r})")
+    line, body = find_node(skill, ACCEPTANCE_NODE)
+    if not body:
+        problems.append(f"{SKILL}:1: no business-test node `{ACCEPTANCE_NODE}[...]` — the tester-owned "
+                        "Farukon acceptance cannot be wired")
+    else:
+        for needle, what in (("mcp__farukon__*", "name the platform tools the tester drives"),
+                             ("ACCEPTANCE", "mark the artifacts the tester owns as ACCEPTANCE"),
+                             ("never MET", "leave a missing capability UNVERIFIED, never MET")):
+            if needle not in body:
+                problems.append(f"{SKILL}:{line}: the business-test node must {what} ({needle!r})")
+    line, body = find_node(skill, "MS")
+    if body and "farukon_expert" not in body:
+        problems.append(f"{SKILL}:{line}: the provider-failure node must name `farukon_expert` "
+                        "among the delegated roles — a task-named platform model stops the run too")
+    if not any("models.farukon_expert" in text and "models_used.farukon_expert" in text
+               for _line, text in prose.paragraphs()):
+        problems.append(f"{SKILL}:1: the models paragraph must carry `models.farukon_expert` as the "
+                        "optional task key AND its `models_used.farukon_expert` logging")
+
+    agent = Doc.load(root, CODE_FACTORY, problems)
+    for needle, what in FARUKON_AGENT_TOKENS:
+        if needle not in agent.text:
+            problems.append(f"{CODE_FACTORY}:1: the agent instruction must {what} ({needle!r})")
+
+    tester = Doc.load(root, TESTER, problems)
+    if re.search(r"^[ \t]*-[ \t]+mcp__farukon__\*\s*$", tester.text, re.M) is None:
+        problems.append(f"{TESTER}:1: the tester's tool list must carry `mcp__farukon__*` exactly "
+                        "as it carries `mcp__chrome-devtools__*` — the acceptance run needs the tools")
+    acceptance = [text for _line, text in tester.paragraphs()
+                  if "mcp__farukon__*" in text and "ACCEPTANCE" in text]
+    if not acceptance:
+        problems.append(f"{TESTER}:1: the tester must own the final replay acceptance: the "
+                        "`mcp__farukon__*` paragraph marks its artifacts ACCEPTANCE and keeps them "
+                        "distinct from the specialist's diagnostic set")
+
+    reference = Doc.load(root, FARUKON_REF, problems)
+    for needle, what in (("merge-config", "name the idempotent config merge"),
+                         ("validate-config", "name the config validator"),
+                         ("farukon_build", "name the tools the platform is driven through"),
+                         ("order_capable", "state the read-only safety default (no order path)"),
+                         ("UNVERIFIED", "state the degradation contract (never a fabricated MET)")):
+        if reference.text and needle not in reference.text:
+            problems.append(f"{FARUKON_REF}:1: the reference must {what} ({needle!r})")
+    return problems
+
+
 SECTIONS = (
     ("A", "the Finish node wires the memory mechanisms", check_finish_node),
     ("B", "the precedent index is built by the flow", check_precedent_index),
@@ -796,6 +907,7 @@ SECTIONS = (
     ("J", "the Advisor gate branches on agreement first", check_advisor_agreement),
     ("K", "the routing prose carries no dead route", check_routing_prose),
     ("L", "the operator manual describes the executable HITL gate", check_readme_approval),
+    ("M", "the conditional Farukon path is wired like its Web GUI twin", check_farukon_wiring),
 )
 
 
@@ -940,6 +1052,17 @@ PROBES = (
      ((README, "user explicitly via `AskUserQuestion` whether to approve",
        "user whether to approve"),),
      "AskUserQuestion"),
+    ("M: the Farukon routing sentence is dropped from the implement node", check_farukon_wiring,
+     ((SKILL, "Conditional Farukon routing: when the Phase 1 applicability decision "
+              "(farukon_mcp.py decide) is applicable",
+       "Conditional Farukon routing: when a Farukon task is applicable"),),
+     "farukon_mcp.py decide"),
+    ("M: the conditional `--farukon` pre-flight probe disappears", check_farukon_wiring,
+     ((SKILL, "--farukon, which appends the cargo", "--rust, which appends the cargo"),),
+     "--farukon"),
+    ("M: the tester stops owning the replay acceptance", check_farukon_wiring,
+     ((TESTER, "and marked ACCEPTANCE", "and marked DIAGNOSTIC"),),
+     "must own the final replay acceptance"),
 )
 
 
@@ -981,7 +1104,10 @@ def main() -> int:
           f"contract has one implementation; the reviewer calibration gate runs BEFORE the "
           f"reviewer in the flow, the agent and the reference; the Advisor gate branches on "
           f"agreement before it names a role; the routing prose carries no route the router "
-          f"cannot take; the operator manual describes the executable HITL gate — and all "
+          f"cannot take; the operator manual describes the executable HITL gate; the conditional "
+          f"Farukon path is wired like its Web GUI twin (routing, `--farukon` probe, "
+          f"`models.farukon_expert`, logged `models_used.farukon_expert`, tester-owned acceptance) "
+          f"— and all "
           f"{caught} deliberately broken copies were caught.")
     return 0
 

@@ -76,6 +76,18 @@ probes reuse those modules' own published check functions (`check_advisor_agreem
 `check_routing_prose`, `check_readme_approval`, `check_plan_approval`, `normalize_path_list`), so a
 renamed or removed check becomes a red here instead of a silently narrower proof.
 
+The `FK` group is THIS run's own change set (run 20261103-4489eb00): the conditional Farukon
+platform path — the specialist's carriers in `SKILL.md` and `code-factory.md`, the `--farukon`
+pre-flight probe, `models.farukon_expert` and its `models_used` logging, the tester-owned replay
+acceptance and the new `references/farukon-mcp.md`. Each contract is one focused probe replayed
+against `FARUKON_BASE_SHA` (the HEAD the run started from, where no Farukon carrier exists yet); the
+fifth probe re-executes the `check_farukon_wiring` section of `test_flow_contracts.py` against that
+tree, so the new module check itself is proven red before the feature, and the sixth pins the
+`farukon_expert` GENERATOR side of `model_matrix.py` — a pin that must NOT live in a module another
+group replays against an older base (V-rf-b3 replays `test_model_precedence.py`, where an exact role
+tuple would fail for a reason unrelated to that regression). Its claim lives in
+`FARUKON_FINDINGS` next to the vaccines, exactly as `CLEAN_CODE_FINDINGS` does for the 12.19 release.
+
 `V-review-verdict-distinction` has no test module: its check is the local probe below, which reads
 the canonical `factory-rule` blocks from the root it is pointed at — the same function serves both
 runs, so the block that is absent at the base commit fails there and passes here.
@@ -174,6 +186,10 @@ IV_BASE_SHA = "b72b5e0177690d1c5e5ea0d5f6c9e14311cf3c17"
 # vaccine is replayed against that commit, so the fixes being shipped now are proven against the
 # tree the run started from — never against an older release's base.
 DP_BASE_SHA = "f4b48920705a53e1329addaa7847d0cfc35b8369"
+# The pre-feature HEAD of THIS run's own change set (run 20261103-4489eb00 started from it): every
+# `FK` vaccine is replayed against that commit, so the conditional Farukon path's carriers are
+# proven against the tree that predates them (no specialist, no reference file, no wiring).
+FARUKON_BASE_SHA = "d5e535104a8e2bc697d809fe51c126f10f8bc6ff"
 
 # The four kinds of focused check a vaccine can name (see the module docstring).
 MODULE = "module"
@@ -195,10 +211,11 @@ PROBE_FIXTURES = ("test_chrome_devtools_mcp.py", "test_memory_project.py",
 # whose vaccines were only ever replayed against an older base proves nothing about the change set
 # being shipped now.
 EXPECTED_GROUPS = (("RV", 20), ("BL", 8), ("PR", 18), ("RF", 15), ("NM", 2), ("CC", 6), ("FX", 15),
-                   ("DP", 12))
+                   ("DP", 12), ("FK", 6))
 # The id prefix that tags a registered vaccine with its group. The five historical groups below
 # carry no tag (their vaccines are the release-wide `V-memory-*`, `V-model-*`, ... entries).
-GROUP_TAGS = {"RF": "V-rf-", "NM": "V-nm-", "CC": "V-cc-", "FX": "V-fx-", "DP": "V-dp-"}
+GROUP_TAGS = {"RF": "V-rf-", "NM": "V-nm-", "CC": "V-cc-", "FX": "V-fx-", "DP": "V-dp-",
+              "FK": "V-fk-"}
 # Groups whose per-run disposition artifact is NOT kept anywhere a clone can read: `.code-factory/`
 # is gitignored, so their item texts are gone. Their vaccines are still attributable by tag (RF/NM)
 # or by the shared historical release base (RV/BL/PR), and that attribution is what keeps the
@@ -1139,6 +1156,116 @@ if "--baseline-files" not in help_text:
                          "orchestrator cannot find is one it cannot pass")
 '''
 
+PROBE_FK_SKILL = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+rel = ".agents/skills/code-factory/SKILL.md"
+text = (root / rel).read_text(encoding="utf-8")
+missing = [needle for needle in ("references/farukon-mcp.md",
+                                 ".agents/agents/sub-agents/farukon-expert.md",
+                                 "--farukon", "farukon_mcp.py decide",
+                                 "models.farukon_expert", "models_used.farukon_expert",
+                                 "mcp__farukon__*")
+           if needle not in text]
+if missing:
+    raise AssertionError(f"{rel}: the conditional Farukon path is unwired ({', '.join(missing)} is "
+                         "missing) — the specialist, its probe, its model key and the tester-owned "
+                         "acceptance must be named where the mechanism lives")
+'''
+
+PROBE_FK_AGENT = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+rel = ".agents/agents/code-factory.md"
+text = (root / rel).read_text(encoding="utf-8")
+missing = [needle for needle in ("  - factory-farukon-expert", "references/farukon-mcp.md",
+                                 "farukon_mcp.py decide", "--farukon", "models.farukon_expert",
+                                 "models_used.farukon_expert", "mcp__farukon__*", "F1\\u2013F2")
+           if needle not in text]
+if missing:
+    raise AssertionError(f"{rel}: the Farukon platform path is not orchestrated "
+                         f"({', '.join(missing)} is missing) — a conditional specialist nobody "
+                         "registers, decides, probes for or routes is a capability no run reaches")
+'''
+
+PROBE_FK_TESTER = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+rel = ".agents/agents/sub-agents/tester.md"
+text = (root / rel).read_text(encoding="utf-8")
+owned = [block for block in text.split("\\n\\n")
+         if "mcp__farukon__*" in block and "ACCEPTANCE" in block]
+if "mcp__farukon__*" not in text or not owned:
+    raise AssertionError(f"{rel}: the tester-owned replay acceptance is missing — the "
+                         "`mcp__farukon__*` tools plus an ACCEPTANCE-labelled artifact set are what "
+                         "make the final Farukon scenario independent of the specialist")
+'''
+
+PROBE_FK_REFERENCE = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+rel = ".agents/skills/code-factory/references/farukon-mcp.md"
+path = root / rel
+if not path.is_file():
+    raise AssertionError(f"{rel} must be shipped — the conditional Farukon path carries its own "
+                         "activation, evidence split, safety defaults and degradation contract")
+text = path.read_text(encoding="utf-8")
+missing = [needle for needle in ("farukon_mcp.py decide", "merge-config", "validate-config",
+                                 "farukon_build", "order_capable", "UNVERIFIED", "F1\\u2013F2")
+           if needle not in text]
+if missing:
+    raise AssertionError(f"{rel}: the platform contract is incomplete ({', '.join(missing)} is "
+                         "missing) — a reference that omits the safety default or the degradation "
+                         "rule cannot govern a platform session")
+'''
+
+PROBE_FK_CONTRACTS = '''\
+import sys
+sys.path.insert(0, ".")
+import test_flow_contracts as t
+problems = t.check_farukon_wiring(t.ROOT)
+if problems:
+    raise AssertionError("the Farukon wiring contracts must hold on this tree: " + problems[0])
+'''
+
+# The generator side the Farukon role belongs to. It is pinned HERE and not in
+# `test_model_precedence.py`, because that module is also replayed against older bases (V-rf-b3):
+# an exact role tuple asserted there would fail on a pre-Farukon tree for a reason unrelated to the
+# regression being proven, which is what made that vaccine a false positive.
+PROBE_FK_GENERATOR_SIDE = '''\
+import sys
+sys.path.insert(0, ".")
+import model_matrix as mm
+expected = ("coder", "tester", "gui_expert", "farukon_expert")
+if mm.GENERATOR_SIDE != expected:
+    raise AssertionError("the farukon_expert generator side must be pinned in GENERATOR_SIDE: "
+                         + repr(mm.GENERATOR_SIDE))
+if "farukon_expert" not in mm.ROLES:
+    raise AssertionError("farukon_expert must be a known role of the factory: " + repr(mm.ROLES))
+'''
+
+# THIS run's (FK) finding list: (id, what the run delivered, the vaccine proven on
+# FARUKON_BASE_SHA). The per-run disposition artifact lives under the gitignored `.code-factory/`,
+# so the claim of the conditional-platform change set is shipped here, next to the vaccines it
+# names — cross-checked two-way exactly like the disposition items.
+FARUKON_FINDINGS: tuple[tuple[str, str, str], ...] = (
+    ("FK-1", "the flow wires the conditional Farukon path: applicability routing in the implement "
+             "node, the `--farukon` pre-flight probe, `models.farukon_expert` with its "
+             "`models_used` logging and the tester-owned acceptance", "V-fk-skill"),
+    ("FK-2", "the agent instruction registers the specialist, decides applicability, probes the "
+             "platform, delegates, logs the model and routes a cargo/MCP failure through F1-F2",
+     "V-fk-agent"),
+    ("FK-3", "the tester owns the final replay acceptance through `mcp__farukon__*` with "
+             "ACCEPTANCE artifacts distinct from the specialist's diagnostics", "V-fk-tester"),
+    ("FK-4", "`references/farukon-mcp.md` states activation, managed config, evidence split, "
+             "safety defaults and the degradation contract", "V-fk-reference"),
+    ("FK-5", "the new `check_farukon_wiring` section of `test_flow_contracts.py` is proven on the "
+             "pre-feature tree", "V-fk-contracts"),
+    ("FK-6", "`model_matrix.py` pins `farukon_expert` as a KNOWN role on the generator side, so the "
+             "default matrix separates it from every judge (the pin moved out of the replayed legacy "
+             "module `test_model_precedence.py` into its own focused probe)", "V-fk-generator-side"),
+)
+
 # The 12.19 release's own finding list: (id, what the release delivered, the vaccine that proves it
 # bites on CLEAN_CODE_BASE_SHA). The release left no per-run disposition file that survives in a
 # clone, so the claim lives here and is cross-checked two-way against REGISTRY exactly like the
@@ -1158,6 +1285,13 @@ CLEAN_CODE_FINDINGS: tuple[tuple[str, str, str], ...] = (
              "and reviewer roles referenced nothing", "V-cc-wiring"),
     ("CC-6", "skill_base.py had no pinned revisions and no multi-source registration "
              "(--revision / --extra-source / `-`)", "V-cc-cli"),
+)
+
+# The shipped claim lists, each with the vaccine-id prefix it owns: (source name, prefix, findings).
+# One place, so the two-way cross-check runs over every list instead of growing a branch per release.
+RELEASE_CLAIMS: tuple[tuple[str, str, tuple[tuple[str, str, str], ...]], ...] = (
+    ("CLEAN_CODE_FINDINGS", "V-cc-", CLEAN_CODE_FINDINGS),
+    ("FARUKON_FINDINGS", "V-fk-", FARUKON_FINDINGS),
 )
 
 # id -> the FOCUSED check that proves it, and the pre-fix failure it must produce. `ids come from
@@ -1229,8 +1363,13 @@ REGISTRY: tuple[Vaccine, ...] = (
             r"an unreadable \(missing\) package\.json must trigger a reinstall", RUN_BASE_SHA),
     Vaccine("V-rf-b2", MODULE, "test_model_attribution.py",
             r"an empty models_used set must be DEGRADED", RUN_BASE_SHA),
+    # The original expectation, restored: on the pre-fix tree the model module has no farukon_expert
+    # role, so nothing of the later Farukon wiring may be allowed to answer for this bite — the
+    # legacy regression alone has to be what fails there. The Farukon generator-side pin lives in
+    # its own FK vaccine (V-fk-generator-side), never in this replay.
     Vaccine("V-rf-b3", MODULE, "test_model_precedence.py",
-            r"a task with no matrix on a config with no default_model leaves every role unresolved",
+            r"a task with no matrix on a config with no default_model leaves every role "
+            r"unresolved",
             RUN_BASE_SHA),
     Vaccine("V-rf-b4", MODULE, "test_review_followup_task.py",
             r"expected 5 criteria, got 4", RUN_BASE_SHA),
@@ -1336,6 +1475,21 @@ REGISTRY: tuple[Vaccine, ...] = (
             r"the portable-verify guidance must name", DP_BASE_SHA),
     Vaccine("V-dp-baseline-files", PROBE, PROBE_DP_BASELINE_FILES,
             r"--baseline-files has no content state", DP_BASE_SHA),
+    # ---- FK: THIS run's own change set (run 20261103-4489eb00), replayed against FARUKON_BASE_SHA -
+    # The conditional Farukon platform path: one focused probe per carrier class, plus the new
+    # `check_farukon_wiring` section of test_flow_contracts.py re-executed against the same tree.
+    Vaccine("V-fk-skill", PROBE, PROBE_FK_SKILL,
+            r"the conditional Farukon path is unwired", FARUKON_BASE_SHA),
+    Vaccine("V-fk-agent", PROBE, PROBE_FK_AGENT,
+            r"the Farukon platform path is not orchestrated", FARUKON_BASE_SHA),
+    Vaccine("V-fk-tester", PROBE, PROBE_FK_TESTER,
+            r"the tester-owned replay acceptance is missing", FARUKON_BASE_SHA),
+    Vaccine("V-fk-reference", PROBE, PROBE_FK_REFERENCE,
+            r"farukon-mcp\.md must be shipped", FARUKON_BASE_SHA),
+    Vaccine("V-fk-contracts", PROBE, PROBE_FK_CONTRACTS,
+            r"the Farukon wiring contracts must hold", FARUKON_BASE_SHA),
+    Vaccine("V-fk-generator-side", PROBE, PROBE_FK_GENERATOR_SIDE,
+            r"the farukon_expert generator side must be pinned in GENERATOR_SIDE", FARUKON_BASE_SHA),
 )
 
 # `- RV-12: fixed: ... | vaccine: V-memory-identity` — one item per finding, never wrapped. The id
@@ -1557,7 +1711,9 @@ def check_registry(items: list[Item], disposed: bool = True) -> tuple[list[str],
     # the vaccines (a release whose per-run artifact a clone does not keep). The claim list names a
     # finding id AND the vaccine that answers it, so both are read here.
     claimed_vaccines = {vaccine for _ident, _what, vaccine in CLEAN_CODE_FINDINGS}
+    claimed_vaccines |= {vaccine for _ident, _what, vaccine in FARUKON_FINDINGS}
     declared_ids = {ident for ident, _what, _vaccine in CLEAN_CODE_FINDINGS}
+    declared_ids |= {ident for ident, _what, _vaccine in FARUKON_FINDINGS}
     if disposed and not speaks_claims(items):
         # The escape this used to be is closed: a present disposition that names no vaccine and no
         # group id cannot be cross-checked by anything, so every fix it disposes of would sit
@@ -1616,27 +1772,29 @@ def _by_id(ident: str) -> Vaccine:
 
 
 def check_release_claims() -> list[str]:
-    """The shipped claim list and REGISTRY must name each other, one vaccine per claim.
+    """The shipped claim lists and REGISTRY must name each other, one vaccine per claim.
 
-    A release whose per-run disposition artifact a clone does not keep needs its claim written down
-    somewhere durable; `CLEAN_CODE_FINDINGS` is that place. The check is the same two-way contract
-    the disposition gets: a claim with no registered vaccine is never executed, and a registered
-    `CC` vaccine no claim answers could be removed without anyone noticing.
+    A release or run whose per-run disposition artifact a clone does not keep needs its claim
+    written down somewhere durable; `CLEAN_CODE_FINDINGS` and `FARUKON_FINDINGS` are that place. The
+    check is the same two-way contract the disposition gets: a claim with no registered vaccine is
+    never executed, and a registered vaccine of that claim list's own prefix that no claim answers
+    could be removed without anyone noticing.
     """
     problems: list[str] = []
     registered = {vaccine.ident for vaccine in REGISTRY}
-    claims = [ident for ident, _what, _vaccine in CLEAN_CODE_FINDINGS]
-    for ident in sorted({claim for claim in claims if claims.count(claim) > 1}):
-        problems.append(f"CLEAN_CODE_FINDINGS: `{ident}` is claimed twice — one claim, one vaccine")
-    for ident, _what, vaccine in CLEAN_CODE_FINDINGS:
-        if vaccine not in registered:
-            problems.append(f"CLEAN_CODE_FINDINGS: {ident} names the vaccine `{vaccine}`, which is "
-                            "NOT registered — its check would never be executed")
-    claimed_vaccines = {vaccine for _ident, _what, vaccine in CLEAN_CODE_FINDINGS}
-    for vaccine in sorted(registered - claimed_vaccines):
-        if vaccine.startswith("V-cc-"):
-            problems.append(f"REGISTRY: `{vaccine}` is a release vaccine no CLEAN_CODE_FINDINGS item "
-                            "claims — an orphaned vaccine proves nothing")
+    for source, prefix, findings in RELEASE_CLAIMS:
+        claims = [ident for ident, _what, _vaccine in findings]
+        for ident in sorted({claim for claim in claims if claims.count(claim) > 1}):
+            problems.append(f"{source}: `{ident}` is claimed twice — one claim, one vaccine")
+        for ident, _what, vaccine in findings:
+            if vaccine not in registered:
+                problems.append(f"{source}: {ident} names the vaccine `{vaccine}`, which is "
+                                "NOT registered — its check would never be executed")
+        claimed_vaccines = {vaccine for _ident, _what, vaccine in findings}
+        for vaccine in sorted(registered - claimed_vaccines):
+            if vaccine.startswith(prefix):
+                problems.append(f"REGISTRY: `{vaccine}` is a release vaccine no {source} item "
+                                "claims — an orphaned vaccine proves nothing")
     return problems
 
 
@@ -2232,7 +2390,9 @@ def main(argv: list[str]) -> int:
             print(f"  - {problem}")
         return 1
     vaccines = len(REGISTRY)
-    verified, attested = inventory_state(items, {i for i, _w, _v in CLEAN_CODE_FINDINGS})
+    verified, attested = inventory_state(
+        items, {ident for _source, _prefix, findings in RELEASE_CLAIMS
+                for ident, _what, _vaccine in findings})
     groups = ", ".join(verified)
     gone = (f"; {', '.join(attested)} are claimed by attribution (their own run kept no artifact)"
             if attested else "")

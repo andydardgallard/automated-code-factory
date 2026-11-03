@@ -61,11 +61,11 @@ EDGE_RE = re.compile(r"^\s*([A-Za-z0-9_]+)\s*-->\s*(?:\|([^|\n]*)\|)?\s*([A-Za-z
 
 FAILURE_NODE = "MS"
 # EVERY task-named role delegation must be able to reach the stop branch, not only the coder and
-# the reviewer: analyzer (E, SC), planner (F, PC), coder/gui_expert (M), tester (N, Q, S),
+# the reviewer: analyzer (E, SC), planner (F, PC), coder/gui_expert/farukon_expert (M), tester (N, Q, S),
 # reviewer (CR, CR0), diagnostician (DG), advisor (ADV), documenter (DOC2), security auditor (SA).
 FAILURE_FROM = ("M", "E", "SC", "F", "PC", "N", "Q", "S", "CR", "CR0", "DG", "ADV", "DOC2", "SA")
-ROLE_FRAGMENTS = ("analyzer", "planner", "coder", "gui_expert", "tester", "reviewer",
-                  "diagnostician", "advisor", "documenter", "security auditor")
+ROLE_FRAGMENTS = ("analyzer", "planner", "coder", "gui_expert", "farukon_expert", "tester",
+                  "reviewer", "diagnostician", "advisor", "documenter", "security auditor")
 # The mechanism the node must name (it is the whole point of the branch).
 NODE_FRAGMENTS = (
     ("error_router.py classify", "the deterministic classification command"),

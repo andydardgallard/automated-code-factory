@@ -134,8 +134,10 @@ business_tests:
 #   gui_expert: deepseek-v4-flash   # Web GUI specialist (generator-side, secondary-class model)
 #   farukon_expert: deepseek-v4-flash  # Farukon platform specialist (generator-side, secondary-class model)
 #   tester: qwen-max
+#   business_tester: qwen-max        # adversarial business tester (generator-side; never judges code)
 #   diagnostician: deepseek-v4-pro
 #   reviewer: deepseek-v4-pro
+#   supervisor: deepseek-v4-pro      # permit supervisor (judge-side: allow|deny with evidence)
 #   advisor: kimi-k3                # judge-side pin: a family contrasting the generator side
 
 # Optional: files that must NOT be committed to git (e.g. personal strategy code).

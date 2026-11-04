@@ -172,6 +172,24 @@ def pipeline(*claims: tuple[str, str], run_id: str = "20261025-4e17a349") -> str
     return "\n".join(lines) + "\n"
 
 
+def contract_pipeline(claims: tuple[tuple[str, str], ...], task_type: str | None = None,
+                      required_roles: tuple[str, ...] = (),
+                      run_id: str = "20261025-4e17a349") -> str:
+    """A pipeline.yaml carrying the strict-attribution contract: task_type + required_roles."""
+    lines: list[str] = []
+    if task_type is not None:
+        lines.append(f"task_type: {task_type}")
+    if required_roles:
+        lines.append("required_roles:")
+        lines.extend(f"  - {role}" for role in required_roles)
+    lines.extend([f"run_id: {run_id}", 'phase: "implement"', "status: in_progress",
+                  'updated_at: "2026-10-25T21:05:00+03:00"', "models_used:"])
+    for role, claim in claims:
+        value = claim if re.fullmatch(r"[A-Za-z0-9_.\-/]+", claim) else f'"{claim}"'
+        lines.append(f"  {role}: {value}")
+    return "\n".join(lines) + "\n"
+
+
 def standard_session(root: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
     """The case-1 fixture: a home dir, and the repo whose session it holds."""
     home = root / "home"
@@ -829,6 +847,159 @@ def case_13_mixed_model_service_is_a_mismatch(root: pathlib.Path) -> None:
            f"the final line must not read PASS: {text!r}")
 
 
+def case_14_strict_attribution(root: pathlib.Path) -> None:
+    """Strict attribution (violation N-3, proposals P-1+P-3): a REQUIRED role's claim must be wired.
+
+    The defect this pins: a role could be listed in `required_roles`, claimed in `models_used`, and
+    leave NO session-wire trace — and the run still exited 3 (DEGRADED), i.e. "no wire for this
+    role" was accepted as a technical detail for a role the run itself declared mandatory. Under
+    strict attribution that is a run FAILURE (exit 1) naming the role.
+    """
+    home, repo = standard_session(root / "strict")
+    # The wire has analyzer + coder. `reviewer` is required and claimed but never spawned.
+    unbacked = contract_pipeline((("analyzer", "deepseek-flash"), ("reviewer", "kimi-k3")),
+                                 task_type="implement", required_roles=("analyzer", "reviewer"))
+    spec = write(root, "pipeline-strict.yaml", unbacked)
+
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(spec), name="strict.json")
+    expect(res.returncode == 1,
+           f"a required role with no wire trace must FAIL (exit 1), not degrade: "
+           f"{res.returncode} {text!r} {err(res)!r}")
+    expect(artifact["strict"] is True, f"strict must be ON for implement: {artifact['strict']!r}")
+    expect("implement" in (artifact["strict_reason"] or ""),
+           f"the artifact must say why: {artifact.get('strict_reason')!r}")
+    expect(artifact["task_type"] == "implement" and artifact["required_roles"] == ["analyzer",
+                                                                                  "reviewer"],
+           f"the contract must be recorded: {artifact.get('task_type')!r} "
+           f"{artifact.get('required_roles')!r}")
+    expect(artifact["comparison"] == {"analyzer": "match", "reviewer": "unbacked"},
+           f"the required unbacked role must be `unbacked`: {artifact['comparison']!r}")
+    expect(artifact["verdict"] == "FAIL" and artifact["attribution_degraded"] is False,
+           f"a strict failure is a FAIL, not a degradation: {artifact['verdict']!r} "
+           f"{artifact['attribution_degraded']!r}")
+    expect(artifact["flags"]["required_unbacked"] == ["reviewer"],
+           f"the flag must name the role: {artifact['flags']!r}")
+    expect("reviewer: unbacked (claimed=kimi-k3, no subagent.spawned trace)" in text,
+           f"the per-role line must name the role and the missing trace: {text!r}")
+    expect(text.strip().splitlines()[-1].startswith("FAIL - ")
+           and "REQUIRED role" in text.strip().splitlines()[-1]
+           and "reviewer" in text.strip().splitlines()[-1],
+           f"the summary must name the required role: {text!r}")
+
+    # refactor is strict by default too.
+    refactor = write(root, "pipeline-refactor.yaml",
+                     unbacked.replace("task_type: implement", "task_type: refactor"))
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(refactor), name="refactor.json")
+    expect(res.returncode == 1 and artifact["comparison"]["reviewer"] == "unbacked",
+           f"refactor must be strict by default: {res.returncode} {artifact['comparison']!r}")
+
+    # review / security_audit are NOT strict by default: the same fixture stays DEGRADED (exit 3).
+    for kind in ("review", "security_audit"):
+        relaxed = write(root, f"pipeline-{kind}.yaml",
+                        unbacked.replace("task_type: implement", f"task_type: {kind}"))
+        res, artifact, text = attr(root, home, repo, "--pipeline", str(relaxed),
+                                   name=f"{kind}.json")
+        expect(res.returncode == 3,
+               f"task_type {kind} is not strict by default (DEGRADED, exit 3): {res.returncode} "
+               f"{text!r}")
+        expect(artifact["strict"] is False and artifact["verdict"] == "DEGRADED",
+               f"the artifact must record the non-strict decision: {artifact['strict']!r} "
+               f"{artifact['verdict']!r}")
+        expect(artifact["comparison"]["reviewer"] == "degraded",
+               f"without strict the status stays `degraded`: {artifact['comparison']!r}")
+
+        # …and `--strict` FORCES it: the same run is a FAIL.
+        res, artifact, text = attr(root, home, repo, "--pipeline", str(relaxed), "--strict",
+                                   name=f"{kind}-strict.json")
+        expect(res.returncode == 1,
+               f"--strict must force strict attribution for {kind}: {res.returncode} {text!r}")
+        expect(artifact["strict"] is True and "--strict" in (artifact["strict_reason"] or ""),
+               f"the artifact must record the forced decision: {artifact.get('strict_reason')!r}")
+        expect(artifact["comparison"]["reviewer"] == "unbacked",
+               f"a forced strict run fails the required role: {artifact['comparison']!r}")
+
+    # A required role WITH a wire trace passes, and an unused/conditional role never causes a
+    # false failure: only a CLAIMED required role is checked.
+    good = contract_pipeline((("analyzer", "deepseek-flash"), ("gui_expert", "unused")),
+                             task_type="implement",
+                             required_roles=("analyzer", "gui_expert", "security_auditor"))
+    spec = write(root, "pipeline-strict-good.yaml", good)
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(spec), name="strict-good.json")
+    expect(res.returncode == 0,
+           f"a wired required role + an unused conditional role must PASS: {res.returncode} "
+           f"{text!r} {err(res)!r}")
+    expect(artifact["comparison"] == {"analyzer": "match", "gui_expert": "match"},
+           f"no false failure for a conditional role: {artifact['comparison']!r}")
+    expect(artifact["flags"]["required_unbacked"] == [],
+           f"nothing is unbacked here: {artifact['flags']!r}")
+
+    # An unknown or empty task_type is an INPUT error naming the four types (never a silent
+    # switch that disables the gate).
+    for label, value in (("unknown", "task_type: deploy"), ("empty", "task_type:")):
+        broken = write(root, f"pipeline-{label}-task-type.yaml",
+                       unbacked.replace("task_type: implement", value))
+        res, _artifact, _text = attr(root, home, repo, "--pipeline", str(broken),
+                                     name=f"{label}-task-type.json")
+        expect(res.returncode == 2,
+               f"a {label} task_type must be an input error (exit 2): {res.returncode}")
+        expect(b"Traceback" not in res.stderr, f"no traceback: {err(res)!r}")
+        expect("task_type" in err(res) and "implement" in err(res),
+               f"the error must name the key and the allowed values: {err(res)!r}")
+
+    # A checkpoint without `task_type` keeps the historical behaviour (documented, not silent).
+    legacy = write(root, "pipeline-legacy.yaml",
+                   contract_pipeline((("reviewer", "kimi-k3"),), required_roles=("reviewer",)))
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(legacy), name="legacy.json")
+    expect(res.returncode == 3,
+           f"a checkpoint without task_type stays non-strict (DEGRADED): {res.returncode} {text!r}")
+    expect(artifact["strict"] is False and "no task_type" in (artifact["strict_reason"] or ""),
+           f"the artifact must say why strict is off: {artifact.get('strict_reason')!r}")
+
+
+def case_15_contract_reader(root: pathlib.Path) -> None:
+    """The checkpoint reader behind strict attribution: task_type, required_roles, one source."""
+    plain = write(root, "contract-plain.yaml", pipeline(("reviewer", "kimi-k3")))
+    contract = ma.read_pipeline_contract(plain)
+    expect(contract["task_type"] == "" and contract["task_type_declared"] is False,
+           f"an absent task_type is not declared: {contract!r}")
+    expect(contract["required_roles"] == [], f"absent required_roles is an empty list: {contract!r}")
+    expect(contract["claims"] == {"reviewer": "kimi-k3"},
+           f"the claims still come from the same reader: {contract['claims']!r}")
+
+    block = write(root, "contract-block.yaml", contract_pipeline(
+        (("analyzer", "deepseek-flash"),), task_type="refactor",
+        required_roles=("analyzer", "gui_expert")))
+    contract = ma.read_pipeline_contract(block)
+    expect(contract["task_type"] == "refactor" and contract["task_type_declared"] is True,
+           f"the task_type must be read: {contract!r}")
+    expect(contract["required_roles"] == ["analyzer", "gui_expert"],
+           f"the block list must be read: {contract['required_roles']!r}")
+
+    flow = write(root, "contract-flow.yaml",
+                 "task_type: implement\nrequired_roles: [analyzer, gui_expert]\n"
+                 "run_id: 20261025-4e17a349\nmodels_used:\n  analyzer: deepseek-flash\n")
+    contract = ma.read_pipeline_contract(flow)
+    expect(contract["required_roles"] == ["analyzer", "gui_expert"],
+           f"a bracketed flow list must be read too: {contract['required_roles']!r}")
+
+    # strict_decision: default ON for implement/refactor, OFF for the other two, forced by --strict.
+    for kind, expected in (("implement", True), ("refactor", True), ("review", False),
+                          ("security_audit", False)):
+        strict, reason = ma.strict_decision(kind, True)
+        expect(strict is expected and reason,
+               f"task_type {kind} strict={expected}, got {strict} ({reason!r})")
+    expect(ma.strict_decision("review", True, forced=True)[0] is True,
+           "--strict forces strict attribution")
+    expect(ma.strict_decision("", False)[0] is False,
+           "an undeclared task_type stays non-strict")
+    try:
+        ma.strict_decision("deploy", True)
+    except ma.AttributionError as exc:
+        expect("implement" in str(exc), f"the error must list the task types: {exc}")
+    else:
+        raise AssertionError("an unknown task_type must raise AttributionError (exit 2)")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -845,6 +1016,8 @@ def main() -> int:
         case_11_no_claims_is_degraded(root)
         case_12_unknown_role_is_a_run_error(root)
         case_13_mixed_model_service_is_a_mismatch(root)
+        case_14_strict_attribution(root)
+        case_15_contract_reader(root)
 
     print("PASS - model_attribution.py confirms every models_used claim against the CLI's own "
           "session wire: roles come from state.json (or subagent.spawned), the wire name is "

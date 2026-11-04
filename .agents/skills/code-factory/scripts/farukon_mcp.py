@@ -11,18 +11,21 @@ the role OFF:
       disk (`farukon_mcp/Cargo.toml` or the declared member's own `Cargo.toml`) — a `members = [...]`
       declaration whose directory is missing builds nothing;
   (b) the TASK SCOPE names a platform OPERATION (build/run/test/start/stop/debug, connectors,
-      portfolio snapshots, message log, web health) bound to the platform itself — weighted keyword
-      scoring that requires BOTH an IDENTITY term (`farukon`, `platform`, `mcp`, …) and an
-      OPERATION term whose object is the platform, with at least ONE occurrence of that operation
-      term unbound to a documentation/media object (`NON_PLATFORM_OBJECTS`, three words either
-      side) AND a weighted score of at least `SCOPE_APPLICABLE_SCORE`: the project name alone, a
-      task that only pins a model, an operation on some other subject ("run the parser test suite")
-      and an operation on DOCUMENTATION ("run the documentation build", even next to a Farukon
-      README edit) all stay `not_applicable`; task-file METADATA (`models:`, `repo_path:`,
-      `commit_exclude:`) is not scope and is stripped before classification. Every decision carries
-      a REASON that names the identity terms matched, the operation terms bound to the platform, the
-      operation terms DISCARDED as bound elsewhere, the score and the host signals. Never a model
-      call.
+      portfolio snapshots, message log, web health) bound to an explicit platform OBJECT — weighted
+      keyword scoring that requires an explicit platform SUBJECT (`farukon`, the `farukon_mcp`
+      crate, `platform`, the MCP server and its eight tools, connectors, portfolio/replay/web
+      instances, cargo) AND an OPERATION term whose object is that subject, with at least ONE
+      occurrence of that operation term unbound to a documentation/media object
+      (`NON_PLATFORM_OBJECTS`, three words either side) AND a weighted score of at least
+      `SCOPE_APPLICABLE_SCORE`: the project name alone, a task that only pins a model, an operation
+      on some other subject ("run the parser test suite"), an operation whose only platform-ish word
+      is a generic identity word ("run the integration tests for the parser", "update the runtime
+      config of the logger") and an operation on DOCUMENTATION ("run the documentation build", even
+      next to a Farukon README edit) all stay `not_applicable`; task-file METADATA (`models:`,
+      `repo_path:`, `commit_exclude:`) is not scope and is stripped before classification. Every
+      decision carries a REASON that names the platform subjects matched, the operation terms bound
+      to the platform, the operation terms DISCARDED as bound elsewhere, the score and the host
+      signals. Never a model call.
 
 Subcommands (all deterministic, stdlib only):
   decide           applicability of the farukon-expert role for a task (--repo, --text/--task-file)
@@ -73,6 +76,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import math
 import os
 import pathlib
 import queue
@@ -84,6 +88,13 @@ import sys
 import tempfile
 import threading
 import time
+
+_SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    # `factory_preflight.py` loads this helper BY PATH (deliberately independent of `sys.path`), so the
+    # shared sibling merge module has to be made importable here instead of being assumed.
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+import mcp_json_merge  # noqa: E402  (the sibling path fix above must run first)
 
 SERVER_NAME = "farukon"
 CRATE = "farukon_mcp"
@@ -110,6 +121,9 @@ FARUKON_TOOLS: tuple[str, ...] = (
 
 CAPABILITY_NAMES: tuple[str, ...] = ("cargo", "farukon_mcp_buildable", "mcp_config")
 HANDSHAKE_CAPABILITY = "mcp_start"
+# The public refusal of an unusable handshake timeout: it must be greppable, and it states that
+# nothing was launched (an unusable budget is refused BEFORE any Popen).
+TIMEOUT_REFUSAL = "refused before starting"
 
 APPLICABLE = "applicable"
 NOT_APPLICABLE = "not_applicable"
@@ -144,6 +158,19 @@ FARUKON_TERMS: tuple[tuple[str, int], ...] = FARUKON_IDENTITY_TERMS + FARUKON_OP
 FARUKON_OPERATION_NAMES: frozenset[str] = frozenset(term for term, _ in FARUKON_OPERATION_TERMS)
 # The identity words alone: an operation word with no identity term is somebody else's task.
 FARUKON_IDENTITY_NAMES: frozenset[str] = frozenset(term for term, _ in FARUKON_IDENTITY_TERMS)
+
+# PLATFORM SUBJECTS. An operation is the platform's only when it is bound to an OBJECT the platform
+# owns: the platform itself, the `farukon_mcp` crate, the MCP server and its eight tools, or a
+# platform object (connectors, portfolio snapshot, message log, web health, replay, live session, a
+# web instance, the crate's cargo). `integration` and `runtime` are NOT subjects — they name a topic,
+# so "run the integration tests for the parser" or "update the runtime config of the logger" stays
+# out of scope however many operation words it carries. `stdio` and a bare `tool` are transports and
+# generic nouns, never the platform object itself.
+FARUKON_PLATFORM_OBJECTS: tuple[str, ...] = (
+    "farukon", "farukon_mcp", "platform", "mcp server", "mcp tool", "mcp",
+    "connector", "portfolio", "message log", "web health", "replay", "quik",
+    "live session", "snapshot", "instance", "cargo", *FARUKON_TOOLS,
+)
 
 # SUBJECT BINDING. An operation is about the object it operates. These words name documentation/media
 # subjects, and a plural/`-ing` form folds onto them. When one of them sits within
@@ -180,7 +207,6 @@ _METADATA_BLOCK = re.compile(
     r"^(?:" + "|".join(METADATA_KEYS) + r")\s*:[^\n]*(?:\n[ \t]+[^\n]*)*", re.MULTILINE)
 _MODELS_TOKEN = re.compile(r"\bmodels(?:_used)?\.[a-z_]+\b", re.IGNORECASE)
 _MEMBER_ARRAY = re.compile(r"members\s*=\s*\[(.*?)\]", re.DOTALL)
-_DECODER = json.JSONDecoder()
 
 
 class InputError(Exception):
@@ -324,10 +350,20 @@ def _within(child: str | pathlib.Path, parent: str | pathlib.Path) -> bool:
 
 # --------------------------------------------------------------------------- applicability
 
+def _present(low: str, name: str) -> bool:
+    """`True` when `name` occurs in the already-lowercased `low` as a whole word (plural allowed)."""
+    return bool(re.search(r"\b" + re.escape(name) + r"s?\b", low))
+
+
 def _find_terms(text: str, terms: tuple[tuple[str, int], ...]) -> list[tuple[str, int]]:
     low = (text or "").lower()
-    return [(term, weight) for term, weight in terms
-            if re.search(r"\b" + re.escape(term) + r"s?\b", low)]
+    return [(term, weight) for term, weight in terms if _present(low, term)]
+
+
+def _find_names(text: str, names: tuple[str, ...]) -> list[str]:
+    """The `names` present in `text` as whole words (optional plural), in vocabulary order."""
+    low = (text or "").lower()
+    return [name for name in names if _present(low, name)]
 
 
 def _object_key(word: str) -> str:
@@ -376,56 +412,107 @@ def scope_text(text: str) -> str:
 
 
 def decide_applicability(text: str, repo: str | pathlib.Path) -> dict:
-    """Classify the farukon-expert role as `applicable`/`not_applicable` WITH a reason."""
+    """Classify the farukon-expert role as `applicable`/`not_applicable` WITH a reason.
+
+    The decision is one chain of focused steps so each stays readable on its own: the host signature
+    (`farukon_platform_signals`), the METADATA-stripped scope (`scope_text`), the matched vocabulary
+    and its subject binding (`_scope_facts`), then the three refusal messages in their fixed order —
+    an explicit exclusion, a repository that does not host the platform, a scope that names no
+    platform operation — and finally the applicable reason.
+    """
     signals = farukon_platform_signals(_checked_repo(repo))
     scope = scope_text(text)
-    low = scope.lower()
-    exclusions = [pattern for pattern in FARUKON_EXCLUSIONS if re.search(pattern, low)]
-    matched = _find_terms(scope, FARUKON_TERMS)
-    scope_terms = [term for term, _ in matched]
-    operations = [term for term in bound_operations(scope) if term in scope_terms]
-    unbound = [term for term in scope_terms
-               if term in FARUKON_OPERATION_NAMES and term not in operations]
-    identity = [term for term in scope_terms if term in FARUKON_IDENTITY_NAMES]
-    score = sum(weight for _, weight in matched)
-    evidence = {
-        "host_signals": signals,
-        "scope_terms": scope_terms,
-        "exclusions": exclusions,
-        "scope_score": score,
-    }
-    if exclusions:
-        return {"decision": NOT_APPLICABLE, "evidence": evidence,
-                "reason": ("the task text explicitly excludes Farukon/MCP scope ("
-                           + ", ".join(exclusions) + "); the farukon-expert role and the eight Farukon "
-                           "MCP tools stay off")}
-    if not signals["platform"]:
-        return {"decision": NOT_APPLICABLE, "evidence": evidence,
-                "reason": (f"the repository {signals['root']} does not host the Farukon platform (no "
-                           f"{CRATE_MANIFEST.as_posix()}, no {CRATE} workspace member in the root "
-                           f"Cargo.toml and no {SERVER_NAME!r} server entry in "
-                           f"{CONFIG_RELPATH.as_posix()}): a configured MCP server alone never "
-                           "activates the role")}
-    if score < SCOPE_APPLICABLE_SCORE or not operations or not identity:
-        listed = ", ".join(scope_terms[:6]) or "none"
-        elsewhere = (f"; operation terms bound to another subject ({', '.join(unbound[:6])}) do not "
-                     "count" if unbound else "")
-        return {"decision": NOT_APPLICABLE, "evidence": evidence,
-                "reason": (f"the repository hosts the Farukon platform ({'; '.join(signals['details'])}), "
-                           f"but the task text carries no platform-operation scope (scope_score={score}; "
-                           f"matched terms: {listed}; operation terms: "
-                           f"{', '.join(operations[:6]) or 'none'}; identity terms: "
-                           f"{', '.join(identity[:6]) or 'none'}{elsewhere}); the scope needs BOTH a "
-                           "platform identity and an operation bound to it — naming the project, "
-                           "hosting the platform or pinning `models.farukon_expert` alone never "
-                           "activates the role, and an operation on some other subject (a "
-                           "documentation build, a parser test suite) stays out of scope")}
+    exclusions = _exclusions(scope)
+    facts = _scope_facts(scope)
+    evidence = {"host_signals": signals, "scope_terms": facts.terms, "exclusions": exclusions,
+                "scope_score": facts.score}
+    refusal = (_exclusion_refusal(exclusions) or _host_refusal(signals)
+               or _scope_refusal(signals, facts))
+    if refusal is not None:
+        return {"decision": NOT_APPLICABLE, "evidence": evidence, "reason": refusal}
     return {"decision": APPLICABLE, "evidence": evidence,
-            "reason": (f"the repository hosts the Farukon platform ({'; '.join(signals['details'])}) and "
-                       f"the task text names a platform operation bound to the platform "
-                       f"({', '.join(operations[:6])}; identity: {', '.join(identity[:6])}; "
-                       f"scope_score={score}): the farukon-expert role and the eight Farukon MCP tools "
-                       "apply")}
+            "reason": _applicable_reason(signals, facts)}
+
+
+# The matched scope vocabulary of ONE task text: the weighted terms it names (`terms`), the bound
+# platform `operations`, the operation terms `unbound` to the platform (bound elsewhere), the
+# identity words, the explicit platform `subjects` and the weighted `score` of every term together.
+ScopeFacts = collections.namedtuple(
+    "ScopeFacts", "terms score operations unbound identity subjects")
+
+
+def _exclusions(scope: str) -> list[str]:
+    """Every explicit exclusion phrase the scope carries (they win over all platform keywords)."""
+    low = (scope or "").lower()
+    return [pattern for pattern in FARUKON_EXCLUSIONS if re.search(pattern, low)]
+
+
+def _scope_facts(scope: str) -> ScopeFacts:
+    """The matched vocabulary of a METADATA-stripped scope, with its subject binding resolved."""
+    matched = _find_terms(scope, FARUKON_TERMS)
+    terms = [term for term, _ in matched]
+    operations = [term for term in bound_operations(scope) if term in terms]
+    return ScopeFacts(
+        terms=terms,
+        score=sum(weight for _, weight in matched),
+        operations=operations,
+        unbound=[term for term in terms
+                 if term in FARUKON_OPERATION_NAMES and term not in operations],
+        identity=[term for term in terms if term in FARUKON_IDENTITY_NAMES],
+        subjects=_find_names(scope, FARUKON_PLATFORM_OBJECTS),
+    )
+
+
+def _exclusion_refusal(exclusions: list[str]) -> str | None:
+    """The refusal of an explicitly deactivated task, or `None` when no exclusion was named."""
+    if not exclusions:
+        return None
+    return ("the task text explicitly excludes Farukon/MCP scope ("
+            + ", ".join(exclusions) + "); the farukon-expert role and the eight Farukon "
+            "MCP tools stay off")
+
+
+def _host_refusal(signals: dict) -> str | None:
+    """The refusal of a repository that does not host the platform, or `None` when it does."""
+    if signals["platform"]:
+        return None
+    return (f"the repository {signals['root']} does not host the Farukon platform (no "
+            f"{CRATE_MANIFEST.as_posix()}, no {CRATE} workspace member in the root "
+            f"Cargo.toml and no {SERVER_NAME!r} server entry in "
+            f"{CONFIG_RELPATH.as_posix()}): a configured MCP server alone never "
+            "activates the role")
+
+
+def _scope_refusal(signals: dict, facts: ScopeFacts) -> str | None:
+    """The refusal of a scope without a bound platform operation, or `None` when it has one."""
+    if (facts.score >= SCOPE_APPLICABLE_SCORE and facts.operations and facts.subjects):
+        return None
+    listed = ", ".join(facts.terms[:6]) or "none"
+    elsewhere = (f"; operation terms bound to another subject ({', '.join(facts.unbound[:6])}) do "
+                 "not count" if facts.unbound else "")
+    return (f"the repository hosts the Farukon platform ({'; '.join(signals['details'])}), "
+            f"but the task text carries no platform-operation scope (scope_score={facts.score}; "
+            f"matched terms: {listed}; platform subjects: "
+            f"{', '.join(facts.subjects[:6]) or 'none'}; operation terms: "
+            f"{', '.join(facts.operations[:6]) or 'none'}; identity terms: "
+            f"{', '.join(facts.identity[:6]) or 'none'}{elsewhere}); the scope needs BOTH an "
+            "explicit platform subject (the platform, the crate, the MCP server, a "
+            "connector, a portfolio snapshot, a replay, a web instance or one of the "
+            "Farukon MCP tools) and an operation bound to it — naming the project, "
+            "hosting the platform or pinning `models.farukon_expert` alone never "
+            "activates the role, a generic identity word (`integration`, `runtime`) is "
+            "no platform subject, and an operation on some other subject (a "
+            "documentation build, a parser test suite) stays out of scope")
+
+
+def _applicable_reason(signals: dict, facts: ScopeFacts) -> str:
+    """The reason of an applicable decision: the host signature and the bound platform operation."""
+    return (f"the repository hosts the Farukon platform ({'; '.join(signals['details'])}) and "
+            f"the task text names a platform operation bound to the platform "
+            f"({', '.join(facts.operations[:6])}; platform subjects: "
+            f"{', '.join(facts.subjects[:6])}; identity: {', '.join(facts.identity[:6])}; "
+            f"scope_score={facts.score}): the farukon-expert role and the eight Farukon MCP tools "
+            "apply")
 
 
 def format_decision(result: dict) -> str:
@@ -483,54 +570,92 @@ def validate_config(path: str | pathlib.Path | None = None, data: object = None
     NO diagnostic echoes a value the entry supplies: an MCP entry may carry credentials in `command`,
     `args`, `cwd` or another key, and this output goes to stdout, logs and evidence. The messages
     name the offending KEY and the managed shape, never the stored value.
+
+    The work is split into focused steps so each one stays readable on its own: reading the file
+    (`_config_object`), locating the managed entry (`_managed_entry_of`) and the invariants of a
+    PRESENT entry (`_entry_problems`, one helper per key).
     """
     if data is None:
-        if path is None:
-            return False, ["a config path is required"]
-        config = pathlib.Path(path)
-        if not config.is_file():
-            return False, [f"config not found: {config}"]
-        try:
-            data = json.loads(config.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            return False, [f"config is not valid JSON: {exc}"]
-    if not isinstance(data, dict):
-        return False, ["config must be a JSON object"]
-    servers = data.get("mcpServers")
-    if servers is None:
-        return True, []
-    if not isinstance(servers, dict):
-        return False, ["mcpServers must be a JSON object"]
-    entry = servers.get(SERVER_NAME)
+        data, problem = _config_object(path)
+        if problem is not None:
+            return False, [problem]
+    problem, entry = _managed_entry_of(data)
+    if problem is not None:
+        return False, [problem]
     if entry is None:
         return True, []
+    problems = _entry_problems(entry)
+    return (not problems), problems
+
+
+def _config_object(path: str | pathlib.Path | None) -> tuple[object | None, str | None]:
+    """`(parsed config, None)`, or `(None, message)` when no config can be read at all."""
+    if path is None:
+        return None, "a config path is required"
+    config = pathlib.Path(path)
+    if not config.is_file():
+        return None, f"config not found: {config}"
+    try:
+        return json.loads(config.read_text(encoding="utf-8")), None
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, f"config is not valid JSON: {exc}"
+
+
+def _managed_entry_of(data: object) -> tuple[str | None, dict | None]:
+    """`(problem, farukon entry)` — `(None, None)` when the config legitimately carries no entry."""
+    if not isinstance(data, dict):
+        return "config must be a JSON object", None
+    servers = data.get("mcpServers")
+    if servers is None:
+        return None, None
+    if not isinstance(servers, dict):
+        return "mcpServers must be a JSON object", None
+    entry = servers.get(SERVER_NAME)
+    if entry is None:
+        return None, None
     if not isinstance(entry, dict):
-        return False, [f"mcpServers.{SERVER_NAME} must be a JSON object"]
-    problems: list[str] = []
-    if entry.get("command") != COMMAND:
-        problems.append(f"mcpServers.{SERVER_NAME}.command must be {COMMAND!r} (the platform crate is "
-                        "run through cargo): found a different command (value omitted: an entry may "
-                        "carry credentials)")
+        return f"mcpServers.{SERVER_NAME} must be a JSON object", None
+    return None, entry
+
+
+def _entry_problems(entry: dict) -> list[str]:
+    """Every invariant a PRESENT managed entry violates (it never echoes a stored value)."""
+    return (_command_problems(entry) + _args_problems(entry) + _cwd_problems(entry))
+
+
+def _command_problems(entry: dict) -> list[str]:
+    """The entry must launch the reviewed command (the platform crate runs through cargo)."""
+    if entry.get("command") == COMMAND:
+        return []
+    return [f"mcpServers.{SERVER_NAME}.command must be {COMMAND!r} (the platform crate is run through "
+            "cargo): found a different command (value omitted: an entry may carry credentials)"]
+
+
+def _args_problems(entry: dict) -> list[str]:
+    """The argument list must be exactly the managed one, in order and with no extra entry."""
     args = entry.get("args")
-    if not isinstance(args, list) or [a for a in args if isinstance(a, str)] != MANAGED_ARGS \
-            or len(args) != len(MANAGED_ARGS):
-        problems.append(f"mcpServers.{SERVER_NAME}.args must be exactly "
-                        f"{json.dumps(MANAGED_ARGS)}: found a different argument list (values omitted: "
-                        "an entry may carry credentials)")
+    if isinstance(args, list) and len(args) == len(MANAGED_ARGS) \
+            and [a for a in args if isinstance(a, str)] == MANAGED_ARGS:
+        return []
+    return [f"mcpServers.{SERVER_NAME}.args must be exactly {json.dumps(MANAGED_ARGS)}: found a "
+            "different argument list (values omitted: an entry may carry credentials)"]
+
+
+def _cwd_problems(entry: dict) -> list[str]:
+    """`cwd` must be a non-empty ABSOLUTE path to a directory that EXISTS (the workspace anchor)."""
     cwd = entry.get("cwd")
     if not isinstance(cwd, str) or not cwd.strip():
-        problems.append(f"mcpServers.{SERVER_NAME}.cwd must be a non-empty absolute path: found no "
-                        "usable value (value omitted: an entry may carry credentials)")
-    elif not pathlib.Path(cwd).is_absolute():
-        problems.append(f"mcpServers.{SERVER_NAME}.cwd must be ABSOLUTE (the platform workspace must "
-                        "resolve independently of the session's working directory): found a relative "
-                        "path (value omitted: an entry may carry credentials)")
-    elif not pathlib.Path(cwd).is_dir():
-        problems.append(f"mcpServers.{SERVER_NAME}.cwd must be an EXISTING directory (the launch "
-                        "resolves the workspace from it, so a path that cannot be entered cannot "
-                        "work): found a path that is not an existing directory (value omitted: an "
-                        "entry may carry credentials)")
-    return (not problems), problems
+        return [f"mcpServers.{SERVER_NAME}.cwd must be a non-empty absolute path: found no usable "
+                "value (value omitted: an entry may carry credentials)"]
+    if not pathlib.Path(cwd).is_absolute():
+        return [f"mcpServers.{SERVER_NAME}.cwd must be ABSOLUTE (the platform workspace must resolve "
+                "independently of the session's working directory): found a relative path (value "
+                "omitted: an entry may carry credentials)"]
+    if not pathlib.Path(cwd).is_dir():
+        return [f"mcpServers.{SERVER_NAME}.cwd must be an EXISTING directory (the launch resolves the "
+                "workspace from it, so a path that cannot be entered cannot work): found a path that "
+                "is not an existing directory (value omitted: an entry may carry credentials)"]
+    return []
 
 
 def managed_config_problems(path: str | pathlib.Path, expected_cwd: str | pathlib.Path | None = None
@@ -563,108 +688,10 @@ def managed_config_problems(path: str | pathlib.Path, expected_cwd: str | pathli
 
 
 # --------------------------------------------------------------------------- surgical JSON merge
-# The merge helpers are deliberately duplicated from the Chrome DevTools twin instead of imported:
-# each helper script is a standalone deployment artifact, and a shared module would couple two
-# unrelated features. Only the ~70 lines of text-surgery are repeated; both files keep their own
-# semantics on top.
-
-def _skip_ws(text: str, index: int) -> int:
-    while index < len(text) and text[index] in " \t\r\n":
-        index += 1
-    return index
-
-
-def _object_members(text: str, obj_open: int) -> list[tuple[str, int, int, int]]:
-    """`(key, key_start, value_start, value_end)` for the depth-1 members of the object at `{`."""
-    members: list[tuple[str, int, int, int]] = []
-    index = _skip_ws(text, obj_open + 1)
-    while index < len(text) and text[index] != "}":
-        key_start = index
-        key, index = _DECODER.raw_decode(text, index)
-        index = _skip_ws(text, index)
-        if index >= len(text) or text[index] != ":":
-            raise ValueError(f"expected ':' after key {key!r} at offset {index}")
-        index = _skip_ws(text, index + 1)
-        value_start = index
-        _, index = _DECODER.raw_decode(text, index)
-        members.append((str(key), key_start, value_start, index))
-        index = _skip_ws(text, index)
-        if index < len(text) and text[index] == ",":
-            index = _skip_ws(text, index + 1)
-    return members
-
-
-def _root_span(text: str) -> tuple[int, int]:
-    start = _skip_ws(text, 0)
-    if start >= len(text) or text[start] != "{":
-        raise ValueError("the config must be a JSON object")
-    _, end = _DECODER.raw_decode(text, start)
-    return start, end - 1
-
-
-def _line_indent(text: str, index: int) -> str:
-    line_start = text.rfind("\n", 0, index) + 1
-    prefix = text[line_start:index]
-    return prefix if prefix.strip() == "" else ""
-
-
-def _indent_unit(text: str) -> str:
-    for line in text.splitlines():
-        stripped = line.lstrip(" \t")
-        if stripped and stripped != line:
-            indent = line[:len(line) - len(stripped)]
-            if indent:
-                return indent
-    return "  "
-
-
-def _member_block(key: str, value: dict, indent: str, newline: str) -> str:
-    """`"key": value` serialized like the surrounding file (json indent 2, re-indented)."""
-    serialized = json.dumps({key: value}, indent=2).replace("\n", newline)
-    lines = serialized.splitlines()[1:-1]
-    relative = [line[2:] if line.startswith("  ") else line for line in lines]
-    return (newline + indent).join(relative)
-
-
-def _insert_member(text: str, obj_open: int, obj_close: int, block: str, indent: str,
-                   newline: str) -> str:
-    """Insert a serialized member into an object, keeping every other byte of the file."""
-    inner = text[obj_open + 1:obj_close]
-    body = inner.rstrip()
-    tail = inner[len(body):]
-    if body.strip():
-        new_inner = body + "," + newline + indent + block + tail
-    else:
-        if not tail.strip():
-            tail = newline + (_line_indent(text, obj_open) or "")
-        new_inner = newline + indent + block + tail
-    return text[:obj_open + 1] + new_inner + text[obj_close:]
-
-
-def _insert_managed_server(text: str, entry: dict) -> str:
-    """Deep-merge ONLY the `mcpServers` map: every other byte of the target is preserved."""
-    root_open, root_close = _root_span(text)
-    newline = "\r\n" if "\r\n" in text else "\n"
-    unit = _indent_unit(text)
-    root_members = _object_members(text, root_open)
-    servers_member = next((m for m in root_members if m[0] == "mcpServers"), None)
-    if servers_member is None:
-        root_indent = _line_indent(text, root_members[0][1]) if root_members else unit
-        block = _member_block("mcpServers", {SERVER_NAME: entry}, root_indent, newline)
-        return _insert_member(text, root_open, root_close, block, root_indent, newline)
-    servers_open = servers_member[2]
-    if text[servers_open] != "{":
-        raise ValueError("mcpServers must be a JSON object")
-    _, servers_end = _DECODER.raw_decode(text, servers_open)
-    servers_close = servers_end - 1
-    servers_members = _object_members(text, servers_open)
-    key_indent = _line_indent(text, servers_member[1])
-    if servers_members:
-        indent = _line_indent(text, servers_members[0][1]) or (key_indent + unit)
-    else:
-        indent = key_indent + unit
-    block = _member_block(SERVER_NAME, entry, indent, newline)
-    return _insert_member(text, servers_open, servers_close, block, indent, newline)
+# The text surgery lives in the shared stdlib sibling `mcp_json_merge.py`, which this helper imports
+# and the Chrome DevTools twin imports as well: the merge machinery is identical, while each helper
+# keeps its OWN semantics on top (server name, managed entry, refusals, conflict reporting, atomic
+# persistence, redacted diagnostics).
 
 
 def _read_text_exact(path: pathlib.Path) -> str:
@@ -817,7 +844,7 @@ def _merged_text(target_path: pathlib.Path, text: str, entry: dict, data: dict,
                  servers: dict | None) -> tuple[str | None, str | None]:
     """`(merged text, None)` after a verified text-surgery merge, `(None, message)` when it refuses."""
     try:
-        merged_text = _insert_managed_server(text, entry)
+        merged_text = mcp_json_merge.insert_managed_server(text, SERVER_NAME, entry)
         merged = json.loads(merged_text)
     except (ValueError, json.JSONDecodeError) as exc:
         return None, f"cannot merge into {target_path} ({exc}); the file is left untouched"
@@ -957,6 +984,36 @@ def _stderr_hint(errors: "collections.deque") -> str:
     return f" (last stderr line: {lines[-1]})" if lines else ""
 
 
+def _timeout_problem(name: str, value: object) -> str | None:
+    """Why `value` is not a usable handshake timeout, or `None` when it is.
+
+    The handshake's contract is a BOUNDED wait, so the budget must be a real number of seconds:
+    a bool is not a number of seconds, a numeric string is a caller's formatting mistake, and a NaN
+    or an infinity would turn "give up after N seconds" into "never", which defeats the contract.
+    Zero is LEGITIMATE: it means "make one immediate, no-wait attempt". Negative is not.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return (f"{name} must be a real number of seconds (found {type(value).__name__}): pass an int "
+                "or a float, never a bool or a numeric string")
+    # Every accepted value is converted into a deadline (`float(timeout)`), so a value the conversion
+    # cannot carry — an int larger than the float range — must be refused HERE, before a process is
+    # started: the OverflowError would otherwise escape after the child is already running.
+    try:
+        float(value)
+    except OverflowError:
+        return (f"{name} must be convertible to a FINITE float (found {value!r}): an integer that "
+                "overflows the float range cannot describe a bounded wait")
+    # An int is always finite and exact; only a float can carry NaN/±inf (and converting a huge int to
+    # float to test it would overflow, so it is never converted here).
+    if isinstance(value, float) and not math.isfinite(value):
+        return (f"{name} must be FINITE (found {value!r}): an infinite or NaN budget would defeat the "
+                "bounded wait this handshake guarantees")
+    if value < 0:
+        return (f"{name} must be NON-NEGATIVE (found {value!r}): a negative budget cannot describe a "
+                "wait — use 0 for an immediate, no-wait attempt")
+    return None
+
+
 def mcp_start_handshake(repo: str | pathlib.Path, argv: list[str] | None = None,
                         first_response_timeout: float = COLD_BUILD_TIMEOUT,
                         response_timeout: float = HANDSHAKE_TIMEOUT,
@@ -970,11 +1027,24 @@ def mcp_start_handshake(repo: str | pathlib.Path, argv: list[str] | None = None,
     awaited for 30 s. The child process TREE is terminated on every path, so a failed probe never
     leaves a platform instance behind. Failures are DATA: `ok=False` with a message, never an
     exception.
+
+    TIMEOUT POLICY (validated BEFORE any process is started, because a budget that defeats the
+    bounded wait makes the probe hang instead of reporting): a timeout must be a real int/float
+    (a bool or a numeric string is refused), FINITE (NaN and ±inf are refused) and NON-NEGATIVE.
+    ZERO is legitimate and means "start the server and make one immediate, no-wait attempt": the
+    handshake then reports the bounded failure ("no initialize response within 0s") like any other
+    silent server. A negative value is refused — it describes no wait at all. A refused value yields
+    the structured `ok=False` result naming the parameter, and no child process is launched.
     """
     command = list(argv) if argv else [COMMAND, *MANAGED_ARGS]
     result = {"command": command, "cwd": os.path.abspath(str(repo)), "ok": False,
               "protocol_version": None, "server": None, "tools": [],
               "missing_tools": list(FARUKON_TOOLS), "message": ""}
+    problem = (_timeout_problem("first_response_timeout", first_response_timeout)
+               or _timeout_problem("response_timeout", response_timeout))
+    if problem is not None:
+        result["message"] = f"{TIMEOUT_REFUSAL} `{' '.join(command)}`: {problem}"
+        return result
     try:
         proc = subprocess.Popen(command, cwd=str(repo), stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,

@@ -5,6 +5,84 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.23.0] — 2026-11-04
+
+### Changed
+- **W1 — backlog closed.** The previous run's farukon findings are resolved, the vaccination
+  self-test's module-level checks were converted to probe-level probes (a check now proves the
+  BEHAVIOUR it guards, not the module's presence), and the claims reconstructed in the last report
+  are backed by evidence or dropped. Nothing on this list is left as an open follow-up.
+
+### Added
+- **W3 — two new roles and the permit gate.** `factory-business-tester`
+  (`sub-agents/business-tester.md`, generator-side) is an ADVERSARIAL user: it attacks the delivered
+  change through the product's OWN interfaces — wrong input type/range, empty/huge/malformed data,
+  wrong order of operations, edge configuration, repeated clicks, interrupted flows — in parallel
+  with the tester at the business-test node, for `implement`/`review`/`refactor` and never for
+  `security_audit`. Its evidence is diagnostic (the acceptance evidence stays tester-owned) and a
+  breakage takes the coder route with the EXISTING coder budget. `factory-supervisor`
+  (`sub-agents/supervisor.md`, judge-side, read-only) returns an `allow|deny` verdict on a proposed
+  delegation's permit against the rulebook and the APPROVED plan. The verdict is MODEL-ENFORCED:
+  `permit_gate.py audit` is the deterministic backstop, so a main agent that bypasses the permit
+  step is **DETECTED at the finish, not intercepted at call time** — the limitation is documented
+  as such, never papered over. New optional task keys `models.business_tester` and
+  `models.supervisor` (the second is judge-side, so it contrasts with the generator family).
+- **Delegation and change-set gates** (stdlib, zero tokens, each with a self-test sibling):
+  `delegation_gate.py` — the retry budget is counted by whoever EXECUTES, not by whoever reports:
+  `check --role <role> --mode hitl|auto` increments `retry_counters.<role>` itself and REFUSES the
+  delegation once the budget is exhausted (hitl then forces the owner stop, auto ends FAILED, no
+  override), `--owner-authorized` grants exactly ONE extra delegation per owner decision and records
+  it, `settle` refunds the one reviewer iteration a wholly refuted round consumed, and `audit`
+  reconciles counters and refunds with the session wire.
+  `manifest.py` — `init` / `require` (the blocking pre-edit gate) / `add --changed|--created` /
+  `audit`: every entry carries a sha256 the script computes, a CHANGED file must already have its
+  backup, a CREATED file must not predate the run, paths are confined to the repository, and the
+  finish audit names any hash drift or missing backup.
+  `gate_all.py` — the phase `K`|`Y` aggregator of the deterministic gates: every applicable gate is
+  recorded, and a gate that should have run and left no record is itself a failure.
+  `permit_gate.py` — the `permits.yaml` lifecycle `add`/`verdict`/`bind`/`close` plus the finish
+  audit: every `subagent.spawned` must match a unique, allowed, already-judged permit whose scope is
+  a subset of the plan task's files, and every allowed permit must have run or be explicitly closed.
+  `mcp_json_merge.py` — the text-preserving JSON merge machinery the two MCP helpers had
+  duplicated, in one home (`farukon_mcp.py`, `chrome_devtools_mcp.py` import it).
+- **Strict model attribution**: `model_attribution.py` is strict BY DEFAULT for
+  `implement`/`refactor`. `pipeline.yaml` gains `task_type` and `required_roles` — a mandatory,
+  non-empty set (analyzer, planner, coder, tester, reviewer, documenter) — and a required role that
+  claims a model in `models_used` but leaves no trace in the session wire now FAILS the run instead
+  of degrading. There is deliberately no weakening opt-out; `--strict` only turns strictness on for
+  the other task types.
+- **False-finding disposition**: `merge_findings.py` and `review_followup_task.py` accept
+  `finding_disposition: accepted|refuted`. A refutation requires `finding_evidence`, a finding is
+  refuted only when EVERY shard occurrence is, and a refuted finding stops counting toward the
+  critical rule and is omitted from the generated fix-tasks — with the omission stated, never
+  silent. `merge_findings.py --round` stamps the round identity.
+
+### Fixed
+- **The seven violations of the previous run (W2).**
+  N-1 (reviewer budget exceeded, a third round without escalation) and N-2 (`retry_counters.reviewer`
+  did not reflect reality): `delegation_gate.py` counts the iteration at the moment of the
+  delegation, refuses past the budget, and `audit` proves the counters against the wire.
+  N-3 (nine roles executed in the main session instead of subagents): strict attribution plus the
+  mandatory `required_roles` contract — a claimed role with no wire trace fails.
+  N-4 (`manifest.json` absent, `backups/` empty): `manifest.py require` blocks the first edit,
+  `add --changed` refuses a file without its backup, `audit` proves the set at the finish.
+  N-5 (the input-validation gate never ran): `gate_all.py` runs it at phases K and Y and fails a
+  phase whose record omits an applicable gate.
+  N-6 (`action_gate.py` not used where required): process signalling is classified —
+  `kill`/`pkill`/`killall`/`taskkill`/`Stop-Process`, mass signalling HARD_DENY, a named process
+  CONFIRM, `kill -l` still ALLOW — and the new `action_gate.py audit` joins the journal with the
+  commands the CLI really EXECUTED from the session wire: an unjournaled destructive command fails,
+  and malformed evidence fails closed.
+  N-7 (version and structure fixation spread over four commits): the two-level fingerprint moved out
+  of `AGENTS.md`'s first line into derived state, `.code-factory/state/fingerprint.json`
+  (`project_fingerprint.py --write-state` / `--check-state`). `AGENTS.md` embeds no hash, its
+  content no longer depends on the commit that carries it, and one version commit is enough again; a
+  fresh clone without the state file is an actionable error, and a stale embedded marker is IGNORED
+  with a warning.
+- `farukon_mcp.py`: applicability now requires an EXPLICIT platform subject bound to the operation
+  (identity vocabulary alone never decides), and the opt-in handshake timeout is validated finite
+  and non-negative before the process is launched (zero = immediate).
+
 ## [12.22.0] — 2026-11-03
 
 ## [12.21.0] — 2026-11-01

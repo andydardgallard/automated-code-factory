@@ -12,9 +12,9 @@ re-analysis + AGENTS.md regeneration ("skip Scout if unchanged").
      c. README (README.md / README.rst / README / readme.md),
      d. sorted top-level directory listing.
    It is COMMIT-stable: the factory's own artifacts are excluded (see EXCLUDED_PARTS), so
-   committing them does not shift the value and the hash embedded in AGENTS.md stays valid
-   after the very commit that carries it — otherwise the "skip Scout when unchanged" branch
-   would be unreachable. Its known blind spot: an edit to an existing file deeper than the
+   committing them does not shift the value and the hash recorded in the derived state
+   (`.code-factory/state/fingerprint.json`) stays valid after the very commit that carries it —
+   otherwise the "skip Scout when unchanged" branch would be unreachable. Its known blind spot: an edit to an existing file deeper than the
    signal list (e.g. `src/a/b/c.py`) is invisible while no root manifest, CI config, README
    or top-level entry changes. Level 2 exists to close exactly that hole.
 
@@ -38,14 +38,22 @@ re-analysis + AGENTS.md regeneration ("skip Scout if unchanged").
    falls back to hashing every non-excluded WORKING-TREE file with the same LF normalization and
    exclusions (`<path>:<sha256>` records), so it works outside git just as well.
 
-   Committing does not change any tracked file's worktree content, so the value embedded in
-   AGENTS.md survives the very commit that carries it and the "skip regeneration" branch stays
-   reachable. The semantics above are pinned by `test_factory_model.py` case 29.
+   Committing does not change any tracked file's worktree content, so the value recorded in
+   `.code-factory/state/fingerprint.json` survives the very commit that carries it and the "skip
+   regeneration" branch stays reachable. The semantics above are pinned by
+   `test_factory_model.py` case 29.
 
-Because both levels exclude the same factory artifacts, AGENTS.md can embed BOTH hashes on its
-first line and be committed without invalidating them:
+Because both levels exclude the same factory artifacts, the pair of hashes can be recorded and
+committed without invalidating them. It lives in DERIVED STATE, never in the `AGENTS.md` whose own
+commit it describes:
 
-  <!-- code-factory-fingerprint: <structural-64-hex> content: <content-64-hex> -->
+  .code-factory/state/fingerprint.json   {"structural": "<64-hex>", "content": "<64-hex>"}
+
+`--write-state` writes exactly those two hashes atomically and `--check-state` compares the
+recomputed pair with the file (exit 0 = both match, 1 = divergence, 2 = no usable state), so
+`AGENTS.md` carries NO embedded fingerprint marker and its content no longer depends on its own
+commit — one version commit is enough. A stale embedded marker left by an older model is ignored
+with a warning: the state is the one home.
 
 The "skip regeneration" branch requires BOTH hashes to match; a content-only change (invisible
 to level 1) therefore still triggers a regeneration, which is the point of the second level.
@@ -54,6 +62,8 @@ Usage:
   python .agents/skills/code-factory/scripts/project_fingerprint.py [--repo <path>]
   python .agents/skills/code-factory/scripts/project_fingerprint.py [--repo <path>] --content
   python .agents/skills/code-factory/scripts/project_fingerprint.py [--repo <path>] --all
+  python .agents/skills/code-factory/scripts/project_fingerprint.py [--repo <path>] --write-state
+  python .agents/skills/code-factory/scripts/project_fingerprint.py [--repo <path>] --check-state
 
 Prints the 64-hex fingerprint(s) to stdout. In the two content modes (`--content`, `--all`)
 UNTRACKED files — outside the tracked content the hash covers — add a note on stderr and leave the
@@ -70,10 +80,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
+import tempfile
 
 # Fixed candidate stack-manifest filenames (same signals as tech-stack-detection.md §1).
 MANIFEST_FILES = [
@@ -124,6 +137,88 @@ AGENTS_SIZE_FAIL_BYTES = 32 * 1024
 # in a content-hash record is a different KIND of value (and a stable one across the deletion), so
 # the explicit marker is what makes losing the content show up as a change.
 MISSING_CONTENT = "MISSING"
+
+# The DERIVED STATE the fingerprints live in (task 12, violation N-7 / proposal P-7): the two-level
+# hash is no longer embedded in AGENTS.md, so AGENTS.md's content does not depend on its own commit
+# and one version commit is enough again. The state file is written by `--write-state` and read by
+# `--check-state` (and by `check_factory_model.py`), and it is NEVER created implicitly: a missing
+# state (a fresh clone) is an actionable error naming the command that writes it.
+FINGERPRINT_STATE_REL = pathlib.Path(".code-factory") / "state" / "fingerprint.json"
+FINGERPRINT_STATE_KEYS = ("structural", "content")
+HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class FingerprintStateError(ValueError):
+    """The fingerprint state is missing or malformed — a message, never a traceback."""
+
+
+def compute_both(root: pathlib.Path) -> dict:
+    """`{"structural": <64-hex>, "content": <64-hex>}` of `root`, both validated."""
+    return {"structural": compute_fingerprint(root),
+            "content": compute_content_fingerprint(root)}
+
+
+def read_state(root: pathlib.Path) -> dict:
+    """The fingerprint state of `root`, validated (`FingerprintStateError` when absent/invalid).
+
+    The file must carry EXACTLY the two keys, each a lowercase 64-hex hash. A missing file is the
+    fresh-clone case and is reported as such — the checker never trusts a stale AGENTS.md line and
+    never populates the state by itself.
+    """
+    path = pathlib.Path(root) / FINGERPRINT_STATE_REL
+    if not path.is_file():
+        raise FingerprintStateError(
+            f"no fingerprint state at {FINGERPRINT_STATE_REL.as_posix()} under {root}: the "
+            f"structural and content hashes live there, not in AGENTS.md — run "
+            f"`project_fingerprint.py --write-state --repo {root}` (the flow does it after "
+            f"generating AGENTS.md); a fresh clone has to recompute them, they are never assumed")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise FingerprintStateError(f"cannot read {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise FingerprintStateError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict) or set(data) != set(FINGERPRINT_STATE_KEYS):
+        raise FingerprintStateError(
+            f"{path} must be an object with exactly {', '.join(FINGERPRINT_STATE_KEYS)}: found "
+            f"{sorted(data) if isinstance(data, dict) else type(data).__name__}")
+    for key in FINGERPRINT_STATE_KEYS:
+        if not isinstance(data[key], str) or not HASH_RE.match(data[key]):
+            raise FingerprintStateError(f"{path}: {key} must be 64 lowercase hex characters, found "
+                                        f"{data[key]!r}")
+    return {key: data[key] for key in FINGERPRINT_STATE_KEYS}
+
+
+def write_state(root: pathlib.Path) -> dict:
+    """Compute both fingerprints and write them to the state file ATOMICALLY; return the state."""
+    state = compute_both(pathlib.Path(root))
+    path = pathlib.Path(root) / FINGERPRINT_STATE_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(state, indent=2) + "\n"
+    handle, temp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(text)
+        os.replace(temp, path)
+    except BaseException:
+        pathlib.Path(temp).unlink(missing_ok=True)
+        raise
+    return state
+
+
+def check_state(root: pathlib.Path) -> dict:
+    """Compare the state file with a fresh computation.
+
+    Returns `{"status": "match"|"diverged", "state": {...}, "current": {...}, "diverged": [...]}`
+    and raises `FingerprintStateError` when there is no usable state (the fresh-clone case).
+    """
+    root = pathlib.Path(root)
+    state = read_state(root)
+    current = compute_both(root)
+    diverged = [key for key in FINGERPRINT_STATE_KEYS if state[key] != current[key]]
+    return {"status": "diverged" if diverged else "match", "state": state, "current": current,
+            "diverged": diverged}
+
 
 
 def agents_size_issues(size: int) -> tuple[str, str]:
@@ -431,8 +526,38 @@ def main() -> int:
                       help="Print only the content fingerprint (tracked working-tree content)")
     mode.add_argument("--all", action="store_true",
                       help="Print both fingerprints as 'structural: <hash>' / 'content: <hash>'")
+    mode.add_argument("--write-state", action="store_true", dest="write_state",
+                      help=f"Compute both fingerprints and write them atomically to "
+                           f"{FINGERPRINT_STATE_REL.as_posix()} (the model no longer embeds them)")
+    mode.add_argument("--check-state", action="store_true", dest="check_state",
+                      help="Compare the state file with a fresh computation: exit 0 match, 1 "
+                           "divergence, 2 no usable state (run --write-state)")
     args = ap.parse_args()
     root = pathlib.Path(args.repo).resolve()
+    if args.write_state:
+        try:
+            state = write_state(root)
+        except OSError as exc:
+            print(f"error: cannot write the fingerprint state: {exc}", file=sys.stderr)
+            return 2
+        print(f"structural: {state['structural']}")
+        print(f"content: {state['content']}")
+        print(f"wrote {FINGERPRINT_STATE_REL.as_posix()}")
+        return 1 if _note_agents_size(root) else 0
+    if args.check_state:
+        try:
+            comparison = check_state(root)
+        except FingerprintStateError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if comparison["status"] == "match":
+            print("match - the fingerprint state matches a fresh computation")
+            return 0
+        for key in comparison["diverged"]:
+            print(f"diverged: {key}: state={comparison['state'][key][:12]}… != "
+                  f"current={comparison['current'][key][:12]}…")
+        print("FAIL - the project changed since the fingerprint state was written")
+        return 1
     if args.content or args.all:
         # Both content modes hash TRACKED content: note the untracked files they cannot cover.
         _note_untracked(root)

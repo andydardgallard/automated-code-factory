@@ -48,6 +48,7 @@ Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
 """
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import re
@@ -71,6 +72,243 @@ def run(*args: str, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
 def expect(cond: bool, msg: str) -> None:
     if not cond:
         raise AssertionError(msg)
+
+
+# ---------------------------------------------------------------------------------------------
+# Process-signalling classification and the session-wire audit (W2: violations N-6, proposal P-6)
+# ---------------------------------------------------------------------------------------------
+def class_of(res: subprocess.CompletedProcess[str]) -> str:
+    match = re.search(r"^class: (\S+)$", res.stdout, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def write_session(root: pathlib.Path, events: list, repo: pathlib.Path | None = None) -> pathlib.Path:
+    """A fixture session: `state.json` + `agents/main/wire.jsonl` (one JSON event per line)."""
+    session = (root / "home" / "sessions" / "wd_fixture"
+               / "session_11111111-1111-4111-8111-111111111111")
+    (session / "agents" / "main").mkdir(parents=True, exist_ok=True)
+    (session / "state.json").write_text(json.dumps({
+        "id": "session_11111111-1111-4111-8111-111111111111",
+        "cwd": str(repo or root).replace("\\", "/"), "archived": False,
+        "agents": {"main": {"type": "main"}}}), encoding="utf-8")
+    body = "\n".join(event if isinstance(event, str) else json.dumps(event) for event in events)
+    (session / "agents" / "main" / "wire.jsonl").write_text(body + "\n", encoding="utf-8")
+    return session
+
+
+def audit(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([sys.executable, str(TOOL), "audit", *args], capture_output=True,
+                          text=True, errors="replace")
+
+
+def check_process_kills() -> None:
+    """A generic deletion rule never covered process signalling: `pkill`/`kill` fell through ALLOW.
+
+    The classification is the deletion rule read by BLAST RADIUS: a named target CONFIRMs (a kill has
+    no `--scope` that could prove it is the run's own server), "signal every process" HARD_DENYs (the
+    same radius as deleting a filesystem root), and the read-only signal listing stays ALLOW.
+    """
+    spare = str(pathlib.Path(tempfile.gettempdir()) / "action-gate-spare.md")
+    for action in ("pkill -f pytest", "pkill pytest", "pkill -9 -f uvicorn", "kill 1234",
+                   "kill -9 1234", "kill -TERM 4321", "killall python", "killall -9 python3",
+                   "taskkill /F /T /PID 1234", "taskkill /IM python.exe /F",
+                   "Stop-Process -Id 1234", "sudo kill -9 999", "sh -c 'pkill -f uvicorn'",
+                   "bash -c 'kill -9 4242'"):
+        res = run("--action", action, "--mode", "hitl", "--journal", spare)
+        expect(class_of(res) == "CONFIRM",
+               f"{action!r} signals a process and must be CONFIRM, not {class_of(res)!r}: "
+               f"{res.stdout!r}")
+        expect(res.returncode == 2 and "CONFIRM_REQUIRED" in res.stdout,
+               f"{action!r} in hitl must require confirmation: {res.returncode} {res.stdout!r}")
+        res = run("--action", action, "--mode", "auto", "--journal", spare)
+        expect(res.returncode == 0 and "ALLOW_WITH_ASSUMPTION" in res.stdout,
+               f"{action!r} in auto must be a recorded assumption: {res.stdout!r}")
+        expect("decision: ALLOW\n" not in res.stdout,
+               f"{action!r} must never be a blind ALLOW: {res.stdout!r}")
+
+    # "Signal everything" is the root-deletion blast radius: HARD_DENY in BOTH modes.
+    for action in ("kill -9 -1", "kill -1 0", "killall *", "killall all", "taskkill /IM * /F",
+                   "sh -c 'kill -9 -1'"):
+        for mode in ("hitl", "auto"):
+            res = run("--action", action, "--mode", mode, "--journal", spare)
+            expect(class_of(res) == "HARD_DENY" and res.returncode == 1,
+                   f"{action!r} in {mode} signals every process and must be HARD_DENY: "
+                   f"{res.returncode} {res.stdout!r}")
+
+    # Read-only and benign forms stay ALLOW (the fix is not a blanket deny of `kill`).
+    for action in ("kill -l", "kill -L", "git status", "python -m pytest"):
+        res = run("--action", action, "--mode", "hitl", "--journal", spare)
+        expect(class_of(res) == "ALLOW" and res.returncode == 0,
+               f"{action!r} is not destructive and must stay ALLOW: {res.stdout!r}")
+
+
+def check_rm_force() -> None:
+    """Explicit `rm -f` coverage: the flag never hides the target, in any position or wrapper."""
+    spare = str(pathlib.Path(tempfile.gettempdir()) / "action-gate-spare.md")
+    for action in ("rm -f src/a.py", "rm -rf src", "rm -fr src", "rm -Rf src/a",
+                   "rm --force src/a.py", "rm -f -- src/a.py", "sh -c 'rm -f src/a.py'",
+                   "sudo rm -f src/a.py", "/bin/rm -f src/a.py"):
+        res = run("--action", action, "--mode", "hitl", "--scope", "src", "--journal", spare)
+        expect(class_of(res) == "CONFIRM",
+               f"{action!r} inside --scope src must be CONFIRM, not {class_of(res)!r}: "
+               f"{res.stdout!r}")
+        res = run("--action", action, "--mode", "hitl", "--journal", spare)
+        expect(class_of(res) == "HARD_DENY",
+               f"{action!r} with NO scope cannot be proven in scope and must be HARD_DENY: "
+               f"{res.stdout!r}")
+    for action in ("rm -f /", "rm -rf /", "rm -f ~", "sh -c 'rm -f /'"):
+        res = run("--action", action, "--mode", "auto", "--scope", "src", "--journal", spare)
+        expect(class_of(res) == "HARD_DENY" and res.returncode == 1,
+               f"{action!r} deletes a root and must be HARD_DENY: {res.stdout!r}")
+
+
+def check_audit(tmp: pathlib.Path) -> None:
+    """The finish audit: executed shell commands vs the action journal (data, never executed)."""
+    root = tmp / "audit"
+    root.mkdir(parents=True, exist_ok=True)
+    marker = root / "marker.txt"
+    marker.write_text("do not delete me\n", encoding="utf-8")
+    journal = root / ".code-factory" / "logs" / "action-gate.md"
+
+    def gate_journal(action: str, *extra: str) -> subprocess.CompletedProcess[str]:
+        return run("--action", action, "--journal", str(journal), *extra)
+
+    events = [
+        {"type": "tool.call", "tool": "shell", "arguments": {"command": "git status"}},
+        {"type": "tool.call", "tool": "shell", "arguments": {"command": "pkill -f pytest"}},
+        {"type": "shell.call", "command": "rm -f marker.txt"},
+        {"type": "llm.request", "model": "k3"},
+    ]
+    session = write_session(root, events, repo=root)
+
+    # 1. Nothing journaled: the two destructive commands are unjournaled (and the marker file proves
+    #    the audit never executes an audited command).
+    res = audit("--repo", str(root), "--session", str(session))
+    expect(res.returncode == 1,
+           f"unjournaled destructive commands must fail the audit: {res.returncode} {res.stdout!r}")
+    expect("pkill -f pytest" in res.stdout, f"the audit must name the command: {res.stdout!r}")
+    expect("rm -f marker.txt" in res.stdout, f"the audit must name both: {res.stdout!r}")
+    expect(marker.is_file() and marker.read_text(encoding="utf-8") == "do not delete me\n",
+           "the audit must never execute an audited command")
+
+    # 2. Journal both: the audit passes.
+    gate_journal("git status")
+    gate_journal("pkill -f pytest")
+    gate_journal("rm -f marker.txt", "--scope", "marker.txt")
+    res = audit("--repo", str(root), "--session", str(session))
+    expect(res.returncode == 0,
+           f"journaled destructive commands must pass: {res.returncode} {res.stdout!r} "
+           f"{res.stderr!r}")
+    expect("PASS" in res.stdout, f"the audit must report the pass: {res.stdout!r}")
+
+    # 3. Drop ONE row: that command is unjournaled again, and only that one.
+    text = journal.read_text(encoding="utf-8")
+    journal.write_text("\n".join(line for line in text.splitlines()
+                                 if "pkill" not in line) + "\n", encoding="utf-8")
+    res = audit("--repo", str(root), "--session", str(session))
+    expect(res.returncode == 1 and "pkill -f pytest" in res.stdout,
+           f"the unjournaled pkill must be named: {res.stdout!r}")
+    expect("rm -f marker.txt" not in res.stdout,
+           f"a journaled command must not be reported: {res.stdout!r}")
+
+    # 3b. (R1-08) A corrupt JOURNAL is a violation, never silent coverage: an unreadable row would
+    #     otherwise be accepted as the record that covers a destructive command.
+    good = journal.read_text(encoding="utf-8")
+    corruptions = {
+        "too few cells": "| 2026-01-01T00:00:00Z | hitl | CONFIRM | CONFIRM_REQUIRED | marker.txt |",
+        "unknown decision": "| 2026-01-01T00:00:00Z | hitl | CONFIRM | maybe | marker.txt | "
+                            "pkill -f pytest | looks fine |",
+        "unknown class": "| 2026-01-01T00:00:00Z | hitl | DESTRUCTIVE | CONFIRM_REQUIRED | "
+                         "marker.txt | pkill -f pytest | looks fine |",
+        "unknown mode": "| 2026-01-01T00:00:00Z | yolo | CONFIRM | CONFIRM_REQUIRED | marker.txt | "
+                        "pkill -f pytest | looks fine |",
+        "no timestamp": "|  | hitl | CONFIRM | CONFIRM_REQUIRED | marker.txt | pkill -f pytest | "
+                        "looks fine |",
+        # (R2-2) A FORGED row: the class says HARD_DENY, the decision claims the auto-mode
+        # assumption of a CONFIRM. The vocabulary is fine, the combination is impossible — and
+        # accepting it would cover the very command the gate refused.
+        "a decision the class cannot produce": "| 2026-01-01T00:00:00Z | auto | HARD_DENY | "
+                                               "ALLOW_WITH_ASSUMPTION | - | pkill -f pytest | "
+                                               "looks fine |",
+    }
+    for label, row in corruptions.items():
+        journal.write_text(good + row + "\n", encoding="utf-8")
+        res = audit("--repo", str(root), "--session", str(session))
+        expect(res.returncode == 1 and "malformed journal" in res.stdout,
+               f"a journal row with {label} must fail the audit: {res.returncode} {res.stdout!r}")
+    journal.write_text(good, encoding="utf-8")
+    res = audit("--repo", str(root), "--session", str(session))
+    expect(res.returncode == 1,
+           f"the fixture must still report the deleted pkill row: {res.stdout!r}")
+
+    # 4. Executed although the gate HARD_DENYed it: the covering rows are all HARD_DENY.
+    denied = tmp / "audit-denied"
+    denied.mkdir(parents=True, exist_ok=True)
+    denied_journal = denied / ".code-factory" / "logs" / "action-gate.md"
+    denied_session = write_session(denied, [
+        {"type": "tool.call", "tool": "shell", "arguments": {"command": "kill -9 -1"}}],
+        repo=denied)
+    subprocess.run([sys.executable, str(TOOL), "check", "--action", "kill -9 -1",
+                    "--journal", str(denied_journal)], capture_output=True)
+    res = audit("--repo", str(denied), "--session", str(denied_session))
+    expect(res.returncode == 1 and "HARD_DENY" in res.stdout,
+           f"a HARD_DENYed command that ran anyway must fail: {res.stdout!r}")
+
+    # 5. A malformed wire line fails the audit CLOSED (never "no unclassified commands").
+    broken = tmp / "audit-malformed"
+    broken.mkdir(parents=True, exist_ok=True)
+    broken_session = write_session(broken, [
+        {"type": "tool.call", "tool": "shell", "arguments": {"command": "git status"}},
+        "{ this is not json"], repo=broken)
+    res = audit("--repo", str(broken), "--session", str(broken_session))
+    expect(res.returncode == 1 and "malformed" in res.stdout.lower(),
+           f"a malformed wire line must fail the audit: {res.returncode} {res.stdout!r}")
+
+    # 6. …and a shell call whose command cannot be read fails closed too.
+    unreadable = tmp / "audit-unreadable"
+    unreadable.mkdir(parents=True, exist_ok=True)
+    unreadable_session = write_session(unreadable, [
+        {"type": "tool.call", "tool": "shell", "arguments": {"note": "no command here"}}],
+        repo=unreadable)
+    res = audit("--repo", str(unreadable), "--session", str(unreadable_session))
+    expect(res.returncode == 1 and "cannot be read" in res.stdout,
+           f"an unreadable shell call must fail closed: {res.stdout!r}")
+
+    # 7. A session with no wire (and no session at all) is DEGRADED, never a silent pass.
+    empty = tmp / "audit-empty"
+    (empty / "agents").mkdir(parents=True, exist_ok=True)
+    (empty / "state.json").write_text("{}", encoding="utf-8")
+    res = audit("--repo", str(empty), "--session", str(empty))
+    expect(res.returncode == 3,
+           f"a session without a wire must be DEGRADED (exit 3): {res.returncode} {res.stdout!r}")
+    lonely = tmp / "audit-nosession"
+    lonely.mkdir(parents=True, exist_ok=True)
+    res = audit("--repo", str(lonely), "--session", "auto")
+    expect(res.returncode == 3,
+           f"a repository with no session must be DEGRADED (exit 3): {res.returncode} {res.stdout!r}")
+
+    # 8. A wire with no destructive command passes with no journal at all.
+    clean = tmp / "audit-clean"
+    clean.mkdir(parents=True, exist_ok=True)
+    clean_session = write_session(clean, [
+        {"type": "tool.call", "tool": "shell", "arguments": {"command": "git status"}},
+        {"type": "tool.call", "tool": "read_file", "arguments": {"path": "x.py"}}], repo=clean)
+    res = audit("--repo", str(clean), "--session", str(clean_session))
+    expect(res.returncode == 0,
+           f"a run that executed nothing destructive must pass: {res.returncode} {res.stdout!r}")
+    expect(not (clean / ".code-factory" / "logs" / "action-gate.md").exists(),
+           "a passing audit must not invent a journal")
+
+    # 9. The CLI contract of the new subcommand.
+    helped = subprocess.run([sys.executable, str(TOOL), "audit", "--help"], capture_output=True,
+                            text=True)
+    expect(helped.returncode == 0, "audit --help must exit 0")
+    res = audit("--session", "auto")
+    expect(res.returncode == 2 and "Traceback" not in res.stderr,
+           f"audit without --repo must be a usage error: {res.returncode} {res.stderr!r}")
+    res = audit("--repo", str(tmp / "no-such-repo"), "--session", "auto")
+    expect(res.returncode == 2 and "Traceback" not in res.stderr,
+           f"an unusable --repo must be an input error: {res.returncode} {res.stderr!r}")
 
 
 def main() -> int:
@@ -1368,6 +1606,13 @@ def main() -> int:
                 f"failed: every line above starting with FAIL is one bug-reproducing vector "
                 f"(a single-quoted -Command/-c payload must classify like its twins)")
 
+        # 28-30 (W2, violations N-6 / proposal P-6): process signalling must be classified at all,
+        # `rm -f` coverage must be proven instead of assumed, and the finished run's EXECUTED shell
+        # commands must be audited against the action journal.
+        check_process_kills()
+        check_rm_force()
+        check_audit(tmp / "w2-audit")
+
     print("PASS - action_gate.py hard-denies pushes to main/master (also behind git global options) "
           "and root/out-of-scope deletions; fail-safe CONFIRMs unparsable/unknown git calls; "
           "confirms in-scope destruction in hitl, records an assumption in auto; classifies git "
@@ -1376,10 +1621,15 @@ def main() -> int:
           "classifies the payload of shell wrappers (sh/bash/dash/zsh -c, cmd /c|/k, "
           "powershell/pwsh -Command|-c) recursively, so a wrapped root deletion or push is as "
           "visible as the bare one and an unreadable payload CONFIRMs instead of ALLOWing; "
-          "journal appended "
-          "and an unwritable journal exits 3 instead of raising; a `builtin --` option terminator "
-          "cannot hide a destructive command while benign terminators stay ALLOW; --help and usage "
-          "errors survive a legacy cp1251 console without a traceback.")
+          "journal appended and an unwritable journal exits 3 instead of raising; a `builtin --` "
+          "option terminator cannot hide a destructive command while benign terminators stay "
+          "ALLOW; process signalling is classified (a named kill CONFIRMs, `kill -9 -1` / "
+          "`killall *` / `taskkill /IM *` HARD_DENY, `kill -l` stays ALLOW) and `rm -f` coverage is "
+          "pinned explicitly; the finish audit joins the run's EXECUTED shell commands with the "
+          "journal (an unjournaled destructive command and one executed despite HARD_DENY fail, a "
+          "malformed wire line fails closed, an absent wire is DEGRADED, and an audited command is "
+          "never executed); --help and usage errors survive a legacy cp1251 console without a "
+          "traceback.")
     return 0
 
 

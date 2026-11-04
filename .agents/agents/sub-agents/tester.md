@@ -66,6 +66,14 @@ evidence and never reuse the specialist's diagnostic artifacts as acceptance pro
 re-stamp this evidence after any later change; when cargo, the farukon MCP server or a tool is
 missing, the affected criteria stay UNVERIFIED — never MET — and no artifact is fabricated.
 
+**The adversarial business tester is DIAGNOSTIC, never a substitute for your acceptance.** On
+`implement`, `review` and `refactor` runs node S also runs `factory-business-tester`, in parallel with
+you, on the same code state. Its report (`.code-factory/logs/business-adversarial/<run_id>.json`)
+lists what a careless user broke; it is DIAGNOSTIC input for the main agent and it never marks a
+criterion MET. You execute the user's business scenario yourself AFTER the last code change and OWN
+the acceptance evidence; a breakage it reports never replaces and is never replaced by your
+acceptance run, and both are re-run when the code changes afterwards.
+
 **Think in Code — never pull a full test log into the context.** Test output larger than 16 KB
 MUST be saved as a file under `.code-factory/logs/`; the context then receives only
 `python .agents/skills/code-factory/scripts/log_tail.py <log> --grep 'FAILED|ERROR'` (counters +

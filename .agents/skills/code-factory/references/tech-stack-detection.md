@@ -114,22 +114,35 @@ whether re-analysis + AGENTS.md regeneration are skipped:
 Both levels exclude the factory's own artifacts (`AGENTS.md`, `memory/`, `task.yaml`, the launchers
 `start.sh`/`start.cmd` and the deployers `prepare_factory.sh`/`prepare_factory.cmd`/
 `prepare_factory.ps1`), so committing them does not shift either hash (a git tree SHA would, which
-would make the "skip when unchanged" branch unreachable). Both hashes are embedded in AGENTS.md on
-the first line, so they travel with the commit and survive a clone:
+would make the "skip when unchanged" branch unreachable).
 
-```
-<!-- code-factory-fingerprint: <structural-64-hex> content: <content-64-hex> -->
+**The hashes live in derived state, not in AGENTS.md.** `AGENTS.md` no longer embeds a
+`code-factory-fingerprint` marker: a value embedded in the file whose own commit it describes would
+need a SECOND commit to stay true, and one version commit is enough. Both levels are written to
+`.code-factory/state/fingerprint.json`:
+
+```bash
+python .agents/skills/code-factory/scripts/project_fingerprint.py --repo <project-root> --write-state
+# writes {"structural": "<64-hex>", "content": "<64-hex>"} atomically
+python .agents/skills/code-factory/scripts/project_fingerprint.py --repo <project-root> --check-state
+# exit 0 = both match, 1 = divergence, 2 = no usable state (run --write-state)
 ```
 
-- **Match** (AGENTS.md exists AND **both** embedded hashes == the recomputed ones) → the project
-  is unchanged: SKIP the analyzer's structural re-analysis and the AGENTS.md regeneration. Proceed
+The state is a RUN artifact (`.code-factory/` is gitignored), so it is regenerated per checkout and
+never travels with the commit: `--write-state` runs right after AGENTS.md is generated, and
+`--check-state` (plus `check_factory_model.py`, §7.4) recomputes both levels and compares.
+
+- **Match** (AGENTS.md exists AND **both** state hashes == the recomputed ones) → the project is
+  unchanged: SKIP the analyzer's structural re-analysis and the AGENTS.md regeneration. Proceed
   directly to the repo-mismatch gate. A content-only change (invisible to level 1) still triggers a
   regeneration — that is exactly what the second level is for.
-- **Either hash missing or mismatching / no AGENTS.md** → regenerate the model below.
-- A **legacy single-hash line** (`<!-- code-factory-fingerprint: <64-hex> -->`, no `content:` part)
-  is a **warning**, not a supported state: such a model cannot see content-only changes, so
-  AGENTS.md is regenerated with both hashes. `check_factory_model.py` (§7.4) reports it as a
-  warning while it validates both hashes.
+- **Either hash mismatching / no AGENTS.md** → regenerate the model below.
+- **No state file at all** (a fresh clone) is an ACTIONABLE error naming `--write-state`: the
+  fingerprints are recomputed, never assumed, and the checker never writes the state itself.
+- A **stale embedded marker** still sitting on AGENTS.md line 1 (the old
+  `<!-- code-factory-fingerprint: … -->` line, one or two hashes) is **IGNORED with a warning**:
+  it is not trusted any more — the state file is the one home — and the warning asks for a
+  regeneration that drops it.
 
 ### 7.2 Generate AGENTS.md (8 sections)
 
@@ -150,9 +163,10 @@ Rules:
 - **Existing AGENTS.md is OVERWRITTEN entirely** — the factory owns the file and it always
   contains exactly these 8 sections. Hand-written project notes belong in `memory/summary.md`,
   not in AGENTS.md.
-- Put the fingerprint comment with BOTH hashes on the first line
-  (`<!-- code-factory-fingerprint: <structural-64-hex> content: <content-64-hex> -->`), then a
-  `# <Project Name>` title line, then the 8 sections.
+- Start the file with the `# <Project Name>` title line, then the 8 sections. Put **no**
+  fingerprint marker on it: both hashes go to `.code-factory/state/fingerprint.json` with
+  `project_fingerprint.py --write-state --repo <project-root>` right after the generation (a stale
+  marker left by an older model is ignored with a warning, never trusted).
 - There is **no init step** in the Scout flow. The factory's own AGENTS.md is already complete;
   the Kimi init slash command would overwrite it and erase the 8 sections, so it is never run.
 
@@ -161,11 +175,13 @@ Rules:
 Both points compare BOTH hashes (`--all`) — the SKIP branch requires both to match:
 
 1. **Start of task (Phase 1)** — catch EXTERNAL changes to the project (edited outside the
-   factory, at any depth): compute both fingerprints; only if BOTH embedded hashes match, skip the
-   regeneration; otherwise regenerate (a content-only difference is enough to regenerate).
-2. **End of task (Phase 9)** — reflect the factory's OWN changes: after implementation +
-   tests, recompute both fingerprints; if the structure/stack/entry points OR the tracked content
-   changed, regenerate AGENTS.md and commit it (respecting `commit_exclude`).
+   factory, at any depth): run `project_fingerprint.py --check-state`; only if BOTH state hashes
+   match, skip the regeneration; otherwise regenerate AGENTS.md and rewrite the state (a
+   content-only difference is enough to regenerate).
+2. **End of task (Phase 9)** — reflect the factory's OWN changes: after implementation + tests,
+   recompute both fingerprints and `--write-state`; if the structure/stack/entry points OR the
+   tracked content changed, regenerate AGENTS.md and commit it (respecting `commit_exclude`). One
+   commit is enough: the hashes are no longer part of the committed file.
 
 ### 7.4 Read the model, don't rebuild it
 
@@ -188,10 +204,12 @@ Verify the model with the deterministic checker:
 python .agents/skills/code-factory/scripts/check_factory_model.py --repo <project-root>
 ```
 
-It asserts: exactly 8 sections, BOTH fingerprints (structural + content) matching, memory format
-correct — and it warns (does not fail) on a legacy single-hash fingerprint line. Run it in
-`final_integration`: on the factory's own root the checker auto-detects that root itself (3-signal
-detector) and SKIPs the AGENTS.md model checks, so no extra flag is needed.
+It asserts: exactly 8 sections, BOTH fingerprints (structural + content) from
+`.code-factory/state/fingerprint.json` matching the recomputation, memory format correct — an
+absent state is the actionable "run `--write-state`" error, and a stale embedded fingerprint marker
+on AGENTS.md line 1 is IGNORED with a warning. Run it in `final_integration`: on the factory's own
+root the checker auto-detects that root itself (the version marker + the deployed flow skill) and
+SKIPs the AGENTS.md model checks, so no extra flag is needed.
 
 Cache: keep the project model in `.code-factory/state/project-model.yaml`.
 

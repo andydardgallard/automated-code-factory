@@ -310,7 +310,32 @@ minor/nit findings are attached separately as "optional" and the coder may skip 
 **Named-model unavailability stops the run (canonical wording):** when a model named in the task's `models:` matrix is unavailable — a provider auth/rate/model error at launch or probe of its role — the run STOPS: in hitl mode the factory asks the owner via `AskUserQuestion` whether to change the matrix (the answer is written to `state/task.yaml`) or to stop, and in auto mode the run ends FAILED with the explicit reason naming the model and the provider error. The main agent NEVER performs the named role's work itself and NEVER substitutes another model, in no mode and under no pretext — "otherwise the run stalls" is not a reason — and no artifact presented as that role's result is produced. A provider failure of a task-named model is classified first with `scripts/error_router.py classify`: a `PROVIDER_*` category routes to infrastructure with budget 3, the record goes to `logs/errors.md` and the counter to `state/pipeline.yaml`, but every retry uses the SAME named model, and an exhausted budget means stop-and-ask, never degradation. An unknown role written into `models_used` — a key absent from the `ROLES` registry of `scripts/model_matrix.py` (`main` aside) — is a run error that exits 1 naming the role, never DEGRADED.
 <!-- factory-rule: model-unavailable-stop end -->
 - Review is bounded: **reviewer budget = 2** iterations per `implement`/`refactor` task (track
-  `retry_counters.reviewer` in `.code-factory/state/pipeline.yaml`).
+  `retry_counters.reviewer` in `.code-factory/state/pipeline.yaml`). The counter is counted by the
+  gate that executes the delegation, not by whoever reports it: before EVERY
+  `factory-code-reviewer` delegation the main agent runs
+  `scripts/delegation_gate.py check --repo <resolved repo_path> --role reviewer --mode <hitl|auto>`,
+  which atomically increments `retry_counters.reviewer` and REFUSES the delegation (`allow: false`,
+  exit 1) once the budget is exhausted — in hitl the refusal forces the `AskUserQuestion` owner
+  stop, in auto it means the run ends FAILED; only an explicit `--owner-authorized` (hitl only,
+  each decision recorded with a timestamp in the checkpoint) grants exactly one extra delegation PER
+  owner decision — the owner really may answer the stop twice, and each answer buys one more
+  delegation. A reviewer pass that was never counted is a violation of the bounded gate, not a
+  detail of the report.
+- **Finding disposition (every finding, before it can cost an iteration)**: the main agent records
+  one disposition per merged finding in `.code-factory/logs/findings-disposition.md` —
+  `finding_disposition: accepted|refuted`, and a `refuted` finding carries its evidence (the quote
+  from the code/test that shows the finding is wrong). `scripts/merge_findings.py --round <round id>` produces the list
+  to dispose of (and stamps the round into the merged report, so the settlement can refuse an
+  artifact that belongs to another round); a finding with no disposition is open, and open critical/major findings block a
+  SUCCESS exactly as §0 states.
+- **A wholly refuted round is refunded, a mixed one never**: when EVERY finding of a review round
+  was refuted with evidence, the round consumed a reviewer iteration it did not deserve, so the
+  settlement refunds exactly that one iteration:
+  `scripts/delegation_gate.py settle --repo <resolved repo_path> --role reviewer --round <round
+  id> --evidence <the merged report of THAT round> --refuted-all` — never below 0, idempotent per round (the round is recorded
+  in `settled_rounds` in `state/pipeline.yaml`), and evidence is mandatory. A mixed round (at least
+  one accepted finding) is NEVER refunded, however many findings were refuted, and no refund
+  replaces the counting rule above: the gate still counts the next delegation.
 - For `implement`/`refactor` only: after a `request_changes` round, the coder applies the rework
   list, then the factory MUST re-run **integration + regression** tests (and business tests only if
   the rework touched business logic) before re-invoking the reviewer. A `task_type: review` run has

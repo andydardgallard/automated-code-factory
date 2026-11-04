@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.22.0 -->
+<!-- code-factory-version: 12.23.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -37,7 +37,7 @@ projects or creates projects from scratch.
 │       ├── scripts/
 │       │   ├── gen_code_changes_report.py  # report_code_changes.md generator (before→after diff)
 │       │   ├── test_gen_code_changes_report.py  # self-test of the report generator (argparse, UTF-8)
-│       │   ├── project_fingerprint.py      # two-level fingerprint: structural + content
+│       │   ├── project_fingerprint.py      # two-level fingerprint: structural + content, recorded in DERIVED STATE — .code-factory/state/fingerprint.json (--write-state / --check-state); AGENTS.md embeds no marker, a stale marker is ignored with a warning
 │       │   ├── check_factory_model.py      # check: 8 sections + both fingerprints + memory format (factory root — SKIP)
 │       │   ├── test_factory_model.py       # self-test of the model scripts
 │       │   ├── memory_project.py           # project memory: init/name/check/compact/rename/backlog/compact-check/validate-fix-tasks
@@ -58,9 +58,9 @@ projects or creates projects from scratch.
 │       │   ├── test_precedent_index.py     # precedent index self-test
 │       │   ├── model_matrix.py             # the single model-precedence resolver: task matrix > default matrix, family check, committee second planner; `resolve` exits 1 on an ERROR — a role with NO model (source `none`) or a default matrix that breaks generator != judge
 │       │   ├── test_model_precedence.py    # model precedence self-test
-│       │   ├── model_attribution.py        # artifact-backed model attribution from the CLI session wire (cross-checks models_used)
+│       │   ├── model_attribution.py        # artifact-backed model attribution from the CLI session wire (cross-checks models_used; STRICT by default for implement/refactor — a role named in pipeline.yaml required_roles that claims a model but leaves no wire trace FAILS)
 │       │   ├── test_model_attribution.py   # model attribution self-test
-│       │   ├── review_followup_task.py     # deterministic review follow-up task generator (.code-factory/review/fix-tasks.yaml)
+│       │   ├── review_followup_task.py     # deterministic review follow-up task generator (.code-factory/review/fix-tasks.yaml; a refuted finding is omitted with its evidence stated, never silently)
 │       │   ├── test_review_followup_task.py # review follow-up task generator self-test
 │       │   ├── test_review_report_only.py  # report-only review guard (the review verdict reaches no write node)
 │       │   ├── test_security_audit_guarantee.py # security_audit keeps its own guarantee, not duplicated
@@ -77,15 +77,25 @@ projects or creates projects from scratch.
 │       │   ├── test_remote_reference_docs.py # remote reference_docs self-test (loopback HTTP + local/bare Git fixtures)
 │       │   ├── chrome_devtools_mcp.py      # conditional browser path: decide/discover-e2e/browser-matrix/vendor-install/merge-config/probe/validate-config
 │       │   ├── test_chrome_devtools_mcp.py # Chrome DevTools MCP helper self-test
-│       │   ├── farukon_mcp.py              # conditional platform path: decide, merge-config, probe (--check-mcp-start opt-in), validate-config
+│       │   ├── farukon_mcp.py              # conditional platform path: decide (requires an explicit platform SUBJECT, not identity vocabulary alone), merge-config, probe (--check-mcp-start opt-in; the timeout must be finite and non-negative, zero = immediate), validate-config
 │       │   ├── test_farukon_mcp.py         # Farukon MCP helper self-test (decide, merge, conflict exit 3, handshake, invariants)
+│       │   ├── mcp_json_merge.py           # shared text-preserving JSON merge of the two MCP helpers (library only, no CLI)
+│       │   ├── manifest.py                 # change set with COMPUTED sha256: init / require (pre-edit gate) / add --changed|--created (backup first) / audit
+│       │   ├── test_manifest.py            # manifest enforcement self-test
+│       │   ├── delegation_gate.py          # per-role retry budgets counted at EXECUTION: check (increment or refuse), init, settle (refund a wholly refuted reviewer round), audit (counters vs session wire); --owner-authorized grants one extra delegation per owner decision
+│       │   ├── test_delegation_gate.py     # delegation gate self-test
+│       │   ├── permit_gate.py              # supervisor permits: add/verdict/bind/close + finish audit (every spawn = a unique allowed permit judged before it, scope ⊆ the plan task's files)
+│       │   ├── test_permit_gate.py         # permit gate self-test
+│       │   ├── gate_all.py                 # phase K|Y aggregator of the deterministic gates: a gate that ran leaves a record, a missing record is a failure
+│       │   ├── test_gate_all.py            # gate aggregator self-test
+│       │   ├── test_business_tester_flow.py # business-tester role wiring self-test
 │       │   ├── version_manager.py          # single version source: get/bump/sync/validate/set/suggest
 │       │   ├── test_version_manager.py     # version script self-test (≥12 cases)
 │       │   ├── validate_mermaid.py         # structural Mermaid diagram validator
 │       │   ├── test_validate_mermaid.py    # Mermaid validator self-test
 │       │   ├── repo_inventory.py           # repository inventory + shards (shard protocol; --tracked = the `git ls-files -z` set)
 │       │   ├── test_repo_inventory.py      # inventory self-test
-│       │   ├── merge_findings.py           # deterministic merge of shard findings + verdict
+│       │   ├── merge_findings.py           # deterministic merge of shard findings + verdict (finding_disposition accepted|refuted — a refutation needs findings_evidence and stops counting toward the critical rule; a finding is refuted only when every shard occurrence is; --round stamps the round identity)
 │       │   ├── test_merge_findings.py      # findings merge self-test
 │       │   ├── plan_arbiter.py             # merge of two competing plans + list of discrepancies
 │       │   ├── test_plan_arbiter.py        # plan arbiter self-test
@@ -95,7 +105,7 @@ projects or creates projects from scratch.
 │       │   ├── test_log_tail.py            # log tail self-test
 │       │   ├── factory_preflight.py        # environment pre-flight (python/python3/py etc.; --web-gui adds the browser capability block, --farukon the platform block)
 │       │   ├── test_factory_preflight.py   # pre-flight self-test
-│       │   ├── action_gate.py              # destructive actions: ALLOW/CONFIRM/HARD_DENY (shell wrappers classified by payload; mutating git stash → CONFIRM, `stash list/show` → ALLOW; a push whose destination is `HEAD`/`@` → CONFIRM, because HEAD is whatever branch is checked out)
+│       │   ├── action_gate.py              # destructive actions: ALLOW/CONFIRM/HARD_DENY (shell wrappers classified by payload; process signalling — kill/pkill/killall/taskkill/Stop-Process — classified by blast radius, since a kill has no path to scope; mutating git stash → CONFIRM, `stash list/show` → ALLOW; a push whose destination is `HEAD`/`@` → CONFIRM) + `audit`: the commands the CLI really EXECUTED, from the session wire, joined with the journal — a destructive command with no decision fails, malformed evidence fails closed
 │       │   ├── test_action_gate.py         # action gate self-test (+ --help/usage under cp1251)
 │       │   ├── task_graph.py               # on-disk task graph: create/claim/complete/ready/list
 │       │   ├── test_task_graph.py          # task graph self-test
@@ -127,9 +137,11 @@ projects or creates projects from scratch.
         ├── gui-expert.md            # subagent: Web GUI implementation and browser debugging (Chrome DevTools MCP)
         ├── farukon-expert.md        # subagent: Farukon platform implementation, build/run/debug (Farukon MCP)
         ├── tester.md                # subagent: tests and result verification
+        ├── business-tester.md       # subagent: adversarial user-level breakage testing (generator-side, parallel with the tester)
         ├── diagnostician.md         # subagent: deep error analysis (read-only)
         ├── advisor.md               # subagent: second opinion on an error after the Diagnostician
         ├── code-reviewer.md         # subagent: static code review (read-only)
+        ├── supervisor.md            # subagent: read-only judge — allow|deny permit verdicts against the rulebook + the approved plan — model-enforced, and `permit_gate.py audit` is the deterministic backstop (a bypassing main agent is DETECTED at finish, not intercepted)
         ├── refactorer.md            # subagent: refactoring without behavior changes
         ├── security-auditor.md      # subagent: security audit (read-only)
         ├── documenter.md            # subagent: documentation of changed files (secondary)
@@ -293,10 +305,16 @@ The factory itself keeps the project's `AGENTS.md` an up-to-date single source o
 
 - it generates exactly 8 `##` sections (Project Overview, Technology Stack, Architecture Overview,
   Directory Structure, Key Configuration Files, Build & Run Instructions,
-  Dependencies & Integrations, Known Constraints & Limitations) and embeds a
-  deterministic TWO-LEVEL fingerprint — structural + content — into the first line:
-  `<!-- code-factory-fingerprint: <64-hex> content: <64-hex> -->`;
-- the fingerprint is computed by `scripts/project_fingerprint.py --all`: the structural level —
+  Dependencies & Integrations, Known Constraints & Limitations); its
+  deterministic TWO-LEVEL fingerprint — structural + content — lives in DERIVED STATE,
+  `.code-factory/state/fingerprint.json` (`{"structural": "<64-hex>", "content": "<64-hex>"}`), and
+  AGENTS.md itself carries NO marker;
+- the fingerprint is computed by `scripts/project_fingerprint.py`: `--write-state` writes the pair
+  atomically and `--check-state` compares it with the recomputed one (exit 0 = both match, 1 =
+  divergence, 2 = no usable state), so the file no longer depends on the commit that carries it — one
+  version commit is enough and the "skip regeneration" branch stays reachable. A fresh clone with no
+  state file is an actionable error naming `--write-state`; a stale embedded marker left by an older
+  model is IGNORED with a warning. The structural level —
   stack manifests, CI configs, README, directory list; the content level — SHA-256 of the contents
   of the tracked working-tree files with CRLF→LF normalization (the factory's own artifacts are
   excluded at both levels). The content level reads the working tree, so unstaged edits are
@@ -331,16 +349,16 @@ with a `reason:` is a legitimate state (`--run-id <id>` names the current record
 access to a project, if `memory/` is missing, it is created with the command
 `python .agents/skills/code-factory/scripts/memory_project.py init --repo <deployment root>
 --project <basename of the resolved repo_path>` (the name is fixed in the summary's `project:` declaration).
-Model check — the `scripts/check_factory_model.py` script (8 sections + fingerprint + journal format);
-self-test — `scripts/test_factory_model.py`; memory ownership — `memory_project.py
+Model check — the `scripts/check_factory_model.py` script (8 sections + the fingerprint state + journal
+format); self-test — `scripts/test_factory_model.py`; memory ownership — `memory_project.py
 check`, and the script's own memory validation is a thin delegation to
 `memory_project.validate_memory`, so there is ONE memory contract rather than two. On the FACTORY'S OWN ROOT the script works without the `--memory-only` flag: it auto-detects a
-hand-authored `AGENTS.md` by THREE signals — the first line has NO `code-factory-fingerprint` marker,
-but DOES have the factory's own `code-factory-version` marker, and
-`.agents/skills/code-factory/SKILL.md` is deployed alongside — and prints `SKIP` with an explanation: this is not an error, the memory and
-WIP checkpoint are checked as usual. For target projects the behavior is unchanged: the skill is deployed by
-`prepare_factory` into EVERY project, so its presence alone is not enough — an AGENTS.md without a fingerprint
-remains an error, and a stale fingerprint remains an error even at the factory root.
+hand-authored `AGENTS.md` by TWO signals that must hold together — the first line carries the factory's own
+`code-factory-version` marker, and `.agents/skills/code-factory/SKILL.md` is deployed alongside — and prints
+`SKIP` with an explanation: this is not an error, the memory and WIP checkpoint are checked as usual. For target
+projects the behavior is unchanged: the skill is deployed by `prepare_factory` into EVERY project, so its
+presence alone is not enough — an AGENTS.md with no fingerprint state remains an error, and a state that is
+present but stale remains an error even at the factory root.
 
 ## Business task format
 
@@ -563,6 +581,17 @@ Practical techniques (proven on a real run):
   the filter works by rerunning with a threshold commensurate with the instrument's price;
 - run business tests with exactly the commands the user provided (build + run);
 - delete the run's side artifacts (results folders) after verification, or ignore them in git.
+
+Adversarial business testing is a separate, generator-side role: `factory-business-tester`
+(`sub-agents/business-tester.md`) attacks the delivered change the way a real, impatient user would —
+through the product's OWN interfaces only (CLI, HTTP/API, Web GUI) — with wrong input type/range,
+empty/huge/malformed data, wrong order of operations, edge configuration, repeated clicks/double
+submits and interrupted flows. It runs IN PARALLEL with the tester at the business-test node for
+`implement`, `review` and `refactor` (never for `security_audit`), writes its evidence to
+`.code-factory/logs/business-adversarial/<run_id>.json`, and never edits a product file. Its findings
+are DIAGNOSTIC — the acceptance evidence stays tester-owned — and a breakage classifies through
+`error_router.py` like a tester failure and takes the SAME route (rollback, then the coder with the
+EXISTING coder budget): there is no separate business-tester budget.
 
 ## Web GUI and the Chrome DevTools MCP path (conditional)
 
@@ -824,6 +853,18 @@ family differs from the reviewer's), a secondary model is preferred for routine 
 used model is logged as `models_used.farukon_expert` in `pipeline.yaml`/`report.md`. The key is the
 ONLY task-side switch for the role — whether the role runs at all is decided by the deterministic
 applicability check, never by the presence of the key.
+The optional `models.business_tester` key names the model of the adversarial tester
+`factory-business-tester`: generator-side like `models.coder` (so its family differs from the
+reviewer's), logged as `models_used.business_tester`. The optional `models.supervisor` key names the
+model of `factory-supervisor`, which is judge-side — its family must contrast with the generator's —
+and is logged as `models_used.supervisor`.
+Attribution of the logged models is STRICT BY DEFAULT for `implement`/`refactor`: the run writes
+`task_type` and `required_roles` into `.code-factory/state/pipeline.yaml` (the mandatory non-empty
+set: analyzer, planner, coder, tester, reviewer, documenter — the conditional roles gui_expert,
+farukon_expert, security_auditor and business_tester may be listed too), and
+`model_attribution.py` FAILS a run in which a required role claims a model in `models_used` but
+leaves no trace in the CLI session wire. A missing wire is DEGRADED only outside strict attribution,
+and `--strict` turns it on for `review`/`security_audit` as well; there is no weakening opt-out.
 The only exception where the matrix is NOT applied is the committee's second planner (double plan
 rejection): the committee rule is stronger than the matrix, and its family is chosen deterministically —
 contrasting with the first planner (`references/providers.md` §5.2).
@@ -845,12 +886,14 @@ If `kimi` is started from a new terminal, a launcher, or via `sudo`, the variabl
 the factory will see `unset` — this is a property of the launch environment, not a factory bug.
 
 Recommended role mapping:
-- primary (reasoning): main/planner, analyzer, diagnostician, reviewer;
+- primary (reasoning): main/planner, analyzer, diagnostician, reviewer; the read-only gatekeeper
+  `factory-supervisor` is judge-side too (`models.supervisor`) — it only returns permit verdicts;
 - secondary (fast): coder, tester; the Web GUI specialist `factory-gui-expert` is generator-side and
   may use a secondary model for routine UI implementation (`models.gui_expert`), with complex visual
   analysis delegated to a read-only primary role; the Farukon platform specialist
   `factory-farukon-expert` is generator-side in the same way and may use a secondary model for routine
-  platform work (`models.farukon_expert`);
+  platform work (`models.farukon_expert`); the adversarial tester `factory-business-tester` is
+  generator-side in the same way (`models.business_tester`) and runs in parallel with the tester;
 - planner-2 (committee on double rejection): a model from a family CONTRASTING with the planner
   (`sub-agents/planner.md`; `model_preference: secondary` is only a fallback), so that the second plan is
   truly independent rather than a retelling of the first.

@@ -3,7 +3,7 @@
 Deterministic self-test for the factory's model scripts (zero LLM tokens).
 
 Builds a synthetic project, then verifies `check_factory_model.py`:
-  - a correct 8-section AGENTS.md + fingerprint + memory passes (exit 0),
+  - a correct 8-section AGENTS.md + fingerprint STATE + memory passes (exit 0),
   - corrupting each invariant fails (exit 1),
   - the `unfinished` memory section is validated (no-debt, with-debt, incomplete -> fail,
     legacy -> warning), and `factory_version` is validated,
@@ -18,18 +18,20 @@ Builds a synthetic project, then verifies `check_factory_model.py`:
     keys, `status` enum, `run_id` format, list/mapping types of the optional keys, empty flow
     collections `[]`/`{}` count as the list/mapping they spell) and a missing one is a SKIP, never
     a failure,
-  - the factory's OWN root is auto-detected by THREE signals — a hand-authored AGENTS.md whose line 1
-    carries no fingerprint marker but DOES carry the factory's own `code-factory-version` marker,
-    plus the deployed flow skill `.agents/skills/code-factory/SKILL.md` — and SKIPPED with a note
-    (exit 0), while a target project missing ANY of them still fails: without the version marker
-    (though `prepare_factory` deploys the skill into every target project) and with a model whose
-    fingerprint went stale,
+  - the factory's OWN root is auto-detected by TWO signals — a hand-authored AGENTS.md whose line 1
+    DOES carry the factory's own `code-factory-version` marker, plus the deployed flow skill
+    `.agents/skills/code-factory/SKILL.md` — and SKIPPED with a note (exit 0), while a target
+    project missing EITHER of them still fails: without the version marker (though
+    `prepare_factory` deploys the skill into every target project) and with a model whose
+    fingerprint state went stale,
   - the AGENTS.md SIZE GATE: over 28 KB is a WARNING, over 32 KB a hard ERROR, on BOTH the
     validation path (`check_factory_model.py`) and the generation path (`project_fingerprint.py`,
     whose printed hash never changes), with the boundary proven exact and the factory's own
     hand-authored manual explicitly NOT exempt (it is the file that once reached 38 KB),
-  - the two-level fingerprint line is validated: the `... content: <hash>` format passes, a
-    forged or stale CONTENT hash fails, and a legacy single-hash line only warns,
+  - the two-level fingerprint lives in `.code-factory/state/fingerprint.json` (AGENTS.md no longer
+    embeds it): a fresh state passes silently, a forged or stale STRUCTURAL/CONTENT hash fails, a
+    MISSING state is the actionable "run `--write-state`" error and is never populated by the
+    checker, and a stale embedded marker on AGENTS.md line 1 is IGNORED with a warning,
   - ONE memory contract, TWO entry points: `check_factory_model.validate_memory` delegates to
     `memory_project.validate_memory`, and the parity block runs BOTH functions and BOTH CLIs over
     the SAME fixtures, asserting identical verdicts on the six axes the two hand-written copies
@@ -53,14 +55,17 @@ axis.
     `untracked_files` detects them, the CLI notes them on stderr and the model check warns while
     staying green (exit 0),
   - both fingerprints stay stable across a commit of the factory's own artifacts,
-  - the CLI modes (default = structural only, `--content`, `--all`) behave as documented.
+  - the CLI modes (default = structural only, `--content`, `--all`) behave as documented, and the
+    state modes are exact: `--write-state` writes exactly the two 64-hex hashes atomically and
+    `--check-state` answers 0 match / 1 divergence / 2 no usable state (missing, malformed or
+    partial), naming the fix.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
 from __future__ import annotations
 
+import json
 import pathlib
-import re
 import shutil
 import subprocess
 import sys
@@ -295,7 +300,12 @@ def memory_fixture(root: pathlib.Path, entry: str = VALID_ENTRY,
 
 
 def build(root: pathlib.Path, entry: str = VALID_ENTRY) -> None:
-    """Write a synthetic but valid project model into `root` (fingerprints stamped on top)."""
+    """Write a synthetic but valid project model into `root`.
+
+    The model is exactly what the flow generates — an 8-section AGENTS.md starting with the title
+    and carrying NO fingerprint marker (both hashes live in the state file) — plus a memory and a
+    fresh fingerprint state written on top.
+    """
     (root / "src").mkdir(parents=True, exist_ok=True)
     (root / "memory").mkdir(exist_ok=True)
     (root / "pyproject.toml").write_text("[project]\nname = \"demo\"\n", encoding="utf-8")
@@ -304,43 +314,48 @@ def build(root: pathlib.Path, entry: str = VALID_ENTRY) -> None:
     (root / "memory" / "change-log.md").write_text(CHANGE_LOG_HEADER + entry, encoding="utf-8")
     (root / "memory" / "summary.md").write_text(SUMMARY, encoding="utf-8")
 
-    lines = ["<!-- code-factory-fingerprint: (unstamped) -->", "# Demo — Project Model", ""]
+    lines = ["# Demo — Project Model", ""]
     for s in SECTIONS:
         lines += [f"## {s}", "", f"Content of {s}.", ""]
     (root / "AGENTS.md").write_text("\n".join(lines), encoding="utf-8")
     stamp(root)
 
 
+def state_path(root: pathlib.Path) -> pathlib.Path:
+    """The derived fingerprint state of `root` — the ONE home of both hashes."""
+    return root / project_fingerprint.FINGERPRINT_STATE_REL
+
+
+def state_of(root: pathlib.Path) -> dict:
+    """The fingerprint state as written on disk."""
+    return json.loads(state_path(root).read_text(encoding="utf-8"))
+
+
+def write_state_file(root: pathlib.Path, state: dict) -> None:
+    """Overwrite the state file with `state` (a fixture mutation, not the implementation)."""
+    state_path(root).parent.mkdir(parents=True, exist_ok=True)
+    state_path(root).write_text(json.dumps(state) + "\n", encoding="utf-8")
+
+
 def stamp(root: pathlib.Path) -> None:
-    """Rewrite AGENTS.md line 1 with the CURRENT structural + content fingerprints.
+    """Rewrite the STATE file with the CURRENT structural + content fingerprints.
 
     Called after every project change that the check itself cannot anticipate (e.g. `git add`,
     which is what the content level reads), so a stale model is never mistaken for a broken one.
+    AGENTS.md is not touched: the hashes are no longer part of it.
     """
-    agents = root / "AGENTS.md"
-    body = agents.read_text(encoding="utf-8").splitlines()[1:]  # drop the old fingerprint line
-    line = "<!-- code-factory-fingerprint: %s content: %s -->" % (
-        project_fingerprint.compute_fingerprint(root),
-        project_fingerprint.compute_content_fingerprint(root))
-    agents.write_text("\n".join([line, *body]), encoding="utf-8")
+    project_fingerprint.write_state(root)
 
 
 def fingerprint_line(root: pathlib.Path) -> str:
-    """Return the raw first (fingerprint) line of AGENTS.md."""
+    """Return the raw first line of AGENTS.md (the title — no fingerprint marker any more)."""
     return (root / "AGENTS.md").read_text(encoding="utf-8").splitlines()[0]
 
 
 def replace_line1(root: pathlib.Path, line: str) -> None:
-    """Replace AGENTS.md line 1 (the fingerprint line) with `line`."""
+    """Replace AGENTS.md line 1 with `line` (used for the stale/legacy marker fixtures)."""
     lines = (root / "AGENTS.md").read_text(encoding="utf-8").splitlines()
-    (root / "AGENTS.md").write_text("\n".join([line, *lines[1:]]), encoding="utf-8")
-
-
-def parsed_fingerprint(root: pathlib.Path) -> re.Match:
-    """Match AGENTS.md line 1 against the checker's regex (structural [+ content] hashes)."""
-    m = check_factory_model.FINGERPRINT_RE.match(fingerprint_line(root).strip())
-    expect(m is not None, f"line 1 must carry a fingerprint: {fingerprint_line(root)!r}")
-    return m
+    (root / "AGENTS.md").write_text("\n".join([line, *lines[1:]]) + "\n", encoding="utf-8")
 
 
 def run_cli(*args: str) -> int:
@@ -424,11 +439,25 @@ def main() -> int:
         expect(check_factory_model.check_agents(root) != [], "missing section must fail")
         expect(run_cli("--repo", str(root)) != 0, "missing section must exit != 0")
 
-        # 3. Wrong (structural AND content) fingerprint -> FAIL.
+        # 3. Wrong (structural AND content) fingerprint STATE -> FAIL. The hashes live in
+        #    .code-factory/state/fingerprint.json now, so a forged state is what a stale model is.
         build(root)
-        replace_line1(root, "<!-- code-factory-fingerprint: " + "0" * 64
-                            + " content: " + "0" * 64 + " -->")
-        expect(check_factory_model.check_agents(root) != [], "wrong fingerprint must fail")
+        write_state_file(root, {"structural": "0" * 64, "content": "0" * 64})
+        errors = check_factory_model.check_agents(root)
+        expect(any("structural fingerprint mismatch" in e for e in errors)
+               and any("content fingerprint mismatch" in e for e in errors),
+               f"a forged state must fail both levels: {errors}")
+
+        # 3b. NO state at all is the fresh-clone case: an actionable error naming --write-state,
+        #     never a silent trust and never an automatic population by the checker.
+        build(root)
+        state_path(root).unlink()
+        errors = check_factory_model.check_agents(root)
+        expect(any("no fingerprint state" in e and "--write-state" in e for e in errors),
+               f"a missing state must name the fix: {errors}")
+        expect(not state_path(root).exists(),
+               "the checker must never write the state itself")
+        expect(run_cli("--repo", str(root)) == 1, "a missing state must exit 1")
 
         # 4. Corrupt memory entry (remove a required key) -> FAIL.
         build(root)
@@ -549,18 +578,18 @@ def main() -> int:
         expect(run_cli("--repo", str(root), "--memory-only") == 0,
                "a 'project:' example in a code block must still exit 0")
 
-        # 23. Two-hash format (structural + content): accepted without warnings, and a FORGED
+        # 23. The state is the one home: a fresh state passes WITHOUT warnings, and a FORGED
         #     content hash fails — a content-only drift is an error, not a warning.
         build(root)
-        expect(check_factory_model.check_agents(root) == [], "two-hash model must pass")
-        expect(agents_warnings(root) == [], f"two-hash model must not warn: {agents_warnings(root)}")
-        replace_line1(root, "<!-- code-factory-fingerprint: %s content: %s -->"
-                            % (parsed_fingerprint(root).group(1), "0" * 64))
+        expect(check_factory_model.check_agents(root) == [], "a fresh state must pass")
+        expect(agents_warnings(root) == [], f"a fresh state must not warn: {agents_warnings(root)}")
+        current_state = state_of(root)
+        write_state_file(root, {**current_state, "content": "0" * 64})
         expect(any("content fingerprint mismatch" in e for e in check_factory_model.check_agents(root)),
                "a forged content hash must fail with a content mismatch")
         expect(run_cli("--repo", str(root)) != 0, "a forged content hash must exit != 0")
 
-        # 23b. A REAL content-only change (structural signals untouched, hash left stale) must fail
+        # 23b. A REAL content-only change (structural signals untouched, state left stale) must fail
         #      the model check as well — this is what makes "skip regeneration" safe.
         build(root)
         struct = project_fingerprint.compute_fingerprint(root)
@@ -570,18 +599,27 @@ def main() -> int:
         expect(any("content fingerprint mismatch" in e for e in check_factory_model.check_agents(root)),
                "a stale content hash must fail the model check")
 
-        # 24. Legacy single-hash fingerprint line: accepted with a WARNING, never an error, so
-        #     models generated before the two-level fingerprint keep working.
+        # 24. A STALE embedded marker (the old two-hash line, or its single-hash ancestor) is
+        #     IGNORED — the state file is the one home — and only WARNED about, so a model written
+        #     before this change keeps working until it is regenerated.
         build(root)
-        legacy = "<!-- code-factory-fingerprint: %s -->" % parsed_fingerprint(root).group(1)
-        replace_line1(root, legacy)
-        expect(check_factory_model.check_agents(root) == [], "legacy line must not be an error")
-        expect(any("legacy" in w and "content" in w for w in agents_warnings(root)),
-               "legacy line must warn about the missing content hash")
-        expect(run_cli("--repo", str(root)) == 0, "legacy line must still exit 0 (warning only)")
+        structural = state_of(root)["structural"]
+        replace_line1(root, f"<!-- code-factory-fingerprint: {structural} content: {'0' * 64} -->")
+        expect(check_factory_model.check_agents(root) == [],
+               "a stale embedded marker must not be trusted, hence not an error")
+        expect(any("IGNORED" in w and project_fingerprint.FINGERPRINT_STATE_REL.as_posix() in w
+                   for w in agents_warnings(root)),
+               f"a stale marker must warn that the state is the home: {agents_warnings(root)}")
+        expect(run_cli("--repo", str(root)) == 0, "a stale marker must still exit 0 (warning only)")
+        #     …and the legacy single-hash line takes the same path.
+        replace_line1(root, f"<!-- code-factory-fingerprint: {structural} -->")
+        expect(check_factory_model.check_agents(root) == [], "a legacy line is still not an error")
+        expect(any("IGNORED" in w for w in agents_warnings(root)),
+               "a legacy line must warn that it is ignored")
 
         # 25. project_fingerprint.py CLI contract: no flag -> structural only (backwards
-        #     compatible), --content -> content only, --all -> both labelled lines.
+        #     compatible), --content -> content only, --all -> both labelled lines, and the two
+        #     state modes (--write-state / --check-state) that replaced the embedded marker.
         build(root)
         struct = project_fingerprint.compute_fingerprint(root)
         content = project_fingerprint.compute_content_fingerprint(root)
@@ -593,6 +631,36 @@ def main() -> int:
         all_out = run_fp("--repo", str(root), "--all").stdout.splitlines()
         expect(all_out == [f"structural: {struct}", f"content: {content}"],
                f"--all must print both labelled hashes: {all_out}")
+
+        # 25a. --write-state / --check-state: exactly two 64-hex hashes, atomic write, and the four
+        #      documented outcomes (match / divergence / missing / malformed).
+        state_path(root).unlink()
+        written = run_fp("--repo", str(root), "--write-state")
+        expect(written.returncode == 0, f"--write-state must succeed: {written.stderr!r}")
+        on_disk = json.loads(state_path(root).read_text(encoding="utf-8"))
+        expect(set(on_disk) == {"structural", "content"} and on_disk["structural"] == struct
+               and on_disk["content"] == content,
+               f"the state must carry exactly both hashes: {on_disk}")
+        expect(not list(state_path(root).parent.glob("*.tmp")),
+               "the state write must be atomic (no temp file left behind)")
+        expect(run_fp("--repo", str(root), "--check-state").returncode == 0,
+               "--check-state must report a match")
+        (root / "src" / "main.py").write_text("print('drift')\n", encoding="utf-8")
+        diverged = run_fp("--repo", str(root), "--check-state")
+        expect(diverged.returncode == 1 and "diverged: content" in diverged.stdout,
+               f"--check-state must report the divergence by name: {diverged.stdout!r}")
+        state_path(root).unlink()
+        missing_state = run_fp("--repo", str(root), "--check-state")
+        expect(missing_state.returncode == 2 and "--write-state" in missing_state.stderr,
+               f"a missing state must be an actionable input error: {missing_state.stderr!r}")
+        write_state_file(root, {"structural": "zz", "content": "0" * 64})
+        malformed = run_fp("--repo", str(root), "--check-state")
+        expect(malformed.returncode == 2 and "64 lowercase hex" in malformed.stderr,
+               f"a malformed state must be an input error: {malformed.stderr!r}")
+        write_state_file(root, {"structural": "0" * 64})
+        partial = run_fp("--repo", str(root), "--check-state")
+        expect(partial.returncode == 2 and "exactly" in partial.stderr,
+               f"a state missing a key must be refused: {partial.stderr!r}")
 
         # 26. Memory format v2 (run_id + provenance marks). A record of a current-generation
         #     factory must carry them: a missing or malformed `run_id`, or a missing mark in
@@ -804,6 +872,76 @@ def main() -> int:
                                                 "retry_counters: {}\n")
         expect(pipeline_errors(proot, empty_counters) == [],
                "an empty flow mapping for retry_counters must be accepted")
+
+        #     The strict-attribution contract (task_08): `task_type` must be one of the four —
+        #     strict model attribution is the DEFAULT for implement/refactor, so a typo would
+        #     silently switch the gate off — and `required_roles` must be a duplicate-free list of
+        #     REGISTERED roles without `main`. A CONDITIONAL role may be listed (a task that needs
+        #     the Web GUI specialist states it), and nothing fabricates it as mandatory.
+        mandatory = "".join(f"  - {role}\n" for role in
+                            check_factory_model.MANDATORY_ROLES)
+        strict_extra = f"required_roles:\n{mandatory}"
+        for kind in ("review", "security_audit"):
+            expect(pipeline_errors(proot, VALID_PIPELINE + f"task_type: {kind}\n") == [],
+                   f"task_type '{kind}' must be accepted without required_roles (only the "
+                   f"implement/refactor chain is mandatory)")
+        for kind in ("implement", "refactor"):
+            expect(pipeline_errors(proot, VALID_PIPELINE + f"task_type: {kind}\n"
+                                                           + strict_extra) == [],
+                   f"task_type '{kind}' with the mandatory roles must be accepted")
+
+        # (R1-03) An implement/refactor checkpoint that OMITS or EMPTIES required_roles disables
+        # strict attribution — the gate exists for exactly those runs, so both are errors.
+        for kind in ("implement", "refactor"):
+            omitted = pipeline_errors(proot, VALID_PIPELINE + f"task_type: {kind}\n")
+            expect(any("must declare 'required_roles'" in e for e in omitted),
+                   f"a {kind} checkpoint with no required_roles must fail: {omitted}")
+            empty = pipeline_errors(proot, VALID_PIPELINE + f"task_type: {kind}\n"
+                                                           "required_roles: []\n")
+            expect(any("lists NO required role" in e for e in empty),
+                   f"a {kind} checkpoint with an empty required_roles must fail: {empty}")
+        partial = VALID_PIPELINE + "task_type: implement\nrequired_roles:\n  - analyzer\n" \
+                                   "  - planner\n"
+        expect(any("must require" in e and "coder" in e
+                   for e in pipeline_errors(proot, partial)),
+               "an implement checkpoint missing a mandatory role must name it")
+        # …the conditional roles stay OPTIONAL on top of the mandatory set.
+        conditional = VALID_PIPELINE + "task_type: implement\n" + strict_extra \
+            + "  - gui_expert\n  - business_tester\n"
+        expect(pipeline_errors(proot, conditional) == [],
+               "a conditional role may be declared on top of the mandatory set")
+        expect(pipeline_errors(proot, VALID_PIPELINE + "task_type: deploy\n") != [],
+               "an unknown task_type must fail")
+        expect(any("task_type" in e for e in
+                   pipeline_errors(proot, VALID_PIPELINE + "task_type: deploy\n")),
+               "the error must name the key")
+        empty_task_type = VALID_PIPELINE + "task_type:\n"
+        expect(any("present but empty" in e for e in pipeline_errors(proot, empty_task_type)),
+               "an empty task_type must fail (a silently disabled gate is the defect)")
+        expect(pipeline_errors(proot, VALID_PIPELINE + "required_roles:\n  - analyzer\n"
+                                                       "  - gui_expert\n") == [],
+               "a required_roles list of registered roles (a conditional one included) must pass")
+        expect(pipeline_errors(proot, VALID_PIPELINE + "task_type: review\n"
+                                                    "required_roles: []\n") == [],
+               "an empty required_roles list is accepted where nothing is mandatory (review)")
+        expect(any("must be a list of roles" in e for e in
+                   pipeline_errors(proot, VALID_PIPELINE + "required_roles: analyzer\n")),
+               "a scalar required_roles must fail")
+        unknown_role = VALID_PIPELINE + "required_roles:\n  - orchestrator\n"
+        expect(any("does not have" in e and "orchestrator" in e
+                   for e in pipeline_errors(proot, unknown_role)),
+               "a required role the factory does not have must fail and be named")
+        duplicate = VALID_PIPELINE + "required_roles:\n  - analyzer\n  - analyzer\n"
+        expect(any("more than once" in e for e in pipeline_errors(proot, duplicate)),
+               "a duplicated required role must fail")
+        main_role = VALID_PIPELINE + "required_roles:\n  - main\n"
+        expect(any("'main'" in e for e in pipeline_errors(proot, main_role)),
+               "main is the session model, not a required role")
+        #     The CLI reports the same errors (the gate is the command, not just the function).
+        (proot / ".code-factory" / "state" / "pipeline.yaml").write_text(
+            unknown_role, encoding="utf-8")
+        expect(run_cli("--repo", str(proot), "--memory-only") != 0,
+               "an unregistered required role must exit != 0")
         #     Every required status of the schema is accepted.
         for status in ("ok", "failed", "in_progress"):
             expect(pipeline_errors(proot, VALID_PIPELINE.replace("status: in_progress",
@@ -854,9 +992,8 @@ def main() -> int:
 
         # 28c. Ordinary target project AS DEPLOYED: `prepare_factory` copies the flow skill into
         #      EVERY target project, so a hand-authored AGENTS.md without the factory's version
-        #      marker must stay the documented error ("line 1 must be …"), exit 1 — the deployed
-        #      skill alone buys no SKIP. This is the regression guard for the detector that was
-        #      widened by the flow skill alone.
+        #      marker must stay an ERROR, exit 1 — the deployed skill alone buys no SKIP. This is
+        #      the regression guard for the detector that was widened by the flow skill alone.
         build(aroot)
         deploy_flow_skill(aroot)
         (aroot / "AGENTS.md").write_text(HAND_AUTHORED_AGENTS.replace(
@@ -867,15 +1004,30 @@ def main() -> int:
                (aroot / "AGENTS.md").read_text(encoding="utf-8").splitlines()[0],
                "the target-project AGENTS.md fixture must NOT carry the version marker")
         a_errs, _, a_skip = check_factory_model.check_agents_model(aroot)
-        expect(a_skip == "" and any("line 1 must be" in e for e in a_errs),
-               f"a deployed target project without the fingerprint must stay an error: "
+        expect(a_skip == "" and a_errs,
+               f"a deployed target project with a hand-authored AGENTS.md must stay an error: "
                f"{a_errs} / {a_skip!r}")
+        expect(any("missing sections" in e for e in a_errs),
+               f"the section contract is what refuses it: {a_errs}")
         res = run_cli_out("--repo", str(aroot))
         expect(res.returncode == 1, f"an ordinary project must exit 1: {res.stderr!r}")
-        expect("line 1 must be" in res.stderr,
-               f"an ordinary project must report the missing fingerprint: {res.stderr!r}")
 
-        # 28d. The third signal matters just as much: the version-marked hand-authored manual
+        # 28c-bis. A GENERATED model (canonical sections) without its fingerprint state is the
+        #      fresh-clone case: the actionable `--write-state` error, never a silent trust.
+        build(aroot)
+        deploy_flow_skill(aroot)
+        state_path(aroot).unlink()
+        a_errs, _, a_skip = check_factory_model.check_agents_model(aroot)
+        expect(a_skip == "" and any("no fingerprint state" in e and "--write-state" in e
+                                    for e in a_errs),
+               f"a generated model without state must name the fix: {a_errs} / {a_skip!r}")
+        expect(not state_path(aroot).exists(), "the checker must never populate the state")
+        res = run_cli_out("--repo", str(aroot))
+        expect(res.returncode == 1, f"a missing state must exit 1: {res.stderr!r}")
+        expect("--write-state" in res.stderr,
+               f"the CLI must say how to write the state: {res.stderr!r}")
+
+        # 28d. The SECOND signal matters just as much: the version-marked hand-authored manual
         #      WITHOUT the deployed flow skill is no factory root either — a copied marker must not
         #      buy a SKIP, the error stays.
         build(aroot)
@@ -884,7 +1036,7 @@ def main() -> int:
         expect(not (aroot / check_factory_model.FACTORY_SKILL_REL).is_file(),
                "the 28d fixture must not have the flow skill deployed")
         a_errs, _, a_skip = check_factory_model.check_agents_model(aroot)
-        expect(a_skip == "" and any("line 1 must be" in e for e in a_errs),
+        expect(a_skip == "" and a_errs,
                f"the version marker alone must not buy a SKIP: {a_errs} / {a_skip!r}")
         expect(run_cli("--repo", str(aroot)) == 1,
                "a version-marked manual without the flow skill must exit 1")
@@ -1016,7 +1168,7 @@ def main() -> int:
         #     The explicit factory-artifact exclusion still holds for a dot-path: the factory's
         #      own .code-factory/ stays invisible even as a tracked file below it.
         cf_file = wroot / ".code-factory" / "state" / "note.md"
-        cf_file.parent.mkdir(parents=True)
+        cf_file.parent.mkdir(parents=True, exist_ok=True)
         cf_file.write_bytes(b"note v1\n")
         subprocess.run(["git", "-C", str(wroot), "add", ".code-factory/state/note.md"], check=True)
         cf_before = project_fingerprint.compute_content_fingerprint(wroot)

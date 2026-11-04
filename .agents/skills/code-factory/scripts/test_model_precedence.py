@@ -94,8 +94,10 @@ models:
   tester: kimi-k3
   gui_expert: deepseek-flash
   farukon_expert: deepseek-flash
+  business_tester: deepseek-flash
   refactorer: deepseek-flash
   reviewer: deepseek-flash
+  supervisor: kimi-code/k3
   diagnostician: kimi-code/k3
   advisor: kimi-code/k3
   documenter: deepseek-flash
@@ -124,8 +126,10 @@ models:
   tester: deepseek-flash
   gui_expert: deepseek-flash
   farukon_expert: deepseek-flash
+  business_tester: deepseek-flash
   refactorer: deepseek-flash
   reviewer: kimi-code/k3
+  supervisor: kimi-code/k3
   diagnostician: kimi-code/k3
   advisor: kimi-code/k3
   documenter: deepseek-flash
@@ -376,7 +380,7 @@ def case_9_precedence_text() -> None:
     # the two sides are disjoint, non-empty tuples of KNOWN roles.
     expect(isinstance(mm.GENERATOR_SIDE, tuple) and mm.GENERATOR_SIDE,
            f"GENERATOR_SIDE must be a non-empty tuple of roles: {mm.GENERATOR_SIDE!r}")
-    expect(mm.JUDGE_SIDE == ("reviewer", "diagnostician", "advisor"),
+    expect(mm.JUDGE_SIDE == ("reviewer", "supervisor", "diagnostician", "advisor"),
            f"JUDGE_SIDE changed: {mm.JUDGE_SIDE!r}")
     expect(not set(mm.GENERATOR_SIDE) & set(mm.JUDGE_SIDE),
            f"a role cannot sit on both sides: {mm.GENERATOR_SIDE!r} / {mm.JUDGE_SIDE!r}")
@@ -573,6 +577,45 @@ def case_13_empty_matrix_is_a_resolution_error(root: pathlib.Path) -> None:
     expect(complete["errors"] == [], f"a fully pinned task must stay clean: {complete!r}")
 
 
+def card_preference(role: str) -> str:
+    """The `model_preference` of a role's card, read the way `model_matrix` reads it."""
+    return mm._model_preference(mm.SUBAGENTS_DIR / mm.ROLE_FILES.get(role, f"{role}.md"))
+
+
+def case_14_new_roles_are_registered_and_sided() -> None:
+    """The two W3 roles: registered, sided, mapped to their card, and separated by family.
+
+    `business_tester` is a GENERATOR-side role (it exercises the product as a user and reports
+    breakage — it produces work like the coder/specialists do), `supervisor` is a JUDGE-side role
+    (it only judges a permit). Both must be in the registry so a task may pin their model, both must
+    have a card `model_matrix` can read the `model_preference` from, and the generator != judge rule
+    must hold between every generator and every judge — including the new pair.
+    """
+    for role, side, preference, card in (
+            ("business_tester", mm.GENERATOR_SIDE, "secondary", "business-tester.md"),
+            ("supervisor", mm.JUDGE_SIDE, "primary", "supervisor.md")):
+        expect(role in mm.ROLES, f"{role} must be a known role of the factory: {mm.ROLES!r}")
+        expect(role in side, f"{role} must sit on its side: {side!r}")
+        expect(mm.ROLE_FILES.get(role, f"{role}.md") == card,
+               f"{role} must map to its card {card!r}: "
+               f"{mm.ROLE_FILES.get(role, f'{role}.md')!r}")
+        expect(card_preference(role) == preference,
+               f"{role}'s card must declare model_preference: {preference}")
+    expect(not set(mm.GENERATOR_SIDE) & set(mm.JUDGE_SIDE),
+           f"a role cannot sit on both sides: {mm.GENERATOR_SIDE!r} / {mm.JUDGE_SIDE!r}")
+    # The pair that matters for this release: the tester (generator) and the gatekeeper (judge)
+    # read opposite model slots, so the shipped two-model config keeps them apart.
+    resolved = mm.resolve_all({"business_tester": "deepseek-flash",
+                               "supervisor": "kimi-code/k3"}, {})
+    expect(mm.family(resolved["business_tester"]["model"])
+           != mm.family(resolved["supervisor"]["model"]),
+           f"business_tester and supervisor must sit on different families: {resolved!r}")
+    # An alias-less role is still resolved by the default matrix route (no third path).
+    expect(resolved["business_tester"]["source"] == "task"
+           and resolved["supervisor"]["source"] == "task",
+           f"a task-named role keeps its value: {resolved!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -589,6 +632,7 @@ def main() -> int:
         case_11_shipped_default_matrix_is_satisfiable(root)
         case_12_same_side_collision_and_empty_side()
         case_13_empty_matrix_is_a_resolution_error(root)
+        case_14_new_roles_are_registered_and_sided()
 
     print("PASS - model_matrix.py keeps the task's model verbatim on a collision (warning only), "
           "falls back to the default matrix for an unnamed role (error when the default matrix "

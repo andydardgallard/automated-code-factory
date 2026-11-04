@@ -10,29 +10,36 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.22.0 — the conditional `factory-farukon-expert` role is live: a coder-class
-specialist that develops/operates the Farukon platform only through the 8 farukon MCP tools
-(decide = host signature AND identity+platform-bound operation AND score ≥ 3, subject binding
-against documentation/media objects; atomic redacted merge-config with symlink-escape refusal;
-fail-soft probe requiring a buildable member manifest and a working cargo; pre-flight --farukon
-delegates the verdict to the probe, a probe exception is degraded+UNVERIFIED, never
-not_applicable). The platform side was fixed per owner decision (the CLI is never modified):
-farukon_mcp v3.4.1 accepts/echoes MCP protocol 2025-11-25 (platform commit 17b3366d). Evidence
-on the real farukon_v3.1.0: helpers green, a real specialist MCP session (build + replay start +
-connector_state + bounded stop) and an independent tester ACCEPTANCE PASS 6/6; platform
-regression 451/0. The suite is green end to end (47 PASS / 0 FAIL of 47 self-test files,
-81/81 vaccines bite), the memory gates run clean.
-Latest run: implement 20261103-236f69e8 (task_farukon_expert_agent.yaml, hitl, plan approved with
-0 rejections, resumed across a CLI restart) — review iterations 1-4 request_changes (9 → 3 → 3 →
-1+2 findings, all closed with failing-first pins), iteration 5 request_changes with 0 critical /
-2 major / 3 minor left OPEN by owner decision (heuristic-classifier finding cycle stopped);
-acceptance SUCCESS (2/2 verify MET, 2 derived with real artifacts, regression pass, ledger
-FRESH); attribution DEGRADED for analyzer/planner only (wire lost on the CLI restart).
-Version 12.21.0 -> 12.22.0 (minor, matrix + reviewer).
-Open backlog: 2 follow_up items (the 5 open iteration-5 review findings; the platform
-workspace_saved:false anomaly — it belongs to the farukon_v3.1.0 project's own backlog); 2 info
-debts carried with follow_up=false (module-vaccine fragility, historical RV/BL/PR/RF/NM
-attribution); 55 items closed with evidence.
+Factory v12.23.0 — the factory now PROVES its process, not just its product. W1: the backlog is
+closed — farukon applicability is bound to explicit platform subjects, handshake timeouts are
+finite-validated before launch (zero immediate, NaN/inf/negative/huge-int refused), both hot
+functions are below the complexity gate with behavior frozen, and the JSON merge surgery is the
+shared stdlib mcp_json_merge.py; all 23 module-kind vaccines are isolated probes now, and 41
+evidence-backed claims cover RV/BL/PR/RF/NM (3 mappings documented as owner-accepted
+unrecoverable gaps). W2: the 7 process violations of the reconciliation run are machine-gated —
+delegation_gate.py counts every budgeted delegation and refuses at the budget (per-owner-decision
+authorizations, settle refunds for wholly-refuted rounds, wire reconciliation audit);
+model_attribution.py strict mode FAILS a required role with no wire trace (default for
+implement/refactor, task_type + required_roles in pipeline.yaml); manifest.py blocks the first
+edit without a manifest and every changed file without a backup; gate_all.py runs every
+deterministic gate at phases K and Y (a missing gate record is a failure); action_gate.py audits
+the session wire for unjournaled destructive commands (fail-closed, pkill/kill classified); the
+AGENTS.md fingerprint lives in .code-factory/state/fingerprint.json (one version commit again);
+finding_disposition accepted|refuted with mandatory evidence and round-stamped settlement. W3:
+factory-business-tester (adversarial user-level breakage, parallel with the tester at node S;
+it found a real major defect in this very run) and factory-supervisor (read-only permit verdicts;
+permit_gate.py audits at finish — model-enforced verdicts, deterministically DETECTED bypasses).
+The suite is green end to end (52 PASS / 0 FAIL of 52 self-test files, 118/118 vaccines bite),
+the memory gates run clean.
+Latest run: implement 20261103-8e939171 (task_factory_breaker_supervisor.yaml, hitl, plan
+approved with 0 rejections) — review iterations 1-5 request_changes (16+1 -> 4+1 -> 2 -> 2+1 ->
+1 findings, iterations 3-6 owner-authorized and machine-recorded), iteration 6 approve with zero
+findings; acceptance SUCCESS (3/3 verify MET, 5 derived with real artifacts, regression pass,
+ledger 7/7 FRESH); strict attribution PASS 8/8 roles after it caught the run's own unbacked
+tester claim. Version 12.22.0 -> 12.23.0 (minor, matrix + reviewer).
+Open backlog: 1 item (the platform workspace_saved:false anomaly — it belongs to the
+farukon_v3.1.0 project's own backlog); 56 closed with evidence; 0 info debts carried.
+Self-tests: 52 files, all green; 118/118 vaccines bite.
 Previous state: factory v12.21.0 — the combined backlog is closed: the dead EnterPlanMode calls are gone from
 all three approval carriers (the HITL gate is `plan.md` + `AskUserQuestion` in SKILL.md node I,
 code-factory.md Phase 3 and planning-guide.md §6), the Advisor agreement gate is real (ADR/ARO

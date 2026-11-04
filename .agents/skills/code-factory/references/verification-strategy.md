@@ -223,6 +223,31 @@ platform scenario runs through the `mcp__farukon__*` tools and is owned by `fact
   (`references/error-routing.md` §1 rows F1–F2); no artifact is fabricated to fill the gap.
 
 
+### 3.3 Adversarial business testing (node S) — diagnostic, never acceptance
+
+For `implement`, `review` and `refactor` runs, node S runs TWO businesses in parallel, and the split
+is the contract:
+
+- **`factory-business-tester` attacks the change as a USER** — through the product's own CLI, HTTP
+  API or Web GUI, with wrong type and range, empty, huge and malformed data, wrong order of
+  operations, repeated clicks / double submits, edge configurations and interrupted flows. It never
+  reads the implementation to find a weakness, never edits a product file, never uses a debugger, and
+  writes only `.code-factory/logs/business-adversarial/<run_id>.json` (its classified report).
+- **`factory-tester` keeps the acceptance** (§3, §3.1, §3.2): the user's business scenario is
+  executed AFTER the last code change and is the only thing that can mark a criterion MET. The
+  adversarial report is DIAGNOSTIC input: it may add a scenario, re-open a FAIL or route a defect,
+  and it is NEVER reused as acceptance proof, in either direction.
+- **Both read the same delivered artifacts** (the built/started program, the user's configs, the
+  acceptance criteria), so they run in parallel on the same code state. Any code change after either
+  run makes that run's evidence STALE (§2.2) — both are re-run on the new state.
+- **A breakage is classified by the adversarial tester**: `code_defect` routes through the existing
+  deterministic error path and the existing coder retry budget (`references/error-routing.md` §1;
+  `scripts/error_router.py classify`) — there is no separate business-tester budget; `contract_gap`
+  is a scope question for the main agent; `environment` goes to the infrastructure diagnosis path;
+  `no_defect` records a proven pass. A scenario nobody could run is UNVERIFIED, never a pass.
+- **Scope**: `security_audit` runs have no adversarial business tester (that is the
+  `factory-security-auditor`'s work), and a breakage is never reported as an acceptance verdict.
+
 ## 4. Rollback mechanism (critical)
 
 Trigger: ANY test failure (integration, regression, business) or acceptance-criteria miss.

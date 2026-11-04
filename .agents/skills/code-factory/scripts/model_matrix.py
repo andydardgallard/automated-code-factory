@@ -53,16 +53,18 @@ import re
 import sys
 
 # Every role that can be named by a task's `models:` matrix, in the order the factory reports them.
-ROLES = ("analyzer", "planner", "coder", "tester", "gui_expert", "farukon_expert", "refactorer",
-         "reviewer", "diagnostician", "advisor", "documenter", "security_auditor", "skill_manager")
+ROLES = ("analyzer", "planner", "coder", "tester", "gui_expert", "farukon_expert",
+         "business_tester", "refactorer", "reviewer", "supervisor", "diagnostician", "advisor",
+         "documenter", "security_auditor", "skill_manager")
 # The two sides of the generator != judge rule (gui_expert and farukon_expert implement, so they
-# are generator-side).
-GENERATOR_SIDE = ("coder", "tester", "gui_expert", "farukon_expert")
-JUDGE_SIDE = ("reviewer", "diagnostician", "advisor")
+# are generator-side; the business_tester DOES the product as a user and reports, so it is
+# generator-side too, while the supervisor only JUDGES a permit and is judge-side).
+GENERATOR_SIDE = ("coder", "tester", "gui_expert", "farukon_expert", "business_tester")
+JUDGE_SIDE = ("reviewer", "supervisor", "diagnostician", "advisor")
 
 # Role -> sub-agent file name, where the file name is not `<role>.md`.
 ROLE_FILES = {"reviewer": "code-reviewer.md", "gui_expert": "gui-expert.md",
-              "farukon_expert": "farukon-expert.md",
+              "farukon_expert": "farukon-expert.md", "business_tester": "business-tester.md",
               "security_auditor": "security-auditor.md", "skill_manager": "skill-manager.md"}
 # The factory's own sub-agent definitions carry `model_preference:` in their YAML frontmatter.
 # A module-level constant, not an environment variable: nothing may silently re-point it.

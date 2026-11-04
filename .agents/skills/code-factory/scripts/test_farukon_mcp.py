@@ -18,7 +18,9 @@ Covers, with tempfile fixtures:
     (missing repository, `--target` escape),
   - the bounded JSON-RPC handshake against a REAL spawned fake stdio server: all eight Farukon tools
     listed, a server missing tools, a server that never answers and a server that answers with an
-    error — each bounded and each terminating its child process,
+    error — each bounded and each terminating its child process, and the timeout values themselves
+    validated BEFORE a process is started (NaN/±inf/negative/bool/numeric string refused, zero a
+    legitimate immediate attempt),
   - the CLI contract: `--help` exit 0 for every subcommand, usage error exit 2, no traceback.
 
 Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
@@ -72,6 +74,21 @@ UNRELATED_OPERATION_TEXTS = (
     "Run the parser test suite and fix the failures the report generator shows.",
     "Debug the logging helper and test the report formatter end to end.",
     "Restart the documentation build and run the link checker.",
+)
+# GENERIC identity words: `integration` and `runtime` describe a topic, never the platform. A task
+# that only says them plus an operation still operates its own subject, so it must stay OFF — the
+# operation has to be bound to an EXPLICIT platform object (the platform, the crate, a connector, a
+# portfolio snapshot, a replay, a web instance, one of the Farukon MCP tools).
+GENERIC_IDENTITY_TEXTS = (
+    "Run the integration tests for the parser.",
+    "Update the runtime config of the logger, then test it end to end.",
+    "Restart the integration environment and run the parser regression suite.",
+)
+# …while an explicit platform OBJECT is a subject in its own right: the connectors, the message log
+# and the platform tools are what the specialist operates, so naming one is enough.
+PLATFORM_OBJECT_TEXTS = (
+    "Restart the connector and check the message log afterwards.",
+    "Run farukon_build and then stop the instance.",
 )
 # SUBJECT BINDING: the platform is named, but every operation in the task targets DOCUMENTATION. The
 # name of the platform elsewhere in the sentence does not transfer an operation to it.
@@ -273,6 +290,29 @@ def test_decide(tmp: pathlib.Path) -> None:
               f"an operation on another subject must stay not_applicable: {text!r} -> {decision}")
         check("identity terms: none" in decision["reason"],
               f"the reason must say that no platform identity matched: {decision['reason']!r}")
+
+    # 1e-bis. NEGATIVE: a GENERIC identity word. `integration` and `runtime` describe a topic, never
+    # the platform itself, so an operation that is merely bound to them belongs to somebody else (a
+    # parser test suite, a logger config). Applicability needs an EXPLICIT platform OBJECT as the
+    # subject the operation works on.
+    for text in GENERIC_IDENTITY_TEXTS:
+        decision = fm.decide_applicability(text, repo=repo)
+        check(decision["decision"] == fm.NOT_APPLICABLE,
+              f"a generic identity word plus an operation must stay not_applicable: {text!r} -> "
+              f"{decision}")
+        check("platform subjects: none" in decision["reason"],
+              f"the reason must say that no explicit platform subject matched: "
+              f"{decision['reason']!r}")
+
+    # 1e-ter. POSITIVE: the platform OBJECTS are subjects in their own right — the connectors, the
+    # message log and the Farukon MCP tools are what the specialist operates, so naming one of them
+    # is enough and the rule must not degrade into "the text has to say farukon".
+    for text in PLATFORM_OBJECT_TEXTS:
+        decision = fm.decide_applicability(text, repo=repo)
+        check(decision["decision"] == fm.APPLICABLE,
+              f"an explicit platform object is a platform subject: {text!r} -> {decision}")
+        check("platform subjects: none" not in decision["reason"],
+              f"the subject must be recorded as evidence: {decision['reason']!r}")
 
     # 1f. NEGATIVE: subject binding. The platform is NAMED, but every operation in the task operates
     # on DOCUMENTATION — naming Farukon does not make "run the documentation build" a platform run.
@@ -1028,6 +1068,55 @@ def test_handshake(tmp: pathlib.Path) -> None:
           f"the managed cargo arguments must stay the reviewed ones: {fm.MANAGED_ARGS}")
 
 
+def test_handshake_timeout_validation(tmp: pathlib.Path) -> None:
+    """A timeout that defeats the BOUNDED wait is refused before a child process is started.
+
+    The handshake's whole contract is a bounded wait: `float("inf")`, a NaN or a negative value
+    would turn "give up after N seconds" into "hang", so they are refused at the public boundary —
+    a structured `ok=False` result, never a traceback and never a spawned cargo. Zero is a
+    LEGITIMATE value: it means "make one immediate, no-wait attempt".
+    """
+    workdir = tmp / "handshake-timeouts"
+    workdir.mkdir()
+    marker = tmp / "timeout-spawn.txt"
+    source = (f"import pathlib, os\n"
+              f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+              + GOOD_SERVER)
+    argv = fake_server(tmp, "timeout-probe", source)
+
+    rejected = (float("inf"), float("-inf"), float("nan"), -1, -0.5, True, False, "30", None,
+                10 ** 400, -(10 ** 400) + 1)
+    for field in ("first_response_timeout", "response_timeout"):
+        for bad in rejected:
+            kwargs = {"first_response_timeout": 30, "response_timeout": 30, field: bad}
+            result = fm.mcp_start_handshake(workdir, argv=argv, **kwargs)
+            check(result["ok"] is False,
+                  f"a {field} of {bad!r} must be refused: {result}")
+            check(fm.TIMEOUT_REFUSAL in result["message"] and field in result["message"],
+                  f"the refusal must name {field} and say nothing was started: {result['message']!r}")
+            check(result["tools"] == [] and result["protocol_version"] is None
+                  and result["server"] is None,
+                  f"a refused handshake must report no server state: {result}")
+    check(not marker.exists(),
+          "a refused timeout must not start a child process (the marker file must not exist)")
+
+    # Zero is legitimate: an immediate, no-wait attempt — bounded, not refused.
+    immediate = fm.mcp_start_handshake(workdir, argv=argv, first_response_timeout=0,
+                                      response_timeout=0)
+    check(fm.TIMEOUT_REFUSAL not in immediate["message"],
+          f"a zero timeout must be ACCEPTED as an immediate attempt: {immediate['message']!r}")
+    check(immediate["ok"] is False and "no initialize response" in immediate["message"],
+          f"an immediate attempt against a chatty server is a bounded failure: {immediate}")
+    check(marker.is_file(), "a legitimate timeout value must actually start the child process")
+    marker.unlink()
+
+    # …and a finite positive value still performs a real handshake.
+    accepted = fm.mcp_start_handshake(workdir, argv=argv, first_response_timeout=0.5,
+                                     response_timeout=30)
+    check(accepted["ok"] is True,
+          f"a finite positive timeout must keep working: {accepted['message']!r}")
+
+
 def test_handshake_is_bounded_and_cleans_up(tmp: pathlib.Path) -> None:
     """A green handshake must leave no child process behind (the fake server blocks on stdin)."""
     workdir = tmp / "handshake-cleanup"
@@ -1090,6 +1179,7 @@ def main() -> int:
         test_validate_config(tmp)
         test_probe(tmp)
         test_handshake(tmp)
+        test_handshake_timeout_validation(tmp)
         test_handshake_is_bounded_and_cleans_up(tmp)
         test_cli_contract()
 

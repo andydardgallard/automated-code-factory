@@ -78,6 +78,10 @@ PUBLIC API
   resolve_session(repo, session, home)    {"session_dir","session_id","resolved_by",...}; raises
                                           Degraded when nothing matches
   read_models_used(path)                  (run_id, {role: claim}) of a pipeline.yaml
+  read_pipeline_contract(path)            the same plus `task_type` and `required_roles`
+  strict_decision(task_type, declared)    (strict, reason): the DEFAULT is implement/refactor
+  required_unbacked(comparison, claims, required_roles, strict)
+                                          REQUIRED roles whose claim the wire never confirmed
   unknown_roles(claims)                   `models_used` keys the factory's registry does not have
   unknown_role_line(role)                 the one-line report of such a key (a run error)
   analyse_session(session_dir)            per-agent records + spawn map of one session
@@ -85,6 +89,19 @@ PUBLIC API
   compare_claims(claims, roles, degraded) (comparison, lines, flags) of claims vs wire
   verdict_of(comparison, reason, required) FAIL / DEGRADED / PASS of a comparison
   build_report(...) / write_artifact(...) the JSON artifact of the run
+
+STRICT ATTRIBUTION
+
+  A run that declares `task_type: implement|refactor` in `pipeline.yaml` is STRICT BY DEFAULT: a
+  role listed in `required_roles` that carries a `models_used` claim but left NO session-wire trace
+  (`subagent.spawned`) is a run FAILURE (exit 1, status `unbacked`, the role named in the summary),
+  never DEGRADED — the run declared that role mandatory, so "no wire for this role" is the missing
+  artifact, not a technical detail. `--strict` forces the same rule for `review`/`security_audit`
+  runs, and there is deliberately NO opt-out that weakens it. A declared `task_type` outside the four
+  is an input error (exit 2); a checkpoint without `task_type` keeps the historical behaviour. A
+  CONDITIONAL role (`gui_expert`, `farukon_expert`, `security_auditor`, `business_tester`) never
+  fails on its own: it must be listed in `required_roles` AND claimed, so a task that does not use it
+  produces no false failure.
 
 CLI
 
@@ -179,6 +196,20 @@ RUN_ID_LINE = re.compile(r"^run_id:\s*(.*)$")
 MODELS_HEADER = re.compile(r"^models_used:\s*(#.*)?$")
 MODELS_ENTRY = re.compile(r"^(\s+)([A-Za-z0-9_]+)\s*:\s*(\S.*?)\s*$")
 TRAILING_COMMENT = re.compile(r"\s+#.*$")
+# The strict-attribution contract of the checkpoint: the run's `task_type` and the roles the run
+# declares as REQUIRED. Both are read with the same deliberately small reader.
+TASK_TYPE_LINE = re.compile(r"^task_type:\s*(.*)$")
+REQUIRED_ROLES_LINE = re.compile(r"^required_roles:\s*(.*)$")
+REQUIRED_ROLE_ITEM = re.compile(r"^\s+-\s+(.*\S)\s*$")
+# The four task types the factory knows. Strict attribution is the DEFAULT for the two that
+# produce or preserve code (`implement`, `refactor`); `--strict` forces it for the other two and
+# there is no weakening opt-out — a claim the wire cannot confirm must never pass silently.
+TASK_TYPES = ("implement", "review", "refactor", "security_audit")
+STRICT_TASK_TYPES = ("implement", "refactor")
+# Roles whose presence depends on the task: they may be listed in `required_roles`, and a
+# conditional role that is NOT claimed in `models_used` never fails — only a CLAIMED required role
+# with no wire evidence does. The model check validates the list; this script only applies it.
+CONDITIONAL_ROLES = ("gui_expert", "farukon_expert", "security_auditor", "business_tester")
 # A version token at the head of an alias remainder (`k3`, `v4-pro`, `k3.1`): the only case in
 # which `canonical()` folds the vendor family word off, so `kimi-k3` and `k3` compare equal while
 # `qwen-max` / `deepseek-flash` stay as they are.
@@ -667,12 +698,20 @@ def read_models_used(path: pathlib.Path) -> tuple[str, dict[str, str]]:
     takes the model token out of it later). A missing file, an absent block or an empty block is
     not an error here; the caller decides what an empty claim set means.
     """
-    run_id = ""
-    claims: dict[str, str] = {}
+    return _parse_models_used(_pipeline_text(path))
+
+
+def _pipeline_text(path: pathlib.Path) -> str:
+    """The checkpoint TEXT (an unreadable file is an AttributionError -> exit 2)."""
     try:
-        text = pathlib.Path(path).read_text(encoding="utf-8", errors="replace")
+        return pathlib.Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise AttributionError(f"cannot read the pipeline checkpoint {path}: {exc}") from exc
+
+
+def _parse_models_used(text: str) -> tuple[str, dict[str, str]]:
+    run_id = ""
+    claims: dict[str, str] = {}
     inside = False
     for line in text.splitlines():
         if not inside:
@@ -691,6 +730,106 @@ def read_models_used(path: pathlib.Path) -> tuple[str, dict[str, str]]:
         if value:
             claims[entry.group(2)] = value
     return run_id, claims
+
+
+def _parse_task_type(text: str) -> tuple[str, bool]:
+    """`(task_type, declared)` — `declared` is True when the key is there, even with no value."""
+    for line in text.splitlines():
+        if line[:1].isspace():
+            continue                               # a nested key is not the run's task_type
+        match = TASK_TYPE_LINE.match(line.rstrip())
+        if match:
+            return _scalar(match.group(1)), True
+    return "", False
+
+
+def _parse_required_roles(text: str) -> list[str]:
+    """The roles the run declares as required — a block list or a bracketed flow list, or []."""
+    roles: list[str] = []
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line[:1].isspace():
+            continue
+        match = REQUIRED_ROLES_LINE.match(line.rstrip())
+        if not match:
+            continue
+        scalar = _scalar(match.group(1))
+        if scalar.startswith("["):
+            body = scalar.strip("[]")
+            roles = [_scalar(item) for item in body.split(",")]
+        else:
+            for child in lines[index + 1:]:
+                if child.strip() and not child[:1].isspace():
+                    break
+                item = REQUIRED_ROLE_ITEM.match(child)
+                if item:
+                    roles.append(_scalar(item.group(1)))
+        break
+    return [role for role in roles if role]
+
+
+def read_pipeline_contract(path: pathlib.Path) -> dict:
+    """`{run_id, claims, task_type, task_type_declared, required_roles}` of one checkpoint.
+
+    ONE reader for the whole strict-attribution contract: the claim side (`models_used`), the run's
+    `task_type` (the default that decides whether strict attribution runs) and `required_roles` (the
+    roles whose claim the wire MUST confirm under strict attribution).
+    """
+    text = _pipeline_text(path)
+    run_id, claims = _parse_models_used(text)
+    task_type, declared = _parse_task_type(text)
+    return {"run_id": run_id, "claims": claims, "task_type": task_type,
+            "task_type_declared": declared, "required_roles": _parse_required_roles(text)}
+
+
+def strict_decision(task_type: str, declared: bool, forced: bool = False) -> tuple[bool, str]:
+    """`(strict, reason)` — strict attribution is the DEFAULT for implement/refactor.
+
+    `--strict` forces it for every task type; a declared `task_type` must be one of the four (an
+    unknown or empty value is an input error, because the strict default cannot be decided from
+    it); a checkpoint with no `task_type` at all keeps the historical non-strict behaviour. There is
+    deliberately NO weakening opt-out: the only switch is the one that turns strictness ON.
+    """
+    if forced:
+        return True, "--strict was requested: strict attribution runs whatever the task_type is"
+    if not declared:
+        return False, ("the checkpoint declares no task_type, so strict attribution stays off "
+                       "(a flow that writes task_type gets it by default)")
+    if task_type not in TASK_TYPES:
+        raise AttributionError(
+            f"the pipeline checkpoint declares task_type {task_type!r}, which is not one of "
+            f"{', '.join(TASK_TYPES)}: a run must declare one of the four task types (or none, "
+            f"which keeps strict attribution off)")
+    if task_type in STRICT_TASK_TYPES:
+        return True, f"task_type {task_type} requires strict attribution by default"
+    return False, (f"task_type {task_type} is not strict by default — pass --strict to force it")
+
+
+def required_unbacked(comparison: dict[str, str], claims: dict[str, str],
+                      required_roles: list[str], strict: bool) -> list[str]:
+    """Required roles that CLAIM a model but left no session-wire trace, under strict attribution.
+
+    The defect this closes: a required role could be listed in `models_used`, run on nothing the CLI
+    ever recorded, and the run still exited 3 (DEGRADED) — "no wire for this role" is exactly the
+    evidence a required role must not be allowed to lack. A role the pipeline does not claim, or
+    claims as `unused`, is not a claim the wire has to confirm, so it never fails here.
+    """
+    if not strict:
+        return []
+    unbacked: list[str] = []
+    for role in required_roles:
+        if role not in claims or is_unused(claims.get(role, "")):
+            continue
+        if comparison.get(role) in ("degraded", "unverified"):
+            unbacked.append(role)
+    return sorted(unbacked)
+
+
+def strict_failure_line(role: str, raw_claim: str, strict_reason: str) -> str:
+    """The one-line report of a required role the wire never saw."""
+    return (f"{role}: unbacked (claimed={claim_model(raw_claim)}, no subagent.spawned trace) -- a "
+            f"REQUIRED role whose claim the session wire cannot confirm FAILS the run, never "
+            f"DEGRADED ({strict_reason})")
 
 
 def claim_model(raw: str) -> str:
@@ -759,7 +898,7 @@ def compare_claims(claims: dict[str, str], roles: dict[str, dict],
     comparison: dict[str, str] = {}
     lines: list[str] = []
     flags: dict[str, list[str]] = {"unused_but_wired": [], "unclaimed_roles": [],
-                                   "unknown_roles": []}
+                                   "unknown_roles": [], "required_unbacked": []}
     for role in claims:
         raw = claims.get(role, "")
         claimed = claim_model(raw)
@@ -813,7 +952,9 @@ def verdict_of(comparison: dict[str, str], degraded_reason: str = "",
     A proven mismatch is NEVER hidden by a degradation: the wire disproving a claim is the one
     finding the owner must not lose, so it wins. A `models_used` role that is not in the factory's
     registry (`unknown_role`) is the same kind of finding — the pipeline invented a role — so it is
-    a run error (FAIL), never a degradation.
+    a run error (FAIL), never a degradation. An `unbacked` status (a REQUIRED role whose claim the
+    wire never confirmed, under strict attribution) is a FAIL for the same reason: the run declared
+    the role mandatory and produced no artifact proving it ran.
 
     An EMPTY comparison is not a success while a claim set was required (`claims_required`, the
     default): with nothing compared, "every claimed role matches the wire" is vacuously true and
@@ -821,7 +962,7 @@ def verdict_of(comparison: dict[str, str], degraded_reason: str = "",
     a pipeline that names no role in `models_used` is DEGRADED. Only a caller that asks for a
     claim-free wire report (no `--pipeline` at all, `claims_required=False`) may pass on nothing.
     """
-    if any(status in ("mismatch", "unknown_role") for status in comparison.values()):
+    if any(status in ("mismatch", "unknown_role", "unbacked") for status in comparison.values()):
         return "FAIL"
     if degraded_reason or (claims_required and not comparison) or \
             any(status in ("degraded", "unverified") for status in comparison.values()):
@@ -846,20 +987,25 @@ def write_artifact(path: pathlib.Path, report: dict) -> pathlib.Path:
 # --------------------------------------------------------------------------------------------
 
 def build_report(repo: str, session: str, home: pathlib.Path | None,
-                 pipeline) -> tuple[dict, list[str], str, str]:
+                 pipeline, force_strict: bool = False) -> tuple[dict, list[str], str, str]:
     """Do the whole job: (artifact, printed lines, verdict, degraded reason).
 
     Raises AttributionError for an input error (exit 2). A missing session/wire is NOT an error:
     it yields an artifact with `attribution_degraded: true` and the reason, so the flow can record
-    `models_warning` instead of staying silent.
+    `models_warning` instead of staying silent. `force_strict` is the CLI's `--strict` (the only
+    switch of the strict-attribution contract, and it only turns strictness ON).
     """
     wire_home = pathlib.Path(home) if home is not None else WIRE_HOME
     run_id = ""
     claims: dict[str, str] = {}
     pipeline_text = ""
+    contract = {"task_type": "", "task_type_declared": False, "required_roles": []}
     if pipeline is not None:
-        run_id, claims = read_models_used(pipeline)
+        contract = read_pipeline_contract(pipeline)
+        run_id, claims = contract["run_id"], contract["claims"]
         pipeline_text = str(pipeline)
+    strict, strict_reason = strict_decision(contract["task_type"],
+                                            contract["task_type_declared"], force_strict)
 
     degraded_reason = ""
     session_info: dict = {}
@@ -893,6 +1039,16 @@ def build_report(repo: str, session: str, home: pathlib.Path | None,
             comparison[role] = "unknown_role"
             flags["unknown_roles"].append(role)
         lines = [unknown_role_line(role) for role in bogus] + lines
+    unbacked = required_unbacked(comparison, claims, contract["required_roles"], strict)
+    if unbacked:
+        # Strict attribution: a REQUIRED role the wire never confirmed is a run FAILURE, not a
+        # degradation — the run declared the role mandatory, so "no wire for this role" is the
+        # missing artifact, never a technical detail.
+        for role in unbacked:
+            comparison[role] = "unbacked"
+            flags["required_unbacked"].append(role)
+        lines = [strict_failure_line(role, claims.get(role, ""), strict_reason)
+                 for role in unbacked] + lines
     verdict = verdict_of(comparison, degraded_reason, claims_required=pipeline is not None)
     session_dir = session_info.get("session_dir")
     skipped_lines = analysis["skipped_lines"]
@@ -925,6 +1081,10 @@ def build_report(repo: str, session: str, home: pathlib.Path | None,
         },
         "comparison": comparison,
         "verdict": verdict,
+        "strict": bool(strict),
+        "strict_reason": strict_reason,
+        "task_type": contract["task_type"] or None,
+        "required_roles": list(contract["required_roles"]),
         "attribution_degraded": bool(degraded_reason) or verdict == "DEGRADED",
         "degraded_reason": degraded_reason or None,
         "flags": flags,
@@ -943,6 +1103,15 @@ def _summary(verdict: str, report: dict, degraded_reason: str) -> str:
             return (f"{len(bogus)} models_used role(s) are not roles of the factory: "
                     + "; ".join(f"{role} is not in {REGISTRY_HINT}" for role in sorted(bogus))
                     + " -- a pipeline may only name the factory's own roles")
+        unbacked = [role for role, status in comparison.items() if status == "unbacked"]
+        if unbacked:
+            return (f"{len(unbacked)} REQUIRED role(s) claim a model the session wire never "
+                    f"confirmed (no subagent.spawned trace): "
+                    + ", ".join(f"{role} claimed="
+                                f"{claim_model(report['claims']['models'].get(role, ''))}"
+                                for role in sorted(unbacked))
+                    + f" -- strict attribution ({report.get('strict_reason') or 'strict'}) fails "
+                      f"the run, never DEGRADED")
         bad = []
         for role, status in comparison.items():
             if status != "mismatch":
@@ -977,12 +1146,16 @@ def main() -> int:
                     help="The run's pipeline.yaml: its run_id + models_used are cross-checked")
     ap.add_argument("--home", default=None,
                     help=f"The CLI's wire root (default: {WIRE_HOME})")
+    ap.add_argument("--strict", action="store_true",
+                    help="Force strict attribution for every task_type (a REQUIRED role claimed "
+                         "without a session-wire trace FAILS the run); there is no weakening "
+                         "opt-out. It is the default already for implement/refactor")
     ap.add_argument("--quiet", action="store_true", help="Print only the final summary line")
     args = ap.parse_args()
 
     try:
         report, lines, verdict, degraded_reason = build_report(
-            args.repo, args.session, args.home, args.pipeline)
+            args.repo, args.session, args.home, args.pipeline, args.strict)
         out = write_artifact(pathlib.Path(args.out), report)
     except AttributionError as exc:
         print(f"model_attribution.py: {exc}", file=sys.stderr)

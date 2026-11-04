@@ -15,12 +15,20 @@ Input — the merged findings JSON of `merge_findings.py --report`
    "counts": {"critical": 2, "major": 11, "minor": 7, "nit": 0},
    "findings": [{"severity": "critical | major | minor | nit", "file": "<path>",
                  "line": <int|null>, "title": "...", "detail": "...",
-                 "occurrences": ["<shard id>", ...]}],
+                 "occurrences": ["<shard id>", ...],
+                 "finding_disposition": "accepted | refuted", "finding_evidence": "<path>"}],
    "shards": [...]}
 
 A BARE JSON LIST of findings is accepted too (then the generated file carries no review verdict).
 `counts`/`shards`/`total_*` of the input are ignored and recomputed from `findings`, so a stale
 summary in the report can never reach the generated task.
+
+FINDING DISPOSITION (proposal P-8): a finding marked `finding_disposition: refuted` — with its
+`finding_evidence` artifact, which must exist under `--repo` — is OMITTED from the generated
+fix-tasks: the reviewer withdrew it, so it must not become rework. The accepted findings are
+generated exactly as before and the omission is REPORTED in the summary line ("N findings, M
+refuted omitted"), never silent. A refutation without evidence is refused (exit 2), and a report
+whose findings are ALL refuted writes no task at all.
 
 Output — ONE flat task in the factory task format (`assets/task-template.yaml`), ready to run:
 
@@ -81,6 +89,13 @@ import sys
 import textwrap
 
 SEVERITIES = ("critical", "major", "minor", "nit")
+# Finding disposition (P-8): a REFUTED finding is omitted from the generated fix-tasks — the
+# reviewer withdrew it with evidence, so generating work for it would spend the owner's budget on
+# a defect nobody believes in. An ABSENT field is legacy input and normalizes to `accepted`.
+DISPOSITIONS = ("accepted", "refuted")
+DISPOSITION_ACCEPTED, DISPOSITION_REFUTED = DISPOSITIONS
+# The evidence of a refutation is ONE repo-relative artifact path (no spaces, no `..` segment).
+EVIDENCE_RE = re.compile(r"^[A-Za-z0-9._/\-]+$")
 TASK_TYPES = ("implement", "review", "refactor", "security_audit")
 MODES = ("hitl", "auto")
 GENERATED_TASK_TYPE = "implement"
@@ -571,8 +586,52 @@ def normalize_finding(raw: object, index: int, label: str) -> dict:
     verify = raw.get("verify", "")
     if not isinstance(verify, str):
         raise CliError(f"{where}.verify must be a string, got {type(verify).__name__}", 2)
+    disposition, evidence = normalize_disposition(raw, where)
     return {"severity": severity, "file": file.strip(), "line": line, "title": title.strip(),
-            "detail": detail, "verify": verify.strip()}
+            "detail": detail, "verify": verify.strip(),
+            "finding_disposition": disposition, "finding_evidence": evidence}
+
+
+def normalize_disposition(raw: dict, where: str) -> tuple[str, str]:
+    """`(disposition, evidence)`; a refutation without evidence is REFUSED, never dropped.
+
+    `finding_disposition` is exactly `accepted` or `refuted` and defaults to `accepted` (legacy
+    input). A refuted finding must carry `finding_evidence` naming ONE artifact (a path), because a
+    refutation that cannot be pointed at is a suppression, not a disposition.
+    """
+    disposition = raw.get("finding_disposition", DISPOSITION_ACCEPTED)
+    if disposition not in DISPOSITIONS:
+        raise CliError(f"{where}.finding_disposition must be one of {list(DISPOSITIONS)}, "
+                       f"got {disposition!r}", 2)
+    evidence = raw.get("finding_evidence", "")
+    if not isinstance(evidence, str):
+        raise CliError(f"{where}.finding_evidence must be a string, "
+                       f"got {type(evidence).__name__}", 2)
+    evidence = evidence.strip()
+    if disposition == DISPOSITION_REFUTED and not evidence:
+        raise CliError(f"{where} is refuted without 'finding_evidence': a refutation must name the "
+                       f"artifact that proves it", 2)
+    if evidence and (not EVIDENCE_RE.match(evidence) or ".." in evidence.split("/")):
+        raise CliError(f"{where}.finding_evidence must be ONE repo-relative artifact path (no "
+                       f"spaces, no '..' segment), got {evidence!r}", 2)
+    return disposition, evidence
+
+
+def split_dispositions(findings: list[dict], repo: pathlib.Path) -> tuple[list[dict], list[dict]]:
+    """`(active, refuted)`; every refutation must point at an artifact that EXISTS under `repo`."""
+    active: list[dict] = []
+    refuted: list[dict] = []
+    for index, finding in enumerate(findings):
+        if finding["finding_disposition"] != DISPOSITION_REFUTED:
+            active.append(finding)
+            continue
+        candidate = (repo / finding["finding_evidence"]).resolve()
+        if not candidate.is_relative_to(repo.resolve()) or not candidate.is_file():
+            raise CliError(f"findings[{index}] is refuted with evidence "
+                           f"{finding['finding_evidence']!r}, which is not a file inside {repo}: "
+                           f"the refutation cannot be checked", 1)
+        refuted.append(finding)
+    return active, refuted
 
 
 def load_findings(path: pathlib.Path) -> tuple[str, list[dict]]:
@@ -672,6 +731,10 @@ def main() -> int:
 
     try:
         verdict, findings = load_findings(pathlib.Path(args.findings))
+        # A refuted finding never becomes rework: the reviewer withdrew it WITH evidence, so the
+        # generated task lists only the active findings (the refuted count is reported, never
+        # silently dropped).
+        findings, refuted = split_dispositions(findings, pathlib.Path(args.repo))
     except CliError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.code
@@ -679,7 +742,13 @@ def main() -> int:
     accepted = {value.strip() for value in args.verdict_ok.split(",") if value.strip()}
     if verdict in accepted and not findings:
         print(f"nothing to do: verdict {verdict} is accepted by --verdict-ok {args.verdict_ok} "
-              f"and the report carries no findings; no task written")
+              f"and the report carries no active finding"
+              + (f" ({len(refuted)} refuted)" if refuted else "") + "; no task written")
+        return 0
+    if not findings and refuted:
+        # Every finding was refuted WITH evidence: there is no rework left to hand over.
+        print(f"nothing to do: the report's {len(refuted)} finding(s) are all REFUTED with "
+              f"evidence — no active finding to turn into a follow-up task; no task written")
         return 0
 
     counts = counts_of(findings)
@@ -694,7 +763,8 @@ def main() -> int:
         print(f"error: cannot write {out}: {exc}", file=sys.stderr)
         return 2
 
-    print(f"wrote {out} ({len(findings)} findings)")
+    print(f"wrote {out} ({len(findings)} finding{'s' if len(findings) != 1 else ''}"
+          + (f", {len(refuted)} refuted omitted" if refuted else "") + ")")
     return 0
 
 

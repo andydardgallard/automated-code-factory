@@ -172,6 +172,14 @@ those sections well formed and one task per line.
   - Dependency-based (independent foundation → dependent core → integration → final validation).
 - Each task must be independently verifiable (single verification command preferred — clearer
   error attribution).
+- **Every task declares its role and its exact files**: the `role:` a task is delegated to and its
+  `files:` list are the scope the pre-delegation gate and the supervisor permit are checked against
+  — a permit wider than the plan task fails `permit_gate.py audit`, so a vague `files:` list makes
+  the gate unenforceable. At pre-flight the main agent also writes `task_type` and `required_roles`
+  (the roles this plan will need: coder, tester, reviewer, business_tester, …) into
+  `.code-factory/state/pipeline.yaml`; strict model attribution needs that contract, and a phase
+  whose required role never appears in the session wire is what the phase-role exit table
+  (`SKILL.md`) catches.
 - **Parallelism**: mark independent tasks (different files, no dependencies) as parallel;
   dependent tasks must be sequential with explicit `deps`.
 - **Business tests are tasks**: for EVERY user story in "Business tests", create a dedicated

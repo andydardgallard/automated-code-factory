@@ -380,6 +380,36 @@ def check_unknown_role(root: pathlib.Path) -> list[str]:
     return problems
 
 
+def check_new_role_cards(root: pathlib.Path) -> list[str]:
+    """the two W3 role cards are governed by the SAME stop rule as every older role.
+
+    A delegation to `factory-business-tester` or `factory-supervisor` runs on a model like any other
+    role, so the stop rule must be stated ON THE CARD: an unavailable model stops the run (hitl asks
+    the owner, auto ends FAILED), the main agent never performs the role itself and never substitutes
+    another model. A card that stays silent would leave its delegation governed by prose nobody wrote.
+    """
+    problems: list[str] = []
+    cards = (("business_tester", ".agents/agents/sub-agents/business-tester.md"),
+             ("supervisor", ".agents/agents/sub-agents/supervisor.md"))
+    required = ("model-unavailable-stop", "STOPS", "never performs this role's work",
+                "never substitutes another model")
+    for role, rel in cards:
+        path = root / rel
+        if not path.is_file():
+            problems.append(f"{rel}:1: the card of role {role!r} is missing — a role with no card "
+                            f"cannot be delegated at all")
+            continue
+        body = " ".join(path.read_text(encoding="utf-8").split())
+        if f"name: factory-{role.replace('_', '-')}" not in body:
+            problems.append(f"{rel}:1: the card must be named "
+                            f"'factory-{role.replace('_', '-')}'")
+        for fragment in required:
+            if fragment not in body:
+                problems.append(f"{rel}:1: the card must state {fragment!r} — the provider-failure "
+                                f"stop governs every task-named role, the new ones included")
+    return problems
+
+
 SECTIONS = (
     ("1", "the router classifies a provider 429 as PROVIDER_RATE / infrastructure", check_router),
     ("2", "SKILL.md wires the provider-failure stop branch for EVERY task-named role",
@@ -387,6 +417,7 @@ SECTIONS = (
     ("3", "the deterministic task parse comes first and its task.json feeds the flow",
      check_task_parse_first),
     ("4", "an unknown models_used role is a run error (exit 1)", check_unknown_role),
+    ("5", "the two new role cards carry the same stop rule", check_new_role_cards),
 )
 
 

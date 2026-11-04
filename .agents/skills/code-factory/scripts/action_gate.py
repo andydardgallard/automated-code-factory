@@ -103,6 +103,9 @@ HARD_DENY rules:
     covered by the declared `--scope`: filesystem root / `/*` / `~` / a drive root, absolute paths
     outside scope, `..` escapes, and — deliberately — any delete when no `--scope` was given
     (without a declared scope nothing can be proven to be inside the task's scope),
+  * signalling EVERY process it can (`kill -9 -1`, `kill -1 0`, `killall *`, `taskkill /IM *`): a
+    kill has no path to scope, so the only thing it can destroy en masse is everything the user can
+    signal — the same blast radius as deleting a filesystem root,
   * a shell wrapper whose readable payload is one of the above — a wrapper is transparent, so
     `sh -c "rm -rf /"` is the same root deletion as `rm -rf /`.
 
@@ -112,6 +115,11 @@ CONFIRM rules (destructive but inside the declared scope, and anything the gate 
     push — the destination is unproven, and only a proven non-default one (`HEAD:feature/x`) stays
     ALLOW,
   * deletion of a path covered by `--scope`,
+  * signalling a NAMED process (`kill 1234`, `kill -9 1234`, `pkill -f pytest`, `killall python`,
+    `taskkill /PID 1234`, `Stop-Process -Id 1234`): a kill carries no path, so nothing proves the
+    target is the run's own test server rather than a parallel agent's or the CLI itself — a human
+    confirms it. The run's own spawned servers are stopped by the script that started them, never
+    by a shell kill. Listing the signals (`kill -l`) reads only and stays ALLOW,
   * `git checkout -- <path>` / `git restore` of paths inside scope. Without the `--` separator an
     operand that can only be a pathspec (`.`, `./...`, an absolute or home path, a wildcard)
     takes the SAME scope route — `.` IS a pathspec that discards the whole tree, never an ALLOW —
@@ -121,8 +129,7 @@ CONFIRM rules (destructive but inside the declared scope, and anything the gate 
     `-b`/`-B`/`--orphan` branch forms take a branch and an optional start point; `--detach` stays
     ALLOW only when no pathspec follows it, because `git checkout --detach HEAD .` still restores
     `.` from HEAD over the uncommitted changes,
-  * `git clean` (repo-wide by nature). `git clean -n` / `--dry-run` is a no-op → ALLOW,
-  * `git stash` in its mutating forms: a bare `git stash` (which IS the default `push`), `push`,
+  * `git clean` (repo-wide by nature). `git clean -n` / `--dry-run` is a no-op → ALLOW,  * `git stash` in its mutating forms: a bare `git stash` (which IS the default `push`), `push`,
     `pop`, `apply`, `drop`, `clear`. Stashing rewrites the SHARED working tree of the run, where
     parallel agents keep uncommitted work, so it can race them or lose their changes — therefore
     the confirmation reason cites the rulebook rule `no-shared-tree-git-mutations` (subagents never
@@ -148,16 +155,31 @@ CONFIRM rules (destructive but inside the declared scope, and anything the gate 
 Usage:
   python action_gate.py check --action "git push origin main" [--mode hitl|auto] \\
       [--scope src] [--scope tests] [--journal .code-factory/logs/action-gate.md]
+  python action_gate.py audit --repo <root> [--session <dir|auto>] [--journal <path>]
 
 Every decision is appended to the journal (timestamp, action, class, mode, decision, scope,
 reason); the journal is created on first use and never rewritten. If the journal cannot be
 written (e.g. its parent is a regular file), the classification is printed first and the gate
 exits 3 with an `error:` line on stderr instead of raising a traceback.
+
+THE FINISH AUDIT (`audit`, violation N-6 / proposal P-6): the classification above only helps when
+it is actually CALLED, and the run's own report is no evidence that it was. `audit` reads the shell
+commands the CLI really EXECUTED from the session wire (`agents/*/wire.jsonl`, resolved by
+`model_attribution.py`'s session resolution) and joins them with the journal: a destructive command
+(anything this gate would CONFIRM or HARD_DENY) that ran with NO covering classification record is a
+violation (exit 1, the command named), and so is one whose only records are HARD_DENY (it ran
+anyway). Audited commands are DATA: nothing is executed, expanded or evaluated. An unreadable wire
+line — or a shell call whose command cannot be read — FAILS the audit CLOSED, because that is
+exactly the state in which "no destructive command ran unclassified" cannot be claimed. Only a
+genuinely ABSENT session/wire is `DEGRADED` (exit 3), consistent with the other fail-soft probes.
+Audit exit codes: 0 pass, 1 violation, 2 input error, 3 degraded/cannot audit.
 """
 from __future__ import annotations
 
 import argparse
 import datetime
+import json
+import os
 import pathlib
 import posixpath
 import re
@@ -250,6 +272,22 @@ LAUNCHER_VALUE_FLAGS = {
 
 DELETE_COMMANDS = {"rm", "rm.exe", "rmdir", "rd", "del", "erase", "remove-item", "ri"}
 DELETE_FLAG_RE = re.compile(r"^/[a-z][a-z0-9]*$")          # cmd.exe switches: /f /s /q /ah
+# PROCESS-SIGNALLING commands (`kill -9 <pid>`, `pkill -f pytest`, `taskkill /F /T /PID n`). They are
+# not path deletions, so `--scope` cannot prove anything about them — and killing the wrong process
+# (a parallel agent's test server, the CLI itself) costs the run its evidence. The classification is
+# therefore conservative and consistent with the deletion rules:
+#   * listing the signals (`kill -l`, `kill -L`) READS only -> ALLOW;
+#   * signalling EVERY process it can (`kill -9 -1`, `pkill -9 -f /` is a pattern, `taskkill /IM *`,
+#     `killall` with a `*`/`all` operand) is the same blast radius as deleting a filesystem ROOT
+#     -> HARD_DENY;
+#   * every other form — a named target, a pattern, `-9`, a missing target — CONFIRM, because what it
+#     signals cannot be proven from the command line. There is deliberately no "it is my own test
+#     server" exemption: the gate reads a command line, not a process table.
+PROCESS_KILL_COMMANDS = {"kill", "kill.exe", "pkill", "killall", "taskkill", "stop-process", "skill"}
+KILL_ALL_TARGETS = {"-1", "0", "*", "all"}
+KILL_SIGNAL_RE = re.compile(r"^(-[0-9]{1,2}|-sig[a-z]+|-s|-n|--signal(=.+)?)$", re.IGNORECASE)
+# `taskkill` options that take the NEXT token as their value (`/PID 1234`, `/IM name`).
+TASKKILL_VALUE_FLAGS = {"/pid", "/im", "/fi", "/s", "/u", "/p"}
 ROOT_TARGETS = {"", "/", "~", "/*", "$home", "${home}", "%userprofile%", "%homedrive%"}
 DRIVE_ROOT_RE = re.compile(r"^[a-z]:/?$")
 REMOTE_REF_PREFIXES = ("origin/", "upstream/", "refs/remotes/", "@{u", "@{upstream}")
@@ -1282,6 +1320,62 @@ def classify_launcher(name: str, raw: str, scopes: list[str], depth: int,
     return cls, f"`{name}` runs a destructive command: {reason}"
 
 
+def classify_process_kill(name: str, argv: list[str]) -> tuple[str, str]:
+    """Classify a process-signalling command (see `PROCESS_KILL_COMMANDS`).
+
+    CONSISTENT WITH THE DELETION RULES BY BLAST RADIUS, not by path: a kill has no `--scope` to
+    prove a target inside, so a named target is CONFIRM (a human confirms what a command line
+    cannot prove), "signal everything" is HARD_DENY (the same blast radius as deleting a root), and
+    the read-only signal listing is ALLOW. Nothing here is executed or looked up.
+    """
+    words = argv[1:]
+    if name in ("kill", "kill.exe") and not any(
+            word not in ("-l", "-L", "--list") and not word.startswith("-") for word in words) \
+            and any(word in ("-l", "-L", "--list") for word in words):
+        return ALLOW, "lists the signal names; it signals no process"
+    if name == "taskkill":
+        targets: list[str] = []
+        index = 0
+        while index < len(words):
+            word = words[index]
+            lower = word.lower()
+            value = ""
+            if ":" in lower and lower.split(":", 1)[0] in TASKKILL_VALUE_FLAGS:
+                value = word.split(":", 1)[1]
+            elif lower in TASKKILL_VALUE_FLAGS:
+                value = words[index + 1] if index + 1 < len(words) else ""
+                index += 1
+            if value:
+                targets.append(value)
+            index += 1
+        if any(target.strip() in KILL_ALL_TARGETS for target in targets):
+            return HARD_DENY, ("taskkill of EVERY matching process (/IM *): the same blast radius "
+                               "as deleting a filesystem root")
+        if not targets:
+            return CONFIRM, ("taskkill without a parsable /PID or /IM target: which processes it "
+                             "ends cannot be proven from the command line")
+        return CONFIRM, (f"taskkill of {', '.join(targets)}: whether that is a process of THIS run "
+                         f"cannot be proven from the command line (a parallel agent's test server "
+                         f"or the CLI itself may match)")
+    signal_seen = False
+    operands: list[str] = []
+    for word in words:
+        if not signal_seen and KILL_SIGNAL_RE.match(word):
+            signal_seen = True
+            continue
+        if word in KILL_ALL_TARGETS:
+            return HARD_DENY, (f"{name} of every process it can signal ({word}): the same blast "
+                               f"radius as deleting a filesystem root")
+        operands.append(word)
+    if not operands:
+        return CONFIRM, (f"{name} without a parsable target: which processes it signals cannot be "
+                         f"proven from the command line")
+    return CONFIRM, (f"{name} of {' '.join(operands)}: whether that is a process of THIS run cannot "
+                     f"be proven from the command line (a parallel agent's test server or the CLI "
+                     f"itself may match); the run's own spawned servers are stopped by the script "
+                     f"that started them, never by a shell kill")
+
+
 def classify_command(argv: list[str], scopes: list[str], depth: int = 0,
                      raw: str = "", dialect: str = POSIX_DIALECT) -> tuple[str, str]:
     """Classify one simple command; `raw` is its text, kept for the wrapper payload rebuild.
@@ -1319,6 +1413,8 @@ def classify_command(argv: list[str], scopes: list[str], depth: int = 0,
                          f"before running")
     if name in DELETE_COMMANDS:
         return classify_delete(argv, scopes)
+    if name in PROCESS_KILL_COMMANDS:
+        return classify_process_kill(name, argv)
     wrapper = name[:-4] if name.endswith(".exe") else name
     if wrapper in SHELL_WRAPPERS:
         return classify_wrapper(wrapper, raw, scopes, depth)
@@ -1397,6 +1493,297 @@ def cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ").strip()
 
 
+# --------------------------------------------------------------------------------------------
+# `audit`: every shell command the run EXECUTED, checked against the action journal
+# --------------------------------------------------------------------------------------------
+# The run's session wire records what the CLI really ran; the journal records what the gate
+# classified. The audit joins the two: a DESTRUCTIVE command that was executed with no matching
+# classification record is a violation, and so is one that was executed although the gate
+# HARD_DENYed it. Audited commands are DATA — nothing here executes, expands or evaluates them.
+#
+# Wire events are read from the shapes the CLI writes for toolbox calls (the same tolerant reader
+# `model_attribution.py` uses for models): an event whose `type` is a shell/tool call, or whose tool
+# name is a shell tool, carries the command in `command`/`cmd`/`script` (a string) or `args`/`argv`
+# (a list, joined into one line for classification). ANY other event is not a candidate. A wire line
+# that is not a JSON object, and a shell call whose command cannot be read, FAIL THE AUDIT CLOSED —
+# an unreadable wire is never "no unclassified commands".
+SHELL_EVENT_TYPES = frozenset({"shell.call", "shell.call.request", "command.call", "exec.call",
+                               "terminal.call", "bash.call", "run.command"})
+# Generic toolbox events: EVERY tool call looks like this, so the TOOL NAME decides whether it is a
+# shell call — a `read_file` call in the same shape must not be read as an unreadable shell command.
+TOOL_CALL_TYPES = frozenset({"tool.call", "tool.call.request", "tool.invocation", "tool.use"})
+SHELL_TOOL_NAMES = frozenset({"shell", "bash", "sh", "run_command", "run_shell", "terminal",
+                              "exec", "execute_command", "command", "cmd", "powershell", "pwsh"})
+TOOL_NAME_KEYS = ("tool", "toolName", "tool_name", "name")
+ARGUMENT_KEYS = ("arguments", "input", "params", "parameters")
+COMMAND_KEYS = ("command", "cmd", "script", "commandLine", "command_line")
+ARGV_KEYS = ("args", "argv")
+# Journal row cells: `| ts | mode | class | decision | scope | action | reason |` with `\|` escaped.
+JOURNAL_CELLS = ("timestamp", "mode", "class", "decision", "scope", "action", "reason")
+# The run modes of the factory, as `check --mode` accepts them, and the DECISION vocabulary
+# a journal row may carry (the class+mode -> decision map above is its source).
+MODES = ("hitl", "auto")
+DECISIONS = tuple(sorted(set(DECISION.values())))
+
+
+class AuditError(ValueError):
+    """The audit cannot run on the input it was given (exit 2), never a traceback."""
+
+
+class AuditDegraded(RuntimeError):
+    """There is no session wire to audit (exit 3): nothing was proven either way."""
+
+
+def _first_text(mapping: dict, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def shell_command(event: dict) -> tuple[str, bool]:
+    """`(command, is_candidate)` of one wire event — the audit's whole wire contract.
+
+    `is_candidate` is True only for a shell/tool call event; a candidate whose command cannot be
+    read returns `("", True)`, which the caller treats as a malformed wire (fail closed).
+    """
+    kind = str(event.get("type") or "").lower()
+    container: dict = event
+    for key in ARGUMENT_KEYS:
+        value = event.get(key)
+        if isinstance(value, dict):
+            container = value
+            break
+    tool = _first_text(event, TOOL_NAME_KEYS) or _first_text(container, TOOL_NAME_KEYS)
+    tool_name = pathlib.PurePath(tool.replace("\\", "/")).name.lower() if tool else ""
+    is_shell = (kind in SHELL_EVENT_TYPES
+                or (kind in TOOL_CALL_TYPES and tool_name in SHELL_TOOL_NAMES))
+    if not is_shell:
+        return "", False
+    command = _first_text(container, COMMAND_KEYS) or _first_text(event, COMMAND_KEYS)
+    if command:
+        return command, True
+    for key in ARGV_KEYS:
+        argv = container.get(key)
+        if isinstance(argv, list) and argv and all(isinstance(item, str) for item in argv):
+            return " ".join(argv), True
+    return "", True
+
+
+def read_wire_commands(session_dir: pathlib.Path) -> tuple[list[str], list[str], int]:
+    """`(commands, malformed, events)` of every `agents/*/wire.jsonl` of one session.
+
+    A malformed line (not a JSON object, or a shell call with no readable command) is REPORTED —
+    never skipped: an unreadable wire is exactly the state in which "no unclassified destructive
+    command" cannot be claimed.
+    """
+    agents_dir = session_dir / "agents"
+    wires = sorted(wire for wire in agents_dir.glob("*/wire.jsonl") if wire.is_file()) \
+        if agents_dir.is_dir() else []
+    if not wires:
+        raise AuditDegraded(f"session {session_dir.name} has no agents/*/wire.jsonl: there is no "
+                            f"executed-command evidence to audit")
+    commands: list[str] = []
+    malformed: list[str] = []
+    events = 0
+    for wire in wires:
+        try:
+            text = wire.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise AuditError(f"cannot read the wire {wire}: {exc}") from exc
+        for number, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                malformed.append(f"{wire}:{number}: not a JSON object (an unreadable wire cannot "
+                                 f"prove that no destructive command ran unclassified)")
+                continue
+            if not isinstance(event, dict):
+                malformed.append(f"{wire}:{number}: the event is not a JSON object")
+                continue
+            events += 1
+            command, candidate = shell_command(event)
+            if not candidate:
+                continue
+            if not command:
+                malformed.append(f"{wire}:{number}: a shell call whose command cannot be read "
+                                 f"(refusing to treat it as harmless)")
+                continue
+            commands.append(command)
+    return commands, malformed, events
+
+
+def _journal_cells(line: str) -> list[str]:
+    """The pipe-separated cells of one journal line (`\\|` is an escaped literal pipe)."""
+    body = line.strip()
+    if body.startswith("|"):
+        body = body[1:]
+    if body.endswith("|"):
+        body = body[:-1]
+    return [part.replace("\\|", "|").strip() for part in re.split(r"(?<!\\)\|", body)]
+
+
+def _journal_row_problem(row: dict) -> str | None:
+    """Why a journal row is unusable, or `None` when it is a well-formed decision record.
+
+    A classification record is what the audit accepts as COVERAGE, so its shape and its vocabulary
+    are validated here: an unknown decision (`maybe`, `OK`, an empty cell) would otherwise count as
+    cover for a destructive command that was never actually decided, and a row missing its reason
+    or its class cannot be told apart from prose.
+    """
+    if not row["timestamp"]:
+        return "a decision row must carry a timestamp"
+    if row["mode"] not in MODES:
+        return f"unknown mode {row['mode']!r} (expected one of {', '.join(MODES)})"
+    if row["class"] not in (ALLOW, CONFIRM, HARD_DENY):
+        return (f"unknown class {row['class']!r} (expected one of "
+                f"{', '.join((ALLOW, CONFIRM, HARD_DENY))})")
+    if row["decision"] not in DECISIONS:
+        return (f"unknown decision {row['decision']!r} (expected one of "
+                f"{', '.join(DECISIONS)}): an unrecognised decision cannot cover a destructive "
+                f"command")
+    # …and the decision must be the one the gate DERIVES from that class and mode: a row that
+    # claims HARD_DENY in the class but ALLOW_WITH_ASSUMPTION in the decision (or any other forged
+    # combination) is a record the gate could never have written, so it covers nothing.
+    expected = DECISION[(row["class"], row["mode"])]
+    if row["decision"] != expected:
+        return (f"inconsistent decision {row['decision']!r}: a {row['class']} in {row['mode']} mode "
+                f"is recorded as {expected!r}, never {row['decision']!r} — a forged row is not "
+                f"coverage")
+    if not row["action"]:
+        return "a decision row must name the action it decided"
+    return None
+
+
+def read_journal_rows(path: pathlib.Path) -> tuple[list[dict], list[str]]:
+    """`(rows, problems)` of the action journal (an unreadable file is an infrastructure error).
+
+    The rows are parsed back and VALIDATED: a malformed row is reported (never skipped), because a
+    journal the audit cannot read is exactly the state in which an unjournaled destructive command
+    would pass unnoticed.
+    """
+    if not path.is_file():
+        return [], []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise AuditError(f"cannot read the action-gate journal {path}: {exc}") from exc
+    rows: list[dict] = []
+    problems: list[str] = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip().startswith("|"):
+            continue
+        cells = _journal_cells(line)
+        if not any(cells):
+            continue                               # a blank table row
+        if cells[0] == "timestamp" or (cells[0] and set(cells[0]) <= set("-: ")):
+            continue                               # the header and its separator row
+        if len(cells) != len(JOURNAL_CELLS):
+            problems.append(f"{path}:{number}: {len(cells)} cell(s) where "
+                            f"{len(JOURNAL_CELLS)} are documented ({', '.join(JOURNAL_CELLS)}) — a "
+                            f"row the audit cannot read cannot cover anything")
+            continue
+        row = dict(zip(JOURNAL_CELLS, cells))
+        problem = _journal_row_problem(row)
+        if problem is not None:
+            problems.append(f"{path}:{number}: {problem}")
+            continue
+        rows.append(row)
+    return rows, problems
+
+
+def _normal_action(text: str) -> str:
+    """A comparable spelling of an action: trimmed, backticks stripped, whitespace collapsed."""
+    return " ".join(text.strip().strip("`").split())
+
+
+def _covering_rows(command: str, rows: list[dict]) -> list[dict]:
+    """The journal rows that classify `command` (an exact row, or one whose whole line contains it)."""
+    normalized = _normal_action(command)
+    covering: list[dict] = []
+    for row in rows:
+        action = _normal_action(row["action"])
+        if action == normalized:
+            covering.append(row)
+            continue
+        segments = [_normal_action(part) for part in COMMAND_SPLIT_RE.split(action)]
+        if normalized in segments:
+            covering.append(row)
+    return covering
+
+
+def audit(repo: str | pathlib.Path, session: str = "auto", home: str | None = None,
+          journal: str | None = None) -> dict:
+    """Audit the run's EXECUTED shell commands against the action journal (data, never executed).
+
+    Returns the verdict dict; raises `AuditDegraded` when there is no wire to audit and
+    `AuditError` for an input it cannot read. The violations are:
+      `unjournaled`      a destructive command ran with no classification record at all;
+      `denied-executed` the only records of the command are HARD_DENY (it ran anyway);
+      `malformed`        a wire line (or a shell call) that cannot be read — fail closed.
+    """
+    attribution = _attribution_module()
+    root = pathlib.Path(os.path.abspath(str(repo)))
+    if not root.is_dir():
+        raise AuditError(f"repository root does not exist: {root}")
+    wire_home = pathlib.Path(home) if home else attribution.WIRE_HOME
+    try:
+        info = attribution.resolve_session(str(root), session, wire_home)
+        session_dir = pathlib.Path(info["session_dir"])
+    except attribution.Degraded as exc:
+        raise AuditDegraded(str(exc)) from exc
+    except attribution.AttributionError as exc:
+        raise AuditError(str(exc)) from exc
+    commands, malformed, events = read_wire_commands(session_dir)
+    journal_path = pathlib.Path(journal) if journal else root / DEFAULT_JOURNAL
+    rows, journal_problems = read_journal_rows(journal_path)
+
+    unjournaled: list[str] = []
+    denied_executed: list[str] = []
+    destructive = 0
+    for command in commands:
+        cls, reason = classify(command, [])
+        if cls == ALLOW:
+            continue
+        destructive += 1
+        covering = _covering_rows(command, rows)
+        if not covering:
+            unjournaled.append(f"{command}  (classified {cls}: {reason})")
+        elif all(row["decision"] == "HARD_DENY" for row in covering):
+            denied_executed.append(f"{command}  (the gate HARD_DENYed it and it ran anyway)")
+    violations = ([f"unjournaled destructive command: {entry}" for entry in unjournaled]
+                  + [f"executed despite HARD_DENY: {entry}" for entry in denied_executed]
+                  + [f"malformed wire: {entry}" for entry in malformed]
+                  + [f"malformed journal: {entry}" for entry in journal_problems])
+    return {"status": "failed" if violations else "ok", "repo": str(root),
+            "session": str(session_dir), "journal": str(journal_path),
+            "events": events, "commands": len(commands), "destructive": destructive,
+            "unjournaled": unjournaled, "denied_executed": denied_executed,
+            "malformed": malformed, "journal_problems": journal_problems,
+            "violations": violations}
+
+
+def _attribution_module():
+    """The sibling `model_attribution` module (session resolution), imported on demand only.
+
+    The gate's `check` path must not depend on the model layer — it is a safety control that has to
+    work when everything else is broken — so the audit imports it lazily and reports a missing
+    sibling as an input error instead of failing at import time.
+    """
+    scripts = pathlib.Path(__file__).resolve().parent
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    try:
+        import model_attribution  # noqa: PLC0415  (deliberately lazy, see the docstring)
+    except ImportError as exc:
+        raise AuditError(f"the action audit reuses model_attribution.py's session resolution, "
+                         f"which cannot be imported: {exc}") from exc
+    return model_attribution
+
+
 def use_utf8_output() -> None:
     """Force UTF-8 on stdout/stderr so the help survives being piped or redirected.
 
@@ -1413,8 +1800,7 @@ def use_utf8_output() -> None:
             pass
 
 
-def main() -> int:
-    use_utf8_output()
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
@@ -1426,8 +1812,55 @@ def main() -> int:
                          help="path the task is allowed to modify (repeatable)")
     p_check.add_argument("--journal", default=DEFAULT_JOURNAL,
                          help=f"decision journal (default: {DEFAULT_JOURNAL})")
-    args = ap.parse_args()
+    p_check.set_defaults(func=_cmd_check)
 
+    p_audit = sub.add_parser("audit", help="check the run's EXECUTED shell commands against the "
+                                           "action journal")
+    p_audit.add_argument("--repo", required=True,
+                         help="repository root of the run (its sessions are resolved)")
+    p_audit.add_argument("--session", default="auto",
+                         help="a session directory, or 'auto' for the current one (default)")
+    p_audit.add_argument("--home", default=None,
+                         help="the CLI's wire root (default: ~/.kimi-code)")
+    p_audit.add_argument("--journal", default=None,
+                         help=f"the action journal to check against (default: <repo>/"
+                              f"{DEFAULT_JOURNAL})")
+    p_audit.set_defaults(func=_cmd_audit)
+    return ap
+
+
+def _cmd_audit(args: argparse.Namespace) -> int:
+    try:
+        result = audit(args.repo, args.session, args.home, args.journal)
+    except AuditDegraded as exc:
+        print(f"DEGRADED - the action audit cannot prove anything: {exc}")
+        return 3
+    except AuditError as exc:
+        print(f"action_gate.py: {exc}", file=sys.stderr)
+        return 2
+    print(f"session: {result['session']}")
+    print(f"journal: {result['journal']}")
+    print(f"events: {result['events']}, shell commands: {result['commands']}, destructive: "
+          f"{result['destructive']}")
+    for violation in result["violations"]:
+        print(f"violation: {violation}")
+    if result["status"] == "ok":
+        print(f"PASS - every destructive command the run executed ({result['destructive']}) has a "
+              f"classification record in the journal")
+        return 0
+    print(f"FAIL - {len(result['violations'])} action-audit violation(s): a destructive command was "
+          f"executed without a covering classification record")
+    return 1
+
+
+def main() -> int:
+    use_utf8_output()
+    ap = build_parser()
+    args = ap.parse_args()
+    return args.func(args)
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
     action = args.action.strip()
     scopes = [s for s in args.scope if s and s.strip()]
     cls, reason = classify(action, scopes)

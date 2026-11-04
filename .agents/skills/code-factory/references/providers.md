@@ -139,9 +139,10 @@ Agent(subagent_type: "factory-code-reviewer", model: "deepseek-flash", ...)
   role's `model_preference: primary|secondary` in `.agents/agents/sub-agents/<role>.md`. That lookup
   is performed by the RESOLVER (`scripts/model_matrix.py resolve`); `model_preference` selects a
   side, it resolves nothing by itself. On this path the generator≠judge rule IS enforced: a
-  same-family coder/tester/gui_expert/farukon_expert versus reviewer/diagnostician/advisor pair with
-  either side taken from the default matrix is an ERROR naming the fix (widen `[secondary_model]` so
-  the two families differ, or pin `models.<role>` in the task).
+  same-family coder/tester/gui_expert/farukon_expert/business_tester versus
+  reviewer/supervisor/diagnostician/advisor pair with either side taken from the default matrix is an
+  ERROR naming the fix (widen `[secondary_model]` so the two families differ, or pin `models.<role>`
+  in the task).
 - **No third path**: the main agent never picks a model on its own, so an unnamed role goes to the
   default matrix and nowhere else. Omitting `model:` when launching a subagent is not a neutral
   choice — the Agent tool then runs the CLI's own default model, not the factory's choice — which is
@@ -161,6 +162,19 @@ Agent(subagent_type: "factory-code-reviewer", model: "deepseek-flash", ...)
   `models_used.farukon_expert`. When the task does not name it, the role's
   `model_preference: secondary` fallback applies — the specialist drives a bounded MCP session, not
   a long reasoning chain.
+- `models.business_tester` (optional) names the model of the adversarial business tester
+  `factory-business-tester`. Like `models.coder` it is GENERATOR-side (§5.1) — the tester does the
+  product as a USER and reports what broke — so its family must differ from the
+  reviewer/supervisor/diagnostician/advisor family; the model actually used is logged as
+  `models_used.business_tester`. When the task does not name it, the role's
+  `model_preference: secondary` fallback applies: it drives bounded user-level probes, not a long
+  reasoning chain, and it never judges code.
+- `models.supervisor` (optional) names the model of the permit supervisor `factory-supervisor`.
+  Unlike the business tester it is JUDGE-side (§5.1) — it returns an `allow`|`deny` verdict on a
+  delegation permit — so its family must differ from the generator side; the model actually used is
+  logged as `models_used.supervisor`. When the task does not name it, the role's
+  `model_preference: primary` fallback applies: the verdict is a bounded judgement with evidence,
+  and a verdict on the family that produced the change would be self-confirmation.
 
 ### 5.1 Model diversity — generator ≠ judge (P1.13)
 
@@ -186,7 +200,8 @@ still the same judge.
   check therefore treats `coder`, `gui_expert` and `farukon_expert` as one generator side.
 - **The family check is one command (deterministic, zero LLM)**: `scripts/model_matrix.py` resolves
   every role and runs its `check_families` check over the resolved families of
-  coder/tester/gui_expert/farukon_expert versus reviewer/diagnostician/advisor. A same-family pair
+  coder/tester/gui_expert/farukon_expert/business_tester versus
+  reviewer/supervisor/diagnostician/advisor. A same-family pair
   is a WARNING
   when both models come from the task's matrix — the task is authoritative, so the run continues on
   the configured models and the warning names both roles and both models — and an ERROR when either

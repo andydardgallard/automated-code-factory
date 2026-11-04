@@ -72,11 +72,13 @@ ENGLISH = ".agents/skills/code-factory/scripts/check_english_only.py"
 RULEBOOK = ".agents/skills/code-factory/references/factory-rules.md"
 CODE_REVIEW = ".agents/skills/code-factory/references/code-review.md"
 FARUKON_REF = ".agents/skills/code-factory/references/farukon-mcp.md"
+DELEGATION_GATE = ".agents/skills/code-factory/scripts/delegation_gate.py"
 TESTER = ".agents/agents/sub-agents/tester.md"
 
 # Every file a contract reads: a probe copies exactly these, then breaks one of them.
 FILES = (SKILL, CODE_FACTORY, AGENTS, README, BRIEFING, PROVIDERS, ERROR_ROUTING, EXAMPLE_TASK,
-         TASK_TEMPLATE, CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK, CODE_REVIEW, FARUKON_REF, TESTER)
+         TASK_TEMPLATE, CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK, CODE_REVIEW, FARUKON_REF,
+         DELEGATION_GATE, TESTER)
 
 FINISH_NODE = "Y"      # `Y[Finish: ...]` — the only place compaction/attribution are invoked
 CODER_NODE = "M"       # `M[Implement: ...]` — the coder delegation and its briefing
@@ -602,6 +604,103 @@ def check_review_gate_budget(root: pathlib.Path) -> list[str]:
     return problems
 
 
+def check_retry_budget_gate(root: pathlib.Path) -> list[str]:
+    """The retry budget must be counted by the pre-delegation gate, and the rulebook must say so.
+
+    The finding this pins (violations N-1/N-2, proposal P-2): the counter in `pipeline.yaml` was
+    written by whoever reported the retry, so nothing refused the delegation that exceeded the
+    budget. `scripts/delegation_gate.py check` is now the one place that increments a counter and
+    refuses; the two carriers that define the counting rule must name it, and the budget table of
+    the script must still be the table the canonical rule states (one source, no drift).
+    """
+    problems: list[str] = []
+    review = Doc.load(root, CODE_REVIEW, problems)
+    rules = Doc.load(root, RULEBOOK, problems)
+    gate = Doc.load(root, DELEGATION_GATE, problems)
+    for doc in (review, rules):
+        for needle, what in (("delegation_gate.py check", "name the pre-delegation command"),
+                             ("--owner-authorized", "state the one explicit override"),
+                             ("retry_counters", "name the counter it increments"),
+                             ("REFUSES", "state that an exhausted budget REFUSES the delegation")):
+            if doc.text and needle not in doc.text:
+                problems.append(f"{doc.rel}:1: the counting rule must {what} ({needle!r} is "
+                                "missing) — a budget counted by the reporter is not a budget")
+    # One budget table: the canonical rule's `role=N` pairs must be exactly the script's BUDGETS.
+    block = re.search(r"<!--\s*factory-rule:\s*retry-budgets\s*begin\s*-->(.*?)"
+                      r"<!--\s*factory-rule:\s*retry-budgets\s*end\s*-->", rules.text, re.S)
+    if block is None:
+        problems.append(f"{RULEBOOK}:1: no canonical `retry-budgets` block — the budgets have no "
+                        "single home")
+    elif gate.text:
+        pairs = dict(re.findall(r"\b([a-z]+)=(\d+)", block.group(1)))
+        if not pairs:
+            problems.append(f"{RULEBOOK}:1: the `retry-budgets` block states no `role=N` budget")
+        for role, budget in sorted(pairs.items()):
+            if not re.search(rf'"{re.escape(role)}":\s*{budget}\b', gate.text):
+                problems.append(f"{DELEGATION_GATE}:1: role {role!r} must be budgeted {budget} — "
+                                "the gate and the canonical rule must state ONE budget table")
+    return problems
+
+
+# The W2/W3 wiring: every mechanism built in those workstreams must be REACHABLE from the flow, in
+# BOTH carriers (SKILL.md draws it, code-factory.md executes it), with the honest limits stated.
+# (relative path, whitespace-normalized fragment, what the carrier must say)
+W2_W3_TOKENS = (
+    (SKILL, "delegation_gate.py check", "the pre-delegation budget gate before a delegation"),
+    (SKILL, "the budget is counted by whoever EXECUTES", "who counts the budget"),
+    (SKILL, "permit_gate.py add", "the permit registration step"),
+    (SKILL, "permit_gate.py verdict", "the recorded supervisor verdict"),
+    (SKILL, "permit_gate.py bind", "the spawned agent id bound to its permit"),
+    (SKILL, "permit_gate.py audit", "the deterministic permit backstop"),
+    (SKILL, "MODEL-ENFORCED", "the honest limits of the supervisor verdict"),
+    (SKILL, "DETECTED, not intercepted", "that a bypassing agent is detected, not stopped"),
+    (SKILL, "manifest.py require", "the blocking pre-edit manifest gate"),
+    (SKILL, "manifest.py add", "the per-change manifest registration"),
+    (SKILL, "manifest.py audit", "the finish manifest audit"),
+    (SKILL, "gate_all.py --repo", "the deterministic gate aggregator"),
+    (SKILL, "--phase K", "the pre-implementation gate checkpoint"),
+    (SKILL, "--phase Y", "the finish gate checkpoint"),
+    (SKILL, "factory-business-tester", "the adversarial business tester"),
+    (SKILL, "business-adversarial", "its own evidence tree"),
+    (SKILL, "finding_disposition", "the accepted|refuted finding disposition"),
+    (SKILL, "delegation_gate.py settle", "the wholly-refuted round settlement"),
+    (SKILL, "project_fingerprint.py --write-state", "the derived fingerprint state"),
+    (SKILL, "--check-state", "the fingerprint comparison"),
+    (SKILL, "no embedded fingerprint marker", "that AGENTS.md carries no hash of itself"),
+    (SKILL, "task_type and required_roles", "the checkpoint contract strict attribution needs"),
+    (SKILL, "Phase-role exit table", "the phase -> role -> mandatory subagent table"),
+    (CODE_FACTORY, "delegation_gate.py check", "the pre-delegation gate in the executable order"),
+    (CODE_FACTORY, "permit_gate.py add", "the permit step in the executable order"),
+    (CODE_FACTORY, "permit_gate.py audit", "the permit backstop in the executable order"),
+    (CODE_FACTORY, "manifest.py require", "the blocking manifest gate in the executable order"),
+    (CODE_FACTORY, "manifest.py audit", "the finish manifest audit in the executable order"),
+    (CODE_FACTORY, "gate_all.py", "the gate aggregator in the executable order"),
+    (CODE_FACTORY, "factory-business-tester", "the adversarial business tester"),
+    (CODE_FACTORY, "business-adversarial", "its own evidence tree"),
+    (CODE_FACTORY, "task_type` and `required_roles`", "the checkpoint contract at pre-flight"),
+)
+
+
+def check_w2_w3_wiring(root: pathlib.Path) -> list[str]:
+    """The W2/W3 machinery is REACHABLE: both carriers name every step, with the honest limits.
+
+    A gate nobody runs protects nothing, and a permit step nobody executes is prose. This section
+    pins the wiring itself — the pre-delegation budget gate, the supervisor permit lifecycle, the
+    manifest enforcement, the two gate checkpoints, the adversarial business tester at node S, the
+    finding disposition and its settlement, the derived fingerprint state and the phase-role table —
+    in the flow carrier AND in the executable order the agent follows.
+    """
+    problems: list[str] = []
+    docs = {SKILL: Doc.load(root, SKILL, problems), CODE_FACTORY: Doc.load(root, CODE_FACTORY,
+                                                                        problems)}
+    bodies = {rel: " ".join(doc.text.split()) for rel, doc in docs.items()}
+    for rel, needle, what in W2_W3_TOKENS:
+        if docs[rel].text and needle not in bodies[rel]:
+            problems.append(f"{rel}:1: the flow must name {what} ({needle!r} is missing) — a "
+                            "mechanism the flow never reaches is not a control")
+    return problems
+
+
 def check_reviewer_calibration(root: pathlib.Path) -> list[str]:
     """The §7 calibration gate must be RUN before the reviewer, in the flow and in the agent.
 
@@ -894,6 +993,158 @@ def check_farukon_wiring(root: pathlib.Path) -> list[str]:
     return problems
 
 
+
+# --------------------------------------------------------------------------------------------
+# P. The pre-delegation gate binds EVERY budgeted delegation, the adversarial node is a real fork,
+#    the manifest is created before it is required, and every role is registered with the orchestrator
+# --------------------------------------------------------------------------------------------
+# (flow node id, the role it delegates) — the gate must be a PRE-STEP of each of these nodes, so the
+# clause sits inside the node itself and the graph can prove it: a hitl/auto run that reaches one of
+# them without the check would spend a budget nobody counted.
+DELEGATION_SITES = (("E", "analyzer"), ("SC", "analyzer"), ("F", "planner"), ("PC", "planner"),
+                    ("M", "coder"), ("N", "tester"), ("Q", "tester"), ("S", "tester"),
+                    ("BT", "business_tester"), ("CR", "reviewer"), ("CR0", "reviewer"),
+                    ("DG", "diagnostician"), ("ADV", "advisor"), ("DOC2", "documenter"),
+                    ("SA", "security_auditor"), ("BTR0", "business_tester"),
+                    ("BTR1", "business_tester"))
+# The fork/join of the business leg and the task-type paths into the adversarial node.
+FORK_EDGES = (("S", "TST"), ("S", "BT"), ("TST", "T"), ("BT", "T"))
+ADVERSARIAL_PATHS = (("CR0", "BTR0", "CRV0"), ("RF", "BTR1", "L"))
+# A write node the adversarial review/refactor branches must NOT reach (review-report-only).
+WRITE_NODES = ("M",)
+
+
+def _edges(doc: Doc) -> set[tuple[str, str]]:
+    pairs: set[tuple[str, str]] = set()
+    _first, nodes = flow_nodes(doc)
+    by_line: dict[int, list[tuple[str, str]]] = {}
+    for line, ident, _body in nodes:
+        by_line.setdefault(line, []).append((ident, _body))
+    for number, line in enumerate(doc.lines, 1):
+        match = EDGE_RE.match(line.strip())
+        if not match:
+            continue
+        raw = match.group(3).strip()
+        target = NODE_RE.match(raw)
+        if target:
+            pairs.add((match.group(1), target.group(1)))
+            continue
+        bare = re.match(r"([A-Za-z][A-Za-z0-9_]*)", raw)
+        if bare:
+            pairs.add((match.group(1), bare.group(1)))
+    return pairs
+
+
+def _reachable(edges: set[tuple[str, str]], start: str) -> set[str]:
+    seen: set[str] = set()
+    queue = [start]
+    while queue:
+        node = queue.pop()
+        for source, target in edges:
+            if source == node and target not in seen:
+                seen.add(target)
+                queue.append(target)
+    return seen
+
+
+def check_delegation_gates(root: pathlib.Path) -> list[str]:
+    """The pre-delegation gate is a PRE-STEP of EVERY delegation, in the graph, not in prose.
+
+    The finding this pins: node DG1 hung off the implement path only, so a run that delegated the
+    analyzer, the planner, the tester, the reviewer, the diagnostician, the advisor, the documenter or
+    the auditor never reached the budget gate or the permit lifecycle at all — a mechanism the flow
+    never reaches is not a control. The adversarial node is pinned the same way: it must be a real
+    FORK of node S (joined before the verdict) and reachable from `review` and `refactor` too, while
+    a review/refactor adversarial branch may never reach a write node.
+    """
+    problems: list[str] = []
+    skill = Doc.load(root, SKILL, problems)
+    agent = Doc.load(root, CODE_FACTORY, problems)
+    _first, nodes = flow_nodes(skill)
+    by_id = {ident: (line, body) for line, ident, body in nodes}
+    for node_id, role in DELEGATION_SITES:
+        if node_id not in by_id:
+            problems.append(f"{SKILL}:1: the delegating node {node_id} is gone — the "
+                            f"pre-delegation gate has no place to run for {role}")
+            continue
+        line, body = by_id[node_id]
+        flattened = " ".join(body.split())
+        for needle, what in ((f"delegation_gate.py check --role {role}", "the budget check"),
+                             (f"permit_gate.py add --role {role}", "the permit registration")):
+            if needle not in flattened:
+                problems.append(f"{SKILL}:{line}: node {node_id} must run {what} \'{needle}\' BEFORE "
+                                f"its {role} delegation — a delegation that skips the gate spends a "
+                                f"budget nobody counted")
+    if "DG1" not in by_id:
+        problems.append(f"{SKILL}:1: node DG1 is gone — the shared pre-delegation gate has no "
+                        f"place to run")
+    for node_id, body in (("DG1", by_id.get("DG1", (0, ""))[1]),) if "DG1" in by_id else ():
+        flattened = " ".join(body.split())
+        for role in ("coder", "planner", "tester", "reviewer", "diagnostician", "advisor",
+                     "documenter", "security_auditor", "business_tester"):
+            if role not in flattened:
+                problems.append(f"{SKILL}:{by_id['DG1'][0]}: node DG1 must name the {role} "
+                                f"delegation it covers, so the shared pre-step is stated once")
+    edges = _edges(skill)
+    for source, target in FORK_EDGES:
+        if (source, target) not in edges:
+            problems.append(f"{SKILL}:1: the business leg must be a real FORK — the \'{source} --> "
+                            f"{target}\' edge is missing (the tester and the adversarial tester run "
+                            f"IN PARALLEL and JOIN before a verdict)")
+    for source, middle, target in ADVERSARIAL_PATHS:
+        for pair in ((source, middle), (middle, target)):
+            if pair not in edges:
+                problems.append(f"{SKILL}:1: the {source} path must reach the adversarial node — "
+                                f"the \'{pair[0]} --> {pair[1]}\' edge is missing (the adversarial "
+                                f"business tester is never security_audit's, and never a rework order)")
+        for write_node in WRITE_NODES:
+            if (middle, write_node) in edges:
+                problems.append(f"{SKILL}:1: the {middle} branch leads straight into the write node "
+                                f"{write_node} — a review/refactor adversarial report is diagnostic "
+                                f"and may never authorise a code change")
+    if "BT" in by_id and "security_audit" not in " ".join(by_id["BT"][1].split()):
+        problems.append(f"{SKILL}:{by_id['BT'][0]}: the adversarial node must exclude "
+                        f"security_audit explicitly")
+    # The manifest is CREATED before it is REQUIRED: require-before-init blocks every fresh run.
+    for doc in (skill, agent):
+        if not doc.text:
+            continue
+        created = doc.text.find("manifest.py init")
+        required = doc.text.find("manifest.py require")
+        if created < 0 or required < 0:
+            problems.append(f"{doc.rel}:1: the carrier must name both `manifest.py init` and "
+                            f"`manifest.py require`")
+        elif created > required:
+            problems.append(f"{doc.rel}:{doc.line_of(required)}: `manifest.py require` is documented "
+                            f"BEFORE `manifest.py init` — the pre-edit gate would block every "
+                            f"fresh run on a manifest nobody has written yet")
+    # Every role the factory can resolve is registered with the orchestrator.
+    orchestrator = agent.text.split("\n---", 1)[0]
+    for role, profile in _model_roles():
+        if profile not in orchestrator:
+            problems.append(f"{CODE_FACTORY}:1: {profile} is a resolvable role but the orchestrator "
+                            f"does not register it in its `subagents:` list — an unregistered role "
+                            f"cannot be delegated")
+    return problems
+
+
+def _model_roles() -> tuple[tuple[str, str], ...]:
+    """`(role, subagent profile)` from `model_matrix.py` (the registry IS the contract, not a copy)."""
+    scripts = str(pathlib.Path(__file__).resolve().parent)
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    try:
+        import model_matrix  # noqa: PLC0415  (deliberately lazy: the module resolves the matrix)
+        pairs = []
+        for role in model_matrix.ROLES:
+            card = model_matrix.ROLE_FILES.get(role, f"{role}.md")
+            pairs.append((role, f"factory-{card[:-3].replace('_', '-')}"))
+        return tuple(pairs)
+    finally:
+        if scripts in sys.path:
+            sys.path.remove(scripts)
+
+
 SECTIONS = (
     ("A", "the Finish node wires the memory mechanisms", check_finish_node),
     ("B", "the precedent index is built by the flow", check_precedent_index),
@@ -908,6 +1159,10 @@ SECTIONS = (
     ("K", "the routing prose carries no dead route", check_routing_prose),
     ("L", "the operator manual describes the executable HITL gate", check_readme_approval),
     ("M", "the conditional Farukon path is wired like its Web GUI twin", check_farukon_wiring),
+    ("N", "the retry budget is counted by the pre-delegation gate", check_retry_budget_gate),
+    ("O", "the W2/W3 machinery is reachable from the flow", check_w2_w3_wiring),
+    ("P", "the pre-delegation gate binds every delegation and the adversarial leg is a fork",
+     check_delegation_gates),
 )
 
 
@@ -1063,6 +1318,42 @@ PROBES = (
     ("M: the tester stops owning the replay acceptance", check_farukon_wiring,
      ((TESTER, "and marked ACCEPTANCE", "and marked DIAGNOSTIC"),),
      "must own the final replay acceptance"),
+    ("N: the reviewer budget stops being counted by the pre-delegation gate", check_retry_budget_gate,
+     ((CODE_REVIEW, "scripts/delegation_gate.py check --repo <resolved repo_path> --role reviewer",
+       "scripts/count_reviews.py --repo <resolved repo_path> --role reviewer"),),
+     "delegation_gate.py check"),
+    ("N: the rulebook's operational note loses the refusal", check_retry_budget_gate,
+     ((RULEBOOK, "REFUSES it once the budget is exhausted", "records it once the budget is "
+       "exhausted"),),
+     "REFUSES"),
+    ("N: the gate's budget table drifts from the canonical rule", check_retry_budget_gate,
+     ((DELEGATION_GATE, '"reviewer": 2', '"reviewer": 3'),),
+     "must be budgeted 2"),
+    ("O: the flow stops naming the pre-delegation budget gate", check_w2_w3_wiring,
+     ((SKILL, "delegation_gate.py check", "count_the_retries.py check"),),
+     "delegation_gate.py check"),
+    ("O: the adversarial business tester disappears from the flow", check_w2_w3_wiring,
+     ((SKILL, "factory-business-tester", "factory-tester-extra"),),
+     "factory-business-tester"),
+    ("O: the executable order loses the blocking manifest gate", check_w2_w3_wiring,
+     ((CODE_FACTORY, "manifest.py require", "manifest.py maybe"),),
+     "manifest.py require"),
+    ("O: the permit step disappears from the executable order", check_w2_w3_wiring,
+     ((CODE_FACTORY, "permit_gate.py add", "permit_gate.py imagine"),),
+     "permit_gate.py add"),
+    ("P: the implement node stops running the pre-delegation gate", check_delegation_gates,
+     ((SKILL, "delegation_gate.py check --role coder",
+       "delegation_gate.py maybe --role coder"),),
+     "node M must run the budget check"),
+    ("P: the business leg collapses back into a sequential step", check_delegation_gates,
+     ((SKILL, "TST --> T{Business results match?", "TST --> T9{Business results match?"),),
+     "the business leg must be a real FORK"),
+    ("P: the review adversarial branch is wired straight into a write node", check_delegation_gates,
+     ((SKILL, "BTR0 --> CRV0", "BTR0 --> M"),),
+     "leads straight into the write node M"),
+    ("P: a resolvable role disappears from the orchestrator's registry", check_delegation_gates,
+     ((CODE_FACTORY, "  - factory-supervisor\n", ""),),
+     "factory-supervisor is a resolvable role"),
 )
 
 
@@ -1107,7 +1398,14 @@ def main() -> int:
           f"cannot take; the operator manual describes the executable HITL gate; the conditional "
           f"Farukon path is wired like its Web GUI twin (routing, `--farukon` probe, "
           f"`models.farukon_expert`, logged `models_used.farukon_expert`, tester-owned acceptance) "
-          f"— and all "
+          f"— the retry budget is counted by the pre-delegation gate that increments the counter "
+          f"and refuses when exhausted, in both carriers that define the counting rule and with the "
+          f"gate's budget table equal to the canonical one; and the W2/W3 machinery is REACHABLE "
+          f"from the flow: the pre-delegation budget gate, the supervisor permit lifecycle "
+          f"(add → verdict → spawn → bind, with the model-enforced verdict and the deterministic "
+          f"audit backstop), the blocking manifest gate, the K/Y gate aggregation, the "
+          f"factory-business-tester at node S with its own evidence tree, the finding disposition "
+          f"and its settlement, the derived fingerprint state and the phase-role table — and all "
           f"{caught} deliberately broken copies were caught.")
     return 0
 

@@ -230,6 +230,16 @@ After classification, decide who retries:
 | PERMISSION | HUMAN | manual fix required |
 | UNKNOWN | DIAGNOSTICIAN | fallback |
 
+**A business breakage is not a new category and not a new role.** When `factory-business-tester`
+(node S, `references/verification-strategy.md` §3.3) reports a scenario that broke the product, its
+`classification` decides the route and the existing tables do it: `code_defect` feeds the observed
+output to `scripts/error_router.py classify` and takes the route that comes back (usually CODER —
+RUNTIME_CRASH/ASSERTION — with the coder's budget 1, exactly as for any other failure; there is no
+business-tester budget in `scripts/delegation_gate.py`), `contract_gap` is a scope question for the
+main agent instead of a retry, `environment` goes through the infrastructure path (budget 3), and
+`no_defect` records a proven pass. A scenario the tester could not run is UNVERIFIED: it routes
+nowhere and is never counted as a pass.
+
 ## 3. Retry budgets (deterministic policy)
 
 | Role | Max retries before escalation |
@@ -242,7 +252,7 @@ After classification, decide who retries:
 | INFRASTRUCTURE | 3 |
 | HUMAN | 0 (cannot auto-retry) |
 <!-- factory-rule: retry-budgets begin -->
-**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently.
+**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently The budget is counted by whoever EXECUTES the delegation, not by whoever reports it: `scripts/delegation_gate.py check` increments `retry_counters.<role>` itself BEFORE every delegation and REFUSES it once the budget is exhausted — in hitl the refusal forces the `AskUserQuestion` owner stop, in auto the run ends FAILED, and only an explicit `--owner-authorized` (hitl, every decision recorded in the checkpoint) grants ONE extra delegation PER OWNER DECISION — N recorded authorizations allow up to budget+N delegations; `delegation_gate.py audit` fails the finish when a budgeted-role spawn left no counted delegation. A review round whose findings were ALL refuted with evidence refunds the one iteration it consumed (`delegation_gate.py settle`, evidence mandatory, never below 0, idempotent per round); a mixed round is never refunded.
 <!-- factory-rule: retry-budgets end -->
 
 - Each retry increments the per-role counter in `.code-factory/state/pipeline.yaml`

@@ -2,7 +2,8 @@
 
 The single briefing template the main agent uses when launching ANY subagent:
 `factory-analyzer`, `factory-coder`, `factory-gui-expert`, `factory-farukon-expert`, `factory-tester`,
-`factory-diagnostician`, `factory-code-reviewer`, `factory-advisor`. The briefing is the subagent's
+`factory-business-tester`, `factory-supervisor`, `factory-diagnostician`, `factory-code-reviewer`,
+`factory-advisor`. The briefing is the subagent's
 only input: it does not see the main agent's dialog history and must not request it. Whatever did
 not make it into the briefing does not exist for the subagent.
 
@@ -19,10 +20,23 @@ the same constraints as `factory-coder` (§2 Constraints), and NEVER the no-edit
 MCP artifacts are diagnostic evidence — the acceptance evidence is produced by the tester
 (`references/verification-strategy.md` §3.2).
 
+`factory-business-tester` (`.agents/agents/sub-agents/business-tester.md`) is a **read-only
+adversarial** role: the briefing names the delivered change, the user story, the acceptance criteria,
+the interfaces the product exposes (never the implementation) and the run's `run_id`, because its
+evidence file is `.code-factory/logs/business-adversarial/<run_id>.json`; it gets the no-edits suffix
+of §4. Its report is DIAGNOSTIC input — the acceptance evidence stays with `factory-tester`
+(`references/verification-strategy.md` §3.3).
+
+`factory-supervisor` (`.agents/agents/sub-agents/supervisor.md`) is a **judge** role briefed per
+permit: the permit id, the plan task id, the role, the phase and the exact file scope of the
+delegation, plus the approved plan task it is checked against. It returns `allow`|`deny` WITH
+evidence and edits nothing (the no-edits suffix of §4); the main agent records the verdict with
+`permit_gate.py verdict` BEFORE the spawn, so a briefing that reaches the agent before its recorded
+verdict is already a contract breach.
+
 Sources: `paseo` (handoff: a fixed template + files by path instead of pastes) and Kaggle 5-Day
 AI Agents Intensive, Day 2 (the concise-output contract: the subagent returns a digest and a link
 to the artifact, not raw data).
-
 ## 1. The "files — by path, never by paste" rule
 
 Pasting file contents into the subagent's prompt is FORBIDDEN — only the path and one line

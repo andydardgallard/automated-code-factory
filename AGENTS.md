@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.22.0 -->
+<!-- code-factory-version: 12.23.0 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.
@@ -28,10 +28,9 @@ mandatory code review before acceptance.
   plus the workflow prose around them in the three approval-gate carriers — a dead plan-mode tool
   name or a step that puts the wait before the plan file and the explicit question),
   `check_english_only.py` (English-only gate over what the repository ships (`git ls-files`, like
-  `project_fingerprint.py`): fails on any Cyrillic left outside the exceptions `CHANGELOG.md`,
-  `memory/`, `task*.yaml`, `.code-factory/`, `.git/` — with `memory/` exempt as HISTORY only: the
-  memory pass runs by default over the v2 records that are not listed in `memory/.english-freeze`
-  and over `memory/summary.md` whole, and `--no-memory` is its one documented escape),
+  `project_fingerprint.py`): fails on any Cyrillic left outside its documented exceptions —
+  `CHANGELOG.md`, `memory/`, `task*.yaml`, `.code-factory/`, `.git/` — with `memory/` exempt as
+  HISTORY only and `--no-memory` the one documented escape),
   `check_translation_structure.py` (translation skeleton comparator: a translated file may change its
   text, never its structure — headings, list items, code fences, `factory-rule` markers, definitions,
   CLI arguments; `--allow-added-rule <id>` admits a deliberately added rulebook rule),
@@ -39,41 +38,50 @@ mandatory code review before acceptance.
   with no accompanying purpose-fitted validation),
   `run_id.py` (the run's run_id: `gen` from task.yaml / `check` — artifacts without run_id),
   `error_router.py` (JSON-first error classification: `classify`/`merge`),
-  `calibrate_reviewer.py` (reviewer golden-set calibration: precision/recall/accuracy; `status`
-  is the deterministic form of the periodic-calibration obligation — it fails loudly when the
-  reviewer prompt changed since the last recorded calibration or 5 runs passed, judged against the
-  append-only `skill-base/golden-set/calibration-log.md`),
+  `calibrate_reviewer.py` (reviewer golden-set calibration: precision/recall/accuracy + the
+  deterministic `status` gate of the periodic-calibration obligation),
   `model_matrix.py` (the single model-precedence resolver: the task matrix used verbatim, the
   default matrix where the generator≠judge rule is enforced, the family check and the committee's
   contrasting second planner), `model_attribution.py` (artifact-backed model attribution: reads the
-  CLI session wire and cross-checks `models_used` — a mismatch FAILS the run, a missing wire is
-  DEGRADED, and a `models_used` key that is not a role of the factory is a run error, exit 1),
+  CLI session wire and cross-checks `models_used` — a mismatch FAILS the run, strict attribution is
+  the DEFAULT for implement/refactor (a role listed in `required_roles` that claims a model but
+  leaves no wire trace FAILS), a missing wire is otherwise DEGRADED, and a `models_used` key that is
+  not a role of the factory is a run error, exit 1),
 `review_followup_task.py` (deterministic review follow-up task generator: the merged
   findings → `.code-factory/review/fix-tasks.yaml`),
   `plan_arbiter.py` (deterministic merge of two competing plans + list of discrepancies —
   committee on double plan rejection), `precedent_index.py` (FTS5 precedent index over memory +
   codebase: `build`/`status`/`query`, with `status` reporting FRESH/STALE and `query --fresh`
   refusing a stale index instead of answering from it),
-  `chrome_devtools_mcp.py` (conditional Web GUI browser path: applicability `decide`, existing
-  E2E-stack discovery, browser matrix, vendored pinned install (`vendor-install`) + idempotent merge
-  of the node-direct `chrome-devtools` server into `.kimi-code/mcp.json`, capability probe that is
-  fail-soft overall but fail-closed on the vendored pin — an unreadable or unreviewed version is not
-  usable),
+  `chrome_devtools_mcp.py` (conditional Web GUI browser path: applicability `decide`, E2E-stack
+  discovery, browser matrix, vendored pinned install (`vendor-install`) + idempotent merge of the
+  node-direct `chrome-devtools` server into `.kimi-code/mcp.json`, and a capability probe that is
+  fail-soft overall but fail-closed on the vendored pin),
   `farukon_mcp.py` (conditional Farukon platform path: applicability `decide` — the repository HOSTS
-  the `farukon_mcp` crate AND the task text names a platform OPERATION bound to the platform (an
-  operation bound to a documentation/media object, identity vocabulary alone, task-file metadata and
-  a `models.farukon_expert` model pin never decide, and the weighted score must reach
-  `SCOPE_APPLICABLE_SCORE`), either condition alone
-  keeps the role off — idempotent, atomic merge-config of the stdio `farukon` server
+  the `farukon_mcp` crate AND the task text binds a platform OPERATION to an EXPLICIT platform SUBJECT
+  (identity vocabulary alone, task-file metadata and a `models.farukon_expert` pin never decide, and
+  the weighted score must reach `SCOPE_APPLICABLE_SCORE`); either condition alone keeps the role off —
+  idempotent, atomic merge-config of the stdio `farukon` server
   (`cargo run --quiet -p farukon_mcp --`, `cwd` = the absolute platform root) into
   `.kimi-code/mcp.json` with a different existing entry preserved as a conflict and
   symlink-resolving `--target` confinement, fail-soft capability probe with the opt-in bounded
   `--check-mcp-start` JSON-RPC handshake, and `validate-config` invariants — no diagnostic echoes a
   value an MCP entry supplies),
-  `task_parser.py` (deterministic stdlib task.yaml parser/validator for Phase 0: the full documented
-  task schema incl. `business_tests` and multi-line `|` block scalars inside list items, verbatim
-  texts, actionable line-numbered errors — exit 2 names the line and the fix, never a generic
-  "unreadable" and never a traceback).
+  `task_parser.py` (deterministic stdlib task.yaml parser/validator for Phase 0: the documented
+  task schema incl. `business_tests` and multi-line `|` block scalars inside list items; verbatim
+  texts; line-numbered actionable errors — exit 2 names the line and the fix, never a traceback),
+  and the delegation and change-set gates: `manifest.py` (the change set with COMPUTED sha256 —
+  `init`, the pre-edit `require` gate, `add --changed|--created` — a CHANGED file needs its backup
+  first — and the finish `audit`), `delegation_gate.py` (per-role retry budgets counted where the
+  role EXECUTES: `check` increments and REFUSES an exhausted budget, `--owner-authorized` = one extra
+  delegation per owner decision, `settle` refunds a wholly refuted reviewer round, `audit`
+  reconciles the counters with the session wire), `permit_gate.py` (`permits.yaml`
+  `add`/`verdict`/`bind`/`close` + the finish audit: every spawn needs a unique allowed permit judged
+  BEFORE it, with a scope inside the plan task's files), `gate_all.py` (phase `K`|`Y` aggregator of
+  the deterministic gates — a gate record that is missing is a failure) and `mcp_json_merge.py` (the
+  text-preserving JSON merge both MCP helpers share); the siblings `test_manifest.py`,
+  `test_delegation_gate.py`, `test_permit_gate.py`, `test_gate_all.py` and
+  `test_business_tester_flow.py` pin them.
   Self-tests pin these contracts: `test_model_precedence.py` and `test_model_attribution.py` cover
   the two model scripts, `test_review_followup_task.py` the follow-up generator and
   `test_task_accepts_business_scenario.py` / `test_task_accepts_multiline_criteria.py` /
@@ -92,7 +100,12 @@ mandatory code review before acceptance.
   do not crash with `UnicodeEncodeError` on a console with a legacy code page (cp1251/cp866); the argparse
   contract is unchanged: `--help` → exit 0, usage error → exit 2, no traceback.
 - `.agents/agents/` — the factory's main agent (Markdown `code-factory.md`) and subagents
-  (`sub-agents/analyzer|planner|coder|gui-expert|farukon-expert|tester|diagnostician|advisor|code-reviewer|refactorer|security-auditor|documenter|skill-manager.md`)
+  (`sub-agents/analyzer|planner|coder|gui-expert|farukon-expert|tester|business-tester|diagnostician|advisor|code-reviewer|supervisor|refactorer|security-auditor|documenter|skill-manager.md`)
+  — `business-tester` is generator-side and attacks the delivered change as an ADVERSARIAL USER
+  through the product's own interfaces, in parallel with the tester; `supervisor` is read-only and
+  judge-side and returns an allow|deny permit verdict against the rulebook and the approved plan —
+  that verdict is MODEL-ENFORCED and `permit_gate.py audit` is the deterministic backstop, so a main
+  agent that skips the permit step is DETECTED at the finish, never intercepted at call time
 - `VERSION` — single source of truth for the factory version (one line X.Y.Z)
 - `skill-base/` — persistent skill base from `reference_docs`/`reference_skills` (optional); it
   always holds the two clean-code skills — `clean-code-discipline` (the writing discipline: make it
@@ -146,22 +159,23 @@ mandatory code review before acceptance.
   the flow builds it at analysis time (`precedent_index.py build`), it is gitignored with the rest of
   `.code-factory/`, `precedent_index.py status` reports FRESH/STALE against the journal and the tree,
   and `query --fresh` refuses a stale index instead of answering from it.
-- **AGENTS.md — single source of truth**: the factory generates it with exactly 8 `##` sections and a
-  deterministic TWO-LEVEL fingerprint in the first line — structural (stack manifests,
-  CI configs, README, directory list) + content (SHA-256 of the contents of tracked working-tree
-  files, CRLF→LF) —
-  `scripts/project_fingerprint.py --all`, marker
-  `<!-- code-factory-fingerprint: <64-hex> content: <64-hex> -->`. It regenerates when EITHER
-  of the two hashes diverges (start of a task) or when the structure/stack/entry points change (end of a task),
-  and commits (with no separate Kimi init step); the "SKIP regeneration" branch is allowed ONLY when
-  BOTH hashes match — a match of the structural level alone is not enough (changes deeper
-  than the first level are seen by the content hash). The content hash is computed over the `git ls-files` working tree,
-  so unstaged edits are visible to it, and a tracked file that is absent from the worktree (deleted
-  but not staged) or unreadable is recorded with an explicit `MISSING` marker instead of its index
-  record, so losing the content still moves the hash; untracked files stay outside the hash — the factory
-  warns about this rather than staying silent: `--content`/`--all` print a stderr note,
-  `check_factory_model.py` prints a warning (hashes and exit codes do not change; `git add` brings an
-  untracked file into the hash). Subagents read AGENTS.md instead of re-deriving the structure.
+- **AGENTS.md — single source of truth**: the factory generates it with exactly 8 `##` sections; its
+  deterministic TWO-LEVEL fingerprint — structural (stack manifests, CI configs, README, directory
+  list) + content (SHA-256 of the contents of tracked working-tree files, CRLF→LF) — lives in DERIVED
+  STATE, `.code-factory/state/fingerprint.json`, never inside the file: `scripts/project_fingerprint.py
+  --write-state` writes `{structural, content}`, `--check-state` compares them (exit 0 match,
+  1 divergence, 2 no usable state), `check_factory_model.py` validates the state. AGENTS.md therefore
+  carries NO embedded marker and its content no longer depends on the commit that carries it — one
+  version commit again; a stale embedded marker is IGNORED with a warning, while a fresh clone with no
+  state file is an actionable error naming `--write-state`. It regenerates when EITHER hash diverges
+  (start of a task) or when the structure/stack/entry points change (end of a task), and commits (with
+  no separate Kimi init step); "SKIP regeneration" is allowed ONLY when BOTH hashes match. The content
+  hash reads the `git ls-files` working tree, so unstaged edits are visible to it, and a tracked file
+  absent from the worktree (deleted but not staged) or unreadable is recorded with an explicit `MISSING`
+  marker instead of its index record — losing the content still moves the hash; untracked files stay
+  outside it, and the factory warns rather than staying silent (`--content`/`--all` stderr note,
+  `check_factory_model.py` warning; hashes and exit codes unchanged, `git add` brings a file in).
+  Subagents read AGENTS.md instead of re-deriving the structure.
 - **Long-term memory `memory/`** (committed, not ignored) — the memory of THE project named
   in the task's `repo_path` (for this repository the target project is the factory itself), not the factory's
   memory: one memory belongs to exactly one project. The `memory/` directory lives AT THE
@@ -169,15 +183,14 @@ mandatory code review before acceptance.
   basename of that directory. When the task's `repo_path` points to a SUBDIRECTORY of the deployment root,
   the main agent creates the memory explicitly, naming the project: `memory_project.py init --repo <deployment
   root> --project <basename of the resolved repo_path>`, and the name is fixed in the summary's
-  `project:` declaration. Every journal entry carries the `project: <project name>` marker, mandatory for NEW entries
-  (the same name declared in the summary); the `summary.md` summary declares the project
-  with `project:`/`repo_path:` lines right after the canonical marker. Entries without `project:` are legacy
+  `project:` declaration (the journal entry and the summary both declare it — rule `memory-ownership`).
+  Entries without `project:` are legacy
   (warning); entries from different projects in one journal are an error (`check_factory_model.py`,
   `memory_project.py check`). The only writer is the main agent (one `change-log.md` entry
   per run, compaction into `summary.md` at the 50-entry threshold — the last 20 entries stay, and the
   flow invokes `memory_project.py compact` for it); it is read at the start of a task and by roles as
-  needed. If `memory/` is missing (first access to the project), the factory creates it with the same
-  `init` command with `--project <name>`. The factory's own development history NEVER enters the target
+  needed, and if `memory/` is missing (first access to the project) the same `init` command creates
+  it. The factory's own development history NEVER enters the target
   project's memory. Model check — `scripts/check_factory_model.py`, whose memory validation is a thin
   delegation to `memory_project.validate_memory`, so there is ONE memory contract rather than two.
 - Rule `memory-ownership`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## memory-ownership`).
@@ -221,12 +234,11 @@ mandatory code review before acceptance.
   a review task must be satisfiable on the unmodified tree; `security_audit` keeps its own guarantee
   (reports + a fix-task file, no auto-fixing). The critical/major boundary is set by `references/code-review.md` §3
   (critical — EXISTING behavior is damaged; major — a NEW path left unprotected or lost
-  coverage), and §7 makes reviewer calibration on the golden set periodic: after every edit
-  of the reviewer prompt and at least once per 5 review runs (`scripts/calibrate_reviewer.py`;
-  soft thresholds — verdict accuracy 100%, macro precision ≥ 0.8). That obligation is
-  DETERMINISTIC, not prose: `calibrate_reviewer.py status` compares the reviewer-prompt digest and
-  the run count with `skill-base/golden-set/calibration-log.md` and exits 1 (loud FAIL) when a
-  calibration is due; `score --log` appends the record that clears it.
+  coverage), and §7's periodic golden-set calibration (after every edit of the reviewer prompt and at
+  least once per 5 review runs) is a DETERMINISTIC obligation, not prose: `calibrate_reviewer.py
+  status` compares the reviewer-prompt digest and the run count with
+  `skill-base/golden-set/calibration-log.md` and exits 1 (loud FAIL) when a calibration is due, while
+  `score --log` appends the record that clears it.
 - Rule `vaccination`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## vaccination`).
 
 - Rule `review-gate-policy`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## review-gate-policy`).
@@ -282,7 +294,12 @@ mandatory code review before acceptance.
   `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` — the `start.sh`/`start.cmd` launcher sets it itself; the factory
   checks it in pre-flight and, if missing, writes `models_warning` to pipeline.yaml/report.md.
   Kimi (K3) and Qwen models are routed via the task's `models` field (see
-  `references/providers.md`).
+  `references/providers.md`). The optional keys `models.business_tester` (generator-side, like
+  `models.coder`) and `models.supervisor` (judge-side, so its family differs from the generator's)
+  name those two roles' models and are logged as `models_used.<role>`. The run writes `task_type` and
+  `required_roles` — the mandatory non-empty set for implement/refactor: analyzer, planner, coder,
+  tester, reviewer, documenter — into `pipeline.yaml`; that is the contract strict model attribution
+  defaults to there.
 - Rule `models-generator-ne-judge`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## models-generator-ne-judge`).
 - Rule `model-unavailable-stop`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## model-unavailable-stop`).
 

@@ -295,6 +295,132 @@ def main() -> int:
                f"a broken later input must be reported: {res.stderr!r}")
         expect(run("--inputs").returncode == 2, "a missing --inputs must exit 2")
 
+    # 13a. FINDING DISPOSITION (proposal P-8): `accepted` | `refuted`, an absent field normalizes
+    #      to accepted (legacy input), and a refutation must carry evidence naming an existing
+    #      artifact. A refuted finding stops counting toward the critical rule but is never deleted:
+    #      the merged report keeps it and states how many were refuted.
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        (root / ".code-factory" / "logs").mkdir(parents=True)
+        (root / ".code-factory" / "logs" / "code-review.md").write_text("# review\n",
+                                                                       encoding="utf-8")
+        refuted = finding("critical", "src/a.py", 1, "the quote was wrong")
+        refuted.update(finding_disposition="refuted",
+                       finding_evidence=".code-factory/logs/code-review.md")
+        live = finding("major", "src/b.py", 2, "still real")
+        shard = write_findings(root, "disposition.json", "shard-1", "request_changes",
+                               [refuted, live])
+        report = mf.load_shard_file(shard)
+        expect(report["findings"][0]["finding_disposition"] == "refuted",
+               f"the refutation must survive validation: {report['findings'][0]}")
+        merged = mf.merge([report])
+        expect(merged["counts"] == {"critical": 0, "major": 1, "minor": 0, "nit": 0},
+               f"a refuted critical must not count: {merged['counts']}")
+        expect(merged["refuted"] == 1 and merged["total_findings"] == 2,
+               f"the refuted finding is COUNTED, never dropped: {merged}")
+        expect([f["finding_disposition"] for f in merged["findings"]] == ["refuted", "accepted"],
+               f"the merged order still sorts by severity (the refuted critical first): "
+               f"{merged['findings']}")
+        expect(merged["verdict"] == "request_changes",
+               "the shard verdict itself is unchanged by a refutation")
+        expect(merged["findings"][0]["finding_evidence"]
+               == ".code-factory/logs/code-review.md",
+               f"the evidence must travel with the refuted record: {merged['findings'][0]}")
+
+        #     A wholly refuted report: no critical counts, the refuted count is stated.
+        wholly = write_findings(root, "wholly.json", "shard-1", "request_changes", [refuted])
+        merged_wholly = mf.merge([mf.load_shard_file(wholly)])
+        expect(merged_wholly["counts"]["critical"] == 0 and merged_wholly["refuted"] == 1,
+               f"a wholly refuted round counts no critical finding: {merged_wholly}")
+
+        #     (R1-10) A WHOLLY REFUTED round APPROVES even though the shard asked for changes: the
+        #     blocking signal must come from the ACTIVE findings, not from the shard's original
+        #     verdict — otherwise a refuted round could never be settled.
+        expect(merged_wholly["verdict"] == "approve",
+               f"a wholly refuted round must approve: {merged_wholly['verdict']!r}")
+        #     A MIXED round still blocks: one accepted finding keeps the shard's request alive.
+        expect(merged["verdict"] == "request_changes",
+               f"a mixed round must stay request_changes: {merged['verdict']!r}")
+        #     A shard that requested changes with NO findings is the explicit "something is wrong"
+        #     signal: nothing can discharge it, so the merged verdict stays red.
+        silent = write_findings(root, "silent.json", "shard-3", "request_changes", [])
+        merged_silent = mf.merge([mf.load_shard_file(silent)])
+        expect(merged_silent["verdict"] == "request_changes",
+               f"an empty request_changes must keep blocking: {merged_silent['verdict']!r}")
+        #     …and an approving shard whose findings were all refuted stays approved.
+        approving = write_findings(root, "approving.json", "shard-4", "approve", [refuted])
+        expect(mf.merge([mf.load_shard_file(approving)])["verdict"] == "approve",
+               "an approving, wholly refuted round must approve")
+
+        #     (I3-1) The round identity must be a SETTLEMENT identifier: an id the settlement would
+        #     refuse is refused HERE, where the mistake is made, so a stamped report can always
+        #     settle the round it names.
+        good_round = write_findings(root, "round.json", "shard-1", "approve", [])
+        res = run("--inputs", str(good_round), "--round", "iter-1")
+        expect(res.returncode == 0 and json.loads(res.stdout)["round"] == "iter-1",
+               f"a settlement identifier must be stamped: {res.stdout!r} {res.stderr!r}")
+        for bad in ("bad round!", "", "a/b", "iter 1", "#1", "iter-1\n", "\niter-1", "iter-1 "):
+            res = run("--inputs", str(good_round), "--round", bad)
+            expect(res.returncode == 2,
+                   f"--round {bad!r} must be refused (exit 2), got {res.returncode}")
+            expect("settlement identifier" in res.stderr and "[A-Za-z0-9._-]+" in res.stderr,
+                   f"the refusal must name the grammar: {res.stderr!r}")
+        #     A trailing newline is NOT an identifier: `$` would match before it, `fullmatch` does not.
+        res = run("--inputs", str(good_round), "--round", "iter-1\n")
+        expect(res.returncode == 2 and "FULL" in res.stderr,
+               f"a terminal newline must be refused by the producer: {res.returncode} "
+               f"{res.stderr!r}")
+
+        #     An ABSENT disposition is legacy input: normalized to accepted and emitted.
+        legacy = write_findings(root, "legacy.json", "shard-1", "request_changes",
+                                [finding("major", "src/c.py", 3, "plain")])
+        legacy_report = mf.load_shard_file(legacy)["findings"][0]
+        expect(legacy_report["finding_disposition"] == "accepted"
+               and legacy_report["finding_evidence"] == "",
+               f"an absent disposition must normalize to accepted: {legacy_report}")
+
+        #     One shard refuting what another asserts keeps the finding ALIVE (a refutation must
+        #     cover the whole finding, never a dissenting minority).
+        accept_shard = write_findings(root, "accept.json", "shard-2", "request_changes",
+                                      [finding("critical", "src/a.py", 1, "the quote was wrong")])
+        mixed = mf.merge([mf.load_shard_file(shard), mf.load_shard_file(accept_shard)])
+        merged_mixed = next(f for f in mixed["findings"] if f["file"] == "src/a.py")
+        expect(merged_mixed["finding_disposition"] == "accepted" and mixed["refuted"] == 0,
+               f"a single refuting shard must not suppress a live finding: {merged_mixed}")
+
+        #     A refutation without evidence, with a malformed path, or pointing at a missing
+        #     artifact is refused (exit 2) — a suppression with a footnote is not a disposition.
+        no_evidence = write_findings(root, "no-evidence.json", "shard-1", "request_changes",
+                                     [{"severity": "major", "file": "src/a.py", "line": 1,
+                                       "title": "t", "finding_disposition": "refuted"}])
+        res = run("--inputs", str(no_evidence))
+        expect(res.returncode == 2 and "finding_evidence" in res.stderr,
+               f"a refutation without evidence must be refused: {res.stderr!r}")
+        bad_form = write_findings(root, "bad-form.json", "shard-1", "request_changes",
+                                  [{"severity": "major", "file": "src/a.py", "line": 1,
+                                    "title": "t", "finding_disposition": "refuted",
+                                    "finding_evidence": "../outside the repo.md"}])
+        res = run("--inputs", str(bad_form))
+        expect(res.returncode == 2 and "repo-relative artifact path" in res.stderr,
+               f"a malformed evidence path must be refused: {res.stderr!r}")
+        bad_disposition = write_findings(root, "bad-disposition.json", "shard-1", "request_changes",
+                                         [{"severity": "major", "file": "src/a.py", "line": 1,
+                                           "title": "t", "finding_disposition": "maybe"}])
+        res = run("--inputs", str(bad_disposition))
+        expect(res.returncode == 2 and "finding_disposition" in res.stderr,
+               f"an unknown disposition must be refused: {res.stderr!r}")
+        missing_evidence = write_findings(root, "missing-evidence.json", "shard-1",
+                                          "request_changes", [dict(refuted,
+                                                                   finding_evidence="no.md")])
+        res = run("--inputs", str(missing_evidence), "--repo", str(root))
+        expect(res.returncode == 2 and "not a file inside" in res.stderr,
+               f"an evidence artifact that does not exist must be refused: {res.stderr!r}")
+        res = run("--inputs", str(shard), "--repo", str(root), "--md", str(root / "m.md"))
+        expect(res.returncode == 1, f"a request_changes report exits 1: {res.returncode}")
+        md = (root / "m.md").read_text(encoding="utf-8")
+        expect("## refuted" in md and ".code-factory/logs/code-review.md" in md,
+               f"the markdown must keep the refuted finding and its evidence: {md!r}")
+
     # 14. stdlib-only contract (no third-party imports).
     src = pathlib.Path(mf.__file__).read_text(encoding="utf-8")
     imported = set(re.findall(r"^(?:import|from)\s+([A-Za-z0-9_]+)", src, flags=re.M))

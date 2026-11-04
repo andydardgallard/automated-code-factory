@@ -71,6 +71,12 @@ import subprocess
 import sys
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
+if str(SCRIPTS) not in sys.path:
+    # `factory_preflight.py` loads this helper BY PATH (deliberately independent of `sys.path`), so the
+    # shared sibling merge module has to be made importable here instead of being assumed.
+    sys.path.insert(0, str(SCRIPTS))
+import mcp_json_merge  # noqa: E402  (the sibling path fix above must run first)
+
 ASSETS = SCRIPTS.parent / "assets"
 DEFAULT_ASSET = ASSETS / "chrome-devtools.mcp.json"
 
@@ -180,8 +186,6 @@ DEFAULT_MATRIX: tuple[str, ...] = ("chromium",)
 CAPABILITY_NAMES: tuple[str, ...] = ("node", "npm", "npx", "chrome", "chrome_for_testing",
                                      "vendor_entry", "mcp_server")
 FALSY = {"", "0", "false", "no", "off", "none"}
-
-_DECODER = json.JSONDecoder()
 
 
 class InputError(Exception):
@@ -845,110 +849,14 @@ def validate_config(path: str | pathlib.Path | None = DEFAULT_ASSET, data: dict 
 
 
 # --------------------------------------------------------------------------- config merge
-
-def _skip_ws(text: str, index: int) -> int:
-    while index < len(text) and text[index] in " \t\r\n":
-        index += 1
-    return index
-
-
-def _object_members(text: str, obj_open: int) -> list[tuple[str, int, int, int]]:
-    """`(key, key_start, value_start, value_end)` for the depth-1 members of the object at `{`."""
-    members: list[tuple[str, int, int, int]] = []
-    index = _skip_ws(text, obj_open + 1)
-    while index < len(text) and text[index] != "}":
-        key_start = index
-        key, index = _DECODER.raw_decode(text, index)
-        index = _skip_ws(text, index)
-        if index >= len(text) or text[index] != ":":
-            raise ValueError(f"expected ':' after key {key!r} at offset {index}")
-        index = _skip_ws(text, index + 1)
-        value_start = index
-        _, index = _DECODER.raw_decode(text, index)
-        members.append((str(key), key_start, value_start, index))
-        index = _skip_ws(text, index)
-        if index < len(text) and text[index] == ",":
-            index = _skip_ws(text, index + 1)
-    return members
-
-
-def _root_span(text: str) -> tuple[int, int]:
-    start = _skip_ws(text, 0)
-    if start >= len(text) or text[start] != "{":
-        raise ValueError("the config must be a JSON object")
-    _, end = _DECODER.raw_decode(text, start)
-    return start, end - 1
-
-
-def _line_indent(text: str, index: int) -> str:
-    line_start = text.rfind("\n", 0, index) + 1
-    prefix = text[line_start:index]
-    return prefix if prefix.strip() == "" else ""
-
-
-def _indent_unit(text: str) -> str:
-    for line in text.splitlines():
-        stripped = line.lstrip(" \t")
-        if stripped and stripped != line:
-            indent = line[:len(line) - len(stripped)]
-            if indent:
-                return indent
-    return "  "
-
-
-def _member_block(key: str, value: dict, indent: str, newline: str) -> str:
-    """`"key": value` serialized like the surrounding file (json indent 2, re-indented)."""
-    serialized = json.dumps({key: value}, indent=2).replace("\n", newline)
-    lines = serialized.splitlines()[1:-1]
-    relative = [line[2:] if line.startswith("  ") else line for line in lines]
-    return (newline + indent).join(relative)
-
-
-def _insert_member(text: str, obj_open: int, obj_close: int, block: str, indent: str,
-                   newline: str) -> str:
-    """Insert a serialized member into an object, keeping every other byte of the file."""
-    inner = text[obj_open + 1:obj_close]
-    body = inner.rstrip()
-    tail = inner[len(body):]
-    if body.strip():
-        new_inner = body + "," + newline + indent + block + tail
-    else:
-        if not tail.strip():
-            tail = newline + (_line_indent(text, obj_open) or "")
-        new_inner = newline + indent + block + tail
-    return text[:obj_open + 1] + new_inner + text[obj_close:]
-
-
-def _insert_managed_server(text: str, entry: dict) -> str:
-    """Deep-merge ONLY the `mcpServers` map: every other byte of the target is preserved."""
-    root_open, root_close = _root_span(text)
-    newline = "\r\n" if "\r\n" in text else "\n"
-    unit = _indent_unit(text)
-    root_members = _object_members(text, root_open)
-    servers_member = next((m for m in root_members if m[0] == "mcpServers"), None)
-    if servers_member is None:
-        root_indent = _line_indent(text, root_members[0][1]) if root_members else unit
-        block = _member_block("mcpServers", {SERVER_NAME: entry}, root_indent, newline)
-        return _insert_member(text, root_open, root_close, block, root_indent, newline)
-    servers_open = servers_member[2]
-    if text[servers_open] != "{":
-        raise ValueError("mcpServers must be a JSON object")
-    _, servers_end = _DECODER.raw_decode(text, servers_open)
-    servers_close = servers_end - 1
-    servers_members = _object_members(text, servers_open)
-    key_indent = _line_indent(text, servers_member[1])
-    if servers_members:
-        indent = _line_indent(text, servers_members[0][1]) or (key_indent + unit)
-    else:
-        indent = key_indent + unit
-    block = _member_block(SERVER_NAME, entry, indent, newline)
-    return _insert_member(text, servers_open, servers_close, block, indent, newline)
+# The text surgery lives in the shared stdlib sibling `mcp_json_merge.py` (the same module the
+# Farukon helper imports): the merge machinery is identical, while each helper keeps its OWN
+# semantics on top (server name, managed entry, exit codes, conflict reporting, persistence).
 
 
 def _read_text_exact(path: pathlib.Path) -> str:
     with open(path, "r", encoding="utf-8", newline="") as handle:
         return handle.read()
-
 
 def _write_text_exact(path: pathlib.Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1039,7 +947,7 @@ def merge_config(target: str | pathlib.Path, asset: str | pathlib.Path | None = 
                              + "; ".join(differences)))
         return base
     try:
-        merged_text = _insert_managed_server(text, entry)
+        merged_text = mcp_json_merge.insert_managed_server(text, SERVER_NAME, entry)
         merged = json.loads(merged_text)
     except (ValueError, json.JSONDecodeError) as exc:
         base.update(status="error",

@@ -53,6 +53,8 @@ import sys
 import tempfile
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+import model_matrix as mm  # noqa: E402  (the ONE role registry: imported, never re-declared)
 
 RULEBOOK = ".agents/skills/code-factory/references/factory-rules.md"
 SKILL = ".agents/skills/code-factory/SKILL.md"
@@ -85,6 +87,13 @@ EDGE_RE = re.compile(r"^\s*([A-Za-z0-9_]+)\s*-->\s*(?:\|([^|\n]*)\|)?\s*([A-Za-z
 # derived from the parsed edges, never from a second list.
 FAILURE_NODE = "MS"
 FAILURE_FROM = ("M", "E", "SC", "F", "PC", "N", "Q", "S", "CR", "CR0", "DG", "ADV", "DOC2", "SA")
+# The roles this release ADDS (W3): each must be known to the registry the rule enforces (a
+# `models_used` key outside it is a run error) and must carry a card that repeats the stop rule, so a
+# delegation to it is governed exactly like the older roles. The FLOW-PROSE list above is extended by
+# the flow-wiring task; this section pins the registry + card half.
+NEW_ROLES = ("business_tester", "supervisor")
+CARD_FRAGMENTS = ("model-unavailable-stop", "never performs this role's work",
+                  "never substitutes another model")
 # The role families the branch must name in words, so the coverage is readable and not only drawn.
 ROLE_FRAGMENTS = ("analyzer", "planner", "coder", "gui_expert", "farukon_expert", "tester",
                   "reviewer", "diagnostician", "advisor", "documenter", "security auditor")
@@ -406,14 +415,53 @@ def check_no_handover(root: pathlib.Path) -> list[str]:
     return problems
 
 
+def check_new_roles(root: pathlib.Path) -> list[str]:
+    """E. The roles this release adds are KNOWN to the registry and their cards repeat the rule.
+
+    The stop rule bites on a `models_used` key: a role outside `model_matrix.ROLES` is a run error,
+    while a role INSIDE it is governed by this contract. Adding a role therefore has two halves, and
+    both are pinned here: the registry knows it, and its card states the same stop/no-substitution
+    promise the older roles carry — otherwise a delegation to the new role would be governed by prose
+    that does not exist.
+    """
+    problems: list[str] = []
+    for role in NEW_ROLES:
+        if role not in mm.ROLES:
+            problems.append(f"model_matrix.ROLES: the role {role!r} must be registered — a "
+                            f"models_used key outside the registry is a run error, never a "
+                            f"delegation")
+            continue
+        rel = (pathlib.Path(".agents/agents/sub-agents")
+               / mm.ROLE_FILES.get(role, f"{role}.md")).as_posix()
+        doc = Doc.load(root, rel, problems)
+        if not doc.text:
+            continue
+        expected_name = "factory-" + role.replace("_", "-")
+        if f"name: {expected_name}" not in doc.text:
+            problems.append(f"{rel}:1: the card must be named {expected_name!r} — the registry and "
+                            f"the card agree on one name")
+        # A card's prose wraps: compare on whitespace-normalized text so a line break inside the
+        # sentence a role must carry is not mistaken for a missing promise.
+        body = " ".join(doc.text.split())
+        for fragment in CARD_FRAGMENTS:
+            if fragment not in body:
+                problems.append(f"{rel}:1: the card must state {fragment!r} — the stop rule and its "
+                                f"two prohibitions govern every delegated role")
+    return problems
+
+
 SECTIONS = (
     ("A", "the canonical stop rule is declared with its four carriers", check_rulebook),
     ("B", "every carrier quotes the rule byte-identically", check_carriers),
     ("C", "the SKILL.md flow carries the stop branch", check_flow),
     ("D", "no carrier hands a named role's work to the main agent", check_no_handover),
+    ("E", "the two new roles are registry roles whose cards repeat the stop rule", check_new_roles),
 )
 
-FILES = (RULEBOOK, SKILL, AGENT, CODE_REVIEW, PROVIDERS)
+# The two W3 cards section E reads, so the probe copies carry them too.
+BUSINESS_CARD = ".agents/agents/sub-agents/business-tester.md"
+SUPERVISOR_CARD = ".agents/agents/sub-agents/supervisor.md"
+FILES = (RULEBOOK, SKILL, AGENT, CODE_REVIEW, PROVIDERS, BUSINESS_CARD, SUPERVISOR_CARD)
 
 
 def locate_root(start: pathlib.Path) -> pathlib.Path:
@@ -498,6 +546,9 @@ PROBES = (
      ((PROVIDERS, "another model is never an infrastructure auto-fix.",
        "the main agent performs the review itself when the provider is unavailable."),),
      "must never"),
+    ("E: a new role card loses the stop rule", check_new_roles,
+     ((BUSINESS_CARD, "model-unavailable-stop", "the model rule"),),
+     "model-unavailable-stop"),
 )
 
 

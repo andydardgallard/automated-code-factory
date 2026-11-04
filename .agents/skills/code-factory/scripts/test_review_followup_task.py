@@ -219,11 +219,64 @@ def main() -> int:
         bare = write_json(tmp / "bare.json", FINDINGS[:1])
         out_bare = tmp / "bare-task.yaml"
         res = run("--findings", str(bare), "--repo", str(repo), "--out", str(out_bare))
-        expect(res.returncode == 0 and "1 findings" in res.stdout,
+        expect(res.returncode == 0 and "1 finding" in res.stdout,
                f"a bare findings list must be accepted: {res.stdout!r} {res.stderr!r}")
         bare_task = generator.parse_task(out_bare.read_text(encoding="utf-8"))
         expect("review verdict: not reported" in bare_task["description"],
                "a bare list carries no review verdict")
+
+        # 11a. FINDING DISPOSITION (proposal P-8): a REFUTED finding never becomes rework — it is
+        #      omitted from the generated task and the omission is REPORTED, never silent. The
+        #      accepted findings are unchanged.
+        (repo / ".code-factory" / "logs").mkdir(parents=True, exist_ok=True)
+        (repo / ".code-factory" / "logs" / "review.md").write_text("# review\n", encoding="utf-8")
+        refuted = dict(FINDINGS[0])
+        refuted.update(finding_disposition="refuted",
+                       finding_evidence=".code-factory/logs/review.md")
+        mixed = write_json(tmp / "disposition.json",
+                           {"verdict": "request_changes", "counts": MERGED["counts"],
+                            "findings": [refuted, *FINDINGS[1:]]})
+        out_mixed = tmp / "mixed-task.yaml"
+        res = run("--findings", str(mixed), "--repo", str(repo), "--out", str(out_mixed))
+        expect(res.returncode == 0,
+               f"a report with a refuted finding must still generate: {res.stderr!r}")
+        expect("2 findings" in res.stdout and "1 refuted omitted" in res.stdout,
+               f"the omission must be reported: {res.stdout!r}")
+        mixed_task = generator.parse_task(out_mixed.read_text(encoding="utf-8"))
+        criteria = mixed_task["acceptance_criteria"]
+        expect(len(criteria) == len(FINDINGS[1:]) + 2,
+               f"only the active findings get a criterion: {len(criteria)}")
+        expect(not any(generator.flatten(refuted["title"]) in item["criterion"]
+                       for item in criteria),
+               "a refuted finding must not become a criterion")
+
+        #      A report whose findings are ALL refuted writes nothing (and says so).
+        all_refuted = write_json(tmp / "all-refuted.json",
+                                 {"verdict": "request_changes", "counts": MERGED["counts"],
+                                  "findings": [refuted]})
+        res = run("--findings", str(all_refuted), "--repo", str(repo), "--out",
+                  str(tmp / "never.yaml"))
+        expect(res.returncode == 0 and "refuted" in res.stdout.lower(),
+               f"an all-refuted report must write nothing and say so: {res.stdout!r}")
+        expect(not (tmp / "never.yaml").exists(), "nothing may be written for a refuted round")
+
+        #      The evidence is mandatory and must exist: a refutation without it is refused.
+        no_evidence = dict(FINDINGS[0], finding_disposition="refuted")
+        res = run("--findings", str(write_json(tmp / "no-evidence.json", [no_evidence])),
+                  "--repo", str(repo), "--out", str(tmp / "x.yaml"))
+        expect(res.returncode == 2 and "finding_evidence" in res.stderr,
+               f"a refutation without evidence must be refused: {res.stderr!r}")
+        missing = dict(FINDINGS[0], finding_disposition="refuted",
+                       finding_evidence="no-such-artifact.md")
+        res = run("--findings", str(write_json(tmp / "missing-evidence.json", [missing])),
+                  "--repo", str(repo), "--out", str(tmp / "y.yaml"))
+        expect(res.returncode == 1 and "not a file inside" in res.stderr,
+               f"evidence that does not exist must be refused: {res.stderr!r}")
+        bad = dict(FINDINGS[0], finding_disposition="maybe")
+        res = run("--findings", str(write_json(tmp / "bad-disposition.json", [bad])),
+                  "--repo", str(repo), "--out", str(tmp / "z.yaml"))
+        expect(res.returncode == 2 and "finding_disposition" in res.stderr,
+               f"an unknown disposition must be refused: {res.stderr!r}")
 
         # 12. A finding carrying a verify command is emitted with `verify`, not `derived`.
         verified = write_json(tmp / "verified.json", [

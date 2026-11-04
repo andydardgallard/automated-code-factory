@@ -12,6 +12,8 @@ subagents:
   - factory-diagnostician
   - factory-advisor
   - factory-code-reviewer
+  - factory-business-tester
+  - factory-supervisor
   - factory-refactorer
   - factory-security-auditor
   - factory-documenter
@@ -66,8 +68,9 @@ at the user unless asked.
 
 Read the relevant reference file when you reach its phase. Keep your own context lean — delegate
 heavy work to subagents (`factory-analyzer`, `factory-planner`, `factory-coder`,
-`factory-gui-expert`, `factory-farukon-expert`, `factory-tester`, `factory-diagnostician`,
-`factory-advisor`, `factory-code-reviewer`) and accept only concise structured results.
+`factory-gui-expert`, `factory-farukon-expert`, `factory-tester`, `factory-business-tester`,
+`factory-supervisor`, `factory-diagnostician`, `factory-advisor`, `factory-code-reviewer`) and accept
+only concise structured results.
 `factory-gui-expert` is the coder-class Web GUI specialist: it implements and debugs assigned UI
 files in a real browser when the
 task's Web GUI path applies (Phase 0/1 decision) and is never invoked on a non-Web-GUI run; the
@@ -212,15 +215,21 @@ under a second), and `--fresh` refuses a STALE index with exit 3, so "how was th
 is answered from a current index and never from memory of a previous run.
 **Scout pipeline (AGENTS.md as single source of truth)** — follow
 `references/tech-stack-detection.md` §7:
-1. Compute the deterministic TWO-LEVEL fingerprint
-   (`python .agents/skills/code-factory/scripts/project_fingerprint.py --repo <project> --all` —
-   `--content` prints only the content level and no flag only the structural one; the SKIP branch
-   needs BOTH, `# structural: <64-hex>` and `# content: <64-hex>`).
-2. If `AGENTS.md` exists AND BOTH embedded hashes (first line comment) match the recomputed ones
-   → the project is unchanged: SKIP regeneration. One matching hash is NOT enough — a
-   content-only change keeps the structural hash and still makes `AGENTS.md` stale. Otherwise
-   generate `AGENTS.md` with exactly the 8 standard sections (overwriting any existing file) and
-   embed the new TWO-LEVEL fingerprint on the first line.
+1. Compare the deterministic TWO-LEVEL fingerprint with its DERIVED STATE — never with a marker
+   embedded in `AGENTS.md`:
+   `python .agents/skills/code-factory/scripts/project_fingerprint.py --repo <project> --check-state`
+   recomputes the structural AND content hashes and compares them with
+   `.code-factory/state/fingerprint.json` (exit 0 = both match, 1 = divergence, 2 = no usable
+   state). `--content` / `--all` only PRINT the hashes; they are not the comparison.
+2. Exit 0 (both levels match) → the project is unchanged: SKIP regeneration. A MISSING state (a
+   fresh clone) is never trusted and never assumed — it is recomputed with
+   `project_fingerprint.py --write-state --repo <project>`, and a diverging state means
+   `AGENTS.md` is regenerated. One matching level is NOT enough: a content-only change keeps the
+   structural hash and still makes `AGENTS.md` stale. `AGENTS.md` itself is generated with exactly
+   the 8 standard sections and carries NO embedded fingerprint marker — its content no longer
+   depends on its own commit, so one version commit is enough — and the state file is written
+   right after the generation (a stale embedded marker left by an older model is IGNORED with a
+   warning: the state is the one home).
 3. There is **no init step** — do not run the init slash command (it would overwrite the file
    and erase the 8 sections).
 4. Roles read AGENTS.md + the target project's memory instead of re-deriving structure: the
@@ -395,13 +404,28 @@ it has not been generated yet) — write it as the required `run_id` key of the 
 `report.md` and the memory entry of this run share one id (`run_id.py check --dir .code-factory`
 lists artifacts without it).
 Copy every file that will be modified into `.code-factory/backups/` preserving relative paths.
-Track changed/created files in `.code-factory/manifest.json`.
+The change set is COMPUTED, never claimed, and the ORDER is init FIRST: at this pre-flight
+`python .agents/skills/code-factory/scripts/manifest.py init --repo <resolved repo_path>` CREATES
+`.code-factory/manifest.json`, and `manifest.py require --repo <resolved repo_path>` is the BLOCKING
+pre-edit gate run immediately BEFORE the first source edit (node DG1) — asking `require` before
+`init` would block every fresh run on a file nobody has written yet. Every file is registered with
+`manifest.py add --changed <path>` — only AFTER its backup exists, since editing without a backup is
+a blocking error — or `manifest.py add --created <path>` (a file that predates the run is changed,
+never created). The sha256 is the script's, never typed by hand.
+Write `task_type` and `required_roles` into `.code-factory/state/pipeline.yaml` now, so strict model
+attribution has its contract at finish.
+**Deterministic gate aggregation (phase K)**: run
+`python .agents/skills/code-factory/scripts/gate_all.py --repo <resolved repo_path> --phase K
+[--diff <base> <head>]` — the input-validation diff gate, the English-only scan, the run-id check,
+the rulebook reconciler and the permit audit — and treat a phase whose record
+(`.code-factory/logs/gate-K.md`) is missing a gate that should have run, or shows a failing one, as
+a FAILURE. A green phase is never claimed from a skipped gate.
 
 **Artifacts-first rule**: before touching ANY source file, `.code-factory/` must already
 contain: `state/task.yaml`, `state/plan.md`, `logs/baseline.md`, `backups/` and
 `manifest.json`. Factory state lives in files, not only in the conversation.
 <!-- factory-rule: artifacts-first begin -->
-**Artifacts before changes (canonical wording):** the factory edits no source file until `.code-factory/` already holds `state/task.yaml` (the parsed task), `state/plan.md` (the plan), `logs/baseline.md` (the baseline test run), `backups/` (a backup of every file that will be changed, relative paths preserved) and `manifest.json` (the changed and created files). The run state lives on disk, not in the conversation: non-persistent knowledge is lost on restart and makes rollback impossible.
+**Artifacts before changes (canonical wording):** the factory edits no source file until `.code-factory/` already holds `state/task.yaml` (the parsed task), `state/plan.md` (the plan), `logs/baseline.md` (the baseline test run), `backups/` (a backup of every file that will be changed, relative paths preserved) and `manifest.json` (the changed and created files). The run state lives on disk, not in the conversation: non-persistent knowledge is lost on restart and makes rollback impossible. The change set is COMPUTED, never claimed: `scripts/manifest.py require` BLOCKS the first source edit until the manifest exists, every changed file is registered with `manifest.py add --changed` only once `.code-factory/backups/<same path>` holds its pre-edit bytes (editing without a backup is a blocking error), every created file with `--created`, and the sha256 is the script's, never typed by hand; `manifest.py audit` fails the finish on drift or a missing backup.
 <!-- factory-rule: artifacts-first end -->
 
 ### Phase 5 — Implement
@@ -413,6 +437,30 @@ subagent returns, append `models_used.<role> = <model>` to
 Every coder briefing carries the MEMORY FACTS slot of `references/handoff-briefing.md` — the open
 backlog items touching this work plus the relevant past decisions from `memory/summary.md` and the
 journal — so the coder never re-derives the project's history.
+
+**Pre-delegation gate (BEFORE every delegation of a budgeted role — coder, ba, planner,
+diagnostician, advisor, infrastructure, reviewer)**: the budget is counted by whoever EXECUTES the
+delegation, never by whoever reports it. Run
+`python .agents/skills/code-factory/scripts/delegation_gate.py check --repo <resolved repo_path>
+--role <role> --mode <hitl|auto>`: the gate increments `retry_counters.<role>` ITSELF and REFUSES
+the delegation (`allow: false`, exit 1) once the budget is exhausted. In hitl the refusal forces the
+`AskUserQuestion` owner stop; in auto it ends FAILED with the reason and there is no override;
+`--owner-authorized` (hitl only) grants exactly ONE extra delegation PER owner decision and
+records each one in the checkpoint, so N recorded decisions allow up to budget + N delegations. `delegation_gate.py audit --repo <resolved repo_path>` is the finish backstop: a
+budgeted-role spawn the session wire shows with no counted delegation fails the run.
+
+**Supervisor permits (before every delegation that spends a budget or touches the plan's scope)**:
+register the permit — `python .agents/skills/code-factory/scripts/permit_gate.py add --repo
+<resolved repo_path> --permit-id <id> --task-id <the plan task id> --role <role> --phase <phase>
+--scope <each file that plan task declares>` — ask `factory-supervisor` for an `allow`|`deny`
+verdict WITH its evidence, record it with `permit_gate.py verdict` BEFORE the spawn, spawn, then
+`permit_gate.py bind --agent-id <id>`. A DENIED permit is never spawned and never acquires an agent
+id; an allowed permit that ends unused is closed with its reason. The verdict is MODEL-ENFORCED (this
+is a mandatory step, not an interceptor); the deterministic backstop is `permit_gate.py audit
+--repo <resolved repo_path> --session <dir|auto>` at finish, which fails a permit-less delegation, a
+scope wider than the plan task, a denied-but-spawned agent, a duplicate agent id, an out-of-order
+verdict, an unused permit and a malformed wire line. A bypassing main agent is DETECTED, not stopped
+at call time.
 
 **Web GUI implementation (conditional)**: when the task's Web GUI path is `applicable`, the UI files
 go to `factory-gui-expert` (coder-class) instead of `factory-coder`: it implements, reproduces and
@@ -488,6 +536,19 @@ never issues the PASS; any later change makes the evidence STALE, so the scenari
 re-stamped (`references/verification-strategy.md` §3.2), and on a missing cargo/MCP capability the
 affected platform criteria stay UNVERIFIED with an infrastructure diagnosis
 (`references/error-routing.md` §1 rows F1–F2) — never MET, and never silently skipped.
+
+**Adversarial business testing (node S, IN PARALLEL with the tester; implement/review/refactor
+only, never security_audit)**: launch `factory-business-tester` — a user-level attacker, not a
+coder — to attack the delivered change through the product's OWN interfaces: wrong input type and
+range, empty, huge and malformed data, wrong order of operations, edge configurations, repeated
+clicks / double submits, interrupted flows. It never edits a product file and never uses a
+debugger; its only write is the classified evidence
+`.code-factory/logs/business-adversarial/<run_id>.json` (run_id, user-level action list, observed
+failure, classification), which is DIAGNOSTIC — the ACCEPTANCE evidence stays tester-owned. Honor
+`models.business_tester` and log `models_used.business_tester`. A breakage classifies through
+`python .agents/skills/code-factory/scripts/error_router.py classify` exactly like a tester failure
+and takes the SAME route: rollback, then the coder with the EXISTING `retry_counters.coder` budget
+— no separate budget, no separate role for a broken product.
 
 ### Phase 8b — Code review (mandatory gate)
 **Calibration gate first (deterministic, before any reviewer runs).** Invoke
@@ -589,6 +650,15 @@ phase, and NO auto-fixing — the deliverables are the audit reports and a gener
 acceptance criteria against the produced reports and the validity of the fix-task file.
 
 ### Phase 9 — Acceptance + finish
+**Finish checkpoints FIRST (both are blocking)**: `python .agents/skills/code-factory/scripts/manifest.py
+audit --repo <resolved repo_path>` (every registered hash still matches the working tree, every
+changed file still has its backup, nothing disappeared) and
+`python .agents/skills/code-factory/scripts/gate_all.py --repo <resolved repo_path> --phase Y` (the
+input-validation diff gate, the English-only scan, the run-id check, the rulebook reconciler, the
+action-gate audit, the manifest audit and the permit/delegation audits). A phase whose record
+(`.code-factory/logs/gate-Y.md`) is missing a gate that should have run, or shows a failed one, is a
+FAILURE — the run does not finish green on a skipped gate.
+
 Acceptance is machine-checked, not asserted: build the criteria input JSON from the task's
 `acceptance_criteria` (the main agent builds it — stdlib has no YAML parser) and run
 `python .agents/skills/code-factory/scripts/verify_acceptance.py --input <criteria.json>
@@ -742,7 +812,7 @@ On ANY failure, do NOT roll back immediately. Follow `references/error-routing.m
    is exhausted, escalate to the Diagnostician, then to the Advisor (budget 1), and finally to the
    human; for the reviewer the canonical review-gate policy of Phase 8b applies.
 <!-- factory-rule: retry-budgets begin -->
-**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently.
+**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently The budget is counted by whoever EXECUTES the delegation, not by whoever reports it: `scripts/delegation_gate.py check` increments `retry_counters.<role>` itself BEFORE every delegation and REFUSES it once the budget is exhausted — in hitl the refusal forces the `AskUserQuestion` owner stop, in auto the run ends FAILED, and only an explicit `--owner-authorized` (hitl, every decision recorded in the checkpoint) grants ONE extra delegation PER OWNER DECISION — N recorded authorizations allow up to budget+N delegations; `delegation_gate.py audit` fails the finish when a budgeted-role spawn left no counted delegation. A review round whose findings were ALL refuted with evidence refunds the one iteration it consumed (`delegation_gate.py settle`, evidence mandatory, never below 0, idempotent per round); a mixed round is never refunded.
 <!-- factory-rule: retry-budgets end -->
 
 3. **Diagnostician** (LLM): launch `factory-diagnostician` with the error output + attempt

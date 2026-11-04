@@ -8,14 +8,17 @@ Checks six invariants of the durable project model:
      28 KB and FAILS over 32 KB — it runs before the factory-own-root skip, because the factory's
      own hand-authored manual is the file that once grew to 38 KB. An instruction file nobody can
      load is not a model, it is a book.
-  2. The fingerprint line embedded in AGENTS.md (line 1) matches the fingerprints recomputed
-     from the project's current signals. The current format carries BOTH levels:
-     `<!-- code-factory-fingerprint: <structural-64-hex> content: <content-64-hex> -->`.
-     A structural mismatch means the project structure/stack/entry points changed, and a
-     content mismatch means a tracked file changed without touching the structural signals
-     (edits at depth >= 2) — both are errors, because either way the model is stale and must
-     be regenerated. The LEGACY single-hash format is still accepted, but only with a WARNING
-     (it cannot see content-only changes); its structural hash is still verified.
+  2. The fingerprint STATE (`.code-factory/state/fingerprint.json`) matches the fingerprints
+     recomputed from the project's current signals. AGENTS.md no longer embeds them: the two-level
+     hash lives in that derived state file (written by `project_fingerprint.py --write-state`), so
+     AGENTS.md's content no longer depends on its own commit and one version commit is enough.
+     A structural mismatch means the project structure/stack/entry points changed, and a content
+     mismatch means a tracked file changed without touching the structural signals (edits at
+     depth >= 2) — both are errors, because either way the model is stale and must be regenerated.
+     A MISSING state is an actionable error naming `--write-state` (a fresh clone recomputes it,
+     never assumes it), and the checker NEVER creates it. A stale `code-factory-fingerprint` marker
+     still sitting on AGENTS.md line 1 is IGNORED with a warning — it is not trusted any more (the
+     state file is the one home), and the warning asks for a regeneration that drops it.
      The content level hashes the tracked WORKING-TREE content, so an untracked file does not show
      up in it: such a worktree is reported with a WARNING — never an error, because the model
      itself may well be up to date and untracked files are outside the tracked content by
@@ -66,24 +69,23 @@ Usage:
   --strict        turn a `## Current state` divergence from the live state into an error instead
                   of a warning (same flag as `memory_project.py check`).
 
-The factory's OWN root is auto-detected by THREE signals that must hold together: line 1 of
-`AGENTS.md` carries NO `code-factory-fingerprint` marker, it DOES carry the factory's own
-`code-factory-version` marker (the hand-authored manual starts with
-`<!-- code-factory-version: X.Y.Z -->`), and `<repo>/.agents/skills/code-factory/SKILL.md` is
-deployed next to it. Such a root holds the factory's hand-authored manual, not a generated
-8-section model — the AGENTS.md checks are then a SKIP with a note (memory and the WIP checkpoint
-are still validated), so the factory's own root passes without `--memory-only`. The version marker
-is what keeps that detector narrow: `prepare_factory` deploys the flow skill into EVERY target
-project, so the skill alone would turn an ordinary target project with a hand-authored AGENTS.md
-into a SKIP instead of the documented `line 1 must be …` error. Every project without the
-fingerprint is still an error, and a fingerprint that is PRESENT but stale stays an error
-everywhere (the model exists and must be regenerated).
+The factory's OWN root is auto-detected by TWO signals that must hold together: line 1 of
+`AGENTS.md` carries the factory's own `code-factory-version` marker (the hand-authored manual
+starts with `<!-- code-factory-version: X.Y.Z -->`), and
+`<repo>/.agents/skills/code-factory/SKILL.md` is deployed next to it. Such a root holds the
+factory's hand-authored manual, not a generated 8-section model — the AGENTS.md checks are then a
+SKIP with a note (memory and the WIP checkpoint are still validated), so the factory's own root
+passes without `--memory-only`. The version marker is what keeps that detector narrow:
+`prepare_factory` deploys the flow skill into EVERY target project, and a generated model never
+carries the factory's own version marker, so the skill alone turns nothing into a SKIP. Every
+project without the fingerprint state is still an error, and a state that is PRESENT but stale
+stays an error everywhere (the model exists and must be regenerated).
 
 Exit code 0 = PASS, 1 = FAIL (each failure printed to stderr). Warnings are printed to
 stderr but do not fail (legacy memory missing the newer optional keys or the `project:`
 ownership declaration; a memory record written before the format v2 — warned, never rewritten;
-legacy single-hash fingerprint line; UNTRACKED files, which the tracked-content fingerprint does
-not cover). A project without a WIP checkpoint prints `SKIP - …`, which is not a failure either.
+a stale embedded fingerprint marker on AGENTS.md line 1, which is IGNORED; UNTRACKED files,
+which the tracked-content fingerprint does not cover). A project without a WIP checkpoint prints `SKIP - …`, which is not a failure either.
 stdlib only.
 """
 from __future__ import annotations
@@ -94,8 +96,10 @@ import re
 import sys
 
 import memory_project
-from project_fingerprint import (agents_size_issues, compute_content_fingerprint,
-                                 compute_fingerprint, untracked_files)
+from model_matrix import ROLES as MODEL_ROLES
+from project_fingerprint import (FINGERPRINT_STATE_REL, FingerprintStateError,
+                                 agents_size_issues, compute_content_fingerprint,
+                                 compute_fingerprint, read_state, untracked_files)
 
 CANONICAL_SECTIONS = [
     "Project Overview",
@@ -108,15 +112,18 @@ CANONICAL_SECTIONS = [
     "Known Constraints & Limitations",
 ]
 
-# Line 1 of a generated AGENTS.md. The `content:` part is optional so a legacy (single-hash)
-# model is still accepted — with a warning, see `check_agents_model`.
+# The LEGACY embedded fingerprint marker. It is no longer written and no longer trusted: the two
+# hashes live in `FINGERPRINT_STATE_REL`. A model that still carries the marker is accepted (with a
+# warning, see `check_agents_model`) so an existing project is not broken by the move — but the
+# marker's VALUE is never compared, because a value embedded in the file whose commit it describes
+# is exactly the second commit this change removes.
 FINGERPRINT_RE = re.compile(
     r"^<!--\s*code-factory-fingerprint:\s*([0-9a-f]{64})"
     r"(?:\s+content:\s*([0-9a-f]{64}))?\s*-->$"
 )
 FINGERPRINT_HINT = "<!-- code-factory-fingerprint: <64-hex> content: <64-hex> -->"
-# Marker that identifies a GENERATED AGENTS.md model. Its absence in line 1 is what makes a model
-# hand-authored — see `_is_factory_own_root`.
+# Marker that used to identify a GENERATED AGENTS.md model; kept so a stale line can be DETECTED and
+# warned about (never trusted) — see `check_agents_model`.
 FINGERPRINT_MARKER = "code-factory-fingerprint"
 # The factory's OWN version marker: the hand-authored manual at the factory's root starts with
 # `<!-- code-factory-version: X.Y.Z -->`. It is a REQUIRED signal of the factory-own-root detector
@@ -139,24 +146,37 @@ RUN_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{8}$")
 PIPELINE_REL = ".code-factory/state/pipeline.yaml"
 PIPELINE_REQUIRED = ("run_id", "phase", "status", "updated_at")
 PIPELINE_STATUSES = {"ok", "failed", "in_progress"}
+# The four task types the factory knows (rule `task-format`). A checkpoint that declares a
+# `task_type` must name one of them: strict model attribution is the DEFAULT for implement/refactor
+# (model_attribution.py), so a typo there would silently switch the gate off.
+PIPELINE_TASK_TYPES = ("implement", "review", "refactor", "security_audit")
+# The task types that run the full delegation chain, so strict attribution applies to them.
+STRICT_TASK_TYPES = ("implement", "refactor")
+# The roles whose presence depends on the task: they may be listed in `required_roles`, and nothing
+# fabricates them as mandatory for every run. A conditional role is a REGISTERED role like any other
+# here; the list exists so the validation states the contract instead of implying "every role".
+CONDITIONAL_ROLES = ("gui_expert", "farukon_expert", "security_auditor", "business_tester")
+# The roles EVERY implement/refactor run delegates, so strict attribution has something to check: the
+# phase table's mandatory set. A checkpoint of such a run that names fewer roles (or none) would
+# silently switch attribution off, which is the loophole this pins shut.
+MANDATORY_ROLES = ("analyzer", "planner", "coder", "tester", "reviewer", "documenter")
 
 
 def _is_factory_own_root(root: pathlib.Path, first_line: str) -> bool:
     """True when `root` is the factory's OWN root, whose AGENTS.md is a hand-authored manual.
 
-    Three signals, ALL required: line 1 of AGENTS.md carries no `code-factory-fingerprint` marker
-    (a generated model always does), it DOES carry the factory's own `code-factory-version` marker
-    (the hand-authored manual starts with `<!-- code-factory-version: X.Y.Z -->`), and the factory's
-    flow skill `<root>/.agents/skills/code-factory/SKILL.md` is deployed next to it. The skill alone
-    would be far too wide a signal: `prepare_factory` deploys it into EVERY target project, so a
-    target project with a hand-authored AGENTS.md would silently become a SKIP instead of the
-    documented `line 1 must be …` error — the version marker is what separates the two. A project
-    whose fingerprint IS there takes the normal path, where a stale fingerprint is an error — the
-    skip never swallows an existing-but-stale model.
+    Two signals, BOTH required: line 1 of AGENTS.md carries the factory's own
+    `code-factory-version` marker (the hand-authored manual starts with
+    `<!-- code-factory-version: X.Y.Z -->`), and the factory's flow skill
+    `<root>/.agents/skills/code-factory/SKILL.md` is deployed next to it. The skill alone would be
+    far too wide a signal: `prepare_factory` deploys it into EVERY target project, so a target
+    project with a hand-authored AGENTS.md would silently become a SKIP — the version marker is what
+    separates the two, and a GENERATED model never carries it either (its fingerprint moved to
+    `FINGERPRINT_STATE_REL`, so the old "no marker in line 1" half of this detector would now be
+    true for every model and is gone). A project with a fingerprint state takes the normal path,
+    where a stale state is an error — the skip never swallows an existing-but-stale model.
     """
-    return (FINGERPRINT_MARKER not in first_line
-            and VERSION_MARKER in first_line
-            and (root / FACTORY_SKILL_REL).is_file())
+    return VERSION_MARKER in first_line and (root / FACTORY_SKILL_REL).is_file()
 
 
 def check_agents_model(root: pathlib.Path) -> tuple[list[str], list[str], str]:
@@ -198,29 +218,35 @@ def check_agents_model(root: pathlib.Path) -> tuple[list[str], list[str], str]:
                                   f"{FACTORY_SKILL_REL} present): AGENTS.md model checks skipped")
 
     m = FINGERPRINT_RE.match(first.strip())
-    if not m:
-        errors.append(f"AGENTS.md line 1 must be '{FINGERPRINT_HINT}'")
+    if m is not None or FINGERPRINT_MARKER in first:
+        # A stale marker from the old design: IGNORED (never trusted — a value embedded in the file
+        # whose commit it describes is exactly what this change removed) and warned about.
+        warnings.append(f"AGENTS.md line 1 still carries the legacy '{FINGERPRINT_MARKER}' marker: "
+                        f"it is IGNORED — the fingerprints live in "
+                        f"{FINGERPRINT_STATE_REL.as_posix()} now — regenerate AGENTS.md to drop it")
+    try:
+        state = read_state(root)
+    except FingerprintStateError as exc:
+        # A missing state is the fresh-clone case: the actionable message is the error, and the
+        # checker never writes the state itself (a populated-but-unverified hash would be trusted).
+        errors.append(str(exc))
     else:
-        embedded, embedded_content = m.group(1), m.group(2)
         current = compute_fingerprint(root)
-        if embedded != current:
-            errors.append(f"fingerprint mismatch: embedded={embedded[:12]}… != current={current[:12]}…")
-        if embedded_content is None:
-            warnings.append("AGENTS.md line 1 uses the legacy single-hash fingerprint (no "
-                            "'content:' part): content-only changes are invisible to the model "
-                            f"— regenerate AGENTS.md as '{FINGERPRINT_HINT}'")
-        else:
-            current_content = compute_content_fingerprint(root)
-            if embedded_content != current_content:
-                errors.append("content fingerprint mismatch: "
-                              f"embedded={embedded_content[:12]}… != current={current_content[:12]}…")
-            # The content level hashes the TRACKED working-tree content (see
-            # project_fingerprint.py), so untracked files are outside it: report them, don't fail.
-            untracked = untracked_files(root)
-            if untracked:
-                warnings.append(f"worktree holds {len(untracked)} untracked file(s): the content "
-                                "fingerprint hashes the tracked content (git ls-files) and does not "
-                                "cover them (add them to git to make them visible)")
+        if state["structural"] != current:
+            errors.append(f"structural fingerprint mismatch: state={state['structural'][:12]}… != "
+                          f"current={current[:12]}… (regenerate AGENTS.md and rerun "
+                          f"`project_fingerprint.py --write-state`)")
+        current_content = compute_content_fingerprint(root)
+        if state["content"] != current_content:
+            errors.append(f"content fingerprint mismatch: state={state['content'][:12]}… != "
+                          f"current={current_content[:12]}…")
+        # The content level hashes the TRACKED working-tree content (see project_fingerprint.py),
+        # so untracked files are outside it: report them, don't fail.
+        untracked = untracked_files(root)
+        if untracked:
+            warnings.append(f"worktree holds {len(untracked)} untracked file(s): the content "
+                            "fingerprint hashes the tracked content (git ls-files) and does not "
+                            "cover them (add them to git to make them visible)")
 
     headings = [ln.strip() for ln in lines if ln.startswith("## ")]
     missing = [s for s in CANONICAL_SECTIONS if f"## {s}" not in headings]
@@ -361,7 +387,73 @@ def check_pipeline_checkpoints(root: pathlib.Path) -> tuple[list[str], str]:
         block = data.get(key)
         if block is not None and not isinstance(block, kind):
             errors.append(f"{PIPELINE_REL}: optional key '{key}' must be a {kind_name}")
+    errors += required_roles_errors(data)
     return errors, ""
+
+
+def required_roles_errors(data: dict) -> list[str]:
+    """The strict-attribution contract of a checkpoint: `task_type` and `required_roles`.
+
+    `task_type` must be one of the four (an empty value is an error too — strict attribution is the
+    default for implement/refactor, so "present but empty" would silently disable it).
+    `required_roles` must be a list of REGISTERED roles, duplicate-free, without `main` (the session
+    model is not a delegable role). CONDITIONAL_ROLES may be listed — a task that really needs the
+    Web GUI or Farukon specialist states it — and nothing here fabricates them as mandatory for
+    every run: the list only validates what the run declared.
+
+    An `implement` or `refactor` checkpoint must DECLARE the mandatory set (`MANDATORY_ROLES`): an
+    omitted or empty list would disable strict attribution for exactly the runs it exists for, so
+    both are errors. The conditional roles stay optional — the Web GUI, the Farukon specialist, the
+    auditor and the adversarial business tester are declared when the task really needs them.
+    """
+    errors: list[str] = []
+    if "task_type" in data:
+        task_type = data.get("task_type")
+        if task_type is None:
+            errors.append(f"{PIPELINE_REL}: optional key 'task_type' is present but empty (expected "
+                          f"one of {', '.join(PIPELINE_TASK_TYPES)})")
+        elif not isinstance(task_type, str) or task_type not in PIPELINE_TASK_TYPES:
+            errors.append(f"{PIPELINE_REL}: invalid task_type {task_type!r} (expected one of "
+                          f"{', '.join(PIPELINE_TASK_TYPES)})")
+    task_type = data.get("task_type")
+    strict = task_type in STRICT_TASK_TYPES
+    if "required_roles" not in data:
+        if strict:
+            errors.append(f"{PIPELINE_REL}: a {task_type} checkpoint must declare "
+                          f"'required_roles' — the mandatory roles "
+                          f"({', '.join(MANDATORY_ROLES)}) are what strict model attribution "
+                          f"checks, so omitting the key switches it off")
+        return errors
+    required = data.get("required_roles")
+    if not isinstance(required, list):
+        errors.append(f"{PIPELINE_REL}: optional key 'required_roles' must be a list of roles")
+        return errors
+    roles = [role for role in required if isinstance(role, str)]
+    if len(roles) != len(required):
+        errors.append(f"{PIPELINE_REL}: every entry of 'required_roles' must be a role name")
+    unknown = sorted({role for role in roles if role not in MODEL_ROLES})
+    if unknown:
+        errors.append(f"{PIPELINE_REL}: required_roles names role(s) the factory does not have: "
+                      f"{', '.join(unknown)} (registered roles: {', '.join(sorted(MODEL_ROLES))})")
+    duplicated = sorted({role for role in roles if roles.count(role) > 1})
+    if duplicated:
+        errors.append(f"{PIPELINE_REL}: required_roles lists {', '.join(duplicated)} more than "
+                      f"once — a required role is declared once")
+    if "main" in roles:
+        errors.append(f"{PIPELINE_REL}: 'required_roles' cannot list 'main' — the session model is "
+                      f"not a delegated role (it cannot be required of a subagent)")
+    if strict:
+        if not roles:
+            errors.append(f"{PIPELINE_REL}: a {task_type} checkpoint lists NO required role: the "
+                          f"mandatory set ({', '.join(MANDATORY_ROLES)}) is what strict model "
+                          f"attribution checks, so an empty list switches it off")
+        else:
+            missing = [role for role in MANDATORY_ROLES if role not in roles]
+            if missing:
+                errors.append(f"{PIPELINE_REL}: a {task_type} checkpoint must require "
+                              f"{', '.join(missing)}: every one of {', '.join(MANDATORY_ROLES)} is "
+                              f"delegated on such a run, and an unlisted role is an unchecked one")
+    return errors
 
 
 def use_utf8_output() -> None:

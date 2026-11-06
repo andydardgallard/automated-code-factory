@@ -570,6 +570,43 @@ def main() -> int:
         expect(r.returncode == 0 and "path=state" in r.stdout,
                f"the baseline subcommand must be discoverable in --help: {r.stdout[:400]!r}")
 
+        # 30. Regression (C39): snapshot/check --files must be confined to the repository —
+        #     absolute paths and `..` traversal are usage errors (exit 2) rejected BEFORE any
+        #     read or write: a snapshot of `../outside.md` reads outside --repo and writes
+        #     outside the baseline, and an absolute entry makes `baseline / rel` the absolute
+        #     path itself (a WRITE target outside the baseline).
+        confined_repo = root / "confined-repo"
+        (confined_repo / "docs").mkdir(parents=True)
+        (confined_repo / "docs" / "c.md").write_text("doc\n", encoding="utf-8")
+        outside_md = root / "outside.md"
+        outside_md.write_text("secret\n", encoding="utf-8")
+        confined_base = root / "confined-base"
+        for cmd in ("snapshot", "check"):
+            for bad in ("../outside.md", str(outside_md.resolve()), "docs/../../outside.md"):
+                r = subprocess.run([sys.executable, str(script), cmd, "--repo",
+                                    str(confined_repo), "--baseline", str(confined_base),
+                                    "--files", "docs/c.md", bad],
+                                   capture_output=True, text=True)
+                expect(r.returncode == 2 and "error:" in r.stderr
+                       and "Traceback" not in r.stderr,
+                       f"{cmd} must reject {bad!r} with exit 2 before any read/write: "
+                       f"{r.returncode} {r.stderr!r}")
+        expect(not confined_base.exists(),
+               "a rejected snapshot must not write anything into the baseline")
+        expect(outside_md.read_text(encoding="utf-8") == "secret\n",
+               "an absolute --files entry must never be used as a read/write target")
+        # ... while plain repository-relative paths still snapshot and check fine.
+        r = subprocess.run([sys.executable, str(script), "snapshot", "--repo",
+                            str(confined_repo), "--baseline", str(confined_base),
+                            "--files", "docs/c.md"], capture_output=True, text=True)
+        expect(r.returncode == 0 and (confined_base / "docs" / "c.md").is_file(),
+               f"a confined snapshot must still work: {r.returncode} {r.stderr!r}")
+        r = subprocess.run([sys.executable, str(script), "check", "--repo",
+                            str(confined_repo), "--baseline", str(confined_base),
+                            "--files", "docs/c.md"], capture_output=True, text=True)
+        expect(r.returncode == 0,
+               f"a confined check must still work: {r.returncode} {r.stderr!r}")
+
     print("PASS - documentation validator allows only documentation-only changes.")
     return 0
 

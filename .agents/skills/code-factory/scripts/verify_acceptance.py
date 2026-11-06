@@ -16,11 +16,16 @@ Verdict (SUCCESS is the only accepted outcome):
              is proven (`--regression pass`), AND a usable `--ledger` holds a FRESH
              `regression=pass` entry. The ledger is not optional for SUCCESS: it is the only
              proof that the regression evidence is about the tree being accepted.
-  DEGRADED — nothing failed, but the baseline is not proven (`--regression not-run`), no criterion
-             carries a `verify` command (nothing was actually verified), no `--ledger` was given
-             (the regression claim is unsigned), or the evidence ledger is STALE / UNSCOPED / has
-             no FRESH `regression=pass` entry (stale evidence downgrades an otherwise SUCCESS run,
-             even with `--regression pass`).
+             In a `review` / `security_audit` context (`--task-type`) the run has no regression
+             stage it could ever sign, so the freshness proof is task-type aware instead: the
+             baseline is not required, and the ledger must hold FRESH `pass` entries for the
+             run's deliverables — `report`, `merged-findings` and `follow-up` (see
+             REVIEW_REQUIRED_EVIDENCE) — rather than a `regression=pass` entry.
+  DEGRADED — nothing failed, but the baseline is not proven (`--regression not-run`; implement /
+             refactor only), no criterion carries a `verify` command (nothing was actually
+             verified), no `--ledger` was given (the evidence claim is unsigned), or the evidence
+             ledger is STALE / UNSCOPED / lacks the entries the task type requires (stale evidence
+             downgrades an otherwise SUCCESS run, even with `--regression pass`).
   FAILURE  — any verify criterion FAILED, or `--regression fail`.
 
 Exit code 0 only for SUCCESS, so a degraded or degenerate run can never be accepted silently.
@@ -29,7 +34,8 @@ Command execution: `shell=True` is intentional — the commands are authored by 
 (task.yaml), not by untrusted input, and they run with `cwd=<repo>`. On Windows they are executed
 by cmd.exe, on POSIX by /bin/sh: for portable tasks keep `verify` free of shell-specific syntax.
 `--timeout` (default 600s, 0 = unlimited) kills the whole timed-out process tree and marks the
-criterion FAILED, so a hung command can never block the gate.
+criterion FAILED, so a hung command can never block the gate. Only ZERO is unlimited: a negative
+value is rejected as a usage error, because a mistyped `-1` must not silently disarm the guard.
 
 Usage:
   python verify_acceptance.py --input criteria.json --output acceptance.md --repo . \\
@@ -45,14 +51,19 @@ acceptance.md — a green log from an older revision is not proof about the curr
 `--ledger` altogether is the same downgrade: SUCCESS is impossible without it.
 
 `--run-id` (see `run_id.py`) is optional and only adds the line `run_id: <id>` to the header of
-acceptance.md, so the artifact names the run it belongs to.
+acceptance.md, so the artifact names the run it belongs to. It must have the canonical shape
+`YYYYMMDD`-`<8 lowercase hex>` — the one `run_id.py check` demands of the artifact and
+`check_factory_model.RUN_ID_RE` enforces on state files — otherwise it is a usage error (exit 2):
+a malformed value would be stamped verbatim and the artifact would be born unattributable.
 
-`--task-type` (default `implement`) is optional and only changes HOW a failure is reported; the
-header records `task_type: <value>`. In a `review` / `security_audit` context the tree is judged
-UNMODIFIED — such a run changes nothing — so a failing criterion is an OWNER DECISION, not a
-rework instruction: the reason line says so and the run stops for the owner. `VERDICTS` and the
-exit-code contract do not change (SUCCESS -> 0, DEGRADED/FAILURE -> 1, exactly as before), and no
-criterion is executed differently.
+`--task-type` (default `implement`) is optional. It changes HOW a failure is reported — in a
+`review` / `security_audit` context the tree is judged UNMODIFIED, so a failing criterion is an
+OWNER DECISION, not a rework instruction — and it makes the freshness proof task-type aware:
+a review/audit run has no regression stage, so instead of a FRESH `regression=pass` ledger entry
+it must prove its deliverables FRESH (ledger entries `report`, `merged-findings`, `follow-up`,
+each signed over the artifact's files), and `--regression not-run` is its honest baseline rather
+than a degradation. `VERDICTS` and the exit-code contract do not change (SUCCESS -> 0,
+DEGRADED/FAILURE -> 1, exactly as before), and no criterion is executed differently.
 
 Exit code 0 = SUCCESS, 1 = FAILURE / DEGRADED / usage error. stdlib only.
 """
@@ -82,6 +93,14 @@ TASK_TYPES = ("implement", "review", "refactor", "security_audit")
 # Task types whose run never edits the project: a failing criterion there is the owner's decision,
 # not an instruction to rework (the rule `review-report-only`). The verdicts stay as they are.
 REVIEW_CONTEXTS = ("review", "security_audit")
+# The deliverables of a review/audit run. Such a run has no regression stage it could ever sign,
+# so its SUCCESS is proven by FRESH pass ledger entries for THESE artifacts (each stamped over
+# the files it depends on) instead of the `regression=pass` entry an implement run needs.
+REVIEW_REQUIRED_EVIDENCE = ("report", "merged-findings", "follow-up")
+# The canonical run id: `YYYYMMDD`-`<8 lowercase hex>`, the shape `check_factory_model.RUN_ID_RE`
+# enforces and `run_id.py check` demands of an artifact. `--run-id` is stamped VERBATIM into
+# acceptance.md, so a malformed value would be born unattributable (its own gate rejects it).
+RUN_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{8}$")
 
 
 def tail_excerpt(text: str, max_lines: int = EXCERPT_MAX_LINES,
@@ -208,7 +227,7 @@ def decide_verdict(results: list[dict], regression: str,
         return "FAILURE", failure_reason(len(failed), task_type)
     if not any(r["command"] for r in results):
         return "DEGRADED", "no criterion carries a verify command: nothing was actually verified"
-    if regression != "pass":
+    if regression != "pass" and task_type not in REVIEW_CONTEXTS:
         return "DEGRADED", ("regression not proven (--regression not-run): SUCCESS is impossible "
                             "without regression evidence")
     verified = sum(1 for r in results if r["command"])
@@ -216,14 +235,50 @@ def decide_verdict(results: list[dict], regression: str,
     reason = f"all {verified} verify {'criterion' if verified == 1 else 'criteria'} MET"
     if unverified:  # name what SUCCESS does NOT cover: the derived/unverified rest was not checked
         reason += f" ({unverified} {'criterion' if unverified == 1 else 'criteria'} derived/unverified)"
+    if task_type in REVIEW_CONTEXTS:
+        # A review/audit run has no regression stage it could sign: its freshness proof is the
+        # ledger over its deliverables, enforced by the ledger gate below.
+        return "SUCCESS", (f"{reason}; a {task_type} run proves its artifacts "
+                           f"({', '.join(REVIEW_REQUIRED_EVIDENCE)}) FRESH instead of a "
+                           "regression baseline it does not have")
     return "SUCCESS", f"{reason} and the regression baseline passed"
 
 
-def check_ledger(ledger_path: pathlib.Path, evidence_files: list[str], repo: pathlib.Path) -> dict:
+def review_acceptance_blocker(rows: list[dict]) -> str:
+    """The review/audit freshness rule; "" reason = trustworthy.
+
+    Same fail-closed freshness discipline as `evidence_ledger.acceptance_blocker` (UNSCOPED, STALE
+    and non-pass entries reject exactly the same way), but the required FRESH pass entries are the
+    run's deliverables — `report`, `merged-findings`, `follow-up` — because a review/audit run
+    produces no regression run it could sign. Requiring one anyway would force every honest
+    review acceptance into DEGRADED.
+    """
+    if not rows:
+        return ("the evidence ledger has no entries: no FRESH review-artifact evidence "
+                f"({', '.join(REVIEW_REQUIRED_EVIDENCE)})")
+    blocker = evidence_ledger.acceptance_blocker(rows)
+    missing_regression = (f"no FRESH {evidence_ledger.REQUIRED_EVIDENCE}=pass evidence "
+                          "in the ledger")
+    if blocker and blocker != missing_regression:
+        return blocker      # UNSCOPED / STALE / non-pass evidence rejects in every context
+    missing = [name for name in REVIEW_REQUIRED_EVIDENCE
+               if not any(row["name"] == name and row["result"] == "pass"
+                          and row["status"] == evidence_ledger.FRESH for row in rows)]
+    if missing:
+        return ("no FRESH pass evidence for the review artifact(s): " + ", ".join(missing)
+                + " — a review/audit run proves its deliverables FRESH, and an unsigned or stale "
+                  "one is not evidence")
+    return ""
+
+
+def check_ledger(ledger_path: pathlib.Path, evidence_files: list[str], repo: pathlib.Path,
+                 task_type: str = "implement") -> dict:
     """Re-check the evidence ledger against the current files; "" reason = trustworthy.
 
     Fail-safe by construction: an unreadable or broken ledger is never "no evidence", it is a
-    rejection — a damaged ledger must not be able to certify a run.
+    rejection — a damaged ledger must not be able to certify a run. The required FRESH evidence
+    is task-type aware: implement/refactor need `regression=pass`, review/security_audit need
+    their deliverables (REVIEW_REQUIRED_EVIDENCE).
     """
     try:
         entries = evidence_ledger.load_ledger(ledger_path)
@@ -231,7 +286,9 @@ def check_ledger(ledger_path: pathlib.Path, evidence_files: list[str], repo: pat
     except ValueError as exc:
         return {"path": str(ledger_path), "reason": f"evidence ledger unusable: {exc}",
                 "detail": str(exc), "fingerprint": "", "rows": [], "files": len(evidence_files)}
-    return {"path": str(ledger_path), "reason": evidence_ledger.acceptance_blocker(report["rows"]),
+    blocker = (review_acceptance_blocker(report["rows"]) if task_type in REVIEW_CONTEXTS
+               else evidence_ledger.acceptance_blocker(report["rows"]))
+    return {"path": str(ledger_path), "reason": blocker,
             "detail": report["reason"], "fingerprint": report["fingerprint"],
             "rows": report["rows"], "files": len(evidence_files)}
 
@@ -377,7 +434,8 @@ def main() -> int:
     ap.add_argument("--regression", choices=REGRESSION_CHOICES, default="not-run",
                     help="Regression baseline outcome (default: not-run -> DEGRADED)")
     ap.add_argument("--timeout", type=int, default=600,
-                    help="Seconds per verify command; 0 disables the timeout (default: 600)")
+                    help="Seconds per verify command; 0 disables the timeout (default: 600); "
+                         "a negative value is a usage error, not unlimited")
     ap.add_argument("--ledger", default="",
                     help="Evidence ledger JSON; SUCCESS is impossible without it (see module "
                          "docstring). When omitted the verdict is DEGRADED, because an unsigned "
@@ -388,12 +446,24 @@ def main() -> int:
     ap.add_argument("--run-id", default="",
                     help="Run id (see run_id.py); when given it is recorded in acceptance.md")
     ap.add_argument("--task-type", choices=TASK_TYPES, default="implement",
-                    help="Task type being judged (default: implement). It only shapes HOW a "
-                         "failure is reported: in review/security_audit a failing criterion is an "
-                         "OWNER DECISION on the unmodified tree, not a rework instruction; the "
-                         "verdicts and the exit codes do not change")
+                    help="Task type being judged (default: implement). It shapes HOW a failure "
+                         "is reported: in review/security_audit a failing criterion is an "
+                         "OWNER DECISION on the unmodified tree, not a rework instruction — and "
+                         "it makes the freshness proof task-type aware: a review/audit SUCCESS "
+                         "needs FRESH pass ledger entries for report, merged-findings and "
+                         "follow-up instead of a regression=pass entry it can never produce; "
+                         "the verdicts and the exit codes do not change")
     args = ap.parse_args()
 
+    if args.timeout < 0:
+        # Only ZERO is the documented unlimited value: a negative timeout would silently disable
+        # the hung-command guard (`timeout > 0 else None`), so it is a usage error, never a pass.
+        ap.error("--timeout must be >= 0: 0 disables the timeout, a negative value is a mistake")
+    if args.run_id and not RUN_ID_RE.fullmatch(args.run_id):
+        # The value is stamped verbatim into acceptance.md: a malformed id would make the artifact
+        # born unattributable (run_id.py check rejects exactly this line), so reject it here.
+        ap.error(f"--run-id must be YYYYMMDD-<8 lowercase hex> (see run_id.py): "
+                 f"{args.run_id!r} is not a run id")
     repo = pathlib.Path(args.repo)
     if not repo.is_dir():
         print(f"error: --repo is not a directory: {repo}", file=sys.stderr)
@@ -409,20 +479,28 @@ def main() -> int:
 
     ledger_report = None
     if args.ledger:
-        ledger_report = check_ledger(pathlib.Path(args.ledger), args.evidence_files, repo)
+        ledger_report = check_ledger(pathlib.Path(args.ledger), args.evidence_files, repo,
+                                     args.task_type)
         if ledger_report["reason"]:
             if verdict == "SUCCESS":
                 verdict, reason = "DEGRADED", f"evidence ledger rejected: {ledger_report['reason']}"
             else:
                 reason = f"{reason}; evidence ledger rejected: {ledger_report['reason']}"
     elif verdict == "SUCCESS":
-        # The ledger is the only thing that can prove the regression evidence is about THIS tree:
-        # with no ledger there is nothing to check, so the fresh-evidence contract is unmet and
-        # SUCCESS is impossible. DEGRADED (not FAILURE): nothing failed, the proof is missing.
+        # The ledger is the only thing that can prove the evidence is about THIS tree: with no
+        # ledger there is nothing to check, so the fresh-evidence contract is unmet and SUCCESS
+        # is impossible. DEGRADED (not FAILURE): nothing failed, the proof is missing.
         verdict = "DEGRADED"
-        reason = ("no evidence ledger given (--ledger ... --evidence-files ...): SUCCESS requires "
-                  f"a usable FRESH {evidence_ledger.REQUIRED_EVIDENCE}=pass ledger entry, and an "
-                  "unsigned regression claim is not evidence")
+        if args.task_type in REVIEW_CONTEXTS:
+            reason = ("no evidence ledger given (--ledger ... --evidence-files ...): SUCCESS "
+                      "requires usable FRESH pass entries for the review artifacts "
+                      f"({', '.join(REVIEW_REQUIRED_EVIDENCE)}), and unsigned artifacts are "
+                      "not evidence")
+        else:
+            reason = ("no evidence ledger given (--ledger ... --evidence-files ...): SUCCESS "
+                      "requires a usable FRESH "
+                      f"{evidence_ledger.REQUIRED_EVIDENCE}=pass ledger entry, and an unsigned "
+                      "regression claim is not evidence")
     # Explicit, -O-proof contract check: an `assert` would vanish under `python -O` and an
     # out-of-contract verdict would be rendered into acceptance.md as if it were a real one.
     if verdict not in VERDICTS:

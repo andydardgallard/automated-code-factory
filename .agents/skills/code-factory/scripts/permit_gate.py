@@ -21,7 +21,8 @@ FORMAT: `permits.yaml` is a JSON-compatible YAML document and is parsed with the
 (no YAML dependency, no hand-written parser). Shape:
 
   {"run_id": "<YYYYMMDD>-<8 hex>",
-   "permits": [{"permit_id": "<id>", "task_id": "<plan task id>", "role": "<factory role>",
+   "permits": [{"permit_id": "<id>", "kind": "plan" | "bootstrap",
+                "task_id": "<plan task id>" | "bootstrap", "role": "<factory role>",
                 "phase": "<lifecycle phase>", "scope": ["<repo-relative path>", ...],
                 "constraints": ["<text>", ...], "created_at": "<ISO>",
                 "verdict": null | "allow" | "deny", "evidence": "<text>",
@@ -29,14 +30,32 @@ FORMAT: `permits.yaml` is a JSON-compatible YAML document and is parsed with the
                 "agent_id": null | "<agent id>", "bound_at": null | "<ISO>",
                 "closed": null | {"at": "<ISO>", "reason": "<text>"}}]}
 
+Every field is TYPE- AND VOCABULARY-VALIDATED when the file is loaded (a scalar `agent_id`, string
+lists for `scope`/`constraints`, the verdict and phase vocabularies, the timestamp shapes): a
+malformed file is a PermitError (exit 2), never a crash inside the audit.
+
+BOOTSTRAP PERMITS (`add --kind bootstrap`): before the plan is APPROVED no delegation can name a
+plan task, so the run's first delegations answer the TASK itself. A bootstrap permit is limited to
+the pre-plan read-only roles (`analyzer`, `planner` — the initial planning — and `supervisor`,
+which is launched under the run's own authority), carries `--task-id bootstrap`, and is validated
+against the PARSED task (`.code-factory/state/task.yaml`) instead of the plan. The approved-plan
+task checks apply to `plan` permits only (implementation and later delegations).
+
+THE SUPERVISOR'S OWN SPAWNS: the supervisor is a run-long WATCHDOG launched at run start under the
+run's own authority — it cannot judge its own permit before it exists (bootstrap circularity). The
+finish audit therefore EXEMPTS supervisor spawns from the permit-less check; a supervisor spawn that
+IS bound to a permit is audited like any other (role, verdict order, plan scope).
+
 SUBCOMMANDS
 
   init    --repo <root>                       create the skeleton {run_id, permits: []} (refuses to
                                               overwrite a file that already lists permits)
   add     --repo <root> --permit-id <id> --task-id <plan task id> --role <role> --phase <phase>
-          [--scope <repo-relative path> ...] [--constraint <text> ...]
+          [--kind plan|bootstrap] [--scope <repo-relative path> ...] [--constraint <text> ...]
                                               register ONE permit; the task id must exist in the
-                                              approved plan, the role must be registered, the phase
+                                              approved plan (a `--kind bootstrap` permit answers the
+                                              TASK itself instead — see BOOTSTRAP PERMITS above),
+                                              the role must be registered, the phase
                                               must be a known lifecycle phase, every scope must be a
                                               confined repo-relative path, and an EMPTY scope is only
                                               allowed for a read-only / business-test role
@@ -55,13 +74,23 @@ SUBCOMMANDS
 
 THE AUDIT (exit codes: 0 pass, 1 violation, 2 input error, 3 DEGRADED — no session wire to audit)
 
-  Every `subagent.spawned` in the session wire must match a permit BY AGENT ID AND ROLE; the permit
+  Before ANY spawn is evaluated the permits file's run_id must equal the current pipeline run id:
+  permits of ANOTHER run never authorize this run's delegations (stale permits are a violation, not
+  a fallback). Then, every `subagent.spawned` in the session wire must match a permit BY AGENT ID
+  AND ROLE; the permit
   must be `allow` (a DENIED permit may never acquire an agent id, so a spawn under it is a breach);
   its verdict time must PRECEDE the spawn time; its scope must be a SUBSET of the files the approved
   plan declares for its task id; every allowed permit must be bound to a spawn or explicitly closed;
   and two permits may never share a permit id or an agent id. A wire line that is not a JSON object
   FAILS THE AUDIT CLOSED — an unreadable wire is exactly the state in which "every delegation was
   permitted" cannot be claimed. An absent session/wire is DEGRADED (exit 3), like the action audit.
+
+  OWNER AUTHORIZATIONS are RUN-BOUND, never self-attested: a permit's `owner_authorized: true` flag
+  lives in this hand-editable file, so it is not evidence by itself. The retroactive bootstrap
+  exception applies only when THIS run's `.code-factory/state/pipeline.yaml` independently records
+  the decision — an `owner_authorizations:` list item naming `permit=<id>` (the journal
+  `delegation_gate.py` appends to). A flag without that note is an `unverified owner authorization`
+  violation and the out-of-order verdict stands.
 """
 from __future__ import annotations
 
@@ -86,8 +115,17 @@ from model_matrix import ROLES  # noqa: E402
 PERMITS_REL = pathlib.Path(".code-factory") / "state" / "permits.yaml"
 PLAN_REL = pathlib.Path(".code-factory") / "state" / "plan.md"
 PIPELINE_REL = pathlib.Path(".code-factory") / "state" / "pipeline.yaml"
+TASK_REL = pathlib.Path(".code-factory") / "state" / "task.yaml"
 
 VERDICTS = ("allow", "deny")
+PERMIT_KINDS = ("plan", "bootstrap")
+# A bootstrap permit answers the TASK itself (no plan exists yet), so it carries this fixed task id.
+BOOTSTRAP_TASK_ID = "bootstrap"
+# The pre-plan bootstrap set: the read-only analysis/planning roles, plus the supervisor itself —
+# the watchdog is launched at run start under the run's OWN authority (it cannot judge its own
+# permit before it exists). Every other role needs an approved-plan task and a `plan` permit.
+BOOTSTRAP_ROLES = frozenset({"analyzer", "planner", "supervisor"})
+SUPERVISOR_ROLE = "supervisor"
 # The lifecycle phases a permit may be issued in: the factory's own phase names (analysis ->
 # acceptance) plus the finish checkpoint. A closed vocabulary so `--phase nonsense` cannot pass.
 PERMIT_PHASES = ("analysis", "plan", "implement", "review", "refactor", "security_audit",
@@ -101,6 +139,11 @@ PERMIT_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 RUN_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{8}$")
 RUN_ID_LINE = re.compile(r"^run_id:\s*(.*)$")
+# The checkpoint's `owner_authorizations:` list (written by `delegation_gate.py`): one plain YAML
+# list item per owner decision, e.g.
+#   - 2026-11-05T16:59:25Z permit=PB role=supervisor mode=hitl
+AUTHORIZATIONS_HEADER = re.compile(r"^owner_authorizations:\s*(?:\[\s*\]\s*)?(?:#.*)?$")
+AUTHORIZATION_ITEM = re.compile(r"^\s*-\s+(?P<note>\S.*?)\s*$")
 TASK_LINE = re.compile(r"^-\s+(?P<id>[A-Za-z][A-Za-z0-9_]*)\s*:\s*(?P<rest>.*)$")
 FILES_FIELD = re.compile(r"\bfiles\s*:\s*(?P<files>.*?)(?:;\s*(?:deps|verify)\b|$)")
 
@@ -196,6 +239,42 @@ def pipeline_run_id(root: pathlib.Path) -> str:
     raise PermitError(f"{path} declares no run_id: a permit must belong to exactly one run")
 
 
+def authorized_permit_ids(root: pathlib.Path) -> set[str]:
+    """The permit ids THIS run's checkpoint independently records as owner-authorized.
+
+    `owner_authorizations:` in `.code-factory/state/pipeline.yaml` is the run's journal of owner
+    decisions (`delegation_gate.py` appends to it). A note naming `permit=<id>` is the ONLY thing
+    that can discharge a permit's own `owner_authorized` flag: the flag lives in the hand-editable
+    `permits.yaml`, so a self-attested boolean alone is neither evidence nor a decision. The
+    checkpoint is run-bound (its `run_id` is compared with the permits file before any spawn is
+    evaluated), so an authorization of ANOTHER run cannot authorize this one.
+    """
+    path = root / PIPELINE_REL
+    if not path.is_file():
+        return set()
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise PermitError(f"cannot read {path}: {exc}") from exc
+    notes: list[str] = []
+    inside = False
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            inside = AUTHORIZATIONS_HEADER.match(line.strip()) is not None
+            continue
+        item = AUTHORIZATION_ITEM.match(line) if inside else None
+        if item:
+            notes.append(item.group("note"))
+    ids: set[str] = set()
+    for note in notes:
+        for token in note.split():
+            if token.startswith("permit=") and len(token) > len("permit="):
+                ids.add(token[len("permit="):].strip("'\""))
+    return ids
+
+
 def _normalize_scope(root: pathlib.Path, raw: str) -> str:
     """One confined repo-relative scope path (a trailing `/` marks a directory and is dropped)."""
     text = (raw or "").strip().replace("\\", "/").rstrip("/")
@@ -263,9 +342,59 @@ def read_permits(root: pathlib.Path) -> dict:
     if not RUN_ID_RE.match(str(data.get("run_id", ""))):
         raise PermitError(f"{path}: run_id {data.get('run_id')!r} is not YYYYMMDD-<8 lowercase hex>")
     for index, permit in enumerate(data["permits"]):
-        if not isinstance(permit, dict) or not isinstance(permit.get("permit_id"), str):
-            raise PermitError(f"{path}: permits[{index}] must be an object with a 'permit_id'")
+        _validate_permit_shape(path, index, permit)
     return data
+
+
+def _validate_permit_shape(path: pathlib.Path, index: int, permit: object) -> None:
+    """Type- and vocabulary-validate EVERY field of one loaded permit.
+
+    The permits file is data on disk: it may have been written by hand or by an older version, and
+    the audit joins on its fields (`agent_id` becomes a dictionary key, `scope` is iterated, the
+    verdict is compared). A field of the wrong type must be a controlled input error HERE — never
+    a crash deep inside the audit.
+    """
+    where = f"{path}: permits[{index}]"
+    if not isinstance(permit, dict) or not isinstance(permit.get("permit_id"), str):
+        raise PermitError(f"{where} must be an object with a 'permit_id'")
+    kind = permit.get("kind", "plan")
+    if kind not in PERMIT_KINDS:
+        raise PermitError(f"{where}: kind must be one of {list(PERMIT_KINDS)}, got {kind!r}")
+    for key in ("task_id", "role", "phase", "evidence"):
+        if not isinstance(permit.get(key), str):
+            raise PermitError(f"{where}: {key} must be a string, got {permit.get(key)!r}")
+    if permit["role"] not in ROLES:
+        raise PermitError(f"{where}: role {permit['role']!r} is not a registered factory role "
+                          f"({', '.join(ROLES)})")
+    if permit["phase"] not in PERMIT_PHASES:
+        raise PermitError(f"{where}: phase {permit['phase']!r} is not a known lifecycle phase "
+                          f"({', '.join(PERMIT_PHASES)})")
+    for key in ("scope", "constraints"):
+        value = permit.get(key)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise PermitError(f"{where}: {key} must be a list of strings, got {value!r}")
+    verdict = permit.get("verdict")
+    if verdict is not None and verdict not in VERDICTS:
+        raise PermitError(f"{where}: verdict must be null or one of {list(VERDICTS)}, got "
+                          f"{verdict!r}")
+    for key in ("created_at", "verdict_at", "agent_id", "bound_at"):
+        value = permit.get(key)
+        if value is not None and not isinstance(value, str):
+            raise PermitError(f"{where}: {key} must be null or a SCALAR string, got {value!r}")
+    stamp = permit.get("verdict_at_ms")
+    if stamp is not None and (isinstance(stamp, bool) or not isinstance(stamp, (int, float))):
+        raise PermitError(f"{where}: verdict_at_ms must be null or a number, got {stamp!r}")
+    # A NaN/infinity FLOAT passes this shape check deliberately: it is a well-typed but unusable
+    # stamp, and the AUDIT owns the "unreadable verdict time" violation (exit 1) for it.
+    closed = permit.get("closed")
+    if closed is not None and (not isinstance(closed, dict)
+                               or not isinstance(closed.get("at"), str)
+                               or not isinstance(closed.get("reason"), str)):
+        raise PermitError(f"{where}: closed must be null or an object with string 'at' and "
+                          f"'reason', got {closed!r}")
+    override = permit.get("owner_authorized")
+    if override is not None and not isinstance(override, bool):
+        raise PermitError(f"{where}: owner_authorized must be null or a bool, got {override!r}")
 
 
 def _write_permits(root: pathlib.Path, data: dict) -> pathlib.Path:
@@ -324,20 +453,56 @@ def init(root: str | pathlib.Path) -> dict:
     return {"status": "created", "run_id": run_id, "permits": str(path)}
 
 
+def _parsed_task(root: pathlib.Path) -> None:
+    """Require the run's task to exist and to PARSE (the bootstrap permit's validation anchor)."""
+    path = root / TASK_REL
+    if not path.is_file():
+        raise PermitError(f"no task at {path}: a bootstrap permit is validated against the parsed "
+                          f"task the run answers, so the task must exist before any pre-plan "
+                          f"delegation is permitted")
+    try:
+        import task_parser  # noqa: PLC0415  (deliberately lazy: only bootstrap permits need it)
+    except ImportError as exc:
+        raise PermitError(f"the bootstrap validation reuses task_parser.py, which cannot be "
+                          f"imported: {exc}") from exc
+    try:
+        task_parser.parse_file(path)
+    except task_parser.TaskError as exc:
+        raise PermitError(f"{path} does not parse as a valid task: {exc}") from exc
+    except OSError as exc:
+        raise PermitError(f"cannot read {path}: {exc}") from exc
+
+
 def add(root: str | pathlib.Path, permit_id: str, task_id: str, role: str, phase: str,
-        scopes: list[str] | None = None, constraints: list[str] | None = None) -> dict:
-    """Register ONE permit (validated against the plan, the registry, the phases and the scope)."""
+        scopes: list[str] | None = None, constraints: list[str] | None = None,
+        kind: str = "plan") -> dict:
+    """Register ONE permit (validated against the plan — or, bootstrap, the parsed task)."""
     root = _checked_repo(root)
     _validate_permit_id(permit_id)
     _validate_role(role)
+    if kind not in PERMIT_KINDS:
+        raise PermitError(f"unknown kind {kind!r}: a permit is one of {', '.join(PERMIT_KINDS)}")
     if phase not in PERMIT_PHASES:
         raise PermitError(f"unknown phase {phase!r}: a permit names one of "
                           f"{', '.join(PERMIT_PHASES)}")
-    tasks = plan_tasks(root)
-    if task_id not in tasks:
-        raise PermitError(f"task id {task_id!r} does not exist in the approved plan "
-                          f"({PLAN_REL.as_posix()}): a permit may only answer a planned task "
-                          f"({len(tasks)} task(s) known)")
+    tasks: dict[str, list[str]] = {}
+    if kind == "bootstrap":
+        if role not in BOOTSTRAP_ROLES:
+            raise PermitError(f"a bootstrap permit is limited to the pre-plan read-only roles "
+                              f"({', '.join(sorted(BOOTSTRAP_ROLES))}): role {role!r} touches the "
+                              f"implementation, so it needs an approved-plan task and a plan "
+                              f"permit")
+        if task_id != BOOTSTRAP_TASK_ID:
+            raise PermitError(f"a bootstrap permit answers the TASK itself: --task-id must be "
+                              f"{BOOTSTRAP_TASK_ID!r} (plan task ids exist only once the plan is "
+                              f"approved), got {task_id!r}")
+        _parsed_task(root)
+    else:
+        tasks = plan_tasks(root)
+        if task_id not in tasks:
+            raise PermitError(f"task id {task_id!r} does not exist in the approved plan "
+                              f"({PLAN_REL.as_posix()}): a permit may only answer a planned task "
+                              f"({len(tasks)} task(s) known)")
     scopes_in = scopes or []
     normalized = [_normalize_scope(root, scope) for scope in scopes_in]
     duplicated = sorted({scope for scope in normalized if normalized.count(scope) > 1})
@@ -347,21 +512,23 @@ def add(root: str | pathlib.Path, permit_id: str, task_id: str, role: str, phase
         raise PermitError(f"role {role!r} changes files, so its permit needs at least one --scope "
                           f"(empty scope is allowed only for the read-only/business-test roles: "
                           f"{', '.join(sorted(READ_ONLY_ROLES))})")
-    declared = tasks[task_id]
-    if not declared:
-        raise PermitError(f"plan task {task_id!r} declares no files, so the scope of this permit "
-                          f"cannot be proven a subset of it: name the files in "
-                          f"{PLAN_REL.as_posix()} first")
-    outside = _outside_plan(normalized, declared)
-    if outside:
-        raise PermitError(f"scope {', '.join(outside)} is not declared by plan task {task_id!r} "
-                          f"({', '.join(declared)}): a permit may narrow the plan task's scope, "
-                          f"never widen it")
+    if kind == "plan":
+        declared = tasks[task_id]
+        if not declared:
+            raise PermitError(f"plan task {task_id!r} declares no files, so the scope of this "
+                              f"permit cannot be proven a subset of it: name the files in "
+                              f"{PLAN_REL.as_posix()} first")
+        outside = _outside_plan(normalized, declared)
+        if outside:
+            raise PermitError(f"scope {', '.join(outside)} is not declared by plan task {task_id!r}"
+                              f" ({', '.join(declared)}): a permit may narrow the plan task's "
+                              f"scope, never widen it")
     data = read_permits(root)
     if any(permit.get("permit_id") == permit_id for permit in data["permits"]):
         raise PermitError(f"permit id {permit_id!r} is already used: a permit id is unique")
     created, _ms = _now()
-    permit = {"permit_id": permit_id, "task_id": task_id, "role": role, "phase": phase,
+    permit = {"permit_id": permit_id, "kind": kind, "task_id": task_id, "role": role,
+              "phase": phase,
               "scope": normalized, "constraints": [str(text).strip() for text in constraints or []
                                                    if str(text).strip()],
               "created_at": created, "verdict": None, "evidence": "", "verdict_at": None,
@@ -559,13 +726,33 @@ def _usable_stamp(value: object) -> bool:
     return False
 
 
-def _verdict_order_problems(permit: dict, label: str, spawn: dict) -> list[str]:
+def _verdict_order_problems(permit: dict, label: str, spawn: dict, authorized: set[str]) -> list[str]:
     """The verdict stamp must be readable AND precede the spawn it permits.
 
     The stamp is a millisecond number this gate writes itself, so anything else — missing, a bool, a
     string, NaN, an infinity — makes the ORDER unprovable: that is an explicit violation, never a
     check silently skipped because an `isinstance(int)` test did not hold.
+
+    The ONE legitimate exception: a hitl owner may retroactively authorize a BOOTSTRAP delegation
+    that ran before the bootstrap-permit mechanism existed (or before the plan was approved). The
+    permit then carries `owner_authorized: true` and a non-empty evidence string — but that flag is
+    self-attested in the hand-editable permits file, so it is NOT the decision: `authorized` holds
+    the permit ids THIS run's checkpoint independently records (`owner_authorizations:` notes naming
+    `permit=<id>`), and only a permit named there is discharged. A flag without that record is an
+    explicit `unverified owner authorization` violation (the forged-flag case) and the order
+    violation stands. A plan-kind permit never qualifies: by the time a plan exists every verdict
+    can precede its spawn.
     """
+    claims_override = (permit.get("owner_authorized") is True
+                       and permit.get("kind") == "bootstrap"
+                       and bool(str(permit.get("evidence") or "").strip()))
+    if claims_override:
+        if str(permit.get("permit_id") or "") in authorized:
+            return []
+        return [f"unverified owner authorization: {label} claims owner_authorized, but this run's "
+                f"{PIPELINE_REL.as_posix()} records no `owner_authorizations` note naming "
+                f"`permit={permit.get('permit_id')}` — a flag set by hand in the editable permits "
+                f"file is not an owner decision, so the verdict order stands as a violation"]
     judged = permit.get("verdict_at_ms")
     if judged is None:
         return [f"unreadable verdict time: {label} carries no verdict_at_ms, so the order of the "
@@ -581,10 +768,16 @@ def _verdict_order_problems(permit: dict, label: str, spawn: dict) -> list[str]:
 
 
 def _spawn_problems(spawn: dict, by_agent: dict[str, list[dict]],
-                    tasks: dict[str, list[str]]) -> list[str]:
+                    tasks: dict[str, list[str]], authorized: set[str]) -> list[str]:
     """Why one wire spawn is not covered by a valid permit (empty = the delegation was permitted)."""
     owners = by_agent.get(spawn["agent_id"], [])
     if not owners:
+        if spawn["role"] == SUPERVISOR_ROLE:
+            # The supervisor watchdog is launched at run start under the run's OWN authority — it
+            # can never carry a verdict that precedes its own spawn (bootstrap circularity), so
+            # its spawns are exempt from the permit-less check. A supervisor spawn that IS bound
+            # to a permit falls through to the full audit below.
+            return []
         return [f"permit-less delegation: agent {spawn['agent_id']!r} (role {spawn['role']!r}) "
                 f"spawned at {spawn['wire']} with NO permit"]
     if len(owners) > 1:
@@ -601,13 +794,17 @@ def _spawn_problems(spawn: dict, by_agent: dict[str, list[dict]],
     if permit.get("role") != spawn["role"]:
         problems.append(f"role mismatch: {label} permits role {permit.get('role')!r}, but agent "
                         f"{spawn['agent_id']!r} is {spawn['role']!r} ({spawn['wire']})")
-    problems += _verdict_order_problems(permit, label, spawn)
+    problems += _verdict_order_problems(permit, label, spawn, authorized)
     problems += _plan_problems(permit, label, tasks)
     return problems
 
 
 def _plan_problems(permit: dict, label: str, tasks: dict[str, list[str]]) -> list[str]:
     """The permit must answer a planned task, and its scope must sit inside that task's files."""
+    if permit.get("kind", "plan") == "bootstrap":
+        # A pre-plan bootstrap permit was validated against the PARSED TASK at `add` time; the
+        # approved-plan task checks apply to implementation and later (plan) delegations only.
+        return []
     task_id = str(permit.get("task_id") or "")
     declared = tasks.get(task_id)
     if declared is None:
@@ -667,10 +864,24 @@ def audit(root: str | pathlib.Path, session: str = "auto", home: str | None = No
     tasks = plan_tasks(root)
 
     problems: list[str] = [f"malformed wire evidence: {entry}" for entry in malformed]
+    if path.is_file():
+        # The permits file must belong to THIS run before any spawn is evaluated: permits of
+        # another run never authorize this run's delegations (a reused agent id would otherwise
+        # inherit a stale allow).
+        current_run = pipeline_run_id(root)
+        if data["run_id"] != current_run:
+            problems.append(f"stale permits: {path} belongs to run {data['run_id']!r}, but the "
+                            f"current pipeline run is {current_run!r} — permits of another run "
+                            f"never authorize this run's delegations (archive or re-initialize "
+                            f"the file)")
+            return {"status": "failed", "repo": str(root), "session": str(session_dir),
+                    "permits": str(path), "run_id": data.get("run_id") or None, "events": events,
+                    "spawns": len(spawns), "permits_count": len(permits), "problems": problems}
+    authorized = authorized_permit_ids(root)
     by_agent, ownership = _ownership_problems(permits)
     problems += ownership
     for spawn in spawns:
-        problems += _spawn_problems(spawn, by_agent, tasks)
+        problems += _spawn_problems(spawn, by_agent, tasks, authorized)
     problems += _lifecycle_problems(permits, by_agent,
                                     {spawn["agent_id"] for spawn in spawns})
     return {"status": "failed" if problems else "ok", "repo": str(root),
@@ -698,7 +909,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repo", required=True)
     p.add_argument("--permit-id", required=True, dest="permit_id")
     p.add_argument("--task-id", required=True, dest="task_id",
-                   help="a task id of the approved plan (.code-factory/state/plan.md)")
+                   help="a task id of the approved plan (.code-factory/state/plan.md); with "
+                        "--kind bootstrap it must be 'bootstrap' (the permit answers the task)")
+    p.add_argument("--kind", default="plan", choices=PERMIT_KINDS,
+                   help="plan (default): validated against the approved plan; bootstrap: a "
+                        "pre-plan permit for analyzer/planner/supervisor, validated against the "
+                        "parsed task")
     p.add_argument("--role", required=True, help="a registered delegate role")
     p.add_argument("--phase", required=True, help="one of " + ", ".join(PERMIT_PHASES))
     p.add_argument("--scope", action="append", default=[],
@@ -743,7 +959,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 def _cmd_add(args: argparse.Namespace) -> int:
     _emit(add(args.repo, args.permit_id, args.task_id, args.role, args.phase, args.scope,
-              args.constraint))
+              args.constraint, args.kind))
     return 0
 
 

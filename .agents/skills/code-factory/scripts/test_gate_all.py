@@ -9,10 +9,16 @@ was invisible: the run report said what the agent chose to say. This aggregator 
 APPLIES to a phase, records each one and fails when a gate that should have run left no record. The
 test pins exactly that:
 
-  - the APPLICABILITY MATRIX: phase K runs the diff gate, the English-only scan, the run-id check and
-    the rulebook reconciler; phase Y adds the action audit and the manifest audit; the optional
-    permit/delegation audits are recorded `not present: skipped` with the reason (never a failure),
-    and the diff gate is skipped for a `review` task;
+  - the APPLICABILITY MATRIX: phase K runs the diff gate, the English-only scan, the run-id check,
+    the rulebook reconciler and the watchdog-deny gate; phase Y adds the action audit and the
+    manifest audit; the optional permit/delegation audits are recorded `not present: skipped` with
+    the reason (never a failure), the diff gate is skipped for a `review` task, and the manifest
+    audit is skipped for a report-only task type (C23: review/security_audit runs never initialize
+    a manifest);
+  - the watchdog-deny gate row: a recorded UNRESOLVED supervisor deny fails the phase, a resolved
+    one does not;
+  - `--out` is confined to the repository (M3): resolved through the nearest existing ancestor, an
+    absolute or traversing escape is an exit-2 usage error;
   - a gate that IS present and FAILS propagates (exit 1) and is named in the record;
   - a MISSING record (or a record missing the row of an applicable gate) is a failure, and a record
     naming a gate that does not apply is a failure too;
@@ -53,7 +59,8 @@ FACTORY_DOCS = ("AGENTS.md", ".agents/README.md", ".agents/agents/code-factory.m
                 ".agents/skills/code-factory/SKILL.md")
 FACTORY_DIRS = (".agents/agents/sub-agents", ".agents/skills/code-factory/references")
 GATE_NAMES = ("input-validation", "english-only", "run-id", "factory-rules", "action-audit",
-              "manifest-audit", "delegation-audit", "permit-audit")
+              "manifest-audit", "delegation-audit", "permit-audit", "watchdog-deny")
+WATCHDOG = pathlib.Path(__file__).with_name("supervisor_watchdog.py")
 
 
 def check(cond: bool, msg: str) -> None:
@@ -113,6 +120,11 @@ def deployed_repo(tmp: pathlib.Path, name: str = "repo", task_type: str = "imple
     (root / ".code-factory" / "state" / "pipeline.yaml").write_text(
         f"run_id: {RUN_ID}\ntask_type: {task_type}\nphase: w2\nstatus: in_progress\n",
         encoding="utf-8")
+    # A real run LAUNCHES its watchdog at run start, and the `watchdog-deny` row fails closed when
+    # no launch is recorded (review R1): the fixture therefore records the launch, exactly as a run
+    # must, so a phase K/Y fixture proves the supervised path instead of the missing one.
+    subprocess.run([sys.executable, str(WATCHDOG), "launch", "--repo", str(root)],
+                   capture_output=True)
     # A real run always has its APPROVED PLAN, and the permit audit answers plan tasks: the fixture
     # carries one (a factory without a plan cannot be permit-audited at all).
     (root / ".code-factory" / "state" / "plan.md").write_text(
@@ -169,7 +181,8 @@ def test_applicability(tmp: pathlib.Path) -> None:
     rows = rows_of(text)
     check(list(rows) == list(GATE_NAMES),
           f"every gate of the table must have exactly one row, in order: {list(rows)!r}")
-    for name in ("input-validation", "english-only", "run-id", "factory-rules", "permit-audit"):
+    for name in ("input-validation", "english-only", "run-id", "factory-rules", "permit-audit",
+                 "watchdog-deny"):
         check(rows[name][1] == "0", f"{name} must have run and passed in phase K: {rows[name]}")
     check(rows["input-validation"][2].startswith("applicable"),
           f"the diff gate applies to an implement run: {rows['input-validation']}")
@@ -204,7 +217,7 @@ def test_applicability(tmp: pathlib.Path) -> None:
     expect_clean_cli(res, 0, "phase Y")
     rows = rows_of(record_of(repo_y, "Y"))
     for name in ("input-validation", "english-only", "run-id", "factory-rules", "action-audit",
-                 "manifest-audit", "delegation-audit", "permit-audit"):
+                 "manifest-audit", "delegation-audit", "permit-audit", "watchdog-deny"):
         check(rows[name][1] == "0", f"{name} must have run and passed in phase Y: {rows[name]}")
     # The two W3 audits are REAL now: their scripts advertise `audit`, so the Y phase runs them.
     check(rows["delegation-audit"][2] == "applicable" and rows["permit-audit"][2] == "applicable",
@@ -227,6 +240,16 @@ def test_applicability(tmp: pathlib.Path) -> None:
     row = rows_of(record_of(review, "K"))["input-validation"]
     check(row[1] == "skipped" and "task_type review" in row[2],
           f"the diff gate does not apply to a review run: {row}")
+
+    # (C23) …and a review run is report-only: the manifest audit does not apply to its phase Y
+    # either (those flows never initialize a manifest), and the phase still passes.
+    res = run("--repo", str(review), "--phase", "Y", env=env_for(home_r))
+    expect_clean_cli(res, 0, "phase Y of a review run")
+    row = rows_of(record_of(review, "Y"))["manifest-audit"]
+    check(row[1] == "skipped" and "report-only" in row[2],
+          f"the manifest audit is change-producing only: {row}")
+    check(rows_of(record_of(review, "Y"))["action-audit"][1] == "0",
+          "the action audit still applies to a review run")
 
 
 # --------------------------------------------------------------------------------------------
@@ -267,6 +290,69 @@ def test_failure_propagates(tmp: pathlib.Path) -> None:
     expect_clean_cli(res, 1, "phase K with a Cyrillic shipped file")
     check(rows_of(record_of(english, "K"))["english-only"][1] == "1",
           "the English-only gate must be recorded as failed")
+
+
+# --------------------------------------------------------------------------------------------
+# M3: --out is confined to the repository (resolved through the nearest existing ancestor)
+# --------------------------------------------------------------------------------------------
+
+def test_out_confinement(tmp: pathlib.Path) -> None:
+    root = (tmp / "confined").resolve()
+    root.mkdir()
+    base = root.resolve()
+    # Legitimate paths: a relative one, a nested not-yet-existing one, an absolute one inside.
+    for out in ("gate-K.md", "logs/deep/gate-K.md", str(base / "logs" / "gate-K.md")):
+        resolved = gate_all.record_path(root, "K", out)
+        check(resolved.is_relative_to(base),
+              f"--out {out!r} must stay inside the repository: {resolved}")
+    check(gate_all.record_path(root, "K", None) == root / ".code-factory" / "logs" / "gate-K.md",
+          "the default record path is unchanged")
+    # Escapes: a relative traversal, an absolute path outside, a '..' component chain.
+    for out in ("../outside.md", str(tmp / "outside.md"), "logs/../../outside.md"):
+        try:
+            gate_all.record_path(root, "K", out)
+        except gate_all.GateAllError as exc:
+            check("outside the repository" in str(exc) or "may not contain" in str(exc),
+                  f"--out {out!r}: the refusal must state the confinement: {exc}")
+        else:
+            check(False, f"--out {out!r} must be refused, got "
+                         f"{gate_all.record_path(root, 'K', out)}")
+
+
+# --------------------------------------------------------------------------------------------
+# The watchdog-deny gate row: a recorded unresolved supervisor deny fails the phase
+# --------------------------------------------------------------------------------------------
+
+def test_watchdog_deny_gate(tmp: pathlib.Path) -> None:
+    home = tmp / "home-w"
+    home.mkdir()
+    root = deployed_repo(tmp, "watchdog", home=home)
+
+    res = run("--repo", str(root), "--phase", "K", env=env_for(home))
+    expect_clean_cli(res, 0, "phase K without a watchdog deny")
+    check(rows_of(record_of(root, "K"))["watchdog-deny"][1] == "0",
+          "the watchdog-deny row passes when no deny is recorded")
+
+    denied = subprocess.run([sys.executable, str(WATCHDOG), "deny", "--repo", str(root),
+                             "--rule", "retry-budgets", "--role", "coder",
+                             "--detail", "coder retried past its budget"],
+                            capture_output=True, text=True)
+    check(denied.returncode == 0, f"the deny fixture must record: {denied.stderr!r}")
+    res = run("--repo", str(root), "--phase", "K", env=env_for(home))
+    expect_clean_cli(res, 1, "phase K with an unresolved watchdog deny")
+    row = rows_of(record_of(root, "K"))["watchdog-deny"]
+    check(row[1] == "1", f"the blocking deny must fail the row: {row}")
+    check("watchdog-deny" in res.stdout, f"the failure must name the gate: {res.stdout!r}")
+
+    resolved = subprocess.run([sys.executable, str(WATCHDOG), "resolve", "--repo", str(root),
+                               "--rule", "retry-budgets", "--role", "coder",
+                               "--evidence", "the counter was corrected and re-audited"],
+                              capture_output=True, text=True)
+    check(resolved.returncode == 0, f"the resolve fixture must record: {resolved.stderr!r}")
+    res = run("--repo", str(root), "--phase", "K", env=env_for(home))
+    expect_clean_cli(res, 0, "phase K after the deny was resolved with evidence")
+    check(rows_of(record_of(root, "K"))["watchdog-deny"][1] == "0",
+          "a resolved deny no longer blocks the phase")
 
 
 # --------------------------------------------------------------------------------------------
@@ -357,6 +443,12 @@ def test_cli_contract(tmp: pathlib.Path) -> None:
                      "a diff range of refs that do not resolve")
     check("Traceback" not in run("--repo", str(root), "--phase", "K").stderr,
           "a repository without a checkpoint must not raise a traceback")
+    # (M3) An --out that escapes the repository is a usage error, never a write outside --repo.
+    expect_clean_cli(run("--repo", str(root), "--phase", "K", "--out", "../gate-K.md"), 2,
+                     "an --out that traverses out of the repository")
+    expect_clean_cli(run("--repo", str(root), "--phase", "K", "--out", str(tmp / "gate-K.md")),
+                     2, "an absolute --out outside the repository")
+    check(not (tmp / "gate-K.md").exists(), "a refused --out must not write anything")
     legacy = run("--help", env=LEGACY_ENV)
     check(legacy.returncode == 0 and "Traceback" not in legacy.stderr,
           f"--help must survive a legacy console code page: {legacy.stderr!r}")
@@ -367,17 +459,23 @@ def main() -> int:
         tmp = pathlib.Path(raw)
         test_applicability(tmp)
         test_failure_propagates(tmp)
+        test_out_confinement(tmp)
+        test_watchdog_deny_gate(tmp)
         test_record_verification(tmp)
         test_gate_availability()
         test_cli_contract(tmp)
 
     print("PASS - gate_all.py runs every deterministic gate that applies to a phase: phase K runs "
           "the input-validation diff gate (implement/refactor only), the English-only scan, the "
-          "run-id check and the rulebook reconciler; phase Y adds the action audit and the manifest "
-          "audit; an optional gate that is not shipped is recorded `not present: skipped` with its "
+          "run-id check, the rulebook reconciler and the watchdog-deny gate (an unresolved "
+          "supervisor deny fails the phase, a resolved one does not); phase Y adds the action "
+          "audit and the manifest audit — the manifest audit being change-producing only, skipped "
+          "with the reason for a report-only review/security_audit run; an optional gate that is "
+          "not shipped is recorded `not present: skipped` with its "
           "reason while a present gate that fails propagates exit 1; every gate gets one row in the "
           "deterministic, run-id-bearing record, and a missing record (or a missing/failing/"
-          "inapplicable row) is a failure; an unknown phase and a malformed diff range are exit-2 "
+          "inapplicable row) is a failure; --out is confined to the repository (resolved through "
+          "its nearest existing ancestor); an unknown phase and a malformed diff range are exit-2 "
           "usage errors without a traceback.")
     return 0
 

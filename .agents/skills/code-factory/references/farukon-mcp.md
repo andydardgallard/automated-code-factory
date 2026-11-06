@@ -30,9 +30,14 @@ The decision is deterministic and carries a REASON (never a model call):
 - The emitted reason states all of it, so a `not_applicable` decision is auditable without reading
   the code: the identity terms matched, the operation terms bound to the platform, and the operation
   terms DISCARDED because they bind to another subject, plus the score and the host signals.
-- Task-file METADATA is not task scope: `models:`, `repo_path:`, `commit_exclude:`, `mode:` and
-  `task_type:` are stripped before classification, so a task whose only mention of the platform is
-  the `models.farukon_expert` key (a MODEL pin) never activates the specialist.
+- Task-file METADATA is not task scope: a file that PARSES as a task is classified from its
+  BUSINESS-SCOPE fields only — `title`, `description`, `user_story`, the acceptance-criterion
+  texts and the business tests' `scenario`/`expected_results`. YAML comments, `models:`,
+  `repo_path:`, `commit_exclude:`, `mode:`, `task_type:`, a criterion's `verify` command and a
+  business test's config path are wiring and never reach the classifier, so a task whose only
+  mention of the platform is the `models.farukon_expert` key (a MODEL pin) — or an instructional
+  comment of the shipped template — never activates the specialist. A file that does not parse as
+  a task is classified verbatim, with only the metadata keys stripped.
 - An explicit exclusion phrase in the task text (`no mcp`, `without farukon`, `out of scope`) always
   wins: deactivating by mistake costs a missed specialist run, activating by mistake puts a
   cargo/MCP session on unrelated work — the conservative direction is deliberate.
@@ -61,7 +66,9 @@ The decision is deterministic and carries a REASON (never a model call):
   target, an unwritable path — is the documented exit-1 error, never a traceback and never a partial
   file.
 - `validate-config --path <config>` checks a managed `farukon` entry against the reviewed invariants
-  (`command`/`args` exactly the managed shape, `cwd` ABSOLUTE and an EXISTING directory) and reports
+  (`command`/`args` exactly the managed shape, `cwd` ABSOLUTE and an EXISTING directory, and the
+  entry carrying EXACTLY the managed keys `command`, `args` and `cwd` — any extra key such as
+  `env`, a credential or a launch option is an unreviewed launch setting and a violation) and reports
   EVERY problem, not just the first. Secrets are never echoed back: every human and `--json`
   diagnostic names the offending KEY and the managed shape, never the value an entry supplies (an MCP
   entry may carry a credential in `command`, `args` or another key), and a merge conflict reports the

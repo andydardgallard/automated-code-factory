@@ -21,8 +21,10 @@ THE CONTRACT
 
   `init --repo <root>`      create the manifest from the run's checkpoint (`run_id` is read from
                             `.code-factory/state/pipeline.yaml` and format-checked). An existing
-                            manifest WITH entries is never overwritten (exit 1); an empty skeleton
-                            is reusable, so a restarted run may re-init it.
+                            manifest OF THIS RUN with entries is never overwritten (exit 1); a
+                            STALE one (a finished run's, so its run_id differs) is archived first
+                            as `manifest.<run_id>.json` next to it and init proceeds; an empty
+                            skeleton is reusable, so a restarted run may re-init it.
   `require --repo <root>`   the PRE-EDIT gate the flow calls before it touches a source file:
                             exit 1 with an actionable message when the manifest is absent.
   `add --repo <root> --changed <path>` / `--created <path>`
@@ -264,19 +266,44 @@ def require(root: pathlib.Path) -> dict:
             "manifest": str(root / MANIFEST_REL)}
 
 
+def _archive_stale(path: pathlib.Path, stale_run_id: str) -> pathlib.Path:
+    """Move a finished run's manifest aside as `manifest.<run_id>.json`, atomically and WITHOUT
+    ever overwriting an existing archive: the change set of a completed run is evidence, and
+    losing it silently is worse than a red gate."""
+    suffix = stale_run_id if RUN_ID_RE.match(stale_run_id) else "unknown"
+    archive = path.with_name(f"{path.stem}.{suffix}{path.suffix}")
+    if archive.exists():
+        raise Blocked(f"{path} is a stale manifest of run {stale_run_id!r}, but its archive "
+                      f"{archive} already exists: move the archive aside by hand — the change set "
+                      f"of a finished run is evidence and is never overwritten")
+    try:
+        os.replace(path, archive)
+    except OSError as exc:
+        raise ManifestError(f"cannot archive the stale manifest {path} as {archive}: {exc}") from exc
+    return archive
+
+
 def init(root: pathlib.Path) -> dict:
-    """Create the manifest; an existing one with entries is never overwritten."""
+    """Create the manifest; an existing one OF THIS RUN with entries is never overwritten, while a
+    stale one (a finished run's, with a different run_id) is archived as `manifest.<run_id>.json`
+    first, so a run that follows a completed run is not blocked by its leftover manifest."""
     root = _checked_repo(root)
     run_id = pipeline_run_id(root)
     path = root / MANIFEST_REL
     if path.is_file():
         existing = read_manifest(root)
         entries = len(_entries(existing, CHANGED)) + len(_entries(existing, CREATED))
-        if entries:
+        stale_run_id = str(existing.get("run_id", ""))
+        if entries and stale_run_id == run_id:
             raise Blocked(f"{path} already lists {entries} file(s): a manifest is created ONCE per "
                           f"run — a second init would forget the change set the run already "
                           f"registered")
-        if existing.get("run_id") == run_id:
+        if entries:
+            archive = _archive_stale(path, stale_run_id)
+            _write_manifest(root, _empty_manifest(run_id))
+            return {"status": "created", "run_id": run_id, "manifest": str(path),
+                    "archived": str(archive), "changed": 0, "created": 0}
+        if stale_run_id == run_id:
             return {"status": "unchanged", "run_id": run_id, "manifest": str(path),
                     "changed": 0, "created": 0}
         _write_manifest(root, _empty_manifest(run_id))

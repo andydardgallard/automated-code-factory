@@ -20,9 +20,12 @@ and report structured results. Read
 
 If the main agent provided past results or the regression baseline from `memory/change-log.md`
 / `memory/summary.md`, read them first so you know what "no regression" means for this project
-and do not re-run checks that are known to be unchanged. That memory belongs to the task's TARGET
-project (the one named by `repo_path`), not to the factory — use the entries whose `project:`
-matches it (entries without `project:` are legacy).
+and which failures are long-standing. That memory INTERPRETS results, it never decides what to
+skip: the canonical FULL regression suite runs after EVERY change, unconditionally — the memory
+cannot see the effects of the change you are testing now, so "looks unchanged" is not a reason to
+omit a check. That memory belongs to the task's TARGET project (the one named by `repo_path`), not
+to the factory — use the entries whose `project:` matches it (entries without `project:` are
+legacy).
 
 <!-- factory-rule: english-only begin -->
 **English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and HISTORY is never rewritten — `CHANGELOG.md` and memory records written before this rule are frozen by `memory/.english-freeze` (one record heading per line) and are never edited; every NEW memory record is gated by `scripts/check_english_only.py`, whose memory pass runs by default over v2 records that are not frozen (`--no-memory` is the one documented escape).
@@ -67,8 +70,9 @@ re-stamp this evidence after any later change; when cargo, the farukon MCP serve
 missing, the affected criteria stay UNVERIFIED — never MET — and no artifact is fabricated.
 
 **The adversarial business tester is DIAGNOSTIC, never a substitute for your acceptance.** On
-`implement`, `review` and `refactor` runs node S also runs `factory-business-tester`, in parallel with
-you, on the same code state. Its report (`.code-factory/logs/business-adversarial/<run_id>.json`)
+`implement` and `refactor` runs node S also runs `factory-business-tester`, in parallel with you, on
+the same code state; a `review` run probes the delivered product at node BTR0 before the review is
+merged and judged, and a `security_audit` run never probes at all. Its report (`.code-factory/logs/business-adversarial/<run_id>.json`)
 lists what a careless user broke; it is DIAGNOSTIC input for the main agent and it never marks a
 criterion MET. You execute the user's business scenario yourself AFTER the last code change and OWN
 the acceptance evidence; a breakage it reports never replaces and is never replaced by your

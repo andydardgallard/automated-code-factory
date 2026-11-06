@@ -14,9 +14,12 @@ TODAY by construction, so only its FORMAT `YYYYMMDD-` is pinned (a pinned date w
 overnight), and the ephemeral runtime task file `.code-factory/state/task.yaml` is never read
 (its bytes change with every task, so pinning them would rot at the next run) — and
 (c) `check` scans exactly the artifacts a run carries (`state/pipeline.yaml`, `state/acceptance.md`,
-`logs/*.md`, `report.md`): an existing artifact without a `run_id: <id>` / `run_id=<id>` line is
-listed and exits 1, a fully marked (or empty / absent) directory exits 0, and any id — not only the
-current one — counts as marked, and (d) the OPTIONAL `--repo`/`--root` anchor (before or after the
+`logs/*.md`, `report.md`): an existing artifact without a FULL marker line carrying a syntactically
+valid id (`YYYYMMDD`-`<8 lowercase hex>`) is listed and exits 1 — a placeholder (`run_id: <id>`), a
+non-id value (`run_id=nonsense`), a malformed id or prose around the marker is NOT attribution,
+while the bullet form (`- run_id: <id>`) the calibration report writes stays valid — a fully marked
+(or empty / absent) directory exits 0, and any VALID id — not only the current one — counts as
+marked, and (d) the OPTIONAL `--repo`/`--root` anchor (before or after the
 subcommand) resolves a RELATIVE `--task` / `--dir` against the run's resolved repo_path while an
 absolute path stays as it is — without the flag the caller's cwd remains the base (fail-safe, the
 behavior every earlier run relied on).
@@ -177,6 +180,36 @@ def main() -> int:
                "an older run id and the run_id=<id> form must count as marked")
         expect(run_id != "20200101-deadbeef", "the fixture ids must differ for this check to mean "
                                               "anything")
+
+        # 5b. The marker must be a FULL line carrying a syntactically valid id: a placeholder, a
+        #     non-id value, a malformed id (date/hex length, non-hex digits, the non-canonical
+        #     uppercase form) or prose around the marker is NOT attribution — otherwise
+        #     documentation mentioning `run_id:` would mark an artifact without a real run id.
+        bad_cf = tmp / "bad" / ".code-factory"
+        scaffold(bad_cf, run_id)
+        target = bad_cf / "state" / "acceptance.md"
+        for label, line in (
+            ("a placeholder value", "run_id: <id>"),
+            ("a non-id value", "run_id=nonsense"),
+            ("a short date", "run_id: 2020010-deadbeef"),
+            ("a short digest", "run_id: 20200101-deadbee"),
+            ("a non-hex digest", "run_id: 20200101-zzzzzzzz"),
+            ("an overlong digest", "run_id: 20200101-deadbeef0"),
+            ("an uppercase digest", "run_id: 20200101-DEADBEEF"),
+            ("trailing prose", "run_id: 20200101-deadbeef (synthetic)"),
+            ("leading prose", "the run_id: 20200101-deadbeef of the run"),
+        ):
+            target.write_text(f"{line}\n", encoding="utf-8")
+            res = run("check", "--dir", str(bad_cf))
+            expect(res.returncode == 1 and "state/acceptance.md" in res.stdout + res.stderr,
+                   f"{label} must not attribute the artifact: {res.stdout + res.stderr!r}")
+        for label, line in (
+            ("bullet form the calibration report writes", "- run_id: 20200101-deadbeef"),
+            ("indented marker line", "  run_id=20200101-deadbeef"),
+        ):
+            target.write_text(f"{line}\n# Acceptance\n", encoding="utf-8")
+            expect(run("check", "--dir", str(bad_cf)).returncode == 0,
+                   f"the {label} must attribute the artifact")
 
         # 6. An empty or absent directory has nothing to check (exit 0), and artifacts outside the
         #    checked set (manifest, plan, non-markdown logs) are ignored.

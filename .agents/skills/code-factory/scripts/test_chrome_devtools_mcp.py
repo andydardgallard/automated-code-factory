@@ -6,7 +6,9 @@ tokens, no network, no real Chrome launch).
 Covers, with tempfile fixtures:
   - the applicability decision (applicable for Web GUI implement/fix/change and green-field GUI;
     not_applicable for backend-only text, CLI/library work and a backend task inside a repository
-    that DOES contain a Web frontend) — every decision carries a non-empty reason,
+    that DOES contain a Web frontend; a task FILE classifies only its normalized business-scope
+    fields — YAML comments and wiring metadata never reach the classifier) — every decision
+    carries a non-empty reason,
   - existing E2E stack discovery for Playwright Test, Cypress, Selenium and WebdriverIO fixtures
     plus the empty repository,
   - browser-matrix derivation (explicit Firefox+WebKit -> matrix; unrelated text -> chrome-only
@@ -72,6 +74,18 @@ GUI_TASKS = (
     "Fix the search form on the products page: submitting it does not update the results panel.",
     "Change the submit button colour and the layout of the checkout page.",
 )
+# A task whose YAML COMMENTS name the browser path while its business scope is backend work (the
+# shipped template's instructional comments have exactly this shape): classified raw, the comments
+# alone activate the browser tooling.
+COMMENTED_GUI_TASK = """\
+# Implement the login form on the web UI page and check it in the browser.
+title: extend the billing backend
+repo_path: ./repo
+description: |
+  Add a REST endpoint for invoices, a SQL migration for the new schema and a queue worker.
+# models:
+#   gui_expert: deepseek-flash   # Web GUI specialist
+"""
 
 
 def check(cond: bool, msg: str) -> None:
@@ -217,6 +231,53 @@ def test_applicability(tmp: pathlib.Path) -> None:
     expect_clean_cli(cli, 0, "decide --task-file")
     check(cli.stdout.splitlines()[0] == cd.NOT_APPLICABLE,
           f"--task-file must be accepted and classified: {cli.stdout!r}")
+
+
+def test_business_scope_classification(tmp: pathlib.Path) -> None:
+    """A task FILE contributes only its business-scope fields — never its comments or metadata."""
+    # The raw file DOES activate the browser path — that is the pinned defect: the classifier must
+    # never see the comments or the wiring metadata of a task file.
+    raw = cd.decide_applicability(COMMENTED_GUI_TASK)
+    check(raw["decision"] == cd.APPLICABLE,
+          f"the fixture's comments must activate the raw classifier (the pinned defect): {raw}")
+
+    task_file = written(tmp / "commented-task.yaml", COMMENTED_GUI_TASK)
+    cli = run("decide", "--task-file", str(task_file), "--json")
+    expect_clean_cli(cli, 0, "decide --task-file with activating comments")
+    payload = json.loads(cli.stdout)
+    check(payload["decision"] == cd.NOT_APPLICABLE,
+          f"comments and metadata must never reach the classifier: {payload}")
+    check(payload["evidence"]["gui_terms"] == [] and payload["evidence"]["gui_score"] == 0,
+          f"no GUI term may survive the business-scope extraction: {payload['evidence']}")
+
+    # Positive control: GUI scope in the BUSINESS fields still activates, comments or not.
+    gui_task = written(tmp / "gui-task.yaml",
+                       "# models:\n#   gui_expert: deepseek-flash\n"
+                       "title: login page\nrepo_path: ./repo\ndescription: |\n  "
+                       + GUI_TASKS[0] + "\n")
+    cli = run("decide", "--task-file", str(gui_task), "--json")
+    expect_clean_cli(cli, 0, "decide --task-file with business-scope GUI work")
+    payload = json.loads(cli.stdout)
+    check(payload["decision"] == cd.APPLICABLE and payload["evidence"]["gui_terms"],
+          f"GUI scope in the business fields must stay applicable: {payload}")
+
+    # The extraction itself: business wording only — a criterion's `verify` command, a business
+    # test's `config` path, `models` and `repo_path` never classify.
+    scope = cd.business_scope({"title": "t", "repo_path": "./repo", "user_story": "story",
+                               "acceptance_criteria": [{"criterion": "c",
+                                                        "verify": "open the browser"}],
+                               "business_tests": [{"scenario": "s", "config": "x.toml",
+                                                   "expected_results": "e"}],
+                               "models": {"gui_expert": "m"}})
+    check(scope == "t\nstory\nc\ns\ne",
+          f"verify/config/models/repo_path must stay out of the scope: {scope!r}")
+
+    # Backward compatibility: a file that is NOT a parseable task is classified verbatim.
+    plain = written(tmp / "plain.txt", GUI_TASKS[0] + "\n")
+    cli = run("decide", "--task-file", str(plain), "--json")
+    expect_clean_cli(cli, 0, "decide --task-file with plain text")
+    check(json.loads(cli.stdout)["decision"] == cd.APPLICABLE,
+          f"plain text stays classified verbatim: {cli.stdout!r}")
 
 
 # --------------------------------------------------------------------- E2E stack discovery
@@ -1059,6 +1120,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         tmp = pathlib.Path(td)
         test_applicability(tmp)
+        test_business_scope_classification(tmp)
         test_e2e_discovery(tmp)
         test_browser_matrix()
         test_merge_config(tmp)

@@ -550,14 +550,30 @@ def case_9_helpers(root: pathlib.Path) -> None:
            "a provider-qualified name is reduced to its model part")
     expect(ma.alias_of({"model": None, "modelAlias": ""}) == "", "an empty event has no alias")
 
-    # canonical: the comparison key folds the family word off a version token, and ONLY that.
-    expect(ma.canonical("kimi-k3") == ma.canonical("k3") == ma.canonical("kimi-code/k3") == "k3",
+    # canonical: the comparison key is `<vendor>/<version>` — only documented spellings of the
+    # SAME vendor normalize together, the vendor itself is never folded away.
+    expect(ma.canonical("kimi-k3") == ma.canonical("k3") == ma.canonical("kimi-code/k3")
+           == "kimi/k3",
            "the three spellings of the same model must compare equal")
+    expect(ma.canonical("moonshot-k3") == "kimi/k3",
+           "moonshot is a documented spelling of the Kimi vendor")
     expect(ma.canonical("kimi-k2") != ma.canonical("kimi-k3"),
            "two DIFFERENT versions must never compare equal")
     expect(ma.canonical("deepseek-flash") == "deepseek-flash", "a named model is not folded")
-    expect(ma.canonical("deepseek-v4-pro") == "v4-pro",
-           "a version token after the family word is folded")
+    expect(ma.canonical("deepseek-v4-pro") == "deepseek/v4-pro",
+           "a version token keeps its vendor in the key")
+    # (C28, review 20261104-b5b601f6, critical 28) a cross-vendor same-version pair must NEVER
+    # compare equal: `kimi-k3` and `deepseek-k3` are different models, and a substitution of one
+    # for the other is a mismatch, not a match.
+    expect(ma.canonical("kimi-k3") != ma.canonical("deepseek-k3"),
+           f"cross-vendor same-version aliases must differ: {ma.canonical('kimi-k3')!r} vs "
+           f"{ma.canonical('deepseek-k3')!r}")
+    cross = ma.compare_claims({"coder": "kimi-k3"},
+                              {"coder": {"models_served": {"deepseek-k3": 2}}})
+    expect(cross[0] == {"coder": "mismatch"},
+           f"a cross-vendor same-version substitution must be a mismatch: {cross[1]!r}")
+    expect(ma.verdict_of(cross[0]) == "FAIL",
+           "a cross-vendor substitution must FAIL the run, never pass the gate")
 
     # role_from_profile
     expect(ma.role_from_profile("factory-analyzer") == "analyzer", "prefix stripped")
@@ -1000,6 +1016,92 @@ def case_15_contract_reader(root: pathlib.Path) -> None:
         raise AssertionError("an unknown task_type must raise AttributionError (exit 2)")
 
 
+def case_16_malformed_wire_records_never_pass(root: pathlib.Path) -> None:
+    """Regression (review 20261104-b5b601f6, critical 29; reworked for review R1): a skipped
+    record is never a free PASS.
+
+    Only ONE skip is explained: a genuinely TRUNCATED, not newline-terminated final JSON record of
+    a wire being appended to right now. An unparsable record anywhere else, an unparsable final
+    line that is newline-terminated or that does not even start like a JSON object, or a valid JSON
+    value that is not an event object, is a malformed/foreign record whose content could hide
+    another served model or a substitution — so any such record must make the attribution DEGRADED
+    (exit 3), never PASS.
+    """
+    good = json.dumps(llm("main", "deepseek-flash", at=T0))
+    sid = "session_16161616-1616-4161-8161-161616161616"
+
+    def session_with(main_wire_body: str, name: str) -> tuple[pathlib.Path, pathlib.Path]:
+        home = root / f"home16-{name}"
+        repo = root / f"repo16-{name}"
+        repo.mkdir(parents=True, exist_ok=True)
+        session_dir = build_session(home, repo, sid, {"main": []})
+        write(session_dir / "agents" / "main", "wire.jsonl", main_wire_body)
+        return home, repo
+
+    spec = write(root, "pipeline-16.yaml", pipeline(("main", "deepseek-flash")))
+
+    # 1) The tolerated case: a half-written FINAL line — PASS, counted as skipped_lines.
+    home, repo = session_with(good + '\n{"type": "llm.request", "model": "ki', "partial")
+    analysis = ma.analyse_session(home / "sessions" / f"wd_fixture_{sid}" / sid)
+    expect(analysis["skipped_lines"] == 1 and analysis["malformed_lines"] == 0,
+           f"a partial final line is the tolerated skip: {analysis!r}")
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(spec), name="16-partial.json")
+    expect(res.returncode == 0,
+           f"a partial final line must still PASS: {res.returncode} {text!r} {err(res)!r}")
+    expect(artifact["session"]["malformed_lines"] == 0,
+           f"no malformed record here: {artifact['session']!r}")
+
+    # 2) A broken record MID-wire: DEGRADED, never PASS.
+    home, repo = session_with(good + '\n{"type": "llm.request", "model":\n' + good + "\n",
+                              "middle")
+    analysis = ma.analyse_session(home / "sessions" / f"wd_fixture_{sid}" / sid)
+    expect(analysis["malformed_lines"] == 1 and analysis["skipped_lines"] == 0,
+           f"a broken mid-wire record is unexplained: {analysis!r}")
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(spec), name="16-middle.json")
+    expect(res.returncode == 3,
+           f"a malformed mid-wire record must be DEGRADED (exit 3), never PASS: "
+           f"{res.returncode} {text!r}")
+    expect(artifact["verdict"] == "DEGRADED" and artifact["attribution_degraded"] is True,
+           f"the artifact must admit it: {artifact.get('verdict')!r}")
+    expect(artifact["session"]["malformed_lines"] == 1,
+           f"the artifact must count it: {artifact['session']!r}")
+    expect("malformed" in (artifact.get("degraded_reason") or ""),
+           f"the reason must name the malformed record: {artifact.get('degraded_reason')!r}")
+    expect(text.strip().splitlines()[-1].startswith("DEGRADED - "),
+           f"the final line must not read PASS: {text!r}")
+
+    # 3) Foreign content — valid JSON, not an event object — is malformed even as the LAST line.
+    home, repo = session_with(good + '\n["not", "an", "event"]\n', "foreign")
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(spec), name="16-foreign.json")
+    expect(res.returncode == 3,
+           f"a foreign JSON record must be DEGRADED (exit 3), never PASS: "
+           f"{res.returncode} {text!r}")
+    expect(artifact["session"]["malformed_lines"] == 1,
+           f"foreign content is unexplained even at the tail: {artifact['session']!r}")
+
+    # 4) REGRESSION (review R1, critical 29): an unparsable FINAL line is tolerated ONLY when it is
+    #    a genuinely truncated, not newline-terminated record. Arbitrary final garbage — with or
+    #    without a trailing newline — is unparsed evidence and must be DEGRADED, never PASS.
+    for label, tail in (("garbage-terminated", "\n<not json at all>\n"),
+                        ("garbage-unterminated", "\n<not json at all>"),
+                        ("closed-object-garbage", '\n{"type": "llm.request"} trailing'),
+                        ("truncated-but-terminated", '\n{"type": "llm.request", "model": "ki\n')):
+        home, repo = session_with(good + tail, label)
+        analysis = ma.analyse_session(home / "sessions" / f"wd_fixture_{sid}" / sid)
+        expect(analysis["malformed_lines"] == 1 and analysis["skipped_lines"] == 0,
+               f"an unparsable final line ({label}) is malformed, never a tolerated partial: "
+               f"{analysis!r}")
+        res, artifact, text = attr(root, home, repo, "--pipeline", str(spec),
+                                   name=f"16-{label}.json")
+        expect(res.returncode == 3,
+               f"an unparsable final line ({label}) must be DEGRADED (exit 3), never PASS: "
+               f"{res.returncode} {text!r}")
+        expect(artifact["verdict"] == "DEGRADED" and artifact["attribution_degraded"] is True,
+               f"the artifact must admit it ({label}): {artifact.get('verdict')!r}")
+        expect(text.strip().splitlines()[-1].startswith("DEGRADED - "),
+               f"the final line must not read PASS ({label}): {text!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -1018,6 +1120,7 @@ def main() -> int:
         case_13_mixed_model_service_is_a_mismatch(root)
         case_14_strict_attribution(root)
         case_15_contract_reader(root)
+        case_16_malformed_wire_records_never_pass(root)
 
     print("PASS - model_attribution.py confirms every models_used claim against the CLI's own "
           "session wire: roles come from state.json (or subagent.spawned), the wire name is "

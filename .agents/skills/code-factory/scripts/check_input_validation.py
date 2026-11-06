@@ -26,12 +26,16 @@ Detection (v1 scope):
 
 A detected input is VALIDATED when the same file's added lines — the declaring lines themselves are
 excluded, so a `max_*` field or a `--max-retries` flag cannot validate itself — carry its name AND
-one validation construct: a comparison OPERATOR (`<`, `<=`, `>`, `>=`; a `->` return arrow or a
-`=>` match arm is not a comparison), a zero comparison (`== 0`, `!= 0`), or one of `clamp`,
-`validate`, `validator`, `check`, `assert`, `NonZero`, `checked_`, `try_from`, `range`, `min`,
-`max`. An argparse `choices=` is the one exception to the exclusion: it is declarative validation
-written on the argument it constrains. A `NonZero*` FIELD TYPE is itself the check and validates the
-field without any extra line. Anything else is a `missing-validation` finding (severity major).
+one validation SHAPE: a comparison OPERATOR (`<`, `<=`, `>`, `>=`; a `->` return arrow or a
+`=>` match arm is not a comparison), a zero comparison (`== 0`, `!= 0`), a validation CALL
+(`clamp(`, `validate(`, `check(`, `.max(`, `NonZeroU32::new(`, `checked_add(`, `try_from(`, ...) or
+an `assert` statement. String and char literals are ignored, so a keyword that only OCCURS in the
+line — `print("max", args.max_retries)`, a log message, a dict key — is NOT evidence, and neither
+is a bare assignment such as `max_retries = args.max_retries` or a helper name merely containing
+max/check/range. An argparse `choices=` is the one exception to the exclusion: it is declarative
+validation written on the argument it constrains. A `NonZero*` FIELD TYPE is itself the check and
+validates the field without any extra line. Anything else is a `missing-validation` finding
+(severity major).
 
 Purpose-blind check: when a NUMERIC input's ONLY validation is a rejection of zero (`> 0`,
 `>= 1`, `== 0`, `NonZero`, `min=1`) while the same diff PROVABLY defaults that input to zero
@@ -83,10 +87,23 @@ COMPARISON = re.compile(r"(?<![-=<>])(?:>=|<=|>(?![>=])|<(?![<=]))")
 # A comparison against zero is the purpose-fitted rejection `if x == 0 { return Err(...) }` — the
 # shape the golden purpose-fitted case uses, which a bare operator test cannot see.
 ZERO_EQUALITY = re.compile(r"[=!]=\s*0(?:\.0)?(?![\w.])")
-# A validation keyword, matched from a word boundary so `unchecked_` is not `checked_`.
-VALIDATION_KEYWORD = re.compile(
-    r"(?:^|[^\w])(?:clamp|validate|validator|check|assert|nonzero|checked_|try_from|range|min|max)",
-    re.IGNORECASE)
+# A validation CALL: the keyword must be USED as a call (`clamp(`, `max(`, `.validate(`, ...), or
+# be one of the two prefix families that are calls by construction — Rust's checked arithmetic
+# (`checked_add(`) and the `NonZero<Ux/Ix>` constructors (`NonZeroU32::new(`). A keyword that merely
+# OCCURS in the line — a string literal (`print("max", args.max_retries)`), a log message, a dict
+# key — is not a check: the token alone never validates anything.
+VALIDATION_CALL = re.compile(
+    r"(?:^|[^\w])(?:clamp|validate|validator|check|ensure|nonzero\w*|checked_\w+|try_from|range|min"
+    r"|max)\s*\(", re.IGNORECASE)
+# The `NonZero<Ux/Ix>` type constructors are associated calls: `NonZeroU32::new(`, `NonZero::new(`.
+NONZERO_CONSTRUCTOR = re.compile(r"(?:^|[^\w])nonzero\w*\s*::\s*\w+\s*\(", re.IGNORECASE)
+# `assert` is a STATEMENT, not a call: `assert args.n > 0` (the comparison is seen separately) and
+# `assert_positive(...)` / `assert args.n, "reason"` are still validation statements.
+VALIDATION_ASSERT = re.compile(r"(?:^|[^\w])assert(?:_\w+)?\b", re.IGNORECASE)
+# A string literal or a char literal, stripped before any keyword matching: text INSIDE a literal
+# is data, never a check (`print("clamp the value", args.x)` checks nothing).
+LITERAL = re.compile(r"""[rbfu]{0,2}(?:'''[\s\S]*?'''|\"\"\"[\s\S]*?\"\"\"|'(?:\\.|[^'\\\n])*'"""
+                     r"""|\"(?:\\.|[^\"\\\n])*\")""")
 # Declarative validation written on the declaration itself: argparse's `choices=(...)`.
 DECLARATIVE_VALIDATION = re.compile(r"\bchoices\s*=")
 # The narrower subset that only rejects zero — the shape the purpose-blind check looks for. `== 0`
@@ -249,9 +266,18 @@ def mentions(text: str, forms: tuple[str, ...]) -> bool:
 
 
 def is_validation(text: str) -> bool:
-    """True when `text` carries a validation construct: an operator, `== 0`, or a keyword word."""
-    return bool(COMPARISON.search(text) or ZERO_EQUALITY.search(text)
-                or VALIDATION_KEYWORD.search(text))
+    """True when `text` carries a validation SHAPE, never merely a keyword.
+
+    Three shapes count: a comparison operator (`>`, `<=`, ...), a zero comparison (`== 0`), and a
+    validation CALL (`clamp(` / `max(` / `.validate(` / `NonZeroU32::new(` / an `assert`
+    statement). String and char literals are stripped first, so `print("max", args.max_retries)` —
+    a keyword that only APPEARS in the line — is not evidence, and neither is a bare assignment
+    (`max_retries = args.max_retries`) or a name merely containing max/check/range.
+    """
+    code = LITERAL.sub('""', text)
+    return bool(COMPARISON.search(code) or ZERO_EQUALITY.search(code)
+                or VALIDATION_CALL.search(code) or NONZERO_CONSTRUCTOR.search(code)
+                or VALIDATION_ASSERT.search(code))
 
 
 def attrs_above(fd: FileDiff, index: int) -> tuple[str, ...]:

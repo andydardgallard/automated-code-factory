@@ -18,7 +18,9 @@ e.g. `version_manager.py --repo . validate` (not `validate --repo .`).
 
 `sync` updates:
   - README.md                title `# Autonomous Code Factory vX.Y.Z` + footer `Current version: **X.Y.Z**`
-  - CHANGELOG.md             prepends `## [X.Y.Z] — <date>` when the top section is older
+  - CHANGELOG.md             prepends `## [X.Y.Z] — <date>` when the top section is older;
+                             a top section NEWER than the version is a downgrade and is refused
+                             (never prepended out of order)
   - AGENTS.md / SKILL.md / .agents/README.md   marker `<!-- code-factory-version: X.Y.Z -->`
   - Cargo.toml / <crate>/Cargo.toml   an EXISTING literal `[workspace.package] version` or
                              `[package] version` that diverges (a field is never inserted and a
@@ -134,10 +136,17 @@ def sync_file(path: pathlib.Path, rel: str, v: str, date: str) -> None:
                 break  # only the first versioned heading is the title
         lines = [README_FOOTER_RE.sub(lambda mo: mo.group(1) + v + mo.group(2), ln) for ln in lines]
     elif rel == "CHANGELOG.md":
-        # Look at the FIRST `## [X.Y.Z]` section only; prepend a new one if it is older than v.
+        # Look at the FIRST `## [X.Y.Z]` section only; prepend a new one if it is OLDER than v.
+        # The versions are compared as parsed semantic versions, never as bare strings: a top
+        # section NEWER than v is a downgrade, and prepending the older release above it would
+        # put the release list out of order — so it is refused with an error instead.
         for i, ln in enumerate(lines):
             m = CHANGELOG_SECTION_RE.match(ln)
             if m:
+                if parse_version(m.group(1)) > parse_version(v):
+                    raise SystemExit(f"CHANGELOG.md: top section [{m.group(1)}] is newer than "
+                                     f"VERSION {v} — refusing to prepend a release out of order; "
+                                     f"fix VERSION or the CHANGELOG first")
                 if m.group(1) != v:
                     lines[i:i] = [f"## [{v}] — {date}", ""]
                 break

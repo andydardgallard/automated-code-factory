@@ -16,3 +16,4 @@ calibration: run_id=20261031-6dfd0921 prompt_sha256=6087dd7a9b46c1079f3f7986d050
 calibration: run_id=20261031-dd7ffa0e prompt_sha256=6087dd7a9b46c1079f3f7986d050344372ef8bb10cd60f162a4208b17cc0751d runs=34 review_runs=9 verdict_accuracy=7/7 accuracy=100.0% macro_precision=1.000
 calibration: run_id=20261101-81600b39 prompt_sha256=185c6984a0c79611058d0af8fd06e2f2055601974f8dcbd46b363ac705728174 runs=36 review_runs=10 verdict_accuracy=9/9 accuracy=100.0% macro_precision=1.000
 calibration: run_id=20261103-8e939171 prompt_sha256=0ad40cf43522d24e788fe3c78396ac184d5b53eab68b462e73071140ce95ac40 runs=39 review_runs=10 verdict_accuracy=9/9 accuracy=100.0% macro_precision=1.000
+calibration: run_id=20261104-b5b601f6 prompt_sha256=4d41f440c271393fa5edd34e68ab99a24805aa94787cd7734013bf2e31ecf878 runs=39 review_runs=9 verdict_accuracy=9/9 accuracy=100.0% macro_precision=1.000

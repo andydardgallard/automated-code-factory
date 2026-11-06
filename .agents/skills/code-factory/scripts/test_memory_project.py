@@ -22,17 +22,22 @@ Deterministic self-test for `memory_project.py` (zero LLM tokens).
     record, `--check` exits 0 only when nothing disappeared silently — every open item carried in
     the CURRENT record with a `reason:` (`carried`) or closed — and exits 1 on an unmentioned
     item, on a carried item without `reason:` and on every invalid `closed:` element (no
-    `evidence:`, or an item no record ever declared); `--run-id` selects the current record,
-    `--json` is machine-readable, and a `## Current state` claiming another version than VERSION
-    only warns (stderr, exit untouched),
+    `evidence:`, or an item no record ever declared); `--run-id` selects the current record and
+    demands exactly one match (an unknown or ambiguous run id is a validation error, never a green
+    gate for a run that was not found), `--json` is machine-readable, and a `## Current state`
+    claiming another version than VERSION only warns (stderr, exit untouched),
   - `compact` implements the 50/20 rule: it folds all but `--keep` records into
     memory/summary.md (`## Recent history` bullets + a `## Carried debt` section that carries every
     critical/follow_up item + a `## Closed with evidence` section that keeps the verbatim evidence
     of every folded closure), verifies in memory that nothing required — critical/follow_up items
     AND the closing protocol of the would-be files — is lost before writing, survives a SECOND fold
     whose records carry no open debt (a closure declares the item it closes, so resetting
-    `## Carried debt` cannot orphan it), refuses to write a result that would report a
-    closing-protocol error, stays byte-identical on a repeated run, and `--dry-run` writes nothing,
+    `## Carried debt` cannot orphan it), replays a declare→close→REDECLARE history in its true
+    order (the reopened item stays open instead of being closed again by the folded closure),
+    refuses to write a result that would report a closing-protocol error, installs summary and
+    journal as ONE transaction (a fold that cannot install the summary keeps every journal record
+    and rolls the other file back), stays byte-identical on a repeated run, and `--dry-run` writes
+    nothing,
   - `validate-fix-tasks` accepts a well-formed generated fix-task file and rejects a file that
     misses a required field (including the mandatory `repo_path`) or carries an invalid
     task_type, naming the offending line,
@@ -1339,6 +1344,162 @@ def main() -> int:
                f"the refused fold must leave the orphan visible, not silently repaired: "
                f"{res.stderr!r}")
 
+        # 34. A declare→close→REDECLARE history survives the fold in its true order. `## Carried
+        #     debt` keeps one entry per folded declaration with its SOURCE stamp, so the fold
+        #     replays the summary sections stamp by stamp. Combined into ONE synthetic record (all
+        #     declarations, then all closures) the fold closed the REOPENED item a second time and
+        #     it disappeared from the backlog after `compact` had exited 0 — the fold silently
+        #     resurrected the old evidence over a newer declaration.
+        reopen = tmp / "compact_reopen"
+        reopen.mkdir()
+        expect(run("init", "--repo", str(reopen)).returncode == 0,
+               "init of the reopen fixture must exit 0")
+        r_clog = reopen / "memory" / "change-log.md"
+        r_sum = reopen / "memory" / "summary.md"
+        reopened = "reopened after a proven closure"
+        reopened_evidence = "scripts/test_reopen.py:31 -> exit 0"
+        write_journal(
+            reopen,
+            journal_entry("2027-01-01T00:00:00Z", "compact_reopen", run_id="20270101-11112233",
+                          factory_version="12.9.0", marks=True,
+                          unfinished=unfinished_block((reopened, "critical", "true"))),
+            journal_entry("2027-01-02T00:00:00Z", "compact_reopen", run_id="20270102-22223333",
+                          factory_version="12.9.0", marks=True,
+                          closed=closed_block((reopened, reopened_evidence))),
+            journal_entry("2027-01-03T00:00:00Z", "compact_reopen", run_id="20270103-33334444",
+                          factory_version="12.9.0", marks=True,
+                          unfinished=unfinished_block((reopened, "critical", "true"))),
+            journal_entry("2027-01-04T00:00:00Z", "compact_reopen", run_id="20270104-44445555",
+                          factory_version="12.9.0", marks=True))
+        payload = json.loads(run("backlog", "--repo", str(reopen), "--json").stdout)
+        expect(payload["open"] == 1 and payload["closed"] == 1,
+               f"the reopened item must be open and closed once BEFORE the fold: {payload!r}")
+        res = run("compact", "--repo", str(reopen), "--threshold", "1", "--keep", "1")
+        expect(res.returncode == 0, f"the fold of a reopened item must exit 0: {res.stderr!r}")
+        payload = json.loads(run("backlog", "--repo", str(reopen), "--json").stdout)
+        expect(payload["open"] == 1,
+               f"the reopened item must stay OPEN after the fold: {payload!r}")
+        expect([item["item"] for item in payload["items"]] == [reopened],
+               f"the reopened item must stay in the backlog: {payload!r}")
+        expect(payload["closed"] == 1 and payload["errors"] == [],
+               f"the folded closure must stay counted exactly once: {payload!r}")
+        r_sum_after = r_sum.read_text(encoding="utf-8")
+        expect(reopened_evidence in r_sum_after,
+               f"the folded evidence must survive in the summary: {r_sum_after!r}")
+        expect(reopened not in r_clog.read_text(encoding="utf-8"),
+               "the folded declarations must have left the journal")
+        # The reopen is a VALID history, not a protocol error: the fold keeps `check` green.
+        res = run("check", "--repo", str(reopen))
+        expect(res.returncode == 0, f"the folded reopen must keep check green: {res.stderr!r}")
+
+        # 35. `compact` installs summary AND journal as ONE transaction: the folded journal records
+        #     are removed only once the summary preserving them is durably installed, and a failure
+        #     commits nothing. Writing the journal first (the old order) removed history for a
+        #     summary that was never written.
+        txn = tmp / "compact_txn"
+        txn.mkdir()
+        expect(run("init", "--repo", str(txn)).returncode == 0,
+               "init of the transaction fixture must exit 0")
+        x_clog = txn / "memory" / "change-log.md"
+        x_sum = txn / "memory" / "summary.md"
+        x_item = "debt the failed fold must not lose"
+        write_journal(
+            txn,
+            journal_entry("2027-03-01T00:00:00Z", "compact_txn", run_id="20270301-11112233",
+                          factory_version="12.9.0", marks=True,
+                          unfinished=unfinished_block((x_item, "critical", "true"))),
+            journal_entry("2027-03-02T00:00:00Z", "compact_txn", run_id="20270302-22223333",
+                          factory_version="12.9.0", marks=True),
+            journal_entry("2027-03-03T00:00:00Z", "compact_txn", run_id="20270303-33334444",
+                          factory_version="12.9.0", marks=True))
+        before_pair = (x_clog.read_bytes(), x_sum.read_bytes())
+        # (a) A summary that cannot even be STAGED: nothing may be committed (portable — a
+        #     directory squatting on the temp name fails the open on every platform).
+        blocked = txn / "memory" / "summary.md.tmp"
+        blocked.mkdir()
+        res = run("compact", "--repo", str(txn), "--threshold", "1", "--keep", "1")
+        expect(res.returncode == 1,
+               f"a fold that cannot stage its summary must exit 1: {res.stdout!r} {res.stderr!r}")
+        expect((x_clog.read_bytes(), x_sum.read_bytes()) == before_pair,
+               "a fold that cannot install the summary must leave the JOURNAL intact - the "
+               "folded records must never be removed before their summary is installed")
+        expect("FAIL - compaction could not install the compacted memory" in res.stderr,
+               f"the failure must name the transaction: {res.stderr!r}")
+        blocked.rmdir()
+        # (b) The summary's COMMIT fails after both files were staged. Windows refuses the atomic
+        #     replace onto a read-only destination; on POSIX the replace is governed by the
+        #     directory's mode instead, so this half is Windows-only (the staging half is portable).
+        if os.name == "nt":
+            os.chmod(x_sum, 0o444)
+            try:
+                res = run("compact", "--repo", str(txn), "--threshold", "1", "--keep", "1")
+                expect(res.returncode == 1,
+                       f"a fold whose summary commit fails must exit 1: {res.stderr!r}")
+                expect((x_clog.read_bytes(), x_sum.read_bytes()) == before_pair,
+                       "a failed commit must roll every file back (the journal keeps its records)")
+                expect(not blocked.exists(),
+                       "a rolled-back fold must not leave a staged temp file behind")
+            finally:
+                os.chmod(x_sum, 0o644)
+        # (c) Nothing in the way: the same fold commits both files and loses no record.
+        res = run("compact", "--repo", str(txn), "--threshold", "1", "--keep", "1")
+        expect(res.returncode == 0, f"the unobstructed fold must exit 0: {res.stderr!r}")
+        expect(x_item in x_sum.read_text(encoding="utf-8"),
+               "the committed fold must carry the debt into the summary")
+        expect(x_item not in x_clog.read_text(encoding="utf-8"),
+               "the committed fold must have removed the folded records from the journal")
+
+        # 36. `backlog --check --run-id` needs EXACTLY one matching record. A run id that matched
+        #     nothing used to leave `current` as None, so nothing counted as unmentioned and the gate
+        #     reported SUCCESS for a run it never found; a run id matching several records silently
+        #     measured the FIRST of them instead of failing.
+        rid = tmp / "backlog_runid"
+        rid.mkdir()
+        expect(run("init", "--repo", str(rid)).returncode == 0,
+               "init of the --run-id fixture must exit 0")
+        u_clog = rid / "memory" / "change-log.md"
+        closed_debt = "debt the later run closed"
+        write_journal(
+            rid,
+            journal_entry("2027-04-01T00:00:00Z", "backlog_runid", run_id="20270401-aaaabbbb",
+                          factory_version="12.9.0", marks=True,
+                          unfinished=unfinished_block((closed_debt, "critical", "true"))),
+            journal_entry("2027-04-02T00:00:00Z", "backlog_runid", run_id="20270402-ccccdddd",
+                          factory_version="12.9.0", marks=True,
+                          closed=closed_block((closed_debt, "scripts/test_runid.py:1 -> exit 0"))),
+            journal_entry("2027-04-03T00:00:00Z", "backlog_runid", run_id="20270403-eeeeffff",
+                          factory_version="12.9.0", marks=True))
+        # The run id that names exactly one record still selects it and the gate is green.
+        res = run("backlog", "--repo", str(rid), "--check", "--run-id", "20270402-ccccdddd")
+        expect(res.returncode == 0,
+               f"the record of that run must pass --check: {res.stdout!r} {res.stderr!r}")
+        # A run id that matches NO record is a validation error, not a green gate: nothing is open,
+        # so only the selection itself can tell that this is the wrong run.
+        res = run("backlog", "--repo", str(rid), "--check", "--run-id", "20270409-99999999")
+        expect(res.returncode == 1,
+               f"a --run-id matching no record must fail --check: {res.stdout!r}")
+        expect("matches no record of memory/change-log.md" in res.stderr,
+               f"the failure must name the unknown run id: {res.stderr!r}")
+        payload = json.loads(run("backlog", "--repo", str(rid), "--json",
+                                 "--run-id", "20270409-99999999").stdout)
+        expect([problem["kind"] for problem in payload["errors"]] == ["unknown-run-id"],
+               f"the report must expose the unknown run id as an error: {payload!r}")
+        expect(payload["current"] == "",
+               f"an unknown --run-id must not name a current record: {payload!r}")
+        # A run id that matches TWO records is ambiguous: the first one is not "the" current record.
+        u_clog.write_text(u_clog.read_text(encoding="utf-8") + journal_entry(
+            "2027-04-04T00:00:00Z", "backlog_runid", run_id="20270402-ccccdddd",
+            factory_version="12.9.0", marks=True), encoding="utf-8")
+        res = run("backlog", "--repo", str(rid), "--check", "--run-id", "20270402-ccccdddd")
+        expect(res.returncode == 1,
+               f"a --run-id matching two records must fail --check: {res.stdout!r}")
+        expect("matches 2 records" in res.stderr,
+               f"the failure must name the ambiguity: {res.stderr!r}")
+        payload = json.loads(run("backlog", "--repo", str(rid), "--json",
+                                 "--run-id", "20270402-ccccdddd").stdout)
+        expect([problem["kind"] for problem in payload["errors"]] == ["ambiguous-run-id"],
+               f"the report must expose the ambiguity as an error: {payload!r}")
+
     print("PASS - memory_project.py behaves as expected (init creates once, never rewrites and "
           "pins the repository identity; check enforces one owner/repository — the identity, not "
           "the folder name — fails on mixed/mismatched/foreign memory, on a duplicated run_id, on "
@@ -1347,10 +1508,13 @@ def main() -> int:
           "the owner and is idempotent; compact folds the journal into the summary, keeps every "
           "critical/follow_up item byte-identically and carries the evidence of every folded "
           "closure so a kept `closed:` element still finds its declaration, survives a SECOND fold "
-          "that resets `## Carried debt`, and refuses to write a result that would report a "
-          "closing-protocol error; compact-check keeps critical/follow_up items; "
+          "that resets `## Carried debt`, replays a declare-close-redeclare history in its true "
+          "order, installs summary and journal as ONE transaction, and refuses to write a result "
+          "that would report a closing-protocol error; compact-check keeps critical/follow_up "
+          "items; "
           "backlog folds the journal into the open items — carried only with a `reason:`, closed "
-          "only by a `closed:` element with `evidence:`, never able to disappear silently — and "
+          "only by a `closed:` element with `evidence:`, never able to disappear silently — demands "
+          "exactly one record for a supplied --run-id, and "
           "warns on a stale summary version; validate-fix-tasks checks the fix-task schema "
           "(including the mandatory repo_path); the "
           "memory format v2 requires run_id + provenance marks + unfinished/factory_version on "

@@ -21,7 +21,10 @@ is missing the command exits 1 with the reason on stderr and invents nothing —
 to the walk, because that fallback would silently re-admit exactly the paths this mode excludes.
 The content filter is the walk's: *.pyc, symlinked, binary and unreadable paths are skipped and
 counted by category in both modes, but the directory-name exclusions do NOT apply: a tracked file
-under `build/` or `node_modules/` is part of the tracked tree. Without the flag the filesystem
+under `build/` or `node_modules/` is part of the tracked tree. A tracked path with a SYMLINKED
+ANCESTOR (a tracked directory replaced by a link) or one whose resolved target leaves the
+repository root is skipped and counted as a symlink too: git tracks files, so the final-component
+check alone would let `root/link/evil.py` read outside the repository. Without the flag the filesystem
 walk stays the
 documented default — the escape hatch for callers that must also see untracked files
 (`repo_stats.py`, `precedent_index.py`).
@@ -170,11 +173,36 @@ def file_record(root: pathlib.Path, path: pathlib.Path, data: bytes) -> dict:
             "bytes": len(data)}
 
 
+def escapes_root(root: pathlib.Path, path: pathlib.Path) -> bool:
+    """True when `path` must not be read as a repository file (fail-closed).
+
+    The final-component symlink check is not enough for the TRACKED set: git tracks FILES, so a
+    tracked directory replaced by a symlink (or a symlink anywhere else in the chain) survives it,
+    and reading `root/link/evil.py` would read outside the repository. Two layers, both
+    fail-closed: the RESOLVED target must stay under the resolved root, and no ancestor between
+    root and file may be a symlink at all — even one pointing back inside, because a swapped
+    directory is never part of the repository the review was promised.
+    """
+    try:
+        if not path.resolve().is_relative_to(root.resolve()):
+            return True
+        relative = path.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return True                     # an unverifiable path is skipped, never read
+    current = root
+    for part in relative.parts[:-1]:    # the final component has its own is_symlink check
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
+
+
 def scan_paths(root: pathlib.Path, paths: list[pathlib.Path]) -> tuple[list[dict], dict]:
     """(records for the listed files, skip counters by category).
 
     The filter is shared by both modes, so a file yields the same record whether it came from the
-    walk or from the tracked set: *.pyc files, symbolic links, binaries and unreadable files are
+    walk or from the tracked set: *.pyc files, symbolic links (including any path with a symlinked
+    ancestor or one that resolves outside the repository root), binaries and unreadable files are
     each skipped and counted under their own key ("pyc", "symlink", "binary", "unreadable").
     """
     records: list[dict] = []
@@ -183,7 +211,7 @@ def scan_paths(root: pathlib.Path, paths: list[pathlib.Path]) -> tuple[list[dict
         if path.suffix in EXCLUDE_SUFFIXES:
             skipped["pyc"] += 1
             continue
-        if path.is_symlink():
+        if path.is_symlink() or escapes_root(root, path):
             skipped["symlink"] += 1
             continue
         data = read_bytes(path)

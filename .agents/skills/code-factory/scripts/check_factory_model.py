@@ -155,11 +155,16 @@ STRICT_TASK_TYPES = ("implement", "refactor")
 # The roles whose presence depends on the task: they may be listed in `required_roles`, and nothing
 # fabricates them as mandatory for every run. A conditional role is a REGISTERED role like any other
 # here; the list exists so the validation states the contract instead of implying "every role".
-CONDITIONAL_ROLES = ("gui_expert", "farukon_expert", "security_auditor", "business_tester")
+CONDITIONAL_ROLES = ("gui_expert", "farukon_expert", "security_auditor")
 # The roles EVERY implement/refactor run delegates, so strict attribution has something to check: the
-# phase table's mandatory set. A checkpoint of such a run that names fewer roles (or none) would
-# silently switch attribution off, which is the loophole this pins shut.
-MANDATORY_ROLES = ("analyzer", "planner", "coder", "tester", "reviewer", "documenter")
+# phase table's mandatory set — business_tester included, because implement and refactor flows always
+# require the adversarial business test, not only when the task remembers to ask for it. A checkpoint
+# of such a run that names fewer roles (or none) would silently switch attribution off, which is the
+# loophole this pins shut. A review/security_audit run has no mandatory set here; when `--strict`
+# forces strict attribution for it, the roles IT declares in `required_roles` are enforced by
+# model_attribution.py.
+MANDATORY_ROLES = ("analyzer", "planner", "coder", "tester", "business_tester", "reviewer",
+                   "documenter")
 
 
 def _is_factory_own_root(root: pathlib.Path, first_line: str) -> bool:
@@ -403,8 +408,9 @@ def required_roles_errors(data: dict) -> list[str]:
 
     An `implement` or `refactor` checkpoint must DECLARE the mandatory set (`MANDATORY_ROLES`): an
     omitted or empty list would disable strict attribution for exactly the runs it exists for, so
-    both are errors. The conditional roles stay optional — the Web GUI, the Farukon specialist, the
-    auditor and the adversarial business tester are declared when the task really needs them.
+    both are errors. The conditional roles stay optional — the Web GUI, the Farukon specialist and
+    the auditor are declared when the task really needs them — while the adversarial business tester
+    is part of the mandatory set: implement and refactor flows always require it.
     """
     errors: list[str] = []
     if "task_type" in data:

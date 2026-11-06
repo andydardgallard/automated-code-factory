@@ -127,6 +127,7 @@ MEM_STATE="absent"          # created | ok | mixed | other | unavailable
 MEM_PROJECT=""              # project name (created state)
 MEM_OWNER=""                # memory owner per memory_project.py check
 MEM_CHECK_OUT=""
+MEM_REPORT=""             # one-line verdict + WARN count (the only part of `check` ever printed)
 # The expected project name = basename of the deployment root. Computed once and
 # resilient to set -euo pipefail: an interpreter/script error must not interrupt the deployment.
 MEM_NAME_EXPECT="$("$PY_BIN" "$MEM_DIR_SCRIPT" name --repo "$PROJECT_DIR" 2>/dev/null || true)"
@@ -161,6 +162,22 @@ elif [[ -n "$PY_BIN" && -f "$MEM_DIR_SCRIPT" ]]; then
     # project | everything is fine. `|| MEM_CHECK_RC=$?` does not crash the script: any state is only a warning.
     MEM_CHECK_RC=0
     MEM_CHECK_OUT="$("$PY_BIN" "$MEM_DIR_SCRIPT" check --repo "$PROJECT_DIR" 2>&1)" || MEM_CHECK_RC=$?
+    # `check` prints ONE WARN line per legacy-format entry and the verdict last, so the whole blob is
+    # ~50 wrapped lines with the verdict buried in them (owner evidence: warnings.md). Only the
+    # verdict plus a WARN count may be PRINTED: MEM_CHECK_OUT stays for PARSING (owner, entry count,
+    # mixed/other detection) and never reaches the console. Same contract as prepare_factory.ps1.
+    MEM_WARN_COUNT="$(printf '%s\n' "$MEM_CHECK_OUT" | grep -c '^WARN -' || true)"
+    MEM_VERDICT="$(printf '%s\n' "$MEM_CHECK_OUT" | grep -E '^(ok|FAIL)[[:space:]]*-' | tail -n 1 || true)"
+    if [[ -z "$MEM_VERDICT" ]]; then
+        # No verdict line at all (an empty output, an interpreter crash): the last non-empty line.
+        MEM_VERDICT="$(printf '%s\n' "$MEM_CHECK_OUT" | awk 'NF{last=$0}END{print last}')"
+    fi
+    MEM_VERDICT="${MEM_VERDICT:-no output}"
+    if [[ "$MEM_WARN_COUNT" -gt 0 ]]; then
+        MEM_REPORT="$MEM_VERDICT ($MEM_WARN_COUNT legacy warnings — run memory_project.py check for details)"
+    else
+        MEM_REPORT="$MEM_VERDICT"
+    fi
     MEM_OWNER=""
     if [[ "$MEM_CHECK_OUT" =~ belongs\ to\ project\ \'([^\']+)\' ]]; then
         MEM_OWNER="${BASH_REMATCH[1]}"
@@ -169,7 +186,7 @@ elif [[ -n "$PY_BIN" && -f "$MEM_DIR_SCRIPT" ]]; then
     fi
     if [[ "$MEM_CHECK_OUT" == *"mixes projects"* ]]; then
         MEM_STATE="mixed"
-        warn "    Project memory: INCONSISTENT — entries from different projects in memory ($MEM_CHECK_OUT)"
+        warn "    Project memory: INCONSISTENT — entries from different projects in memory ($MEM_REPORT)"
         warn "    Check ownership: the project: field in entries must match the project."
     elif [[ "$MEM_CHECK_OUT" == *"expected"* ]] \
       || { [[ -n "$MEM_OWNER" ]] && [[ "$MEM_OWNER" != "$MEM_NAME_EXPECT" ]] \
@@ -177,11 +194,11 @@ elif [[ -n "$PY_BIN" && -f "$MEM_DIR_SCRIPT" ]]; then
       || [[ "$MEM_CHECK_RC" -ne 0 ]]; then
         # The memory belongs to (or is declared for) ANOTHER project — we are deploying to the wrong place.
         MEM_STATE="other"
-        warn "    Project memory: CHECK — the memory is declared for project '${MEM_OWNER:-?}', but the factory is being deployed in directory '$MEM_NAME_EXPECT' ($MEM_CHECK_OUT)"
+        warn "    Project memory: CHECK — the memory is declared for project '${MEM_OWNER:-?}', but the factory is being deployed in directory '$MEM_NAME_EXPECT' ($MEM_REPORT)"
         warn "    Verify this is the same project: the project: field in the memory/change-log.md entries."
     else
         MEM_STATE="ok"
-        info "    Project memory: in place — $MEM_CHECK_OUT"
+        info "    Project memory: in place — $MEM_REPORT"
     fi
 else
     MEM_STATE="unavailable"

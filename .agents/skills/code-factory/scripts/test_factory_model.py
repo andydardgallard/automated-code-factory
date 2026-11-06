@@ -907,9 +907,26 @@ def main() -> int:
                "an implement checkpoint missing a mandatory role must name it")
         # …the conditional roles stay OPTIONAL on top of the mandatory set.
         conditional = VALID_PIPELINE + "task_type: implement\n" + strict_extra \
-            + "  - gui_expert\n  - business_tester\n"
+            + "  - gui_expert\n  - security_auditor\n"
         expect(pipeline_errors(proot, conditional) == [],
                "a conditional role may be declared on top of the mandatory set")
+
+        # (C18, review 20261104-b5b601f6, critical 18) business_tester is part of the MANDATORY
+        # set: implement/refactor flows always require the adversarial business test, so a
+        # checkpoint that omits it must fail — and it is no longer a conditional role.
+        expect("business_tester" in check_factory_model.MANDATORY_ROLES,
+               f"business_tester must be mandatory for implement/refactor: "
+               f"{check_factory_model.MANDATORY_ROLES!r}")
+        expect("business_tester" not in check_factory_model.CONDITIONAL_ROLES,
+               f"a mandatory role is not conditional: {check_factory_model.CONDITIONAL_ROLES!r}")
+        without_bt = VALID_PIPELINE + "task_type: implement\nrequired_roles:\n" + "".join(
+            f"  - {role}\n" for role in check_factory_model.MANDATORY_ROLES
+            if role != "business_tester")
+        expect(any("business_tester" in e for e in pipeline_errors(proot, without_bt)),
+               "an implement checkpoint without business_tester must fail naming it")
+        without_bt = without_bt.replace("task_type: implement", "task_type: refactor")
+        expect(any("business_tester" in e for e in pipeline_errors(proot, without_bt)),
+               "a refactor checkpoint without business_tester must fail naming it too")
         expect(pipeline_errors(proot, VALID_PIPELINE + "task_type: deploy\n") != [],
                "an unknown task_type must fail")
         expect(any("task_type" in e for e in

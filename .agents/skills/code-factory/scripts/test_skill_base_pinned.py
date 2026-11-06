@@ -3,8 +3,9 @@
 Deterministic OFFLINE self-test for PINNED revisions and MULTIPLE sources in `skill_base.py`.
 
 Two local bare Git repositories are published over LOOPBACK smart HTTP (`git http-backend` on
-127.0.0.1 — the fixture of `test_remote_reference_docs.py`), so the suite never touches the
-internet and stays reproducible.
+127.0.0.1, reached through the hermetic `fixture.example` mapping of `test_remote_reference_docs.py`
+— the public-destination guard of `skill_base.py` never sees a loopback URL), so the suite never
+touches the internet and stays reproducible.
 
 Verifies: `--revision` on `resolve` / `hash` / `record` materializes EXACTLY the pinned commit and
 signs the CHECKED-OUT content (not HEAD), an abbreviated sha pins its full commit, a cache checked
@@ -30,17 +31,11 @@ import sys
 import tempfile
 
 import skill_base as sb
-from test_remote_reference_docs import Check, error_of, git, serve_git, stop, url_of
-
-SCRIPT = pathlib.Path(__file__).resolve().parent / "skill_base.py"
+from test_remote_reference_docs import (FIXTURE_HOST, Check, cli, error_of, fixture_network, git,
+                                        serve_git, stop, url_of)
 
 # Three commits: the pinned revisions differ from HEAD in content, not only in the sha.
 COMMITS = (("readme.md", "# Pinned v1\n"), ("docs/b.md", "b\n"), ("readme.md", "# Pinned v3\n"))
-
-
-def cli(*args: str, cwd: pathlib.Path | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(SCRIPT), *args], cwd=str(cwd) if cwd else None,
-                          capture_output=True, text=True, errors="replace")
 
 
 def git_available() -> bool:
@@ -289,7 +284,7 @@ def test_no_network(check: Check, root: pathlib.Path, url: str, shas: list[str],
     check(digest == pinned_digest and reused.resolved_revision == shas[0],
           "a clone already checked out at the pinned revision must be reused, not refetched")
     message = error_of(lambda: sb.materialize_and_hash(url, repo=root, revision=shas[1]))
-    check("cannot resolve" in message and "127.0.0.1" in message,
+    check("cannot resolve" in message and FIXTURE_HOST in message,
           f"a pin that needs the network must name the source and the reason (got: {message})")
     cached_tree = sb.cache_root(root) / "git" / sb.cache_key(url)
     check(sb.hash_path(cached_tree) == pinned_digest,
@@ -363,7 +358,7 @@ def run(check: Check, root: pathlib.Path) -> None:
 
 def main() -> int:
     check = Check()
-    with tempfile.TemporaryDirectory() as td:
+    with fixture_network(), tempfile.TemporaryDirectory() as td:
         try:
             run(check, pathlib.Path(td))
         except AssertionError as exc:

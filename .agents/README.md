@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.23.0 -->
+<!-- code-factory-version: 12.24.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -82,12 +82,16 @@ projects or creates projects from scratch.
 │       │   ├── mcp_json_merge.py           # shared text-preserving JSON merge of the two MCP helpers (library only, no CLI)
 │       │   ├── manifest.py                 # change set with COMPUTED sha256: init / require (pre-edit gate) / add --changed|--created (backup first) / audit
 │       │   ├── test_manifest.py            # manifest enforcement self-test
-│       │   ├── delegation_gate.py          # per-role retry budgets counted at EXECUTION: check (increment or refuse), init, settle (refund a wholly refuted reviewer round), audit (counters vs session wire); --owner-authorized grants one extra delegation per owner decision
+│       │   ├── rollback.py                 # the file side of a rollback: delete the created files, restore the changed ones from .code-factory/backups — every manifest path validated as confined to the repo BEFORE anything is touched (no partial rollback, --dry-run prints the plan)
+│       │   ├── test_rollback.py            # rollback helper self-test
+│       │   ├── delegation_gate.py          # per-role retry budgets counted at EXECUTION: check (increment or refuse; a registered UNBUDGETED role passes through allow:true, budgeted:false, and --round <id> counts one reviewer iteration per LOGICAL round so a shard fan-out spends none more), init, settle (refund a wholly refuted reviewer round), audit (counters vs session wire); --owner-authorized grants one extra delegation per owner decision
 │       │   ├── test_delegation_gate.py     # delegation gate self-test
-│       │   ├── permit_gate.py              # supervisor permits: add/verdict/bind/close + finish audit (every spawn = a unique allowed permit judged before it, scope ⊆ the plan task's files)
+│       │   ├── permit_gate.py              # supervisor permits: add/verdict/bind/close + finish audit (every spawn = a unique allowed permit judged before it, scope ⊆ the plan task's files; a `--kind bootstrap` permit answers the pre-plan task for analyzer/planner/supervisor, the permits file must belong to THIS run, and a supervisor spawn carries the run's own authority)
 │       │   ├── test_permit_gate.py         # permit gate self-test
-│       │   ├── gate_all.py                 # phase K|Y aggregator of the deterministic gates: a gate that ran leaves a record, a missing record is a failure
+│       │   ├── gate_all.py                 # phase K|Y aggregator of the deterministic gates: a gate that ran leaves a record, a missing record is a failure (the watchdog-deny row fails the phase while a supervisor deny is unresolved; the manifest audit is skipped as not applicable for a report-only run)
 │       │   ├── test_gate_all.py            # gate aggregator self-test
+│       │   ├── supervisor_watchdog.py      # run-long supervisor watchdog: launch/scan/status/deny/resolve — a deterministic anomaly scan at every phase transition, an unresolved deny blocking the gate_all watchdog-deny row
+│       │   ├── test_supervisor_watchdog.py # supervisor watchdog self-test
 │       │   ├── test_business_tester_flow.py # business-tester role wiring self-test
 │       │   ├── version_manager.py          # single version source: get/bump/sync/validate/set/suggest
 │       │   ├── test_version_manager.py     # version script self-test (≥12 cases)
@@ -109,9 +113,9 @@ projects or creates projects from scratch.
 │       │   ├── test_action_gate.py         # action gate self-test (+ --help/usage under cp1251)
 │       │   ├── task_graph.py               # on-disk task graph: create/claim/complete/ready/list
 │       │   ├── test_task_graph.py          # task graph self-test
-│       │   ├── evidence_ledger.py          # evidence ledger with FRESH/STALE/UNSCOPED signatures (an empty or missing signed scope is UNSCOPED, never FRESH; `stamp` refuses `--files` that name no file)
+│       │   ├── evidence_ledger.py          # evidence ledger with FRESH/STALE/UNSCOPED signatures (an empty or missing signed scope is UNSCOPED, never FRESH; `stamp` refuses `--files` that name no file, and `sign`/`stamp` reject an absolute, `..`-carrying or outside-`--repo` path — evidence covers the repository)
 │       │   ├── test_evidence_ledger.py     # evidence ledger self-test
-│       │   ├── verify_acceptance.py        # machine verification of acceptance criteria (anti-tautology: SUCCESS needs a FRESH `--ledger` entry, so no ledger = DEGRADED)
+│       │   ├── verify_acceptance.py        # machine verification of acceptance criteria (anti-tautology: SUCCESS needs the FRESH `--ledger` evidence the task type requires — `regression=pass` for implement/refactor, the review deliverables for review/security_audit — so no ledger = DEGRADED)
 │       │   ├── test_verify_acceptance.py   # acceptance check self-test
 │       │   ├── verify_quotes.py            # verbatim quote check of evidence quotes (Evidence-Preserving Reducer)
 │       │   ├── test_verify_quotes.py       # quote check self-test
@@ -495,14 +499,17 @@ errors, and they are cured by editing the reviewer prompt, not the golden set.
 Acceptance is additionally verified by machine: criteria with `verify` are executed for real
 (`scripts/verify_acceptance.py` → `.code-factory/state/acceptance.md`), and SUCCESS (exit 0)
 requires at least one criterion to carry `verify`, all criteria with `verify` to be MET, the
-regression baseline to be proven, AND a usable `--ledger` with a FRESH `regression=pass` entry
-(`--ledger state/evidence.json --evidence-files <files>`). A run without a single `verify`, without
+baseline the task type implies to be proven, AND a usable `--ledger` holding the FRESH evidence
+that type requires (`--ledger state/evidence.json --evidence-files <files>`): a FRESH
+`regression=pass` entry for an `implement`/`refactor` run, and FRESH `pass` entries for `report`,
+`merged-findings` and `follow-up` for a `review`/`security_audit` run, which has no regression stage
+it could ever sign. A run without a single `verify`, without
 a ledger (an unsigned regression claim is not evidence), or with stale/UNSCOPED evidence gets
 DEGRADED, not SUCCESS: the FRESH/STALE/UNSCOPED evidence signatures are computed by
 `scripts/evidence_ledger.py`, an entry that signed no file is never FRESH, and a green log from an
 old revision does not count as acceptance.
 <!-- factory-rule: verified-acceptance begin -->
-**Verified acceptance (canonical wording):** acceptance is machine-verifiable — `scripts/verify_acceptance.py` actually executes the criteria with `verify` and writes exit codes and output excerpts into `.code-factory/state/acceptance.md`. Exit 0 is possible only on SUCCESS: at least one criterion with `verify`, all criteria that carry `verify` are MET, baseline proven; criteria without `verify` are marked `derived`/`unverified` and are not evidence. STALE evidence or a degraded baseline lowers the verdict to DEGRADED; SUCCESS without regression evidence is impossible.
+**Verified acceptance (canonical wording):** acceptance is machine-verifiable — `scripts/verify_acceptance.py` actually executes the criteria with `verify` and writes exit codes and output excerpts into `.code-factory/state/acceptance.md`. Exit 0 is possible only on SUCCESS: at least one criterion with `verify`, all criteria that carry `verify` are MET, baseline proven; criteria without `verify` are marked `derived`/`unverified` and are not evidence. STALE evidence or a degraded baseline lowers the verdict to DEGRADED. The FRESH evidence SUCCESS requires is task-type specific (`--task-type`): an implement/refactor run requires a usable FRESH regression=pass ledger entry — SUCCESS without regression evidence is impossible there; a review/security_audit run has no regression stage, so it proves the freshness of its deliverables (report, merged-findings, follow-up) instead and reports regression as the honest not-run baseline.
 <!-- factory-rule: verified-acceptance end -->
 
 ## Change rollback and error routing
@@ -860,8 +867,8 @@ model of `factory-supervisor`, which is judge-side — its family must contrast 
 and is logged as `models_used.supervisor`.
 Attribution of the logged models is STRICT BY DEFAULT for `implement`/`refactor`: the run writes
 `task_type` and `required_roles` into `.code-factory/state/pipeline.yaml` (the mandatory non-empty
-set: analyzer, planner, coder, tester, reviewer, documenter — the conditional roles gui_expert,
-farukon_expert, security_auditor and business_tester may be listed too), and
+set: analyzer, planner, coder, tester, business_tester, reviewer, documenter — the conditional roles
+gui_expert, farukon_expert and security_auditor may be listed too), and
 `model_attribution.py` FAILS a run in which a required role claims a model in `models_used` but
 leaves no trace in the CLI session wire. A missing wire is DEGRADED only outside strict attribution,
 and `--strict` turns it on for `review`/`security_audit` as well; there is no weakening opt-out.

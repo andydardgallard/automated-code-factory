@@ -93,6 +93,22 @@ deletion), and a balanced benign backslash string (`pwsh -c 'echo "C:\\temp\\x";
 ALLOW instead of becoming a blanket deny. An outer spelling the gate cannot read on those terms —
 or a payload whose PowerShell quoting never closes — keeps the fail-safe CONFIRM, never an ALLOW.
 
+cmd.exe single quotes (fixed contract): the decoded payload of a `cmd` `/c` or `/k` wrapper is
+cmd.exe TEXT, which quotes with `"` only — a single quote is an ordinary character and a backslash
+escapes nothing there. Read as POSIX text, `cmd /c 'x && del /q target.txt'` collapsed into ONE
+single-quoted token and the deletion behind the `&&` was waved through as harmless, while cmd.exe
+really separates at that `&&`; read with cmd's own quoting rules (`split_commands_cmd`) the
+separator is visible and the payload classifies exactly like its double-quoted twin.
+
+Scope comparison (fixed contract): `--scope` may be the RESOLVED repository path (absolute — the
+canonical invocation passes `<resolved repo_path>`), while the classified commands name their
+targets relative to that repository. Targets and scopes are therefore resolved against ONE common
+base — the gate's working directory, which the canonical invocation runs from the repository
+root — and compared symlink-aware (`resolve_scope_path`): a relative rollback target such as
+`src/a.py` is recognised inside an absolute repository scope, while `..` traversal, an absolute
+path outside the scope and a target that escapes through a symlinked component still resolve
+OUTSIDE it and stay HARD_DENY.
+
 HARD_DENY rules:
   * `git push` (also `--force` / `-f` / `--mirror` / `--all`) that targets the default branch
     (`main` / `master`, in any refspec form: `main`, `refs/heads/main`, `origin/main`, `HEAD:main`),
@@ -181,7 +197,6 @@ import datetime
 import json
 import os
 import pathlib
-import posixpath
 import re
 import sys
 
@@ -226,9 +241,14 @@ SHELL_WRAPPERS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "cmd", "powershe
 # POSIX / cmd.exe rules it is really read with.
 POWERSHELL_WRAPPERS = frozenset({"powershell", "pwsh"})
 # The dialect of ONE command TEXT: POSIX (backslash escapes a quote inside a quoted run, see
-# QUOTE_ESCAPES) or PowerShell (it never does). The dialect belongs to a single text, never to the
-# whole run, so a PowerShell payload cannot change how a POSIX or cmd.exe payload is read.
-POSIX_DIALECT, POWERSHELL_DIALECT = "posix", "powershell"
+# QUOTE_ESCAPES), PowerShell (a backslash never escapes; only a doubled quote is an escaped quote),
+# or cmd.exe (quoting with `"` only — a single quote is an ordinary character and a backslash is
+# literal, see `split_commands_cmd`). The dialect belongs to a single text, never to the whole run,
+# so one wrapper's payload cannot change how another wrapper's payload is read.
+POSIX_DIALECT, POWERSHELL_DIALECT, CMD_DIALECT = "posix", "powershell", "cmd"
+# The characters that OPEN a quoted run in each dialect: cmd.exe quotes with `"` only, so a single
+# quote can never hide a command separator there.
+DIALECT_QUOTES = {POSIX_DIALECT: "\"'", POWERSHELL_DIALECT: "\"'", CMD_DIALECT: '"'}
 POSIX_COMMAND_FLAG_RE = re.compile(r"-[A-Za-z]*c[A-Za-z]*")     # -c, -ec, -lc
 CMD_COMMAND_FLAGS = ("/c", "/k")
 # PowerShell parameter spellings the gate trusts as `-Command`. `-co` is deliberately NOT among
@@ -340,13 +360,16 @@ def token_spans(command: str, dialect: str = POSIX_DIALECT) -> list[tuple[str, s
     text; a raw-only view cannot recognise control words. This returns both. A quoted run stays quoted
     in the raw span, adjacent quoted / unquoted runs stay ONE token, and the decoded value resolves
     quotes and escapes per the enclosing dialect's rules (`QUOTE_ESCAPES` for POSIX, a doubled quote for
-    PowerShell), so `env FOO="a b" rm -rf /` still carries the assignment `FOO=a b` as ONE word.
+    PowerShell, nothing at all for cmd.exe), so `env FOO="a b" rm -rf /` still carries the assignment
+    `FOO=a b` as ONE word.
     """
     spans: list[tuple[str, str]] = []
     raw: list[str] = []
     value: list[str] = []
     quote = ""
+    posix = dialect == POSIX_DIALECT
     powershell = dialect == POWERSHELL_DIALECT
+    quotes = DIALECT_QUOTES[dialect]
     i = 0
     while i < len(command):
         ch = command[i]
@@ -359,19 +382,19 @@ def token_spans(command: str, dialect: str = POSIX_DIALECT) -> list[tuple[str, s
                     i += 2
                     continue
                 quote = ""
-            elif not powershell and ch == "\\" and i + 1 < len(command) \
+            elif posix and ch == "\\" and i + 1 < len(command) \
                     and command[i + 1] in QUOTE_ESCAPES[quote]:
                 raw.append(command[i + 1])
                 value.append(command[i + 1])                            # the escape resolves away
                 i += 2
                 continue
-            elif not powershell and ch == quote:
+            elif ch == quote:
                 quote = ""
             else:
                 value.append(ch)
             i += 1
             continue
-        if ch in "\"'":
+        if ch in quotes:
             quote = ch
             raw.append(ch)
             i += 1
@@ -382,7 +405,7 @@ def token_spans(command: str, dialect: str = POSIX_DIALECT) -> list[tuple[str, s
                 raw, value = [], []
             i += 1
             continue
-        if ch == "\\" and not powershell and i + 1 < len(command):
+        if ch == "\\" and posix and i + 1 < len(command):
             raw.append(ch)
             raw.append(command[i + 1])
             value.append(command[i + 1])                                # `\"` outside quotes is `"`
@@ -407,7 +430,9 @@ def split_commands(action: str, dialect: str = POSIX_DIALECT) -> list[str]:
     followed by the deletion, while in double quotes `\\\\` and `\\"` are escapes.
 
     `dialect` is the dialect of THIS text: a PowerShell payload is PowerShell's own quoting, where a
-    backslash never escapes anything (`split_commands_powershell`); everything else is POSIX.
+    backslash never escapes anything (`split_commands_powershell`); a cmd.exe payload quotes with
+    `"` only, so a single quote is an ordinary character (`split_commands_cmd`); everything else is
+    POSIX.
 
     The returned text is the LINE VERBATIM (quotes and backslashes included): the splitter only
     decides where one simple command ends, and `posix_argv` re-reads the text afterwards — the
@@ -415,6 +440,8 @@ def split_commands(action: str, dialect: str = POSIX_DIALECT) -> list[str]:
     """
     if dialect == POWERSHELL_DIALECT:
         return split_commands_powershell(action)
+    if dialect == CMD_DIALECT:
+        return split_commands_cmd(action)
     parts: list[str] = []
     buf: list[str] = []
     quote = ""
@@ -507,6 +534,41 @@ def split_commands_powershell(action: str) -> list[str]:
     return [part for part in parts if part.strip()]
 
 
+def split_commands_cmd(action: str) -> list[str]:
+    """Simple-command TEXTS of a cmd.exe payload, split with CMD's own quoting rules.
+
+    cmd.exe quotes with `"` only: a single quote is an ORDINARY character and can never hide a
+    separator — `cmd /c 'x && del /q t.txt'` really separates at that `&&`, although the POSIX
+    reading swallowed the whole single-quoted run into one harmless-looking token and ALLOWed the
+    deletion behind it. A backslash escapes nothing either, quoting toggles at every `"`, and
+    parentheses group nothing on a cmd.exe line, so a separator inside `$(...)` still separates
+    (cmd.exe runs no substitution there). Like `split_commands`, the returned text is the LINE
+    VERBATIM (quotes and backslashes included) — only the boundaries are decided here.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    in_quotes = False
+    i = 0
+    while i < len(action):
+        ch = action[i]
+        if ch == '"':
+            in_quotes = not in_quotes                       # `"` toggles quoting; `'` never does
+            buf.append(ch)
+            i += 1
+            continue
+        if not in_quotes:
+            match = COMMAND_SPLIT_RE.match(action, i)
+            if match:
+                parts.append("".join(buf))
+                buf = []
+                i = match.end()
+                continue
+        buf.append(ch)
+        i += 1
+    parts.append("".join(buf))
+    return [part for part in parts if part.strip()]
+
+
 def copy_substitution(text: str, start: int, buf: list[str], dialect: str) -> int:
     """Copy the whole `$(...)` starting at `start` into `buf`; return the index just past it.
 
@@ -531,6 +593,8 @@ def matching_paren(text: str, start: int, dialect: str) -> int | None:
     """
     depth = 0
     quote = ""
+    posix = dialect == POSIX_DIALECT
+    quotes = DIALECT_QUOTES[dialect]
     i = start
     while i < len(text):
         ch = text[i]
@@ -543,16 +607,16 @@ def matching_paren(text: str, start: int, dialect: str) -> int | None:
                     quote = ""
                 i += 1
                 continue
-            if ch == "\\" and i + 1 < len(text) and text[i + 1] in QUOTE_ESCAPES[quote]:
+            if posix and ch == "\\" and i + 1 < len(text) and text[i + 1] in QUOTE_ESCAPES[quote]:
                 i += 2
                 continue
             if ch == quote:
                 quote = ""
             i += 1
             continue
-        if ch in "\"'":
+        if ch in quotes:
             quote = ch
-        elif ch == "\\" and dialect == POSIX_DIALECT:
+        elif ch == "\\" and posix:
             i += 2
             continue
         elif ch == "(":
@@ -576,12 +640,16 @@ def substitution_bodies(text: str, dialect: str = POSIX_DIALECT) -> tuple[list[s
         and so is one whose `$` is escaped in double quotes (`echo "\\$(rm -rf /)"`) — both inert,
       * PowerShell: a single-quoted string is literal too, while inside a double-quoted string a
         subexpression DOES run (`Write-Host "$(Get-Date)"`),
+      * cmd.exe: the shell itself runs no `$(...)`, but the bodies are read anyway — the gate
+        cannot know whether the CALLER's shell expands the text before cmd.exe ever sees it,
       * no expansion is attempted at all: this scans quoting, it does not evaluate anything.
 
     `False` means a `$(` never closes, so no command string can be proven — the caller CONFIRMs it.
     """
     bodies: list[str] = []
     quote = ""
+    posix = dialect == POSIX_DIALECT
+    quotes = DIALECT_QUOTES[dialect]
     i = 0
     while i < len(text):
         ch = text[i]
@@ -603,7 +671,7 @@ def substitution_bodies(text: str, dialect: str = POSIX_DIALECT) -> tuple[list[s
                     continue
                 i += 1
                 continue
-            if ch == "\\" and i + 1 < len(text) and text[i + 1] in QUOTE_ESCAPES[quote]:
+            if posix and ch == "\\" and i + 1 < len(text) and text[i + 1] in QUOTE_ESCAPES[quote]:
                 i += 2                                  # escaped (`\$`, `\"`): never a substitution
                 continue
             if ch == quote:
@@ -619,11 +687,11 @@ def substitution_bodies(text: str, dialect: str = POSIX_DIALECT) -> tuple[list[s
                 continue
             i += 1
             continue
-        if ch in "\"'":
+        if ch in quotes:
             quote = ch
             i += 1
             continue
-        if ch == "\\" and dialect == POSIX_DIALECT:
+        if ch == "\\" and posix:
             i += 2                                      # `\$(x)` outside quotes is literal text
             continue
         if ch == "$" and text.startswith("$(", i):
@@ -825,13 +893,34 @@ def is_root_target(target: str) -> bool:
     return base.lower() in ROOT_TARGETS or bool(DRIVE_ROOT_RE.match(base))
 
 
+def resolve_scope_path(path: str) -> str:
+    """The absolute, symlink-resolved spelling of a scope or target for the containment check.
+
+    Targets and scopes must stand on ONE footing before they can be compared: the canonical
+    invocation declares the scope as the RESOLVED repository path (absolute), while rollback
+    commands name their targets relative to that repository (`rm -f src/a.py`), so a purely lexical
+    comparison denied every legitimate in-scope path. Both sides are therefore resolved against the
+    same base — the gate's working directory, which that invocation runs from the repository
+    root — and `os.path.realpath` collapses `..`, resolves the symlinked components that exist and
+    (with `os.path.normcase`) applies the platform's case folding. A relative target is then
+    recognised inside an absolute scope, while `..` traversal, an absolute path outside the scope
+    and a target that escapes through a symlinked component still resolve OUTSIDE it.
+    """
+    p = norm(path)
+    if not p:
+        return ""
+    return norm(os.path.normcase(os.path.realpath(p)))
+
+
 def in_scope(target: str, scopes: list[str]) -> bool:
     """True when `target` is the scope path itself or lives below one of the scopes."""
     if not scopes:
         return False
-    t = posixpath.normpath(target_base(target))
+    t = resolve_scope_path(target_base(target))
+    if not t:
+        return False
     for scope in scopes:
-        s = posixpath.normpath(norm(scope)).rstrip("/")
+        s = resolve_scope_path(scope).rstrip("/")
         if s and (t == s or t.startswith(s + "/")):
             return True
     return False
@@ -1186,7 +1275,9 @@ def classify_wrapper(name: str, raw: str, scopes: list[str], depth: int) -> tupl
     The payload is read in the wrapper's OWN dialect: a `powershell`/`pwsh` payload is PowerShell text,
     where a backslash is literal and cannot keep a string open across a `;` — so
     `pwsh -Command 'echo "\\"; rm -rf /'` really runs `rm -rf /` (HARD_DENY) instead of reading as a
-    harmless `echo`. Every other wrapper keeps the POSIX / cmd.exe rules its payload is read with.
+    harmless `echo`. A `cmd` payload is cmd.exe text, where a single quote is an ordinary character
+    and cannot hide a separator (`split_commands_cmd`) — so `cmd /c 'x && del /q t.txt'` really
+    separates at that `&&`. Every other wrapper keeps the POSIX rules its payload is read with.
     """
     payload = wrapper_payload(name, raw)
     if payload is None or not payload.strip():
@@ -1196,7 +1287,12 @@ def classify_wrapper(name: str, raw: str, scopes: list[str], depth: int) -> tupl
     if depth >= MAX_WRAPPER_DEPTH:
         return CONFIRM, (f"`{name}` nests shell wrappers deeper than {MAX_WRAPPER_DEPTH} "
                          f"levels: the innermost payload cannot be proven harmless")
-    dialect = POWERSHELL_DIALECT if name in POWERSHELL_WRAPPERS else POSIX_DIALECT
+    if name in POWERSHELL_WRAPPERS:
+        dialect = POWERSHELL_DIALECT
+    elif name == "cmd":
+        dialect = CMD_DIALECT
+    else:
+        dialect = POSIX_DIALECT
     cls, reason = classify(payload, scopes, depth + 1, dialect)
     if cls == ALLOW:
         return ALLOW, f"`{name}` runs a payload that is not destructive ({reason})"
@@ -1433,9 +1529,10 @@ def classify(action: str, scopes: list[str], depth: int = 0,
     its own argument list (concatenated quoted/unquoted runs) instead of guessing it from tokens.
 
     `dialect` is the quoting dialect of THIS text and only of this text: a decoded PowerShell payload
-    is PowerShell's own (backslash literal, see `split_commands_powershell`), everything the gate reads
-    elsewhere stays POSIX. A nested wrapper decides its own dialect again from its name, so the
-    PowerShell rules never leak into a POSIX or cmd.exe payload.
+    is PowerShell's own (backslash literal, see `split_commands_powershell`), a decoded cmd.exe
+    payload quotes with `"` only (`split_commands_cmd`), everything the gate reads elsewhere stays
+    POSIX. A nested wrapper decides its own dialect again from its name, so the rules of one payload
+    never leak into another.
 
     A segment is more than the command it names: a readable `$(...)` substitution inside it is a
     command the SHELL runs, so its body is classified here too, at every nesting level

@@ -12,7 +12,8 @@ computed. This test pins the enforcement:
 
   - `require` fails (exit 1, actionable) while the manifest is absent — the pre-edit gate;
   - `init` takes the run_id from the checkpoint (format-checked), is deterministic, reuses an EMPTY
-    skeleton, and never overwrites a manifest that already lists files;
+    skeleton, archives a STALE manifest (a finished run's, run_id differs) as
+    `manifest.<run_id>.json`, and never overwrites a manifest of THIS run that lists files;
   - `add --changed` BLOCKS a file with no backup at `.code-factory/backups/<same path>`, records the
     sha256 the script computed (64 lowercase hex) and re-hashes a re-edited file;
   - `add --created` refuses a path that predates the run (tracked by git, or one that has a backup)
@@ -188,6 +189,68 @@ def test_init(tmp: pathlib.Path) -> None:
     res = run("init", "--repo", str(no_pipeline))
     expect_clean_cli(res, 2, "init without a checkpoint")
     check("pipeline.yaml" in res.stderr, f"the error must name the checkpoint: {res.stderr!r}")
+
+
+def test_init_archives_stale_manifest(tmp: pathlib.Path) -> None:
+    """(M4) Two runs in sequence: the next run's init ARCHIVES the finished run's manifest.
+
+    A run that follows a completed run must not be BLOCKED by the stale manifest.json the
+    previous run left behind (observed live in run 20261104-b5b601f6): init moves it aside as
+    `manifest.<run_id>.json` and creates a fresh skeleton, while a SAME-run re-init over a
+    populated manifest stays refused and an existing archive is never overwritten.
+    """
+    root = repo(tmp, "two-runs", run_id="20261103-8e939171")
+    expect_clean_cli(run("init", "--repo", str(root)), 0, "run 1 init")
+    write_file(root, "src/a.py", "a = 1\n")
+    backup(root, "src/a.py", "a = 0\n")
+    expect_clean_cli(run("add", "--repo", str(root), "--changed", "src/a.py"), 0, "run 1 add")
+    expect_clean_cli(run("audit", "--repo", str(root)), 0, "run 1 finish audit")
+    stale_bytes = (root / MANIFEST_REL).read_bytes()
+
+    # The next run starts: the checkpoint carries ITS run_id, the stale manifest is still there.
+    (root / PIPELINE_REL).write_text("run_id: 20261105-11a026da\nphase: w2\nstatus: in_progress\n",
+                                     encoding="utf-8")
+    res = run("init", "--repo", str(root))
+    expect_clean_cli(res, 0, "run 2 init over the stale manifest")
+    archive = root / ".code-factory" / "manifest.20261103-8e939171.json"
+    check(archive.is_file() and archive.read_bytes() == stale_bytes,
+          "the stale manifest must be archived byte-identically")
+    check(payload(res).get("archived") == str(archive),
+          f"init must report the archive it made: {res.stdout!r}")
+    check(manifest(root) == {"run_id": "20261105-11a026da", "changed_files": [],
+                             "created_files": []},
+          "run 2 gets a fresh skeleton carrying its own run_id")
+    expect_clean_cli(run("require", "--repo", str(root)), 0, "run 2 pre-edit gate")
+
+    # The SAME-run protection is intact: run 2 registers a file, a second init is still refused.
+    write_file(root, "src/b.py", "b = 1\n")
+    backup(root, "src/b.py", "b = 0\n")
+    expect_clean_cli(run("add", "--repo", str(root), "--changed", "src/b.py"), 0, "run 2 add")
+    res = run("init", "--repo", str(root))
+    expect_clean_cli(res, 1, "run 2 re-init over its own populated manifest")
+    check("already lists" in res.stderr, f"the same-run refusal must stay: {res.stderr!r}")
+    data = manifest(root)
+    check(data["run_id"] == "20261105-11a026da" and len(data["changed_files"]) == 1,
+          "a refused same-run init must leave the manifest untouched")
+    check(archive.read_bytes() == stale_bytes, "a refused init must not touch the archive")
+
+    # An existing archive is never overwritten: the same stale run_id twice BLOCKS (exit 1) and
+    # nothing is moved or lost.
+    clash = repo(tmp, "archive-clash", run_id="20261105-11a026da")
+    target = write_file(clash, "src/a.py", "a = 1\n")
+    (clash / MANIFEST_REL).write_text(json.dumps(
+        {"run_id": "20261103-8e939171",
+         "changed_files": [{"path": "src/a.py", "sha256": sha256(target)}],
+         "created_files": []}), encoding="utf-8")
+    existing_archive = clash / ".code-factory" / "manifest.20261103-8e939171.json"
+    existing_archive.write_text("previous archive\n", encoding="utf-8")
+    res = run("init", "--repo", str(clash))
+    expect_clean_cli(res, 1, "init when the archive already exists")
+    check("already exists" in res.stderr, f"the refusal must explain it: {res.stderr!r}")
+    check(existing_archive.read_text(encoding="utf-8") == "previous archive\n",
+          "an existing archive is never overwritten")
+    check(manifest(clash)["run_id"] == "20261103-8e939171",
+          "a refused init must leave the stale manifest in place")
 
 
 # --------------------------------------------------------------------------------------------
@@ -442,16 +505,30 @@ def test_atomic_write_failure(tmp: pathlib.Path) -> None:
     write_file(frozen, "src/new.py", "new = 1" + chr(10))
     path = frozen / MANIFEST_REL
     before = path.read_bytes()
-    os.chmod(path, 0o444)
+    # The write failure must be DETERMINISTIC on every platform: `chmod 0444` on the FILE is a
+    # Windows-only assumption — on POSIX the atomic replace is governed by the DIRECTORY's
+    # permissions, not the destination's mode, so a read-only directory (which refuses the temp
+    # file itself) is the portable POSIX counterpart of a read-only destination on Windows.
+    if os.name == "nt":
+        os.chmod(path, 0o444)
+        restore = (path, 0o644)
+    else:
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            print("note: skipping the read-only-directory case — root ignores directory modes")
+            return
+        os.chmod(path.parent, 0o555)
+        restore = (path.parent, 0o755)
     try:
         res = run("add", "--repo", str(frozen), "--created", "src/new.py")
-        expect_clean_cli(res, 2, "add onto a read-only manifest")
+        expect_clean_cli(res, 2, "add onto an unwritable manifest location")
         check("cannot write the manifest" in res.stderr,
               f"add must name the write failure: {res.stderr!r}")
         check(path.read_bytes() == before,
               "a failed write must leave the manifest byte-identical")
+        check(not list(path.parent.glob("manifest.json.*.tmp")),
+              "a failed write must not leave a temp file behind")
     finally:
-        os.chmod(path, 0o644)
+        os.chmod(*restore)
 
 
 def main() -> int:
@@ -459,6 +536,7 @@ def main() -> int:
         tmp = pathlib.Path(raw)
         test_require(tmp)
         test_init(tmp)
+        test_init_archives_stale_manifest(tmp)
         test_add_changed(tmp)
         test_add_created(tmp)
         test_path_confinement(tmp)
@@ -469,7 +547,8 @@ def main() -> int:
 
     print("PASS - manifest.py enforces the run's change set: `require` blocks a run that has no "
           "manifest (the pre-edit gate), `init` takes the run_id from the checkpoint, is "
-          "deterministic, reuses an empty skeleton and never overwrites a populated manifest, "
+          "deterministic, reuses an empty skeleton, archives a stale manifest of a finished run "
+          "as `manifest.<run_id>.json` and never overwrites a populated manifest of THIS run, "
           "`add` computes the sha256 itself and BLOCKS a changed file without its backup and a "
           "created file that predates the run, every path is confined to the repository (absolute "
           "/ drive / '..' / symlink escapes refused), and `audit` reports drift, a missing file, a "

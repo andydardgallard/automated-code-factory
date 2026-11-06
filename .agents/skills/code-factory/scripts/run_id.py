@@ -23,10 +23,14 @@ changes: relative paths stay relative to the caller's working directory.
 
 `gen` prints the run id and exits 0 (an unreadable task file is an error, exit 1). `check` scans
 the artifacts a run carries — `state/pipeline.yaml`, `state/acceptance.md`, `logs/*.md`,
-`report.md` — and exits 1 after listing every EXISTING artifact that has no `run_id: <id>` or
-`run_id=<id>` line. Any id counts: the goal is that the artifact is attributed to a run, not that
-it matches the current one. Missing artifacts and an empty or absent directory are not an error
-(exit 0), so a run passes the check until it writes its first artifact. stdlib only, Windows/POSIX.
+`report.md` — and exits 1 after listing every EXISTING artifact that has no full `run_id: <id>` or
+`run_id=<id>` marker line. A marker line carries ONLY the marker (an optional markdown bullet such
+as `- run_id: <id>` is allowed) and a syntactically valid id (`YYYYMMDD`-`<8 lowercase hex>`, the
+shape `check_factory_model.RUN_ID_RE` enforces elsewhere): a placeholder (`run_id: <id>`), a
+non-id value (`run_id=nonsense`), a malformed id or prose around the marker is NOT attribution.
+Any VALID id counts: the goal is that the artifact is attributed to a run, not that it matches the
+current one. Missing artifacts and an empty or absent directory are not an error (exit 0), so a
+run passes the check until it writes its first artifact. stdlib only, Windows/POSIX.
 """
 from __future__ import annotations
 
@@ -37,8 +41,13 @@ import re
 import sys
 from datetime import date
 
-# An artifact is marked when it carries `run_id: <id>` or `run_id=<id>` (any id, not the current one).
-RUN_ID_LINE = re.compile(r"run_id\s*[:=]\s*\S+")
+# An artifact is marked when a FULL line of it carries ONLY the marker — an optional markdown
+# bullet, then `run_id: <id>` or `run_id=<id>` — with a syntactically valid id (`YYYYMMDD`-`<8
+# lowercase hex>`, the same shape check_factory_model.RUN_ID_RE enforces on pipeline.yaml). Any
+# valid id counts, not only the current one; a placeholder, a malformed id or prose around the
+# marker is not attribution.
+RUN_ID_LINE = re.compile(r"^[ \t]*(?:[-*][ \t]+)?run_id[ \t]*[:=][ \t]*\d{8}-[0-9a-f]{8}[ \t]*$",
+                         re.MULTILINE)
 ARTIFACT_GLOBS = ("state/pipeline.yaml", "state/acceptance.md", "logs/*.md", "report.md")
 REPO_HELP = ("Resolved repo_path of the run: a RELATIVE --task/--dir is resolved against it "
              "(default: the caller's working directory — unchanged without the flag)")
@@ -93,7 +102,7 @@ def artifact_paths(root: pathlib.Path) -> list[pathlib.Path]:
 
 
 def has_run_id(text: str) -> bool:
-    """True when the artifact text carries a `run_id: <id>` / `run_id=<id>` line."""
+    """True when the artifact text carries a full marker line with a syntactically valid run id."""
     return bool(RUN_ID_LINE.search(text))
 
 
@@ -135,8 +144,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         return 0
     for rel in unmarked:
         print(rel)
-    print(f"run_id: {len(unmarked)} existing artifact(s) without a run_id: "
-          f"expected a 'run_id: <id>' or 'run_id=<id>' line", file=sys.stderr)
+    print(f"run_id: {len(unmarked)} existing artifact(s) without a run_id: expected a full line "
+          f"'run_id: <YYYYMMDD-8hex>' or 'run_id=<YYYYMMDD-8hex>'", file=sys.stderr)
     return 1
 
 

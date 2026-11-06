@@ -14,10 +14,16 @@ one file per phase, and fails when a gate that should have run left no record.
 PHASES
 
   K  the pre-implementation checkpoint: the input-validation diff gate (implement/refactor only),
-     the English-only scan, the run-id provenance check and the rulebook reconciler.
+     the English-only scan, the run-id provenance check, the rulebook reconciler and the
+     watchdog-deny gate (a recorded unresolved supervisor deny blocks the phase).
   Y  the finish checkpoint: every K gate plus the action-gate finish audit and the manifest audit.
 
-Optional gates (the delegation and permit audits) are picked up automatically once the script
+The manifest audit is CHANGE-PRODUCING only: a `review`/`security_audit` run is report-only and
+never initializes a manifest, so the gate is recorded `skipped` with that reason instead of failing
+on the missing file.
+
+Optional gates (the delegation and permit audits, the watchdog-deny gate) are picked up
+automatically once the script
 EXISTS and advertises the subcommand: a gate script that is not present is recorded as
 `not present: skipped` with the reason and never fails the phase, while a gate that IS present and
 fails propagates a failure (exit 1). This is how `permit_gate.py` (task_16) joins without touching
@@ -30,7 +36,9 @@ USAGE
 
   --diff BASE HEAD   the change range of the run. Without it the input-validation gate scans the
                      working tree against HEAD (`--base HEAD`), which is what both checkpoints mean.
-  --out              the record file (default: `<repo>/.code-factory/logs/gate-<phase>.md`)
+  --out              the record file (default: `<repo>/.code-factory/logs/gate-<phase>.md`); the
+                     path is resolved through its nearest existing ancestor and must stay INSIDE
+                     --repo (an absolute or traversing path that escapes is an input error)
   --verify-only      do not run anything: check that `<record>` names every gate that APPLIES to the
                      phase and that none of them failed — the "a missing gate record is a failure"
                      rule, usable by a later audit.
@@ -78,13 +86,17 @@ class Gate:
     """
 
     def __init__(self, name: str, script: str, phases: tuple[str, ...], args: tuple[str, ...],
-                 optional: bool = False, diff_scoped: bool = False):
+                 optional: bool = False, diff_scoped: bool = False,
+                 change_producing: bool = False):
         self.name = name
         self.script = script
         self.phases = phases
         self.args = args
         self.optional = optional
         self.diff_scoped = diff_scoped
+        # A change-producing gate audits the run's CHANGE SET; a report-only task type
+        # (review/security_audit) never produces one, so the gate is skipped with the reason.
+        self.change_producing = change_producing
 
 
 GATES: tuple[Gate, ...] = (
@@ -94,10 +106,13 @@ GATES: tuple[Gate, ...] = (
     Gate("run-id", "run_id.py", PHASES, ("check", "--dir", ".code-factory", "--repo", "{repo}")),
     Gate("factory-rules", "check_factory_rules.py", PHASES, ("--root", "{repo}")),
     Gate("action-audit", "action_gate.py", ("Y",), ("audit", "--repo", "{repo}")),
-    Gate("manifest-audit", "manifest.py", ("Y",), ("audit", "--repo", "{repo}")),
+    Gate("manifest-audit", "manifest.py", ("Y",), ("audit", "--repo", "{repo}"),
+         change_producing=True),
     Gate("delegation-audit", "delegation_gate.py", ("Y",), ("audit", "--repo", "{repo}"),
          optional=True),
     Gate("permit-audit", "permit_gate.py", PHASES, ("audit", "--repo", "{repo}"), optional=True),
+    Gate("watchdog-deny", "supervisor_watchdog.py", PHASES, ("status", "--repo", "{repo}"),
+         optional=True),
 )
 RECORD_COLUMNS = ("gate", "exit", "applicability", "ran_at", "command")
 
@@ -209,16 +224,46 @@ def applicability(gate: Gate, phase: str, contract: dict, range_reason: str) -> 
             return False, (f"not applicable: task_type {task_type} produces no change range for the "
                            f"input-validation scan")
         return True, f"applicable: the change range is {range_reason}"
+    if gate.change_producing:
+        task_type = contract["task_type"]
+        if task_type and task_type not in STRICT_TASK_TYPES:
+            return False, (f"not applicable: task_type {task_type} is report-only and never "
+                           f"initializes a manifest")
     return True, "applicable"
 
 
 # ----------------------------------------------------------------------------------------- record
 
 def record_path(root: pathlib.Path, phase: str, out: str | None) -> pathlib.Path:
-    if out:
-        path = pathlib.Path(out)
-        return path if path.is_absolute() else root / path
-    return root / RECORD_REL / f"gate-{phase}.md"
+    """The record file's path, CONFINED to the repository.
+
+    `--out` is user input: an absolute path or a `..` traversal must never make the aggregator
+    write its record outside the resolved repository. The file itself may not exist yet, so the
+    path is resolved through its NEAREST EXISTING ANCESTOR (symlinks included) and the remaining
+    components are re-appended; the result must stay inside --repo.
+    """
+    if not out:
+        return root / RECORD_REL / f"gate-{phase}.md"
+    raw = pathlib.Path(out)
+    candidate = raw if raw.is_absolute() else root / raw
+    node, tail = candidate, []
+    while not node.exists() and node.parent != node:
+        tail.append(node.name)
+        node = node.parent
+    if not node.exists():
+        raise GateAllError(f"--out {out!r} has no existing ancestor: the record path cannot be "
+                           f"confined to the repository root {root}")
+    resolved = node.resolve()
+    for part in reversed(tail):
+        if part in ("", ".", ".."):
+            raise GateAllError(f"--out {out!r} may not contain {part!r} components: the record "
+                               f"path must be a plain path inside the repository root {root}")
+        resolved = resolved / part
+    base = root.resolve()
+    if not resolved.is_relative_to(base):
+        raise GateAllError(f"--out {out!r} resolves to {resolved}, which is outside the "
+                           f"repository root {base}: the gate record must stay inside --repo")
+    return resolved
 
 
 def _cell(text: str) -> str:

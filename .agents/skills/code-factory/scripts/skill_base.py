@@ -7,8 +7,10 @@ name, source, sha256, created_at, last_used, task_ids. Freshness is decided ONLY
 the source content (equal -> reuse, different -> update), never by the LLM.
 
 `reference_docs[].path` may be a local file/folder OR a PUBLIC http(s) source: a document URL
-(`http_doc`) or a Git repository URL (`http_git` — a URL ending in `.git`). Remote sources are
-materialized into the resolved repository's uncommitted runtime cache
+(`http_doc`) or a Git repository URL (`http_git` — a URL ending in `.git`). PUBLIC is enforced at
+the destination: the host is resolved before the transfer and loopback, private, link-local and
+other non-globally-routable addresses — the source's own and every redirect hop's — are rejected.
+Remote sources are materialized into the resolved repository's uncommitted runtime cache
 `<repo>/.code-factory/cache/reference-docs/` and are handled from then on exactly like a local
 path. The `{path, skill}` task schema is unchanged: a URL is simply a new kind of `path` value.
 
@@ -21,7 +23,9 @@ Usage (`--base` and `--repo` are TOP-LEVEL options, so they must precede the sub
   python3 skill_base.py [--base skill-base] list
 
 `resolve`, `hash` and `record` also accept the remote-source flags `--offline`, `--allow-stale`,
-`--timeout <seconds>` (default 60) and `--max-bytes <n>` (default 67108864 — the download/clone cap).
+`--timeout <seconds>` (default 60 — a finite number greater than zero) and `--max-bytes <n>`
+(default 67108864 — the download/clone cap; a positive integer no larger than sys.maxsize - 1).
+An invalid limit is a usage error (exit 2) BEFORE any transfer starts.
 The cap is enforced DURING a transfer too: a download is counted chunk by chunk, a clone is
 supervised while its temporary tree grows, and crossing the cap aborts the transfer with an explicit
 reason and removes the partial content.
@@ -76,11 +80,15 @@ import argparse
 import dataclasses
 import datetime
 import hashlib
+import http.client
+import ipaddress
 import json
+import math
 import os
 import pathlib
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -128,6 +136,11 @@ def local_path_of(source: str, repo: str | pathlib.Path | None = None) -> pathli
 # Public, unauthenticated http(s) sources only. Remote content is UNTRUSTED reference data: nothing
 # of it is ever executed, no hooks run, no submodules and no LFS content are fetched, and a URL
 # carrying credentials is rejected before it could reach a log, a manifest or a generated skill.
+# "Public" is checked at the DESTINATION, not only at the URL's shape: the host is resolved before
+# the transfer starts and every resolved address must be globally routable, so a source (or a
+# redirect hop of it) can never point at loopback, a private/link-local range or a cloud-metadata
+# endpoint. A clone never follows an HTTP redirect: git cannot re-validate the hop for us, so the
+# operator re-points the source at the final URL instead.
 
 CACHE_SUBDIR = pathlib.Path(".code-factory") / "cache" / "reference-docs"
 MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
@@ -150,7 +163,10 @@ CLONE_POLL_SECONDS = 0.05          # how often a running clone's temporary tree 
 _GIT_CONFIG = ("-c", f"core.hooksPath={os.devnull}",     # a downloaded hook must never run
                "-c", "core.autocrlf=false", "-c", "core.eol=lf",   # platform-independent content
                "-c", "core.symlinks=false", "-c", "core.fsmonitor=false",
-               "-c", "credential.helper=")
+               "-c", "credential.helper=",
+               # A redirect hop of a clone cannot be re-validated for a public destination, so no
+               # redirect is followed at all: the operator re-points the source at the final URL.
+               "-c", "http.followRedirects=false")
 
 
 class SourceError(RuntimeError):
@@ -174,10 +190,11 @@ def _redact(source: str) -> str:
 
 
 def _validate_url(url: str, context: str) -> None:
-    """A URL must be public http(s): no other scheme and no embedded credentials.
+    """A URL must be public http(s) IN SHAPE: no other scheme and no embedded credentials.
 
     Applied to the source itself AND to every redirect target, so an allowed source can never jump
     to `file://`, an unsupported scheme or a credentials-bearing URL half way through a fetch.
+    The shape alone says nothing about the DESTINATION — that is `_validate_destination`'s job.
     """
     try:
         parts = urllib.parse.urlsplit(url)
@@ -192,6 +209,53 @@ def _validate_url(url: str, context: str) -> None:
                           f"public, unauthenticated sources are supported ({_redact(url)})")
     if not parts.hostname:
         raise SourceError(f"{context} has no host ({_redact(url)})")
+
+
+def _default_resolver(host: str, port: int | None) -> list[str]:
+    """The addresses the system resolver returns for `host` — the ones a transfer would use."""
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return sorted({info[4][0] for info in infos})
+
+
+def _validate_destination(url: str, context: str, resolve=None) -> str:
+    """A remote source must resolve to PUBLIC addresses only; returns the address to CONNECT to.
+
+    `_validate_url` proves the URL's shape; this proves its DESTINATION: the host is resolved (a
+    literal IP is its own resolution, so it needs no resolver and no network) and EVERY returned
+    address must be globally routable. Loopback, private (RFC 1918 / ULA), link-local and reserved
+    ranges — the cloud-metadata 169.254.169.254 included — are rejected for the initial request
+    AND for every redirect target, so an allowed public source cannot jump to an internal service
+    half way through a fetch. A host that cannot be resolved at all is rejected as well: a
+    destination that cannot be checked is not a public source.
+
+    The return value is the FIRST validated address, and it is what the transfer connects to: the
+    check and the connection share ONE resolution, so a DNS answer that changes between them (a
+    rebinding attacker) can never route the request somewhere this function never saw.
+
+    `resolve` is the resolver, called as `resolve(host, port)` and returning address strings; it
+    defaults to the system resolver and is injectable, so tests never touch the network.
+    """
+    _validate_url(url, context)
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or ""
+    try:
+        defined = ipaddress.ip_address(host.split("%", 1)[0])      # a literal IP: no DNS needed
+        addresses = [defined]
+    except ValueError:
+        resolver = resolve or _default_resolver
+        try:
+            addresses = [ipaddress.ip_address(text.split("%", 1)[0])
+                         for text in resolver(host, parts.port)]
+        except (OSError, ValueError) as exc:
+            raise SourceError(f"{context} host cannot be resolved, so its destination cannot be "
+                              f"checked ({_redact(url)}): {exc}") from exc
+        if not addresses:
+            raise SourceError(f"{context} host resolves to no address ({_redact(url)})")
+    for address in addresses:
+        if not address.is_global:
+            raise SourceError(f"{context} resolves to the non-public address {address}: only "
+                              f"public http(s) sources are supported ({_redact(url)})")
+    return str(addresses[0])
 
 
 def classify_source(source: str) -> str:
@@ -290,12 +354,97 @@ class Materialized:
 
 
 class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Auto-following handler that re-validates EVERY redirect target before it is followed."""
+    """Auto-following handler that re-validates EVERY redirect target before it is followed.
+
+    The target is checked with the SAME resolver as the initial request, so a redirect can jump
+    neither to a forbidden scheme nor to a non-public destination. The connection itself is pinned
+    again when the new request reaches `_PinnedHTTPHandler`, so the hop is resolved once for the
+    check and once for its own connection — never checked with one answer and connected with
+    another.
+    """
+
+    def __init__(self, resolve=None):
+        super().__init__()
+        self._resolve = resolve
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         target = urllib.parse.urljoin(req.full_url, newurl)
-        _validate_url(target, context="redirect target")
+        _validate_destination(target, context="redirect target", resolve=self._resolve)
         return super().redirect_request(req, fp, code, msg, headers, target)
+
+
+def _connect_to(address: str, port: int, timeout, source_address=None):
+    """Open the TCP connection to ONE already-validated address (the pinning seam).
+
+    The address is the one `_validate_destination` approved, so the resolver is never asked a
+    second time for the connection: a DNS answer that changes between the check and the connect
+    (DNS rebinding) has no window to redirect this transfer. A module-level function, so a test can
+    observe/redirect the exact address the transport would dial.
+    """
+    return socket.create_connection((address, port), timeout, source_address)
+
+
+def _pinned_connection(base, address: str):
+    """A `http.client` connection class whose socket goes to `address`, host name preserved.
+
+    `http.client` stores the connector as an INSTANCE attribute (`self._create_connection =
+    socket.create_connection`, "to allow unit tests to replace it"), so the pin is installed after
+    `__init__` ran and before any request is sent. `self.host` keeps the URL's host name, so the
+    `Host` header, the TLS SNI and the certificate check still name the site — the connection just
+    stops re-resolving it.
+    """
+
+    class _Pinned(base):                                            # noqa: N801 (private helper)
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._create_connection = self._pinned_connect
+
+        def _pinned_connect(self, sockaddr, timeout=None, source_address=None):
+            return _connect_to(address, sockaddr[1], timeout, source_address)
+
+    return _Pinned
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    """Plain-HTTP handler that validates the destination and dials the VALIDATED address."""
+
+    def __init__(self, resolve=None):
+        super().__init__()
+        self._resolve = resolve
+
+    def http_open(self, req):
+        address = _validate_destination(req.full_url, context="reference_docs URL",
+                                        resolve=self._resolve)
+        return self.do_open(_pinned_connection(http.client.HTTPConnection, address), req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """TLS handler with the same pinning; SNI/certificate verification keep the URL's host name."""
+
+    def __init__(self, resolve=None):
+        super().__init__()
+        self._resolve = resolve
+
+    def https_open(self, req):
+        address = _validate_destination(req.full_url, context="reference_docs URL",
+                                        resolve=self._resolve)
+        return self.do_open(_pinned_connection(http.client.HTTPSConnection, address), req,
+                            context=self._context)
+
+
+def _build_opener(resolve=None):
+    """The transfer's opener: pinned connections, validated redirects, and NO proxy.
+
+    A proxy would make the socket go to the proxy instead of the validated address, which is
+    exactly the bypass this pinning exists to close, so the environment's proxy configuration is
+    deliberately not consulted.
+    """
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _PinnedHTTPHandler(resolve),
+        _PinnedHTTPSHandler(resolve),
+        _ValidatingRedirectHandler(resolve),
+    )
 
 
 def _load_meta(cache: pathlib.Path, key: str) -> dict:
@@ -330,19 +479,22 @@ def _doc_filename(url: str, content_type: str | None) -> str:
     return f"{path.stem or 'document'}{_CONTENT_TYPE_SUFFIXES.get((content_type or '').lower(), '.txt')}"
 
 
-def _download_doc(url: str, folder: pathlib.Path, *, max_bytes: int, timeout: float) -> tuple[pathlib.Path, str | None]:
+def _download_doc(url: str, folder: pathlib.Path, *, max_bytes: int, timeout: float,
+                  resolve=None) -> tuple[pathlib.Path, str | None]:
     """Download one document into `folder` (atomic: `body.part` is renamed only when complete)."""
     try:
         folder.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise SourceError(f"cannot write the cache: {exc}") from exc
     part = folder / "body.part"
-    opener = urllib.request.build_opener(_ValidatingRedirectHandler())
+    # No separate pre-check: `_PinnedHTTPHandler` resolves ONCE per hop, proves every address public
+    # and dials the one it validated, so checking here first would resolve the host a second time
+    # (the very window this closes) and could validate one answer while another is connected.
+    opener = _build_opener(resolve)
     request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     deadline = time.monotonic() + timeout
     try:
         with opener.open(request, timeout=timeout) as resp:
-            _validate_url(resp.geturl(), context="response URL")
             length = resp.headers.get("Content-Length")
             if length and length.isdigit() and int(length) > max_bytes:
                 raise SourceError(f"the source is larger than the {max_bytes} byte limit "
@@ -388,7 +540,7 @@ def _cached_doc(folder: pathlib.Path, filename: str | None) -> pathlib.Path | No
 
 
 def _materialize_http_doc(source: str, cache: pathlib.Path, *, max_bytes: int, timeout: float,
-                          offline: bool) -> Materialized:
+                          offline: bool, resolve=None) -> Materialized:
     key = cache_key(source)
     folder = cache / "http" / key
     if offline:
@@ -397,7 +549,8 @@ def _materialize_http_doc(source: str, cache: pathlib.Path, *, max_bytes: int, t
             raise SourceError(f"there is no cached copy of {_redact(source)} under {cache}, so it "
                               "cannot be resolved offline")
         return Materialized(source, "http_doc", cached, offline=True, stale=True)
-    path, content_type = _download_doc(source, folder, max_bytes=max_bytes, timeout=timeout)
+    path, content_type = _download_doc(source, folder, max_bytes=max_bytes, timeout=timeout,
+                                       resolve=resolve)
     _save_meta(cache, key, {"source": canonical_url(source), "source_type": "http_doc",
                             "filename": path.name, "content_type": content_type,
                             "fetched_at": _now()})
@@ -571,8 +724,16 @@ def _supervised_clone(source: str, tmp: pathlib.Path, *, max_bytes: int,
 
 
 def _clone_git(source: str, clone: pathlib.Path, *, max_bytes: int, timeout: float,
-               full: bool = False) -> str | None:
-    """Clone without submodules/tags; returns the resolved commit sha of the checkout."""
+               full: bool = False, resolve=None) -> str | None:
+    """Clone without submodules/tags; returns the resolved commit sha of the checkout.
+
+    HONEST LIMIT on the pinning rule: a clone runs in the git EXECUTABLE, which resolves the host
+    itself, so the validated address cannot be handed to it. The destination is still proved public
+    before the clone and `http.followRedirects=false` keeps every hop on that one host; a rebinding
+    answer could only reach git's own resolver, which is why the http(s) document path — the one
+    that carries the `Host`/SNI contract — is the pinned one.
+    """
+    _validate_destination(source, context="reference_docs URL", resolve=resolve)
     tmp = clone.with_name(clone.name + ".part")
     remove_tree(tmp)
     try:
@@ -722,7 +883,7 @@ def _verify_cached_tree(source: str, tree: pathlib.Path, revision: str, *,
 
 
 def _materialize_git(source: str, cache: pathlib.Path, *, max_bytes: int, timeout: float,
-                     offline: bool, revision: str | None = None) -> Materialized:
+                     offline: bool, revision: str | None = None, resolve=None) -> Materialized:
     key = cache_key(source)
     tree = cache / "git" / key
     if offline:
@@ -734,13 +895,14 @@ def _materialize_git(source: str, cache: pathlib.Path, *, max_bytes: int, timeou
     if revision:
         head = _clone_is_pinned(clone, revision, timeout=timeout)
         if head is None:                 # not the pinned content yet: re-clone, then check out
-            _clone_git(source, clone, max_bytes=max_bytes, timeout=timeout, full=True)
+            _clone_git(source, clone, max_bytes=max_bytes, timeout=timeout, full=True,
+                       resolve=resolve)
             head = _checkout_pinned(clone, revision, timeout=timeout)
         _export_clean_tree(clone, tree)
         _save_meta(cache, key, {"source": canonical_url(source), "source_type": "http_git",
                                 "resolved_revision": head, "fetched_at": _now()})
         return Materialized(source, "http_git", tree, resolved_revision=head)
-    revision_sha = _clone_git(source, clone, max_bytes=max_bytes, timeout=timeout)
+    revision_sha = _clone_git(source, clone, max_bytes=max_bytes, timeout=timeout, resolve=resolve)
     _export_clean_tree(clone, tree)
     _save_meta(cache, key, {"source": canonical_url(source), "source_type": "http_git",
                             "resolved_revision": revision_sha, "fetched_at": _now()})
@@ -750,7 +912,8 @@ def _materialize_git(source: str, cache: pathlib.Path, *, max_bytes: int, timeou
 def resolve_source(source: str, *, repo: str | pathlib.Path | None = None,
                    cache: pathlib.Path | None = None, max_bytes: int = MAX_DOWNLOAD_BYTES,
                    timeout: float = FETCH_TIMEOUT_SECONDS, offline: bool = False,
-                   allow_stale: bool = False, revision: str | None = None) -> Materialized:
+                   allow_stale: bool = False, revision: str | None = None,
+                   resolve=None) -> Materialized:
     """Classify and materialize a `reference_docs` source (local path or public URL).
 
     A local path is returned as it is (a relative one is resolved against `repo`). A remote source
@@ -758,6 +921,7 @@ def resolve_source(source: str, *, repo: str | pathlib.Path | None = None,
     `allow_stale` permits a cached copy after a failed fetch; ONLY those two flags yield a `stale`
     result, so a cached copy is never passed off as checked remote content. `revision` pins a Git
     source to that exact commit (see the module docstring); it is meaningless for any other kind.
+    `resolve` overrides the DNS resolver used to prove the destination public (tests inject it).
     """
     kind = classify_source(source)
     if kind == "local":
@@ -768,7 +932,7 @@ def resolve_source(source: str, *, repo: str | pathlib.Path | None = None,
                             local_path=local_path_of(source, repo))
     cache_dir = cache if cache is not None else cache_root(repo)
     fetch = _materialize_git if kind == "http_git" else _materialize_http_doc
-    options = {"max_bytes": max_bytes, "timeout": timeout}
+    options = {"max_bytes": max_bytes, "timeout": timeout, "resolve": resolve}
     if kind == "http_git" and revision:
         options["revision"] = revision
     if offline:
@@ -815,6 +979,27 @@ def add_remote_options(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
     return parser
 
 
+def remote_limits(args) -> tuple[float, int]:
+    """The validated `--timeout` / `--max-bytes` of a subcommand, BEFORE any transfer starts.
+
+    A time limit that is not a finite number of seconds greater than zero, or a byte cap that is
+    not a positive integer no larger than `sys.maxsize - 1` (so `max_bytes + 1` arithmetic can
+    never overflow a fixed-width build), is a usage error (exit 2), never an uncaught ValueError
+    deep in the transfer machinery. `getattr` defaults keep old Namespace-shaped callers valid.
+    """
+    timeout = getattr(args, "timeout", FETCH_TIMEOUT_SECONDS)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) \
+            or not math.isfinite(timeout) or timeout <= 0:
+        raise UsageError(f"--timeout must be a finite number of seconds greater than zero "
+                         f"(got {timeout!r})")
+    max_bytes = getattr(args, "max_bytes", MAX_DOWNLOAD_BYTES)
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) \
+            or not 0 < max_bytes <= sys.maxsize - 1:
+        raise UsageError(f"--max-bytes must be a positive integer no larger than "
+                         f"{sys.maxsize - 1} (got {max_bytes!r})")
+    return float(timeout), max_bytes
+
+
 def _source_options(args) -> dict:
     """The `resolve_source` options a subcommand carries (`getattr`: old callers stay valid)."""
     return {
@@ -859,6 +1044,7 @@ def cmd_hash(args) -> int:
     declared repository root decides which file is meant, never the process working directory.
     `--revision` hashes the CHECKED-OUT content of a pinned Git source, not its HEAD.
     """
+    remote_limits(args)              # the transfer limits are usage errors before any transfer
     revision = pinned_revision(getattr(args, "revision", None))
     require_git_source(args.path, revision, "--revision")
     if classify_source(args.path) == "local":
@@ -874,6 +1060,7 @@ def cmd_hash(args) -> int:
 
 def cmd_resolve(args) -> int:
     """Print the local path and metadata of a materialized `reference_docs` source as JSON."""
+    remote_limits(args)              # the transfer limits are usage errors before any transfer
     revision = pinned_revision(getattr(args, "revision", None))
     require_git_source(args.source, revision, "--revision")
     materialized, digest = materialize_and_hash(args.source, revision=revision,
@@ -1045,6 +1232,7 @@ def _new_entry(name: str, values: dict, sources: list[dict] | None, task_id: str
 
 def cmd_record(args) -> int:
     """Record one skill: its positional source, its optional pin and its extra sources."""
+    remote_limits(args)              # the transfer limits are usage errors before any transfer
     base = pathlib.Path(args.base).resolve()
     manifest = load_manifest(base)
     revision = pinned_revision(getattr(args, "revision", None))

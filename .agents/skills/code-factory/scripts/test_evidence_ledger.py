@@ -10,13 +10,15 @@ mixed-scope ledger verifies with no `--files` at all, and a caller scope that di
 stamped one is a fail-closed STALE whose reason names the scope mismatch instead of a file change,
 (d) a broken ledger is refused, never overwritten, and never leaves a temp file behind, and (e) an
 entry whose recorded scope is EMPTY signs no file, so it is never FRESH — and `stamp` refuses to
-write such an entry at all.
+write such an entry at all. `--run-id` attributes an entry to its run, and a value that is not
+`YYYYMMDD`-`<8 lowercase hex>` is a usage error (exit 2) that records nothing.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -194,6 +196,25 @@ def main() -> int:
         expect(res.returncode == 0 and res.stdout.strip() == sign(tmp, "a.py")[0],
                f"sign must accept --run-id and stay unchanged: {res.stdout!r}")
 
+        # 10b. A malformed --run-id is a USAGE error (exit 2, no traceback) and records nothing:
+        #      the value lands verbatim in the signed entry, so an id that is not
+        #      `YYYYMMDD`-`<8 lowercase hex>` gives the acceptance gate an attribution no run-id
+        #      check can match. (Regression: the pre-fix script stamped `BOGUS!!` with exit 0.)
+        for bad_run_id in ("BOGUS!!", "<id>", "bogus", "20260922-442CD2F8", "2026092-442cd2f8"):
+            bad_ledger = tmp / "bad-run-id" / "evidence.json"
+            res = stamp(tmp, bad_ledger, "regression", "pass", "a.py", run_id=bad_run_id)
+            expect(res.returncode == 2,
+                   f"--run-id {bad_run_id!r} must be a usage error, got {res.returncode}")
+            expect("--run-id" in res.stderr,
+                   f"the usage error must name the flag: {res.stderr!r}")
+            expect("Traceback" not in res.stderr,
+                   f"a malformed --run-id must not raise a traceback: {res.stderr!r}")
+            expect(not bad_ledger.exists(),
+                   f"no ledger entry may be written for --run-id {bad_run_id!r}")
+        # `sign` rejects the same value (one rule for every subcommand that takes the flag).
+        res = run("sign", "--repo", str(tmp), "--files", "a.py", "--run-id", "<id>")
+        expect(res.returncode == 2, f"sign must reject a malformed --run-id: {res.returncode}")
+
         # 11. Per-entry scope: every entry records the --files set it was stamped with, and `check`
         #     verifies each entry against ITS OWN scope — a mixed-scope ledger verifies with no
         #     --files at all. A caller scope that differs from the stamped one is a SCOPE MISMATCH
@@ -283,9 +304,53 @@ def main() -> int:
                f"stamping an empty scope must be refused: {res.stdout!r}{res.stderr!r}")
         expect(not no_files.exists(), "a refused stamp must not create the ledger")
 
+        # 15. Regression (M1): every --files entry of sign/stamp must be a plain
+        #     repository-relative path — an absolute path, a `..` escape or a path that resolves
+        #     outside --repo through a symlink would sign an EXTERNAL file and retain it under
+        #     its external spelling. Both subcommands reject with exit 1 before hashing or
+        #     writing anything; plain repo-relative paths still sign and stamp.
+        m1repo = tmp / "m1-repo"
+        m1repo.mkdir()
+        (m1repo / "inner.py").write_text("IN\n", encoding="utf-8")
+        outside = tmp / "outside.txt"
+        outside.write_text("OUT\n", encoding="utf-8")
+        m1ledger = tmp / "m1" / "evidence.json"
+        stamp_args = ["stamp", "--ledger", str(m1ledger), "--name", "regression",
+                      "--result", "pass"]
+        for cmd_args in (["sign"], stamp_args):
+            for bad in (str(outside.resolve()), "../outside.txt"):
+                res = run(*cmd_args, "--repo", str(m1repo), "--files", "inner.py", bad)
+                expect(res.returncode == 1 and "error:" in res.stderr
+                       and "Traceback" not in res.stderr,
+                       f"{cmd_args[0]} must reject {bad!r} with exit 1: "
+                       f"{res.returncode} {res.stderr!r}")
+        expect(not m1ledger.exists(), "a rejected stamp must not create the ledger")
+        res = run("sign", "--repo", str(m1repo), "--files", "inner.py")
+        expect(res.returncode == 0 and bool(HEX64.match(res.stdout.strip())),
+               f"a plain repo-relative path must still sign: {res.returncode} {res.stderr!r}")
+        res = stamp(m1repo, m1ledger, "regression", "pass", "inner.py")
+        expect(res.returncode == 0 and m1ledger.is_file(),
+               f"a plain repo-relative path must still stamp: {res.stderr!r}")
+        # A symlink inside the repo that resolves to an external file is rejected too (skipped
+        # where the host cannot create one; the resolved-root comparison is platform code).
+        try:
+            os.symlink(outside, m1repo / "link.txt")
+        except OSError:
+            pass            # no symlink privilege (unelevated Windows): skip the live fixture
+        else:
+            res = run("sign", "--repo", str(m1repo), "--files", "link.txt")
+            expect(res.returncode == 1 and "error:" in res.stderr,
+                   f"a symlink resolving outside --repo must be rejected by sign: "
+                   f"{res.returncode} {res.stderr!r}")
+            res = stamp(m1repo, m1ledger, "unit", "pass", "link.txt")
+            expect(res.returncode == 1 and "error:" in res.stderr,
+                   f"a symlink resolving outside --repo must be rejected by stamp: "
+                   f"{res.returncode} {res.stderr!r}")
+
     print("PASS - evidence_ledger.py behaves as expected (deterministic sign, atomic stamp, "
           "FRESH/STALE check with stale evidence rejected and an empty signed scope never FRESH, "
-          "run id attributed per entry).")
+          "run id attributed per entry — a malformed --run-id is a usage error (exit 2) that "
+          "records nothing).")
     return 0
 
 

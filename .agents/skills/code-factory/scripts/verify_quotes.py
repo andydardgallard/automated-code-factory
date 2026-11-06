@@ -11,9 +11,10 @@ Normalization is deliberately minimal — CRLF -> LF only, so a log written on W
 quote pasted on POSIX. Case and whitespace are NOT normalized: an approximate match is a failed
 match.
 
-Fail-safe: a missing/unreadable source, an empty quote or a quote that is not found verbatim is
-reported as UNTRUSTED, always with an explicit `fallback to full log` note — the caller must
-re-read the raw archive instead of trusting the reduction. Unreadable input never crashes the run.
+Fail-safe: a missing/unreadable source, an empty or whitespace-only quote or a quote that is not
+found verbatim is reported as UNTRUSTED, always with an explicit `fallback to full log` note — the
+caller must re-read the raw archive instead of trusting the reduction. Unreadable input never
+crashes the run.
 
 Input (JSON):
   [{"quote": "exact text from the source", "source": ".code-factory/logs/baseline.md"}, ...]
@@ -83,9 +84,9 @@ def check_claim(quote: str, source: str, base: pathlib.Path) -> dict:
     `base` is what a relative `source` is resolved against: `--repo` when it was given, else the
     caller's working directory.
     """
-    if not quote:
+    if not quote.strip():
         return {"quote": quote, "source": source, "reason":
-                f"empty quote is never evidence; {FAIL_SAFE}"}
+                f"empty or whitespace-only quote is never evidence; {FAIL_SAFE}"}
     path = anchored(source, base)
     text = read_source(path)
     if text is None:

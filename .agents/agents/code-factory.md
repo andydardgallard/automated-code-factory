@@ -537,8 +537,9 @@ re-stamped (`references/verification-strategy.md` §3.2), and on a missing cargo
 affected platform criteria stay UNVERIFIED with an infrastructure diagnosis
 (`references/error-routing.md` §1 rows F1–F2) — never MET, and never silently skipped.
 
-**Adversarial business testing (node S, IN PARALLEL with the tester; implement/review/refactor
-only, never security_audit)**: launch `factory-business-tester` — a user-level attacker, not a
+**Adversarial business testing (node S, IN PARALLEL with the tester — node BTR0 before a review's
+merge and verdict; implement/refactor/review only, never security_audit)**: launch
+`factory-business-tester` — a user-level attacker, not a
 coder — to attack the delivered change through the product's OWN interfaces: wrong input type and
 range, empty, huge and malformed data, wrong order of operations, edge configurations, repeated
 clicks / double submits, interrupted flows. It never edits a product file and never uses a
@@ -549,6 +550,11 @@ failure, classification), which is DIAGNOSTIC — the ACCEPTANCE evidence stays 
 `python .agents/skills/code-factory/scripts/error_router.py classify` exactly like a tester failure
 and takes the SAME route: rollback, then the coder with the EXISTING `retry_counters.coder` budget
 — no separate budget, no separate role for a broken product.
+**A `review` run probes at node BTR0 instead, and it probes EARLIER than Phase 8b:** the
+adversarial probe runs before the reviewer's findings are merged, so `merge_findings.py` folds its
+classified breakages into the merged evidence and every product defect reaches the verdict
+(`CRV0`) as review evidence. Nothing of it is this run's rework list — the review stays
+report-only, and the breakages travel to the owner through the generated follow-up task file.
 
 ### Phase 8b — Code review (mandatory gate)
 **Calibration gate first (deterministic, before any reviewer runs).** Invoke
@@ -562,6 +568,15 @@ all) — run the golden-set calibration FIRST
 could not judge (an unreadable reviewer prompt or memory journal) — stop and report it, never guess.
 This is the deterministic form of `references/code-review.md` §7: the obligation is not prose any
 more, it is a command whose exit code is obeyed.
+**Version proposal BEFORE the reviewer (implement/refactor only).** Compute the proposed version
+type FIRST, so it can be judged inside the same reviewer handoff:
+`python .agents/skills/code-factory/scripts/version_manager.py --repo <deployment root> suggest`
+over the run's changes returns `major|minor|patch|none` with an explanation. Pass that proposal
+into the reviewer's briefing as part of the change description; the reviewer validates or
+overrides it with an explanation (it never chooses the type from scratch) and reports the verdict
+in the same result. There is NO reviewer delegation after the review gate for the version: the
+two-round budget belongs to judging the change, and the proposal rides on the round that judges
+it. Applying the validated type is a Phase 9 step.
 Then launch `factory-code-reviewer` following `references/code-review.md`. Scope: for a normal task
 the DIFF (`git diff` vs `git-head.txt` + `created_files` from `manifest.json`); for a review
 task the WHOLE codebase (see the shard protocol below). Findings carry a severity
@@ -650,38 +665,45 @@ phase, and NO auto-fixing — the deliverables are the audit reports and a gener
 acceptance criteria against the produced reports and the validity of the fix-task file.
 
 ### Phase 9 — Acceptance + finish
-**Finish checkpoints FIRST (both are blocking)**: `python .agents/skills/code-factory/scripts/manifest.py
-audit --repo <resolved repo_path>` (every registered hash still matches the working tree, every
-changed file still has its backup, nothing disappeared) and
-`python .agents/skills/code-factory/scripts/gate_all.py --repo <resolved repo_path> --phase Y` (the
-input-validation diff gate, the English-only scan, the run-id check, the rulebook reconciler, the
-action-gate audit, the manifest audit and the permit/delegation audits). A phase whose record
+**Phase 9 order (the finish checkpoints come LAST, after the last content write).** Acceptance is
+checked first, then the post-acceptance writes happen (the documenter, the version sync of
+VER3/Phase 8b and the AGENTS.md regeneration), then EVERY one of those writes is re-registered in
+the manifest, and only then do the two blocking finish checkpoints run — so they hash the FINAL
+bytes instead of failing a legitimate post-acceptance write as drift. A phase whose record
 (`.code-factory/logs/gate-Y.md`) is missing a gate that should have run, or shows a failed one, is a
 FAILURE — the run does not finish green on a skipped gate.
 
 Acceptance is machine-checked, not asserted: build the criteria input JSON from the task's
 `acceptance_criteria` (the main agent builds it — stdlib has no YAML parser) and run
 `python .agents/skills/code-factory/scripts/verify_acceptance.py --input <criteria.json>
---output .code-factory/state/acceptance.md --repo <project> [--regression pass|fail|not-run]
+--output .code-factory/state/acceptance.md --repo <project> --task-type <the run's task_type>
+[--regression pass|fail|not-run]
 [--ledger .code-factory/state/evidence.json --evidence-files <file...>] [--run-id <run_id>]`. The
-ledger is optional on the command line only — omitting it caps the verdict at DEGRADED (SUCCESS
-requires a usable FRESH `regression=pass` ledger entry), so the orchestrator always supplies it.
+freshness requirement is TASK-TYPE AWARE, so no run is asked to prove a stage it never has:
+
+- `implement` / `refactor` — the run must prove a usable FRESH `regression=pass` ledger entry. The
+  ledger is optional on the command line only: omitting it caps the verdict at DEGRADED, so the
+  orchestrator always supplies it, with `--evidence-files` naming the signed files.
+- `review` / `security_audit` — these runs have no regression stage they could sign, so they
+  prove the freshness of their DELIVERABLES instead: FRESH `pass` ledger entries naming the report,
+  the merged findings and the follow-up/fix-task file, each signed over the artifact's own files,
+  and `--regression not-run` is their HONEST baseline — reported as such, not read as a
+  degradation. SUCCESS never depends on a regression entry here.
+
 Criteria that carry `verify` are
 executed for real: the
 command, its exit code and an output excerpt land in `acceptance.md`; criteria without `verify`
 are labeled `derived` (inferred from other artifacts) or `unverified` and never count as proof. A
-degraded baseline (`--regression not-run`), the absence of any verified criterion, or STALE
-ledger evidence downgrades the verdict to DEGRADED — the exit code is 0 only for SUCCESS, so a
+degraded baseline that the task type requires (a missing fresh regression entry on
+implement/refactor), the absence of any verified criterion, or STALE ledger evidence downgrades the
+verdict to DEGRADED — the exit code is 0 only for SUCCESS, so a
 degraded or unproven run can never be accepted silently. The scripts that write run artifacts all
 accept `--run-id <run_id>` (`verify_acceptance.py`, `evidence_ledger.py`,
 `gen_code_changes_report.py`) — pass it so acceptance, the signed evidence and the report code
 changes are stamped with the same id as the checkpoint, the logs and the memory entry.
 <!-- factory-rule: verified-acceptance begin -->
-**Verified acceptance (canonical wording):** acceptance is machine-verifiable — `scripts/verify_acceptance.py` actually executes the criteria with `verify` and writes exit codes and output excerpts into `.code-factory/state/acceptance.md`. Exit 0 is possible only on SUCCESS: at least one criterion with `verify`, all criteria that carry `verify` are MET, baseline proven; criteria without `verify` are marked `derived`/`unverified` and are not evidence. STALE evidence or a degraded baseline lowers the verdict to DEGRADED; SUCCESS without regression evidence is impossible.
+**Verified acceptance (canonical wording):** acceptance is machine-verifiable — `scripts/verify_acceptance.py` actually executes the criteria with `verify` and writes exit codes and output excerpts into `.code-factory/state/acceptance.md`. Exit 0 is possible only on SUCCESS: at least one criterion with `verify`, all criteria that carry `verify` are MET, baseline proven; criteria without `verify` are marked `derived`/`unverified` and are not evidence. STALE evidence or a degraded baseline lowers the verdict to DEGRADED. The FRESH evidence SUCCESS requires is task-type specific (`--task-type`): an implement/refactor run requires a usable FRESH regression=pass ledger entry — SUCCESS without regression evidence is impossible there; a review/security_audit run has no regression stage, so it proves the freshness of its deliverables (report, merged-findings, follow-up) instead and reports regression as the honest not-run baseline.
 <!-- factory-rule: verified-acceptance end -->
-
-Remove backups. Produce the final business-language report: what changed, test results, business
-results, acceptance evidence.
 
 **Documentation (implement/refactor only)**: after acceptance, if `task_type` is `implement` or
 `refactor`, launch the `factory-documenter` subagent (secondary model) with the run manifest
@@ -699,14 +721,16 @@ skipped. Log `models_used.documenter`.
 **Documentation (canonical wording):** after every successful `implement`/`refactor` the main agent invokes the `factory-documenter` subagent (secondary) with the run's manifest; it updates ONLY doc comments and `.md` files and never code, tests or configs. It validates its work with `scripts/validate_documentation.py` with a budget of 1 retry; when the budget is exhausted, the documentation debt is recorded in the run report and the factory continues. Documentation is not invoked for `review`/`security_audit`.
 <!-- factory-rule: documentation end -->
 
-**Version bump (implement/refactor only, after the change)** — three steps:
-1. **Deterministic matrix**: run `python .agents/skills/code-factory/scripts/version_manager.py
-   --repo <deployment root> suggest <flags>` over the run's changes (new subagent → minor, new task
-   type → minor, new task field → minor, breaking change → major, fix → patch,
-   review/security_audit → none) to propose the version type with an explanation.
-2. **Reviewer validation**: pass the proposed type + change list to the code reviewer; it
-   validates and may override (raise/lower) with an explanation — it never determines the type
-   from scratch. Record any override in `report.md`.
+**Version bump (implement/refactor only)** — the type was proposed BEFORE the final review and
+validated in that SAME reviewer handoff (Phase 8b), so no reviewer delegation after the review gate
+exists for it; this step only APPLIES the validated type:
+1. **Proposal (already done)**: the deterministic matrix ran before the reviewer in Phase 8b
+   (`version_manager.py --repo <deployment root> suggest` over the run's changes: new subagent →
+   minor, new task type → minor, new task field → minor, breaking change → major, fix → patch,
+   review/security_audit → none).
+2. **Reviewer validation (same handoff)**: the code reviewer that judged the change also validated
+   the proposed type and may have overridden it (raise/lower) with an explanation. Record any
+   override in `report.md`. A validated proposal is never re-opened after the gate.
 3. **Apply**: `python .../version_manager.py --repo <deployment root> bump <type>` (or `set`) then
    `sync`; run `validate` and require exit 0. For `review`/`security_audit` skip versioning
    entirely. `--repo` is a GLOBAL option of `version_manager.py`, so it comes BEFORE the
@@ -812,7 +836,7 @@ On ANY failure, do NOT roll back immediately. Follow `references/error-routing.m
    is exhausted, escalate to the Diagnostician, then to the Advisor (budget 1), and finally to the
    human; for the reviewer the canonical review-gate policy of Phase 8b applies.
 <!-- factory-rule: retry-budgets begin -->
-**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently The budget is counted by whoever EXECUTES the delegation, not by whoever reports it: `scripts/delegation_gate.py check` increments `retry_counters.<role>` itself BEFORE every delegation and REFUSES it once the budget is exhausted — in hitl the refusal forces the `AskUserQuestion` owner stop, in auto the run ends FAILED, and only an explicit `--owner-authorized` (hitl, every decision recorded in the checkpoint) grants ONE extra delegation PER OWNER DECISION — N recorded authorizations allow up to budget+N delegations; `delegation_gate.py audit` fails the finish when a budgeted-role spawn left no counted delegation. A review round whose findings were ALL refuted with evidence refunds the one iteration it consumed (`delegation_gate.py settle`, evidence mandatory, never below 0, idempotent per round); a mixed round is never refunded.
+**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently The budget is counted by whoever EXECUTES the delegation, not by whoever reports it: `scripts/delegation_gate.py check` increments `retry_counters.<role>` itself BEFORE every delegation and REFUSES it once the budget is exhausted — in hitl the refusal forces the `AskUserQuestion` owner stop, in auto the run ends FAILED, and only an explicit `--owner-authorized` (hitl, every decision recorded in the checkpoint) grants ONE extra delegation PER OWNER DECISION — N recorded authorizations allow up to budget+N delegations; `delegation_gate.py audit` fails the finish when a budgeted-role spawn left no counted delegation. A registered role WITHOUT a budget entry is passed through instead of counted (`allow: true`, `budgeted: false`) and stays audited by its permit, and the reviewer is counted per LOGICAL REVIEW ROUND (`check --role reviewer --round <id>`): the first check of a round consumes one iteration and every shard delegation of the SAME round is allowed without moving the counter, because one whole-repo review is one iteration. A review round whose findings were ALL refuted with evidence refunds the one iteration it consumed (`delegation_gate.py settle`, evidence mandatory, never below 0, idempotent per round); a mixed round is never refunded.
 <!-- factory-rule: retry-budgets end -->
 
 3. **Diagnostician** (LLM): launch `factory-diagnostician` with the error output + attempt
@@ -969,3 +993,22 @@ write `.code-factory/report_code_changes.md` (next to it) via
     exception to the resolved-`repo_path` scoping of the run (never blindly the resolved `repo_path`
     when that is a subdirectory of the deployment root); `--repo` is a global option, so it comes
     BEFORE the subcommand. `review`/`security_audit` skip both steps and never change the version.
+
+**Re-register every post-acceptance write, THEN run the finish checkpoints.** The documenter's
+documentation edits, the version sync of VER3 and the regenerated `AGENTS.md` all change files the
+manifest already hashed, so each of them is re-registered with
+`python .agents/skills/code-factory/scripts/manifest.py add --repo <resolved repo_path>
+--changed <path>` (a new file with `--created`) — AFTER the LAST content write of the run and
+BEFORE phase Y. Only then do the two blocking finish checkpoints run:
+`python .agents/skills/code-factory/scripts/manifest.py audit --repo <resolved repo_path>` (every
+registered hash still matches the working tree, every changed file still has its backup, nothing
+disappeared) and `python .agents/skills/code-factory/scripts/gate_all.py --repo <resolved repo_path>
+--phase Y` (the input-validation diff gate, the English-only scan, the run-id check, the rulebook
+reconciler, the action-gate audit, the manifest audit — skipped as not applicable for the
+report-only `review`/`security_audit` task types, which never initialize a manifest — the
+permit/delegation audits and the watchdog-deny row).
+Re-registering BEFORE the last write, or after phase Y, is the same defect twice: the first makes
+the audit hash bytes that no longer exist, the second leaves the final bytes unaudited.
+
+Remove backups. Produce the final business-language report: what changed, test results, business
+results, acceptance evidence.

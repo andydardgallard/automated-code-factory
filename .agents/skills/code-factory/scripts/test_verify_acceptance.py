@@ -9,11 +9,17 @@ follows the rules (SUCCESS only with all verify criteria MET + regression pass +
 `regression=pass` ledger entry; DEGRADED without a regression proof, without any verify criterion,
 or without a ledger at all; FAILURE on any failure), and the evidence ledger gate
 (--ledger/--evidence-files) downgrades SUCCESS to DEGRADED on STALE, failed, missing or unparsable
-evidence, while a FRESH regression=pass ledger keeps SUCCESS. The optional
-`--run-id` only adds the `run_id: <id>` provenance line to the acceptance header, and the optional
-`--task-type` only adds the `task_type: <value>` header line plus — in a `review`/`security_audit`
-context — the OWNER DECISION wording of a failure; neither the verdicts nor the exit codes move, and
-an implement-context run stays byte-identical to the task-type-blind output apart from that line.
+evidence, while a FRESH regression=pass ledger keeps SUCCESS. `--timeout` accepts 0 as the
+documented unlimited value and rejects a negative one as a usage error. The optional
+`--run-id` only adds the `run_id: <id>` provenance line to the acceptance header — and a value that
+is not `YYYYMMDD`-`<8 lowercase hex>` is a usage error (exit 2, no artifact written), because that
+line is what `run_id.py check` reads back. The optional
+`--task-type` adds the `task_type: <value>` header line plus — in a `review`/`security_audit`
+context — the OWNER DECISION wording of a failure and the task-type-aware freshness proof: such a
+run has no regression stage, so its SUCCESS rests on FRESH pass ledger entries for its
+deliverables (report, merged-findings, follow-up) instead of a regression=pass entry. The verdicts
+and the exit codes do not move, and an implement-context run stays byte-identical to the
+task-type-blind output apart from that line.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -283,6 +289,26 @@ def main() -> int:
                f"the run id must be recorded in acceptance.md: {text_runid[:300]!r}")
         expect("Verdict: **SUCCESS**" in text_runid, "the verdict must stay unaffected by --run-id")
 
+        # 15b. A malformed --run-id is a USAGE error (exit 2, no traceback) and never reaches
+        #      acceptance.md: the value is stamped verbatim into the artifact, so an id that is not
+        #      `YYYYMMDD`-`<8 lowercase hex>` makes the file born unattributable — run_id.py check
+        #      rejects exactly that line afterwards. (Regression: the pre-fix script accepted
+        #      `--run-id bogus` with exit 0 and wrote `- run_id: bogus`.)
+        for bad_run_id in ("bogus", "<id>", "BOGUS!!", "20260922-442CD2F8", "2026092-442cd2f8",
+                           "20260922-442cd2f8-extra"):
+            md_bad_runid = tmp / "acceptance_bad_runid.md"
+            res = run("--input", str(runid_criteria), "--output", str(md_bad_runid),
+                      "--repo", str(tmp), "--regression", "pass", "--run-id", bad_run_id,
+                      *SUCCESS_ARGS)
+            expect(res.returncode == 2,
+                   f"--run-id {bad_run_id!r} must be a usage error, got {res.returncode}")
+            expect("--run-id" in res.stderr,
+                   f"the usage error must name the flag: {res.stderr!r}")
+            expect("Traceback" not in res.stderr,
+                   f"a malformed --run-id must not raise a traceback: {res.stderr!r}")
+            expect(not md_bad_runid.exists(),
+                   f"no acceptance.md may be written for --run-id {bad_run_id!r}")
+
         # 21. No ledger at all. `--regression pass` plus green verify criteria used to be SUCCESS
         #     with no freshness check whatsoever: the regression claim was unsigned evidence. A
         #     SUCCESS verdict now requires a usable FRESH regression=pass ledger entry, so a run
@@ -411,13 +437,138 @@ def main() -> int:
                f"an unsupported --task-type must exit 2: {res.returncode} {res.stderr!r}")
         expect("Traceback" not in res.stderr, "a usage error must not raise a traceback")
 
+        # 23. --timeout: only ZERO is the documented unlimited value. A negative value used to
+        #     silently disable the hung-command guard (`timeout if timeout > 0 else None`); it is
+        #     now a usage error (exit 2, no traceback), while 0 keeps its documented meaning.
+        res = run("--input", str(runid_criteria), "--output", str(tmp / "x.md"), "--repo",
+                  str(tmp), "--timeout", "-1")
+        expect(res.returncode == 2,
+               f"a negative --timeout must be a usage error, not unlimited: "
+               f"{res.returncode} {res.stderr!r}")
+        expect("--timeout" in res.stderr and "Traceback" not in res.stderr,
+               f"the rejection must name --timeout and must not crash: {res.stderr!r}")
+        md_zero_timeout = tmp / "acceptance_timeout_zero.md"
+        res = run("--input", str(runid_criteria), "--output", str(md_zero_timeout), "--repo",
+                  str(tmp), "--regression", "pass", "--timeout", "0", *SUCCESS_ARGS)
+        expect(res.returncode == 0,
+               f"--timeout 0 stays the documented unlimited value: {res.stderr!r}")
+        expect("Verdict: **SUCCESS**" in md_zero_timeout.read_text(encoding="utf-8"),
+               "--timeout 0 must not change the verdict")
+
+        # 24. Review/security_audit acceptance is task-type aware: such a run has no regression
+        #     stage it could ever sign, so --regression not-run is its honest baseline and the
+        #     ledger must prove the DELIVERABLES (report, merged-findings, follow-up) FRESH
+        #     instead of the regression=pass entry an implement run needs.
+        REVIEW_FILES = ("report.md", "merged.json", "fix-tasks.yaml")
+        for artifact in REVIEW_FILES:
+            (tmp / artifact).write_text(f"# {artifact}\n", encoding="utf-8")
+        review_ledger = tmp / "state" / "review-evidence.json"
+        for name in ("report", "merged-findings", "follow-up"):
+            stamp = run_ledger("stamp", "--repo", str(tmp), "--ledger", str(review_ledger),
+                               "--name", name, "--result", "pass", "--files", *REVIEW_FILES)
+            expect(stamp.returncode == 0, f"stamping {name} must work: {stamp.stderr!r}")
+        review_criteria = write_criteria(
+            tmp, [{"criterion": "the review report holds", "verify": f'{PY} -c "pass"'}],
+            name="review.json")
+        REVIEW_ARGS = ("--ledger", str(review_ledger), "--evidence-files", *REVIEW_FILES)
+
+        # 24a. not-run + FRESH deliverables -> SUCCESS, exit 0 (used to be unreachable: the
+        #      regression proof the old contract demanded can never exist for a review run).
+        md_review_ok = tmp / "acceptance_review_success.md"
+        res = run("--input", str(review_criteria), "--output", str(md_review_ok), "--repo",
+                  str(tmp), "--regression", "not-run", "--task-type", "review", *REVIEW_ARGS)
+        expect(res.returncode == 0,
+               f"a review SUCCESS must be reachable without regression evidence: {res.stdout!r}")
+        text = md_review_ok.read_text(encoding="utf-8")
+        expect("Verdict: **SUCCESS**" in text and "- task_type: review" in text,
+               f"the review context must succeed on its own evidence: {text[:300]!r}")
+        expect("proves its artifacts" in text,
+               f"the SUCCESS reason must name the review freshness proof: {text[:500]!r}")
+
+        # 24b. security_audit shares the task-type-aware contract.
+        md_audit_ok = tmp / "acceptance_audit_success.md"
+        res = run("--input", str(review_criteria), "--output", str(md_audit_ok), "--repo",
+                  str(tmp), "--regression", "not-run", "--task-type", "security_audit",
+                  *REVIEW_ARGS)
+        expect(res.returncode == 0, f"a security_audit SUCCESS must be reachable: {res.stdout!r}")
+        expect("Verdict: **SUCCESS**" in md_audit_ok.read_text(encoding="utf-8"),
+               "a security_audit run succeeds on FRESH deliverables too")
+
+        # 24c. No ledger at all degrades a review run too — unsigned artifacts are not evidence —
+        #      and the reason names the review artifacts, not a regression entry.
+        md_review_noledger = tmp / "acceptance_review_noledger.md"
+        res = run("--input", str(review_criteria), "--output", str(md_review_noledger), "--repo",
+                  str(tmp), "--regression", "not-run", "--task-type", "review")
+        expect(res.returncode == 1, "a review SUCCESS without a ledger must be impossible")
+        text = md_review_noledger.read_text(encoding="utf-8")
+        expect("Verdict: **DEGRADED**" in text and "no evidence ledger given" in text,
+               f"the missing ledger must degrade with a reason: {text[:400]!r}")
+        expect("report, merged-findings, follow-up" in text,
+               f"the reason must name the review artifacts: {text[:600]!r}")
+
+        # 24d. A ledger missing one deliverable (no follow-up entry) degrades and names it.
+        partial_ledger = tmp / "state" / "partial-evidence.json"
+        for name in ("report", "merged-findings"):
+            stamp = run_ledger("stamp", "--repo", str(tmp), "--ledger", str(partial_ledger),
+                               "--name", name, "--result", "pass", "--files", *REVIEW_FILES)
+            expect(stamp.returncode == 0, f"stamping {name} must work: {stamp.stderr!r}")
+        md_partial = tmp / "acceptance_review_partial.md"
+        res = run("--input", str(review_criteria), "--output", str(md_partial), "--repo", str(tmp),
+                  "--regression", "not-run", "--task-type", "review",
+                  "--ledger", str(partial_ledger), "--evidence-files", *REVIEW_FILES)
+        expect(res.returncode == 1, "a missing deliverable must degrade the review acceptance")
+        text = md_partial.read_text(encoding="utf-8")
+        expect("Verdict: **DEGRADED**" in text and "follow-up" in text,
+               f"the missing deliverable must be named: {text[:500]!r}")
+
+        # 24e. A FRESH regression=pass entry alone is NOT the review proof: the old contract's
+        #      evidence does not certify the review deliverables.
+        regression_only = tmp / "state" / "regression-only-evidence.json"
+        stamp = run_ledger("stamp", "--repo", str(tmp), "--ledger", str(regression_only),
+                           "--name", "regression", "--result", "pass", "--files", *REVIEW_FILES)
+        expect(stamp.returncode == 0, f"stamping regression must work: {stamp.stderr!r}")
+        md_reg_only = tmp / "acceptance_review_regression_only.md"
+        res = run("--input", str(review_criteria), "--output", str(md_reg_only), "--repo",
+                  str(tmp), "--regression", "pass", "--task-type", "review",
+                  "--ledger", str(regression_only), "--evidence-files", *REVIEW_FILES)
+        expect(res.returncode == 1, "regression evidence alone must not certify a review")
+        expect("Verdict: **DEGRADED**" in md_reg_only.read_text(encoding="utf-8"),
+               "the review deliverables stay required even with regression evidence")
+
+        # 24f. A STALE deliverable degrades exactly like stale regression evidence does.
+        report_file = tmp / "report.md"
+        original = report_file.read_bytes()
+        report_file.write_text("# report.md\nchanged after stamping\n", encoding="utf-8")
+        try:
+            md_review_stale = tmp / "acceptance_review_stale.md"
+            res = run("--input", str(review_criteria), "--output", str(md_review_stale), "--repo",
+                      str(tmp), "--regression", "not-run", "--task-type", "review", *REVIEW_ARGS)
+            expect(res.returncode == 1, "a STALE deliverable must degrade the review acceptance")
+            text = md_review_stale.read_text(encoding="utf-8")
+            expect("Verdict: **DEGRADED**" in text and "STALE" in text,
+                   f"the staleness must be named: {text[:500]!r}")
+        finally:
+            report_file.write_bytes(original)
+
+        # 24g. An explicitly failed baseline stays a FAILURE in a review context too: the
+        #      task-type awareness relaxes the missing stage, never a failing one.
+        md_review_regfail = tmp / "acceptance_review_regfail.md"
+        res = run("--input", str(review_criteria), "--output", str(md_review_regfail), "--repo",
+                  str(tmp), "--regression", "fail", "--task-type", "review", *REVIEW_ARGS)
+        expect(res.returncode == 1, "--regression fail must keep failing a review run")
+        expect("Verdict: **FAILURE**" in md_review_regfail.read_text(encoding="utf-8"),
+               "a failed baseline is a FAILURE in every task-type context")
+
     print("PASS - verify_acceptance.py behaves as expected (MET/FAILED/UNVERIFIED with "
           "derived/unverified labels, excerpts, SUCCESS/DEGRADED/FAILURE verdicts, the "
           "evidence ledger gate: a FRESH regression=pass entry is required for SUCCESS (no ledger "
-          "or an empty signed scope degrades), STALE/missing evidence degrades, the "
-          "optional --run-id provenance line, and the optional --task-type context: implement is "
-          "unchanged apart from its header line while review/security_audit report a failure as "
-          "an OWNER DECISION on the unmodified tree).")
+          "or an empty signed scope degrades), STALE/missing evidence degrades, --timeout rejects "
+          "a negative value while 0 stays unlimited, the optional --run-id provenance line (a "
+          "malformed value is a usage error that writes no artifact), and "
+          "the --task-type context: implement is unchanged apart from its header line, "
+          "review/security_audit report a failure as an OWNER DECISION on the unmodified tree "
+          "and prove their deliverables (report, merged-findings, follow-up) FRESH instead of a "
+          "regression=pass entry they can never produce).")
     return 0
 
 

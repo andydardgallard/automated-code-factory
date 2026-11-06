@@ -13,13 +13,18 @@ Two halves:
 2. The SCORER is exercised on throwaway fixtures in a temp dir: a perfect match (precision =
    recall = 1, accuracy = 1), a verdict mismatch (accuracy < 1, visible in the report) and an
    incomplete run (no result for a case -> exit 2 naming it), plus the CLI contract (report file
-   with the table, deterministic output, the optional `--run-id` header line, broken input ->
-   exit 2). Finally the real golden set is scored end to end against synthetic perfect results.
+   with the table, deterministic output, the optional `--run-id` header line (a malformed value is
+   a usage error that writes no report), broken input -> exit 2). Finally the real golden set is
+   scored end to end against synthetic perfect results.
 3. The PERIODIC GATE (`status`) is the deterministic form of `references/code-review.md` section 7:
    on a throwaway repository root it proves BOTH triggers make a calibration due — an edit to
    either reviewer prompt, and the fifth run recorded after the calibration — that recording a
    calibration (`score --log`) clears them, that only the LAST log record decides, that
    compaction of the journal counts conservatively, and that an unreadable prompt exits 2.
+   The split-root contract is pinned separately: `--memory-root` anchors the run journal at the
+   DEPLOYMENT root (its default is the deployment the script lives in) while the reviewer prompts
+   stay anchored to `--repo`, so a subdirectory repo_path can no longer hide the journal from the
+   five-run trigger.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -332,6 +337,24 @@ def check_fixtures() -> None:
         expect(tagged_text.replace("- run_id: 20260922-442cd2f8\n", "") == plain_text,
                "the run id line must be the ONLY difference the option makes")
 
+        # 7b. A malformed --run-id is a USAGE error (exit 2, no traceback) and writes no report:
+        #     the value is stamped verbatim into a report that lives under `.code-factory/logs/`,
+        #     the very directory `run_id.py check` scans, so a placeholder or garbage value makes
+        #     the artifact born unattributable. (Regression: the pre-fix script accepted
+        #     `--run-id <id>` and `--run-id BOGUS` with exit 0 and stamped them.)
+        for bad_run_id in ("<id>", "BOGUS", "bogus", "20260922-442CD2F8", "2026092-442cd2f8"):
+            bad_out = root / "bad-run-id.md"
+            res = run("score", "--golden", str(golden), "--results", str(results),
+                      "--out", str(bad_out), "--run-id", bad_run_id)
+            expect(res.returncode == 2,
+                   f"--run-id {bad_run_id!r} must be a usage error, got {res.returncode}")
+            expect("--run-id" in res.stderr,
+                   f"the usage error must name the flag: {res.stderr!r}")
+            expect("Traceback" not in res.stderr,
+                   f"a malformed --run-id must not raise a traceback: {res.stderr!r}")
+            expect(not bad_out.exists(),
+                   f"no report may be written for --run-id {bad_run_id!r}")
+
         # Missing dirs and a missing subcommand are usage errors, not silent success.
         res = run("score", "--golden", str(root / "nope"), "--results", str(results),
                   "--out", str(root / "broken.md"))
@@ -398,7 +421,8 @@ def check_calibration_status() -> None:
             records = cr.journal_runs(root)
             run_id = records[-1].get("run_id", "") if records else ""
             args = ["score", "--golden", str(golden), "--results", str(results),
-                    "--out", str(report), "--log", str(log), "--repo", str(root)]
+                    "--out", str(report), "--log", str(log), "--repo", str(root),
+                    "--memory-root", str(root)]
             if run_id:
                 args += ["--run-id", run_id]
             res = run(*args)
@@ -408,7 +432,10 @@ def check_calibration_status() -> None:
             return run_id
 
         def status(*extra: str) -> subprocess.CompletedProcess[str]:
-            return run("status", "--repo", str(root), "--log", str(log), *extra)
+            # The throwaway root is its own deployment here: --memory-root makes that explicit
+            # instead of reading the real repository's journal (the flag's default).
+            return run("status", "--repo", str(root), "--memory-root", str(root),
+                       "--log", str(log), *extra)
 
         def append_run() -> None:
             """One more run record in the journal — the §7 run counter goes up by exactly one."""
@@ -606,6 +633,79 @@ def check_calibration_status() -> None:
         expect(res.returncode == 0, f"status --help must exit 0: {res.stderr!r}")
         expect("--max-runs" in res.stdout and "calibration-log.md" in res.stdout,
                f"status must document --max-runs and the default log: {res.stdout!r}")
+        expect("--memory-root" in res.stdout,
+               f"status must document the deployment-root journal anchor: {res.stdout!r}")
+        res = run("score", "--help")
+        expect(res.returncode == 0 and "--memory-root" in res.stdout,
+               f"score must document --memory-root too: {res.stdout!r}")
+
+
+def check_memory_root_split() -> None:
+    """C17 regression: the journal is read from the DEPLOYMENT root, the prompts from --repo.
+
+    A subdirectory repo_path holds no `memory/change-log.md`; counting runs from beneath --repo
+    saw no journal, so the five-run recalibration trigger never fired. `--memory-root` anchors
+    the journal at the deployment root while the reviewer prompts stay anchored to --repo.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        deploy = pathlib.Path(td) / "deploy"
+        repo = deploy / "project"                     # the subdirectory repo_path
+        golden = repo / "cases"
+        results = repo / "results"
+        golden.mkdir(parents=True)
+        results.mkdir()
+        write_case(golden, "clean", "approve", [])
+        write_result(results, "clean", "approve", [])
+        for index, rel in enumerate(cr.REVIEWER_PROMPT_FILES):
+            prompt = repo / rel
+            prompt.parent.mkdir(parents=True, exist_ok=True)
+            prompt.write_text(f"# reviewer prompt {index}\nserve the review gate\n",
+                              encoding="utf-8")
+        journal = deploy / cr.JOURNAL_REL             # canonical memory at the deployment root
+        journal.parent.mkdir(parents=True)
+        journal.write_text(JOURNAL_HEADER + record_text(1), encoding="utf-8")
+        log = repo / "calibration-log.md"
+        report = repo / "calibration.md"
+
+        # The calibration is recorded with the same split: prompts from --repo, the run count
+        # from the deployment journal — its record must see the ONE run the journal holds.
+        run_id = cr.journal_runs(deploy)[-1]["run_id"]
+        res = run("score", "--golden", str(golden), "--results", str(results), "--out",
+                  str(report), "--log", str(log), "--repo", str(repo),
+                  "--memory-root", str(deploy), "--run-id", run_id)
+        expect(res.returncode == 0, f"score --log with a split root must exit 0: {res.stderr!r}")
+        records = cr.parse_log(log.read_text(encoding="utf-8"))
+        expect(len(records) == 1 and records[0].get("runs") == "1",
+               f"the record must count the deployment journal, not the empty repo one: {records}")
+
+        # Five more runs land in the DEPLOYMENT journal: the §7 interval must fire for the
+        # subdirectory repo_path — exactly the trigger the pre-fix anchoring never saw.
+        with journal.open("a", encoding="utf-8", newline="\n") as handle:
+            for index in range(2, 7):
+                handle.write(record_text(index))
+        due = run("status", "--repo", str(repo), "--memory-root", str(deploy), "--log", str(log))
+        expect(due.returncode == 1,
+               f"5 runs in the deployment journal must make the calibration due: {due.stdout!r}")
+        expect("5 run(s) since the last recorded calibration (limit 5)" in due.stderr,
+               f"the interval trigger must be named: {due.stderr!r}")
+
+        # The old anchoring stays expressible — and visibly wrong: pointed at the repo itself,
+        # the gate sees no journal at all and reports the calibration CURRENT on zero evidence.
+        blind = run("status", "--repo", str(repo), "--memory-root", str(repo), "--log", str(log))
+        expect(blind.returncode == 0,
+               f"a repo-anchored (journal-less) memory root hides the runs: {blind.stderr!r}")
+        expect("0 run(s) since" in blind.stdout,
+               f"the repo subdirectory holds no journal: {blind.stdout!r}")
+
+        # The prompts stay anchored to --repo: an edit there triggers the prompt rule even though
+        # the journal lives at the deployment root.
+        prompt = repo / cr.REVIEWER_PROMPT_FILES[0]
+        prompt.write_text(prompt.read_text(encoding="utf-8") + "\nan extra instruction\n",
+                          encoding="utf-8")
+        edited = run("status", "--repo", str(repo), "--memory-root", str(deploy), "--log",
+                     str(log))
+        expect(edited.returncode == 1 and "the reviewer prompt changed" in edited.stderr,
+               f"a prompt edit under --repo must still trigger: {edited.stderr!r}")
 
 
 JOURNAL_HEADER = "# Change Log\n\n<!-- code-factory-memory: change-log -->\n\n"
@@ -615,7 +715,7 @@ def record_text(index: int) -> str:
     """One journal record (the count of these is the §7 run counter)."""
     return (f"## 2026-10-{index:02d}T00:00:00Z — Run {index}\n"
             f"title: Run {index}\n"
-            f"run_id: 202610{index:02d}-000000{index - 1:x}\n"
+            f"run_id: 202610{index:02d}-{index - 1:08x}\n"
             f"task_type: {'review' if index % 2 == 0 else 'implement'}\n\n")
 
 
@@ -625,6 +725,7 @@ def main() -> int:
     check_fixtures()
     check_real_golden_set()
     check_calibration_status()
+    check_memory_root_split()
 
     # stdlib-only contract (no third-party imports).
     src = pathlib.Path(cr.__file__).read_text(encoding="utf-8")
@@ -633,10 +734,12 @@ def main() -> int:
     expect(imported <= allowed, f"calibrate_reviewer must be stdlib-only, imports={imported}")
 
     print("PASS - calibrate_reviewer.py scores the golden set deterministically (verdict accuracy, "
-          "macro precision/recall, exit 0 for data, exit 2 for incomplete runs), the 9 shipped "
+          "macro precision/recall, exit 0 for data, exit 2 for incomplete runs and for a malformed "
+          "--run-id, which writes no report), the 9 shipped "
           "golden cases match the calibration brief, and `status` turns section 7 into a "
           "deterministic gate: a reviewer-prompt edit and the 5-run interval both fail loudly "
-          "until the calibration is recorded in the append-only log.")
+          "until the calibration is recorded in the append-only log, with the run journal read "
+          "from the deployment root (--memory-root) while the prompts stay anchored to --repo.")
     return 0
 
 

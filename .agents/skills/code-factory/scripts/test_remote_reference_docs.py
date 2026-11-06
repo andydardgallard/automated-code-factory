@@ -4,7 +4,11 @@ Deterministic OFFLINE self-test for the remote `reference_docs` support of `skil
 
 Everything runs against LOOPBACK fixtures only: a local `http.server` publishing Markdown/HTML and
 a local smart-HTTP Git server backed by `git http-backend` on 127.0.0.1. The default suite never
-touches the internet, so it stays fast and reproducible.
+touches the internet, so it stays fast and reproducible. Because the public-destination guard of
+`skill_base.py` refuses literal loopback URLs, the fixtures publish under the FAKE public host
+`fixture.example`: an injected resolver proves it "public" to the guard, the in-process DNS maps it
+back to 127.0.0.1, and the git child process rewrites it with `url.insteadOf` — all of it local to
+this test process, with the production guard untouched.
 
 Verifies: source classification (local / http_doc / http_git and the rejected schemes and
 credential URLs), HTTP materialization into `<repo>/.code-factory/cache/reference-docs/`, the
@@ -20,12 +24,15 @@ Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import http.server
+import io
 import json
 import os
 import pathlib
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -37,6 +44,74 @@ import skill_base as sb
 
 SCRIPT = pathlib.Path(__file__).resolve().parent / "skill_base.py"
 SLOW_SECONDS = 5.0
+
+# --- hermetic fixture network ---------------------------------------------------------------------
+#
+# The fixtures bind 127.0.0.1, but the public-destination guard of `skill_base.py` can never accept
+# a literal loopback URL, so they are ADDRESSED under a fake public host. Three test-local seams
+# route it back to loopback without touching production code: the guard gets an injected resolver
+# that answers a public address for the fixture host (the `resolve=` seam the guard documents),
+# the pinned transport (`sb._connect_to`) dials THAT validated address — so the fixture maps it back
+# to loopback, exactly where the fixture server listens — and the git EXECUTABLE — a child process
+# monkeypatches cannot reach — rewrites the host with its own `url.<base>.insteadOf`, passed through
+# the environment of the fixture.
+
+FIXTURE_HOST = "fixture.example"            # a reserved TLD (RFC 2606): never resolves for real
+FIXTURE_PUBLIC_ADDRESS = "93.184.216.34"    # what the injected resolver answers for FIXTURE_HOST
+
+_real_default_resolver = sb._default_resolver
+_real_getaddrinfo = socket.getaddrinfo
+_real_connect_to = sb._connect_to
+
+
+def _fixture_resolver(host: str, port) -> list[str]:
+    """The destination guard's view: the fixture host is public, every other host is real."""
+    if host == FIXTURE_HOST:
+        return [FIXTURE_PUBLIC_ADDRESS]
+    return _real_default_resolver(host, port)
+
+
+def _fixture_getaddrinfo(host, port, *args, **kwargs):
+    """The in-process transport's view: the fixture host lives on loopback."""
+    if host == FIXTURE_HOST:
+        return _real_getaddrinfo("127.0.0.1", port, *args, **kwargs)
+    return _real_getaddrinfo(host, port, *args, **kwargs)
+
+
+def _fixture_connect_to(address: str, port, timeout, source_address=None):
+    """The PINNED transport's view: the validated public address is really the loopback server.
+
+    `skill_base.py` dials the address the guard validated (never the host name again), so the only
+    way a fixture can serve it is at the dial seam. Any other address is dialled as it is.
+    """
+    if address == FIXTURE_PUBLIC_ADDRESS:
+        return _real_connect_to("127.0.0.1", port, timeout, source_address)
+    return _real_connect_to(address, port, timeout, source_address)
+
+
+@contextlib.contextmanager
+def fixture_network():
+    """Patch the guard's default resolver and the process DNS for the fixture host (restored)."""
+    sb._default_resolver = _fixture_resolver
+    sb._connect_to = _fixture_connect_to
+    socket.getaddrinfo = _fixture_getaddrinfo
+    try:
+        yield
+    finally:
+        sb._default_resolver = _real_default_resolver
+        sb._connect_to = _real_connect_to
+        socket.getaddrinfo = _real_getaddrinfo
+
+
+def expose_to_git(server: http.server.ThreadingHTTPServer) -> None:
+    """Let the git EXECUTABLE reach a loopback fixture: it runs in a child process the patches of
+    `fixture_network` cannot reach, so its own `url.<base>.insteadOf` configuration rewrites the
+    fixture host back to loopback — passed through the environment the clone inherits."""
+    port = server.server_address[1]
+    count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
+    os.environ[f"GIT_CONFIG_KEY_{count}"] = f"url.http://127.0.0.1:{port}/.insteadOf"
+    os.environ[f"GIT_CONFIG_VALUE_{count}"] = f"http://{FIXTURE_HOST}:{port}/"
+    os.environ["GIT_CONFIG_COUNT"] = str(count + 1)
 
 
 class Check:
@@ -148,11 +223,13 @@ def serve_git(root: pathlib.Path) -> http.server.ThreadingHTTPServer:
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    expose_to_git(server)
     return server
 
 
 def url_of(server: http.server.ThreadingHTTPServer, route: str) -> str:
-    return f"http://127.0.0.1:{server.server_address[1]}{route}"
+    """The fixture URL under the FAKE public host the guard accepts (mapped to loopback)."""
+    return f"http://{FIXTURE_HOST}:{server.server_address[1]}{route}"
 
 
 def stop(server: http.server.ThreadingHTTPServer) -> None:
@@ -166,8 +243,29 @@ def stop(server: http.server.ThreadingHTTPServer) -> None:
 
 
 def cli(*args: str, cwd: pathlib.Path | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(SCRIPT), *args], cwd=str(cwd) if cwd else None,
-                          capture_output=True, text=True, errors="replace")
+    """The CLI run IN-PROCESS: only then do the fixture resolver and loopback transport apply.
+
+    A subprocess could not receive the injected resolver of `fixture_network`, so `main()` is
+    called with a patched argv and captured streams; the SystemExit of argparse (`--help`, usage
+    errors) becomes the return code, exactly like the exit code of the former subprocess.
+    """
+    stdout, stderr = io.StringIO(), io.StringIO()
+    old_argv, old_cwd = sys.argv, pathlib.Path.cwd()
+    sys.argv = [str(SCRIPT), *args]
+    if cwd is not None:
+        os.chdir(cwd)
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            try:
+                code = sb.main()
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 1
+    finally:
+        sys.argv = old_argv
+        if cwd is not None:
+            os.chdir(old_cwd)
+    return subprocess.CompletedProcess([str(SCRIPT), *args], code,
+                                       stdout.getvalue(), stderr.getvalue())
 
 
 def git(*args: str, cwd: pathlib.Path) -> str:
@@ -273,7 +371,7 @@ def test_fetch_limits(check: Check, root: pathlib.Path, server, doc_url: str) ->
     message = error_of(lambda: sb.materialize_and_hash(slow, repo=root, timeout=1.0))
     elapsed = time.monotonic() - started
     check(elapsed < SLOW_SECONDS - 1, f"the fetch timeout must end the request early ({elapsed:.1f}s)")
-    check("cannot resolve" in message and "127.0.0.1" in message,
+    check("cannot resolve" in message and slow in message,
           f"a failed fetch must name the source and the reason (got: {message})")
 
 
@@ -554,7 +652,7 @@ def test_clone_supervision(check: Check, root: pathlib.Path) -> None:
     """
     stub = root / "stub-git.py"
     stub.write_text(STUB_GIT, encoding="utf-8")
-    source = "http://127.0.0.1:9/never.git"
+    source = f"http://{FIXTURE_HOST}:9/never.git"     # the stub git never connects anyway
     repo = root / "supervised"
     repo.mkdir()
     real_popen, real_run = subprocess.Popen, subprocess.run
@@ -638,7 +736,7 @@ def run(check: Check, root: pathlib.Path) -> None:
 
 def main() -> int:
     check = Check()
-    with tempfile.TemporaryDirectory() as td:
+    with fixture_network(), tempfile.TemporaryDirectory() as td:
         try:
             run(check, pathlib.Path(td))
         except AssertionError as exc:

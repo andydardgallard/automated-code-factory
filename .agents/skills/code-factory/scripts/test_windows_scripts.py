@@ -90,7 +90,9 @@ Verified here:
      line after the `memory/` bullet must already be the next bullet),
   17. the pre-fix negation probe does not rot: the base commit is resolved with `git log -S
      start.sh.bak` (the OLDEST commit that introduced the guard, minus one) instead of `HEAD`, so
-     the very guard assertions are proven to FAIL on the tree before the fix.
+     the very guard assertions are proven to FAIL on the tree before the fix — and a base commit or
+     pre-fix source that cannot be obtained (missing or shallow history) FAILS the check instead of
+     silently passing: a negation probe that never ran proves nothing.
   18. the start.sh guard runs FOR REAL where the network is available (a network-gated behavioural
      deployment of a project with a hand-written launcher: it is announced, kept as `start.sh.bak`
      and only then replaced, and a re-run adds no second backup). Offline the case SKIPs with the
@@ -197,6 +199,17 @@ MEM_WARNINGS_HINT = "legacy warnings — run memory_project.py check for details
 MEM_CHECK_MARKER = "Project memory: CHECK"
 MEM_READINESS_LABEL = "• memory/:"
 MEM_READINESS_CHECK = "CHECK ✗"
+# The bash twin of the same contract (prepare_factory.sh), pinned with the bash variable names:
+# `$MEM_CHECK_OUT` is parsing-only, every printed line is built from `$MEM_REPORT`.
+SH_MEM_CHECK_OUT_VAR = "$MEM_CHECK_OUT"
+SH_MEM_VERDICT_VAR = "$MEM_VERDICT"
+SH_MEM_WARN_COUNT_VAR = "$MEM_WARN_COUNT"
+SH_MEM_REPORT_VAR = "$MEM_REPORT"
+SH_MEM_WARN_COUNT_SRC = "grep -c '^WARN -'"
+SH_MEM_VERDICT_SRC = "grep -E '^(ok|FAIL)"
+SH_MEM_LAST_LINE = "tail -n 1"
+SH_MEM_MIXED_MARKER = "Project memory: INCONSISTENT"
+SH_MEM_OK_MARKER = "Project memory: in place"
 
 # The deployers must produce exactly these files in a fresh project (without a working Python
 # the two memory files are the only expected gap - see MEMORY_RELS).
@@ -702,13 +715,17 @@ def launcher_backup_guard() -> None:
         assert_start_sh_guard(name, read_text(path), SH_WRITE_MARKERS[name])
 
     # Vaccination: the pre-fix tree has no guard, so the assertions above must fail on it.
+    # A base commit or pre-fix source that cannot be obtained (missing or shallow git history) is
+    # a FAILURE, never a silent pass: a negation probe that never ran proves nothing about the fix.
     for rel in (SH_NAME, PS1_NAME):
         base = pre_guard_base(rel)
-        if base is None:
-            return
+        expect(base is not None,
+               f"{rel}: the pre-fix base commit could not be resolved (missing or shallow git "
+               "history) - the negation probe was NOT executed, so the vaccination proves nothing")
         old = git_show(f"{base}:{rel}")
-        if old is None:
-            return
+        expect(old is not None,
+               f"{rel}: the pre-fix source at {base} could not be read - the negation probe was "
+               "NOT executed, so the vaccination proves nothing")
         failure = assertion_error(
             lambda: assert_start_sh_guard(rel, old, SH_WRITE_MARKERS[rel]))
         expect(failure is not None,
@@ -1101,6 +1118,56 @@ def ps1_memory_check_line_is_single_line() -> None:
     expect(sum(1 for line in code if MEM_REPORT_VAR in line) >= 3,
            f"{PS1_NAME}: {MEM_REPORT_VAR} must feed the mixed warning, the CHECK warning AND the "
            "readiness line (all three used to dump the whole check output)")
+
+
+def sh_memory_check_line_is_single_line() -> None:
+    """The bash twin of `ps1_memory_check_line_is_single_line`: the verdict, never the whole blob.
+
+    The parity fix reduced only the .ps1 output branches to the verdict plus a WARN count; the bash
+    deployer kept interpolating the complete multi-line `check` output into the INCONSISTENT, the
+    CHECK and the in-place line (the same flood of warnings.md). The full text stays available for
+    PARSING (`$MEM_CHECK_OUT`: owner, entry count, mixed/other detection); every PRINTED line is
+    built from `$MEM_REPORT` = the trailing `ok -`/`FAIL -` verdict + a WARN count.
+    """
+    lines = check_text_file(SH, bom=False, crlf_only=False).splitlines()
+    # (a) no line that reaches the console may interpolate the whole check output.
+    offenders = [line.strip() for line in lines
+                 if SH_MEM_CHECK_OUT_VAR in line
+                 and re.match(r"\s*(warn|info|err)\b", line)]
+    expect(not offenders,
+           f"{SH_NAME}: the memory output line(s) interpolate the whole `check` output "
+           f"({SH_MEM_CHECK_OUT_VAR}) - one WARN line per legacy entry floods the console and "
+           f"buries the verdict; got {offenders}")
+    # (b) the warning count comes from the WARN lines of the same output.
+    expect(any("MEM_WARN_COUNT=" in line and SH_MEM_WARN_COUNT_SRC in line for line in lines),
+           f"{SH_NAME}: the number of legacy warnings must be counted (MEM_WARN_COUNT from the "
+           f"{SH_MEM_WARN_COUNT_SRC} lines)")
+    # (c) the verdict is the LAST `ok -`/`FAIL -` line.
+    expect(any("MEM_VERDICT=" in line and SH_MEM_VERDICT_SRC in line
+               and SH_MEM_LAST_LINE in line for line in lines),
+           f"{SH_NAME}: the verdict must be derived as the last line matching "
+           f"{SH_MEM_VERDICT_SRC!r} ({SH_MEM_LAST_LINE}) - the trailing verdict line, not the "
+           "whole dump")
+    # (d) the printed text is verdict + count + the documented hint, built once.
+    report_line = next((line for line in lines
+                        if re.match(r"\s*MEM_REPORT=", line)
+                        and MEM_WARNINGS_HINT in line), None)
+    expect(report_line is not None,
+           f"{SH_NAME}: {SH_MEM_REPORT_VAR} must be built once as the verdict plus a warnings "
+           f"count plus the hint ({MEM_WARNINGS_HINT!r})")
+    missing = [token for token in (SH_MEM_VERDICT_VAR, SH_MEM_WARN_COUNT_VAR)
+               if token not in report_line]
+    expect(not missing,
+           f"{SH_NAME}: {SH_MEM_REPORT_VAR} must be the verdict plus a warnings count "
+           f"(missing {missing}); got {report_line.strip()!r}")
+    # (e) all THREE output branches print it: INCONSISTENT, CHECK and in place.
+    for marker in (SH_MEM_MIXED_MARKER, MEM_CHECK_MARKER, SH_MEM_OK_MARKER):
+        marker_lines = [line for line in lines if marker in line]
+        expect(marker_lines, f"{SH_NAME}: the {marker!r} line is gone")
+        for line in marker_lines:
+            expect(SH_MEM_REPORT_VAR in line,
+                   f"{SH_NAME}: the {marker!r} line must show {SH_MEM_REPORT_VAR}, "
+                   f"got {line.strip()!r}")
 
 
 def gitattributes_rules() -> set[str]:
@@ -2452,7 +2519,8 @@ def main() -> int:
     # 6b. A pre-existing, differing start.sh is announced and backed up (and the check is proven to
     #     fail on the pre-fix tree, resolved from the history rather than from HEAD).
     checker.check("both deployers: a differing start.sh is warned about and kept as start.sh.bak "
-                  "BEFORE the launcher is written (probe: the PRE-FIX base commit must fail this)",
+                  "BEFORE the launcher is written (probe: the PRE-FIX base commit must fail this; "
+                  "an unobtainable pre-fix source FAILS, never silently passes)",
                   launcher_backup_guard)
     checker.check("prepare_factory.ps1: a start.sh.bak that cannot be created aborts the overwrite "
                   "and marks a hard deployment error (never an empty catch before the write)",
@@ -2477,6 +2545,9 @@ def main() -> int:
     checker.check("prepare_factory.ps1: the memory CHECK line is ONE line - the trailing verdict "
                   "plus a WARN count, never the whole `check` output",
                   ps1_memory_check_line_is_single_line)
+    checker.check("prepare_factory.sh: the memory output lines are ONE line - the trailing "
+                  "verdict plus a WARN count, never the whole `check` output",
+                  sh_memory_check_line_is_single_line)
 
     # 9. Repo-path scoping hazards: both deployers ignore their own task.yaml/launchers (or a
     # leftover one in a TARGET project is handed over as a new task / committed), and both launcher

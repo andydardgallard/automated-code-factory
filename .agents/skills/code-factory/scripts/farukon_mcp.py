@@ -95,6 +95,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
     # shared sibling merge module has to be made importable here instead of being assumed.
     sys.path.insert(0, str(_SCRIPTS_DIR))
 import mcp_json_merge  # noqa: E402  (the sibling path fix above must run first)
+import task_parser  # noqa: E402  (the sibling path fix above must run first)
 
 SERVER_NAME = "farukon"
 CRATE = "farukon_mcp"
@@ -538,6 +539,11 @@ def managed_entry(repo: str | pathlib.Path) -> dict:
             "cwd": os.path.abspath(str(repo))}
 
 
+# A managed entry is EXACTLY these keys: anything else (`env`, credentials, launch options) is an
+# unreviewed launch setting, and the exact-managed-entry contract refuses it.
+MANAGED_ENTRY_KEYS: tuple[str, ...] = ("command", "args", "cwd")
+
+
 # --------------------------------------------------------------------------- config validation
 
 def _farukon_entry(path: str | pathlib.Path) -> dict | None:
@@ -620,7 +626,19 @@ def _managed_entry_of(data: object) -> tuple[str | None, dict | None]:
 
 def _entry_problems(entry: dict) -> list[str]:
     """Every invariant a PRESENT managed entry violates (it never echoes a stored value)."""
-    return (_command_problems(entry) + _args_problems(entry) + _cwd_problems(entry))
+    return (_key_problems(entry) + _command_problems(entry) + _args_problems(entry)
+            + _cwd_problems(entry))
+
+
+def _key_problems(entry: dict) -> list[str]:
+    """The entry must carry ONLY the managed keys — an extra key is an unreviewed launch setting."""
+    extra = sorted(str(key) for key in entry if key not in MANAGED_ENTRY_KEYS)
+    if not extra:
+        return []
+    return [f"mcpServers.{SERVER_NAME} must carry exactly the managed keys "
+            f"{', '.join(MANAGED_ENTRY_KEYS)}: found the unmanaged key(s) {', '.join(extra)} — an "
+            "unreviewed launch setting (env, credentials, launch options) is never part of the "
+            "managed entry (key names only: values are never echoed)"]
 
 
 def _command_problems(entry: dict) -> list[str]:
@@ -1256,6 +1274,44 @@ def use_utf8_output() -> None:
             pass
 
 
+# The fields of a PARSED task that say WHAT the task operates. Everything around them — YAML
+# comments, `models`, `repo_path`, `mode`, launch instructions — is wiring, and the classifier
+# never sees it: the shipped template's own instructional comments name the platform AND its
+# operations, so classifying them would activate the specialist on an unrelated task.
+BUSINESS_SCOPE_SCALARS: tuple[str, ...] = ("title", "description", "user_story")
+BUSINESS_TEST_TEXT_KEYS: tuple[str, ...] = ("scenario", "expected_results")
+
+
+def business_scope(task: dict) -> str:
+    """The business-scope text of a PARSED task: only the fields that say WHAT the task operates.
+
+    A criterion's `verify` (a shell command) and a business test's `config` (a path) are machine
+    wiring, not business wording, so they stay out together with the metadata.
+    """
+    parts = [str(task.get(key) or "") for key in BUSINESS_SCOPE_SCALARS]
+    for item in task.get("acceptance_criteria") or []:
+        parts.append(str(item.get("criterion") or "") if isinstance(item, dict) else str(item))
+    for item in task.get("business_tests") or []:
+        if isinstance(item, dict):
+            parts.extend(str(item.get(key) or "") for key in BUSINESS_TEST_TEXT_KEYS)
+    return "\n".join(part for part in parts if part.strip())
+
+
+def _file_scope_text(raw: str) -> str:
+    """The classification text of a task FILE read from disk.
+
+    A file that parses as a task contributes only its normalized business-scope fields — comments
+    and metadata are dropped by the canonical parser, never re-parsed here. A file that is NOT a
+    task (plain text, or a task the strict parser refuses) is classified verbatim, exactly as
+    before; the downstream METADATA stripping of `scope_text` still applies to it.
+    """
+    try:
+        task, _warnings = task_parser.parse_text(raw)
+    except task_parser.TaskError:
+        return raw
+    return business_scope(task)
+
+
 def _task_text(args: argparse.Namespace) -> str:
     if args.text is not None:
         return args.text
@@ -1263,9 +1319,10 @@ def _task_text(args: argparse.Namespace) -> str:
     if not path.is_file():
         raise InputError(f"task file not found: {path}")
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise InputError(f"cannot read {path}: {exc}") from exc
+    return _file_scope_text(raw)
 
 
 def _emit(args: argparse.Namespace, payload: dict, human: str) -> None:
@@ -1274,12 +1331,21 @@ def _emit(args: argparse.Namespace, payload: dict, human: str) -> None:
 
 
 def _probe_out_path(value: str, repo_root: pathlib.Path) -> pathlib.Path:
-    """`--out` accepts a directory (writes probe.json inside) or a `*.json` file path."""
+    """`--out` accepts a directory (writes probe.json inside) or a `*.json` file path.
+
+    The RESOLVED path is confined to the repository exactly like `--target`: a traversal, an
+    absolute path elsewhere or a symlink escape must never write the probe result outside the
+    project it describes.
+    """
     path = pathlib.Path(value)
     if not path.is_absolute():
         path = repo_root / path
     path = pathlib.Path(os.path.abspath(str(path)))
-    return path if path.suffix.lower() == ".json" else path / PROBE_FILE_NAME
+    path = path if path.suffix.lower() == ".json" else path / PROBE_FILE_NAME
+    if not _within(path, repo_root):
+        raise InputError(f"--out {path} is outside the repository root {repo_root}: the probe "
+                         "result must stay inside the project it describes; nothing was written")
+    return path
 
 
 def cmd_decide(args: argparse.Namespace) -> int:
@@ -1333,8 +1399,9 @@ def cmd_validate_config(args: argparse.Namespace) -> int:
                          ensure_ascii=False))
         return 0 if ok else 1
     if ok:
-        print(f"OK {path}: managed {SERVER_NAME!r} entry (if present) matches command {COMMAND!r}, "
-              f"args {json.dumps(MANAGED_ARGS)} and an absolute, existing cwd")
+        print(f"OK {path}: managed {SERVER_NAME!r} entry (if present) carries exactly the managed "
+              f"keys — command {COMMAND!r}, args {json.dumps(MANAGED_ARGS)} and an absolute, "
+              "existing cwd")
         return 0
     print(f"FAIL {path}: {len(problems)} invariant(s) violated")
     for problem in problems:

@@ -106,6 +106,19 @@ def main() -> int:
         claims = write_claims(tmp, [{"quote": "", "source": "logs/baseline.md"}], name="empty.json")
         res = run("--claims", str(claims), cwd=tmp)
         expect(res.returncode == 1, "an empty quote must not be verified")
+        # A WHITESPACE-ONLY quote is never evidence either: spaces/tabs/newlines occur in virtually
+        # any source, so such a quote would "verify" everywhere while proving nothing.
+        for name, blank in (("spaces", " "), ("tabs", "\t"), ("newlines", "\n"),
+                            ("mixed", " \t\n ")):
+            claims = write_claims(tmp, [{"quote": blank, "source": "logs/baseline.md"}],
+                                  name=f"blank-{name}.json")
+            res = run("--claims", str(claims), cwd=tmp)
+            expect(res.returncode == 1,
+                   f"a {name}-only quote must not be verified: {res.returncode}")
+            report = json.loads(res.stdout)
+            expect(report["untrusted_count"] == 1 and "whitespace" in report["untrusted"][0]["reason"]
+                   and "fallback to full log" in report["untrusted"][0]["reason"],
+                   f"a {name}-only quote must be UNTRUSTED with the fail-safe note: {report!r}")
 
         # 5. A CRLF source matches a quote held with LF (the only normalization allowed).
         crlf = tmp / "logs" / "baseline_crlf.md"
@@ -189,8 +202,9 @@ def main() -> int:
                f"an absolute source must never be re-anchored: {res.stdout!r} {res.stderr!r}")
 
     print("PASS - verify_quotes.py behaves as expected (exact quote verified, invented/missing/"
-          "empty sources UNTRUSTED with fail-safe, an empty claims file UNVERIFIED with exit 2, "
-          "CRLF normalized to LF only, relative sources anchored at --repo/--base).")
+          "empty/whitespace-only sources UNTRUSTED with fail-safe, an empty claims file "
+          "UNVERIFIED with exit 2, CRLF normalized to LF only, relative sources anchored at "
+          "--repo/--base).")
     return 0
 
 

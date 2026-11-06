@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.23.0 -->
+<!-- code-factory-version: 12.24.0 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.
@@ -298,8 +298,9 @@ mandatory code review before acceptance.
   `models.coder`) and `models.supervisor` (judge-side, so its family differs from the generator's)
   name those two roles' models and are logged as `models_used.<role>`. The run writes `task_type` and
   `required_roles` — the mandatory non-empty set for implement/refactor: analyzer, planner, coder,
-  tester, reviewer, documenter — into `pipeline.yaml`; that is the contract strict model attribution
-  defaults to there.
+  tester, business_tester, reviewer, documenter — into `pipeline.yaml`; that is the contract strict
+  model attribution defaults to there (gui_expert, farukon_expert and security_auditor stay
+  conditional and are listed only when the task needs them).
 - Rule `models-generator-ne-judge`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## models-generator-ne-judge`).
 - Rule `model-unavailable-stop`: canonical wording — `.agents/skills/code-factory/references/factory-rules.md` (`## model-unavailable-stop`).
 

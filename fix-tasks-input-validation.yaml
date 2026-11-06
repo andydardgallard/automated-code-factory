@@ -1,0 +1,96 @@
+# Task materialized from the factory backlog (memory/backlog.md, item 2 — owner finding from
+# run farukon_v3.1.0/20261101-85052459). Sibling of the generated fix-tasks.yaml (one task per
+# file — the parser reads a single document). Run it when you choose: /skill:code-factory
+# .code-factory/review/fix-tasks-input-validation.yaml
+
+title: "Factory must enforce intelligent variable/input validation in the code it writes"
+
+repo_path: "."
+
+mode: hitl
+
+task_type: implement
+
+description: |
+  Owner finding from run farukon_v3.1.0/20261101-85052459: the factory added a new optional
+  config field `lshade_params.stall_patience` as a `usize`. The type-only choice silently
+  covered the negative case (serde rejects -1 for usize) and hid the real defect — 0 was
+  accepted and degenerated into "for 0 consecutive iterations", an immediate early stop. The
+  neighbouring fields of the same struct carry explicit `> 0` validation
+  (farukon_core/src/settings.rs:464-479); the NEW field was added without one, and no reviewer
+  gate noticed that the new input path was left unprotected.
+
+  GOAL: the factory itself must catch a missing/ill-fitting input validation — a human must
+  not have to find it while reading a diff.
+
+  OWNER REQUIREMENTS (business rules, verbatim from the backlog item):
+  - Missing input validation must be caught by the factory itself — a human must not have to
+    find it while reading a diff.
+  - The checks must be chosen by the field's TYPE AND PURPOSE, not applied mechanically: a
+    value that may legitimately be 0 must not be rejected by a blanket "non-zero" rule, and a
+    check imposed without a reason is as much a defect as a missing one.
+  - OVERFLOW must be checked too: conversions, arithmetic on user-supplied numbers, and casts
+    between widths/signedness are in scope, not only range and non-zero.
+  - The factory decides HOW to strengthen itself (which rule, which carriers, which gate,
+    which deterministic check) — this task records the requirement, not the design.
+
+  Evidence of the reproduced defect: config with stall_patience=-1 -> "invalid value: integer
+  `-1`, expected usize" (exit 1); config with stall_patience=0 -> accepted, console prints
+  "LSHADE-RSP converged: no relative improvement > 0.000001 for 0 consecutive iterations.
+  Stopping early at Evals=20/300". Sibling guards at farukon_core/src/settings.rs:464-479;
+  the new field has none. Recorded in the target project's backlog as commit 75da663c
+  (farukon_v3.1.0).
+
+  Overflow class evidence (to investigate, not a verified defect): `stall_patience: usize` is
+  unbounded above; `Farukon_2/src/main.rs` / `portfolio` configs use usize/u64/f64 for counts
+  and prices whose conversions are not systematically guarded.
+
+  Paths that today can silently pass an unvalidated new input: analyzer (no validation
+  inventory), planner (no boundary/overflow task), coder (followed the plan literally),
+  reviewer (checked the field exists, not that it is validated in a way that fits its
+  purpose), acceptance (verify criteria checked text presence, not behaviour on refusal).
+
+user_story: |
+  As the owner I want the factory, whenever it adds or changes an input (a config field, a
+  CLI argument, a public API parameter), to invent and enforce the validation that fits that
+  field's type and purpose — range, zero-legitimacy, overflow of conversions and casts — so
+  that an unprotected new input path can never ship silently again.
+
+acceptance_criteria:
+  - criterion: "The factory workflow (SKILL.md / code-factory.md / sub-agents / references) requires an input-validation analysis for every NEW or changed input — typed by purpose (range, zero-legitimacy, overflow of conversions and casts), not a blanket rule."
+    derived: true
+  - criterion: "A deterministic gate (self-test in .agents/skills/code-factory/scripts/) proves the new requirement bites: it fails on a fixture whose new input lacks purpose-fitted validation and passes on the corrected fixture."
+    derived: true
+  - criterion: "The reviewer checklist (references/code-review.md) makes 'a NEW input path left without purpose-fitted validation' a finding of severity >= major."
+    derived: true
+  - criterion: "The full self-test suite passes after the change."
+    verify: "python .agents/skills/code-factory/scripts/test_flow_contracts.py"
+
+business_tests:
+  - scenario: "The owner re-runs a farukon-like task that adds a numeric config field and checks the factory's plan/review"
+    config: "factory repo at the fixed revision; a task adding an optional numeric config field to a Rust project"
+    expected_results: "the plan contains a boundary/overflow validation task for the new field; a missing or purpose-blind validation is flagged by the reviewer before acceptance"
+
+commit_exclude:
+  - "task.yaml"
+  - "task_*.yaml"
+  - "task-*.yaml"
+  - ".kimi-code/local.toml"
+  - "**/.env*"
+  - "**/*credentials*"
+  - "**/*.secret.json"
+  - "**/*.pem"
+  - "**/*.key"
+  - "**/*.whl"
+  - "**/chrome-profile*/**"
+  - "**/*.heapsnapshot"
+
+models:
+  analyzer: kimi-code/k3.1-pro
+  planner: kimi-code/k3.1-pro
+  coder: deepseek-flash
+  tester: deepseek-flash
+  reviewer: kimi-code/k3.1-pro
+  diagnostician: kimi-code/k3.1-pro
+  advisor: deepseek-flash
+  documenter: deepseek-flash

@@ -108,6 +108,12 @@ python .agents/skills/code-factory/scripts/evidence_ledger.py check \
   de-duplicated, so neither the order of `--files` nor the platform separator matters. A deleted
   file contributes `:missing` and an unreadable one `:unreadable`, so a deletion counts as a change
   instead of an error. Re-stamping a name refreshes that entry (one current entry per name).
+- `--files` is CONFINED to the repository: an absolute entry, a `..` segment or a path that
+  resolves (symlinks included) outside `--repo` is rejected with exit 1 by `sign` and `stamp` —
+  evidence covers the repository, so an external file is never signed under its own spelling. A
+  given `--run-id` must have the canonical shape `YYYYMMDD`-`<8 lowercase hex>` (the shape
+  `run_id.py check` demands of an artifact); a malformed value is a usage error (exit 2), because
+  the entry records it verbatim and it could never be attributed to a run afterwards.
 - **FRESH** = every signed file is byte-identical to the moment the evidence was produced;
   **STALE** = at least one signed file changed afterwards. Each entry records the exact `--files`
   scope it was stamped with and is re-measured against THAT scope: a caller `--files` that differs
@@ -127,9 +133,13 @@ python .agents/skills/code-factory/scripts/evidence_ledger.py check \
   ledger in-process, and a STALE entry — or the absence of a FRESH `regression=pass` entry —
   downgrades an otherwise SUCCESS run to **DEGRADED** with the reason quoted in `acceptance.md`.
   Omitting `--ledger` is not a loophole: without a ledger there is no freshness proof at all, so
-  the verdict is DEGRADED as well — SUCCESS always requires a usable FRESH `regression=pass`
-  ledger entry, and an entry stamped with an EMPTY scope (`--files` empty) is UNSCOPED and never
-  counts as that proof:
+  the verdict is DEGRADED as well. WHICH evidence SUCCESS requires is task-type aware
+  (`--task-type`): an `implement`/`refactor` run needs a usable FRESH `regression=pass` ledger
+  entry, while a `review`/`security_audit` run has no regression stage it could ever sign and must
+  instead hold FRESH `pass` entries for its deliverables (`report`, `merged-findings`, `follow-up`,
+  each signed over the artifact's files) — a missing or stale deliverable is DEGRADED there exactly
+  as a missing regression entry is for an implement run. In every context an entry stamped with an
+  EMPTY scope (`--files` empty) is UNSCOPED and never counts as that proof:
 
   ```bash
   python .agents/skills/code-factory/scripts/verify_acceptance.py \
@@ -277,24 +287,28 @@ so the branch, the base commit and its HEAD all belong to the resolved repositor
 
 ### 4.2 Manifest
 
-Maintain `<resolved repo_path>/.code-factory/manifest.json`. Every path in it is relative to the
-resolved repo root and `backup_root` points INSIDE that repository:
+Maintain `<resolved repo_path>/.code-factory/manifest.json` through `scripts/manifest.py`
+(`init` once, then one `add` per touched file — it is never written by hand). Every path in it is
+relative to the resolved repo root, every entry is an OBJECT carrying the path and the sha256 the
+script computed from the file's current bytes, and the backup of a changed file lives at
+`.code-factory/backups/<same relative path>` INSIDE that repository:
 
 ```json
 {
-  "changed_files": ["src/lib.rs", "configs/trading.toml"],
-  "created_files": ["tests/integration_fractional.rs", "scripts/gen_report.py"],
-  "backup_root": ".code-factory/backups"
+  "run_id": "20261105-11a026da",
+  "changed_files": [{"path": "src/lib.rs", "sha256": "<64 lowercase hex>"}],
+  "created_files": [{"path": "tests/integration_fractional.rs", "sha256": "<64 lowercase hex>"}]
 }
 ```
 
-Update it after every file operation by the factory.
+`scripts/manifest.py add --repo <resolved repo_path> --changed|--created <path>` registers the
+file after every file operation by the factory.
 
 ### 4.3 Rollback steps (on failure)
 
 Run every step with the cwd at `<resolved repo_path>`, or prefix each path with it. Every
-destructive restoring command below (`rm -f`, `git reset --hard`, `git checkout --`, the branch
-deletion) is classified FIRST with
+destructive restoring command below (`python .../scripts/rollback.py`, `git reset --hard`,
+`git checkout --`, the branch deletion) is classified FIRST with
 `python .agents/skills/code-factory/scripts/action_gate.py check --action "<command>" --scope
 <resolved repo_path> --mode <hitl|auto>` and its verdict is respected (canonical rule
 `destructive-action-gate`): ALLOW proceeds, CONFIRM needs an explicit user decision (in `auto`
@@ -302,8 +316,19 @@ mode the factory proceeds and records the assumption), HARD_DENY is never execut
 CONFIRM or HARD_DENY answer is not a reason to skip the classification of the next command.
 
 ```bash
-# 1. Remove files created by the factory (manifest paths are relative to the resolved repo)
-while read -r f; do rm -f "$f"; done < <(python -c "import json;print('\n'.join(json.load(open('.code-factory/manifest.json'))['created_files']))")
+# 1. Remove the files the factory created and restore the changed files from their backups —
+#    ONE confined, portable helper (pure Python stdlib, so it runs under cmd.exe exactly as under
+#    bash — no shell process substitution, no `rm -f` one-liner). It reads the manifest's OBJECT
+#    entries ({"path", "sha256"}), extracts each entry's `path`, and validates EVERY created and
+#    changed path as confined to the resolved repository BEFORE touching anything: an absolute,
+#    '..'-carrying or symlink-escaping entry — or a changed file whose backup is missing — aborts
+#    the WHOLE rollback with exit 1 and not one file is deleted (never a partial rollback). Only
+#    then does it delete the created files and restore each changed file from
+#    .code-factory/backups/<same relative path>:
+python .agents/skills/code-factory/scripts/rollback.py --repo <resolved repo_path>
+#    (`--dry-run` runs the same validation and prints the plan without touching the tree;
+#    exit 1 = a blocking validation error, exit 2 = a usage error, a failure is a message,
+#    never a traceback)
 
 # 2. If the run moved HEAD (it made commits on the feature branch — the normal implement case),
 #    git restores the base state FIRST; restoring file backups before this step is wasted work,
@@ -314,10 +339,10 @@ while read -r f; do rm -f "$f"; done < <(python -c "import json;print('\n'.join(
 #    git -C <resolved repo_path> branch -D <feature branch>
 #    (the main agent alone performs these working-tree mutations, on the resolved repo)
 
-# 3. If HEAD was NOT moved (no run commits): restore modified files from backups
-#    (all inside the resolved repo) — for each changed file: cp .code-factory/backups/<path> <path>;
-#    for tracked files git can double-check: git -C <resolved repo_path> checkout -- <changed files>
-#    (created/untracked files must be removed manually — step 1)
+# 3. If HEAD was NOT moved (no run commits): the helper in step 1 has already restored every
+#    changed file from its backup (all inside the resolved repo); for tracked files git can
+#    double-check: git -C <resolved repo_path> checkout -- <changed files>
+#    (created/untracked files were removed by the helper — step 1)
 
 # 4. Verify: git -C <resolved repo_path> status should now match .code-factory/state/git-status-before.txt
 ```

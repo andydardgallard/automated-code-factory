@@ -17,11 +17,17 @@ This test pins it:
      router, the budget, the unknown-role error);
   B. every carrier quotes that block BYTE-IDENTICALLY exactly once;
   C. the SKILL.md flow carries the branch for EVERY named-role delegation:
-     - the provider-failure node MS is fed by the coder/gui_expert/farukon_expert M, the analyzer E and SC, the
-       planner F and PC, the tester N, Q and S, the reviewer CR and CR0, the diagnostician DG, the
-       advisor ADV, the documenter DOC2 and the security auditor SA — each with a
-       `provider error at delegation` edge — and its body names every role family as well as the
-       router, the budget, the errors.md record, the SAME named model and the STOP;
+     - the provider-failure node MS is fed by EVERY delegation site of the flow's DELEGATION TABLE —
+       the coder/refactorer/gui_expert/farukon_expert M, the analyzer E and SC, the planner F and
+       PC, the tester N, Q and S, the business_tester BT and BTR0, the reviewer CR and CR0, the
+       diagnostician DG, the advisor ADV, the documenter DOC2, the security auditor SA and the
+       supervisor watchdog launch SWD — each with a `provider error at delegation` edge — and its
+       body names every role family as well as the router, the budget, the errors.md record, the
+       SAME named model and the STOP;
+     - the coverage is DERIVED from that table reconciled against the role registry
+       (`model_matrix.ROLES`), never from a hand-written node list: a role the registry resolves but
+       no delegation site carries, or a table entry outside the registry, is reported instead of
+       being silently uncovered;
      - MS leaves ONLY to the owner decision VMS (hitl, naming AskUserQuestion) and to the terminal
        Y (auto FAILED) — never to an implementation, delivery or review node;
      - VMS offers exactly two outcomes: `new matrix` → RDM and `stop` → Y;
@@ -33,13 +39,17 @@ This test pins it:
      - the retry coverage is DERIVED from the parsed provider-failure edges: every node that can
        reach MS must be named by RDM, so an added failing delegation cannot silently lose its retry
        path — there is no second hand-written list;
-  D. no carrier contains an unnegated sentence handing a named role's work to the main agent.
+  D. no carrier contains an unnegated sentence handing a named role's work to the main agent;
+  E. the roles this release adds are registered and their cards repeat the stop rule;
+  F. the flow's delegation table and the role registry cover the SAME roles, so the derived failure
+     coverage cannot drift away from the roles the factory can actually resolve.
 
 Invariant: every check reads the REAL shipped file and reports `<file>:<line>: <what is missing>`;
-the nine negative probes at the bottom break the contract on a throwaway copy the way a careless
+the twelve negative probes at the bottom break the contract on a throwaway copy the way a careless
 edit would (drop the block from a carrier, re-point MS at a delivery node, delete MS, unhook the
-analyst delegation, add an uncovered failing delegation X, drop the `new matrix` outcome, draw the
-retry as a fan-out edge, stop naming the origin node, hand a role's work to the main agent) and the
+analyst delegation, unhook the business-tester and the supervisor-watchdog delegations, add an
+uncovered failing delegation X, drop the `new matrix` outcome, draw the retry as a fan-out edge,
+stop naming the origin node, hand a role's work to the main agent, strip a new role's card) and the
 checker must FAIL on each of them, so none of the pins is a tautology.
 
 Exit code 0 = every contract holds and every probe is caught, 1 = a contract or a probe failed.
@@ -83,10 +93,40 @@ EDGE_RE = re.compile(r"^\s*([A-Za-z0-9_]+)\s*-->\s*(?:\|([^|\n]*)\|)?\s*([A-Za-z
 
 # The branch: who may reach it, and where it may lead. The rule covers EVERY task-named role, so
 # every delegation node of the flow must be able to reach the stop branch — not only the coder and
-# the reviewer. This tuple is only the MINIMUM coverage the flow must draw; the retry coverage is
-# derived from the parsed edges, never from a second list.
+# the reviewer. The coverage is DERIVED below from the role REGISTRY (`model_matrix.ROLES`) and the
+# flow's DELEGATION TABLE, never from a hand-written list of node ids: a hard-coded tuple silently
+# dropped `business_tester` (nodes BT/BTR0) and the supervisor watchdog launch (SWD), so their
+# provider-error routing could disappear without a failing test.
 FAILURE_NODE = "MS"
-FAILURE_FROM = ("M", "E", "SC", "F", "PC", "N", "Q", "S", "CR", "CR0", "DG", "ADV", "DOC2", "SA")
+# (the flow node that delegates, the roles it delegates). One node may carry several roles: `M` is
+# the only implementation delegation of the graph, so it carries the coder, the refactorer (the
+# refactor branch re-joins G and implements with `factory-refactorer` through this node) and the two
+# conditional specialists; `SWD` is the supervisor watchdog's own launch site.
+DELEGATION_TABLE = (
+    ("E", ("analyzer",)),
+    ("SC", ("analyzer",)),
+    ("F", ("planner",)),
+    ("PC", ("planner",)),
+    ("M", ("coder", "refactorer", "gui_expert", "farukon_expert")),
+    ("N", ("tester",)),
+    ("Q", ("tester",)),
+    ("S", ("tester",)),
+    ("BT", ("business_tester",)),
+    ("BTR0", ("business_tester",)),
+    ("CR", ("reviewer",)),
+    ("CR0", ("reviewer",)),
+    ("DG", ("diagnostician",)),
+    ("ADV", ("advisor",)),
+    ("DOC2", ("documenter",)),
+    ("SA", ("security_auditor",)),
+    ("SWD", ("supervisor",)),
+)
+# The registry role the flow does not delegate on its own: the skill manager turns the task's
+# `reference_docs`/`reference_skills` into skills at analysis time, before any plan task exists, and
+# is not a role whose model the task can name per delegation — so it has no stop-branch node.
+NOT_FLOW_DELEGATED = ("skill_manager",)
+# Every delegation site of the table must reach the stop branch.
+FAILURE_FROM = tuple(node for node, _roles in DELEGATION_TABLE)
 # The roles this release ADDS (W3): each must be known to the registry the rule enforces (a
 # `models_used` key outside it is a run error) and must carry a card that repeats the stop rule, so a
 # delegation to it is governed exactly like the older roles. The FLOW-PROSE list above is extended by
@@ -96,7 +136,8 @@ CARD_FRAGMENTS = ("model-unavailable-stop", "never performs this role's work",
                   "never substitutes another model")
 # The role families the branch must name in words, so the coverage is readable and not only drawn.
 ROLE_FRAGMENTS = ("analyzer", "planner", "coder", "gui_expert", "farukon_expert", "tester",
-                  "reviewer", "diagnostician", "advisor", "documenter", "security auditor")
+                  "business_tester", "reviewer", "supervisor", "diagnostician", "advisor",
+                  "documenter", "security auditor")
 # The ONLY legal destinations of the provider-failure node: the owner's decision (hitl) and the
 # terminal finish node (auto FAILED). No implementation/delivery/review node may follow a provider
 # refusal of a task-named model.
@@ -281,6 +322,29 @@ def check_carriers(root: pathlib.Path) -> list[str]:
     return problems
 
 
+def check_delegation_coverage(_root: pathlib.Path) -> list[str]:
+    """The delegation table and the role registry must describe the SAME roles.
+
+    The failure coverage of `check_flow` is derived from `DELEGATION_TABLE`, so the table itself has
+    to be reconciled or it becomes the next hand-written list: a role the registry can resolve but no
+    node of the table delegates has no delegation site — and therefore no stop-branch edge — while a
+    table entry naming a role outside the registry would claim a coverage the factory cannot resolve.
+    """
+    problems: list[str] = []
+    table_roles = {role for _node, roles in DELEGATION_TABLE for role in roles}
+    for role in sorted(table_roles - set(mm.ROLES)):
+        problems.append(f"model_matrix.ROLES: the delegation table delegates {role!r}, which the "
+                        "registry does not know — a `models_used` key outside the registry is a run "
+                        "error, so the flow may not delegate it either")
+    for role in mm.ROLES:
+        if role in table_roles or role in NOT_FLOW_DELEGATED:
+            continue
+        problems.append(f"model_matrix.ROLES: the resolvable role {role!r} is delegated by no node of "
+                        "the flow's delegation table — its task-named model failure would reach no "
+                        "stop branch, because a delegation the table does not know carries no edge")
+    return problems
+
+
 def check_flow(root: pathlib.Path) -> list[str]:
     """C. The SKILL.md flow carries the stop branch and nothing but the two stop destinations."""
     problems: list[str] = []
@@ -305,13 +369,18 @@ def check_flow(root: pathlib.Path) -> list[str]:
                             "the rule covers EVERY task-named role delegation, not only M/CR/CR0")
 
     edges = skill.edges()
-    for source in FAILURE_FROM:
+    for source, roles in DELEGATION_TABLE:
+        if source not in nodes:
+            problems.append(f"{SKILL}:1: the delegation site {source} of the table is gone from the "
+                            f"flow — the {', '.join(roles)} delegation has neither a gate nor a "
+                            "provider-failure route")
+            continue
         routes = [(line, label) for line, src, label, target in edges
                   if src == source and target == FAILURE_NODE]
         if not routes:
             problems.append(f"{SKILL}:1: node {source} has no edge to {FAILURE_NODE} — the "
-                            f"delegation of {source} can fail on the named model too, and every "
-                            "task-named role must reach the stop branch")
+                            f"delegation of {', '.join(roles)} can fail on the named model too, and "
+                            "every task-named role must reach the stop branch")
             continue
         if not any(label and INCOMING_LABEL in label.lower() for _line, label in routes):
             problems.append(f"{SKILL}:{routes[0][0]}: the {source} -> {FAILURE_NODE} edge must be "
@@ -456,6 +525,8 @@ SECTIONS = (
     ("C", "the SKILL.md flow carries the stop branch", check_flow),
     ("D", "no carrier hands a named role's work to the main agent", check_no_handover),
     ("E", "the two new roles are registry roles whose cards repeat the stop rule", check_new_roles),
+    ("F", "the flow's delegation table and the role registry cover the same roles",
+     check_delegation_coverage),
 )
 
 # The two W3 cards section E reads, so the probe copies carry them too.
@@ -549,6 +620,12 @@ PROBES = (
     ("E: a new role card loses the stop rule", check_new_roles,
      ((BUSINESS_CARD, "model-unavailable-stop", "the model rule"),),
      "model-unavailable-stop"),
+    ("C: the business-tester delegation can no longer reach the stop branch", check_flow,
+     ((SKILL, "    BTR0 -->|provider error at delegation: the named model is unavailable| MS\n", ""),),
+     "delegation of business_tester"),
+    ("C: the supervisor watchdog launch can no longer reach the stop branch", check_flow,
+     ((SKILL, "    SWD -->|provider error at delegation: the named model is unavailable| MS\n", ""),),
+     "delegation of supervisor"),
 )
 
 
@@ -594,12 +671,14 @@ def main() -> int:
 
     print(f"PASS - the rule '{RULE}' is declared in {RULEBOOK} with its four carriers and quoted "
           f"byte-identically in every one of them; the SKILL.md flow routes a provider failure of "
-          f"ANY task-named role delegation (analyzer, planner, coder/gui_expert/farukon_expert, tester, reviewer, "
-          f"diagnostician, advisor, documenter, security auditor — nodes M, E, SC, F, PC, N, Q, S, "
-          f"CR, CR0, DG, ADV, DOC2, SA) into the stop branch, which only asks the owner (VMS), "
-          f"re-resolves an owner-authorized matrix and retries the SAME role, or ends the run (auto "
-          f"FAILED / owner declines); no carrier hands a named role's work to the main agent — and "
-          f"all {caught} deliberately broken copies were caught.")
+          f"ANY task-named role delegation into the stop branch — the coverage is derived from the "
+          f"flow's delegation table reconciled against the role registry (analyzer, planner, "
+          f"coder/refactorer/gui_expert/farukon_expert, tester, business_tester, reviewer, "
+          f"supervisor, diagnostician, advisor, documenter, security auditor — nodes "
+          f"{', '.join(FAILURE_FROM)}) — and the branch only asks the owner (VMS), re-resolves an "
+          f"owner-authorized matrix and retries the SAME role, or ends the run (auto FAILED / owner "
+          f"declines); no carrier hands a named role's work to the main agent — and all {caught} "
+          f"deliberately broken copies were caught.")
     return 0
 
 

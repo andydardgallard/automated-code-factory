@@ -18,11 +18,13 @@ softened in prose:
     `occurrences: [<shard ids>]` (sorted in shard-id order, unique);
   - sorting by severity (critical -> major -> minor -> nit), then file, then line (null last),
     then normalized title — so the merged order never depends on the input order;
-  - summary: per-severity counts, shard count, and the merged verdict — request_changes when at
-    least one shard returned request_changes OR any critical finding exists, else approve,
+  - summary: per-severity counts, shard count, and the merged verdict — request_changes when any
+    ACTIVE critical or major finding exists (a shard approving despite one cannot soften the
+    round: the verdict is derived from the findings, not trusted) or at least one shard still
+    asks for it through an active finding of its own, else approve,
   - FINDING DISPOSITION (`finding_disposition`: `accepted` | `refuted`, absent = accepted for legacy
     input): a REFUTED finding must carry `finding_evidence` — ONE repo-relative artifact path, which
-    `--repo` additionally proves exists. A refuted finding stops counting toward the critical rule
+    `--repo` additionally proves exists. A refuted finding stops counting toward the blocking rule
     and is omitted from the follow-up task, but it is NEVER deleted from the merged report and the
     report states how many were refuted (`refuted`), so nothing disappears silently. A finding is
     refuted only when EVERY shard occurrence is (one dissenting shard keeps it alive).
@@ -55,8 +57,10 @@ import sys
 SEVERITIES = ("critical", "major", "minor", "nit")
 VERDICTS = ("approve", "request_changes")
 SEVERITY_RANK = {severity: index for index, severity in enumerate(SEVERITIES)}
-# Merged verdict is request_changes when any shard asks for it or any critical finding exists.
-BLOCKING_SEVERITY = "critical"
+# Merged verdict is request_changes when any ACTIVE critical or major finding exists — the verdict
+# is derived from the findings themselves, so a shard that approved despite a live critical/major
+# finding cannot soften the round — or when a still-contributing shard asks for it.
+BLOCKING_SEVERITIES = ("critical", "major")
 # Finding disposition (P-8): a reviewer may REFUTE its own finding (the quote was wrong, the code
 # path is unreachable, a later shard proved it mistaken) — and a refutation must carry evidence. A
 # refuted finding stops counting toward the critical rule that forces request_changes, but it is
@@ -230,12 +234,20 @@ def merge(shards: list[dict]) -> dict:
             groups.setdefault(key, []).append((shard, finding))
 
     findings: list[dict] = []
+    active_shards: set[str] = set()
     for (file, line, _), records in groups.items():
         records.sort(key=_occurrence_key)
         chosen = records[0][1]
         # REFUTED only when every occurrence is: a refutation must cover the whole finding, and one
         # dissenting shard keeps it alive (never silently suppressed by the minority).
         refuted = all(pair[1]["finding_disposition"] == DISPOSITION_REFUTED for pair in records)
+        # A shard's `request_changes` blocks only while one of ITS OWN occurrence records is still
+        # active: a refutation discharges the refuting shard's request even when the SAME
+        # deduplicated finding stays alive through another shard's occurrence. A shard that asked
+        # for changes and listed NO findings stays blocking — that is the explicit "something is
+        # wrong, I could not enumerate it" signal, and it is the one case no disposition discharges.
+        active_shards.update(pair[0] for pair in records
+                             if pair[1]["finding_disposition"] != DISPOSITION_REFUTED)
         findings.append({"severity": chosen["severity"], "file": file, "line": line,
                          "title": chosen["title"], "detail": chosen["detail"],
                          "occurrences": sorted({pair[0] for pair in records}, key=shard_key),
@@ -249,22 +261,14 @@ def merge(shards: list[dict]) -> dict:
     for finding in findings:
         if finding["finding_disposition"] == DISPOSITION_REFUTED:
             refuted_count += 1
-            continue                      # a refuted finding never counts toward the critical rule
+            continue                      # a refuted finding never counts toward the blocking rule
         counts[finding["severity"]] += 1
     shard_ids = sorted(verdicts, key=shard_key)
-    # A shard's `request_changes` blocks only while it still CONTRIBUTES an active finding: a round
-    # whose every finding was refuted with evidence proved nothing and must not keep the merged
-    # verdict red through the shard's original request. A shard that asked for changes and listed NO
-    # findings stays blocking — that is the explicit "something is wrong, I could not enumerate it"
-    # signal, and it is the one case no disposition can discharge.
-    active_shards: set[str] = set()
-    for finding in findings:
-        if finding["finding_disposition"] != DISPOSITION_REFUTED:
-            active_shards.update(finding["occurrences"])
     silent_requests = {payload["shard"] for payload in shards if not payload["findings"]}
-    blocked = counts[BLOCKING_SEVERITY] > 0 or any(
-        verdict == "request_changes" and (shard in active_shards or shard in silent_requests)
-        for shard, verdict in verdicts.items())
+    blocked = (any(counts[severity] > 0 for severity in BLOCKING_SEVERITIES)
+               or any(verdict == "request_changes"
+                      and (shard in active_shards or shard in silent_requests)
+                      for shard, verdict in verdicts.items()))
     return {"verdict": "request_changes" if blocked else "approve",
             "total_shards": len(shard_ids),
             "shards": [{"shard": shard, "verdict": verdicts[shard]} for shard in shard_ids],

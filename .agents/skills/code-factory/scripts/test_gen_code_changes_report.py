@@ -78,7 +78,12 @@ def check_unknown_flag() -> None:
 
 
 def check_report() -> None:
-    """A throwaway git repo whose HEAD changes one line, so the report has a was → became row."""
+    """A throwaway git repo whose HEAD changes one line, so the report has a was → became row.
+
+    The generation runs under the cp1251 torture console (`env=LEGACY_ENV`): the report carries
+    non-ASCII content (the `→` header), so this is exactly the path where the encoding regression
+    mattered — both streams are decoded and judged, not only the exit code.
+    """
     if shutil.which("git") is None:
         print("SKIP - report generation (git is not on PATH)")
         return
@@ -96,13 +101,16 @@ def check_report() -> None:
                "the second commit must succeed")
 
         report = out / "report_code_changes.md"
-        res = run("--repo", str(repo), "--commit", "HEAD", "--out", str(report), "--run-id", "test-1")
+        res = run("--repo", str(repo), "--commit", "HEAD", "--out", str(report), "--run-id",
+                  "20260101-00000001", env=LEGACY_ENV)
         text = decoded(res)
-        expect(res.returncode == 0, f"report generation must exit 0: {text!r}")
-        expect("Traceback" not in text, f"report generation must not raise a traceback: {text!r}")
+        expect(res.returncode == 0,
+               f"report generation must exit 0 under PYTHONIOENCODING=cp1251: {text!r}")
+        expect("Traceback" not in text,
+               f"report generation must not raise a traceback (stdout+stderr): {text!r}")
         expect(report.is_file(), f"the report must be written to --out: {report}")
         content = report.read_text(encoding="utf-8")
-        expect("test-1" in content and "app.py" in content and "extra.py" in content,
+        expect("20260101-00000001" in content and "app.py" in content and "extra.py" in content,
                f"the report must name the run id and the changed files: {content!r}")
         expect("value = 1" in content and "value = 2" in content,
                f"both sides of the changed line must be in the report: {content!r}")

@@ -202,6 +202,28 @@ def main() -> int:
         expect("v13.0.0" in (root / "README.md").read_text(encoding="utf-8"),
                "set must sync README")
 
+        # 17. (N3, review 20261104-b5b601f6, minor 3) CHANGELOG sync compares PARSED semantic
+        # versions: a top section NEWER than the synced version is a downgrade and must be
+        # refused — never prepended out of order — and the file must stay untouched.
+        (root / "CHANGELOG.md").write_text(
+            "# Changelog\n\n## [13.2.0] — 2026-09-09\n\n## [13.0.0] — 2026-09-08\n",
+            encoding="utf-8")
+        before = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+        try:
+            vm.sync(root, "13.0.0", "2026-09-10")
+            expect(False, "sync must refuse to prepend an older release over a newer top section")
+        except SystemExit as exc:
+            expect("13.2.0" in str(exc) and "13.0.0" in str(exc),
+                   f"the refusal must name both versions: {exc!r}")
+        expect((root / "CHANGELOG.md").read_text(encoding="utf-8") == before,
+               "a refused downgrade must leave the CHANGELOG untouched")
+        # …while a top section that is merely OLDER still gets the new section prepended (the
+        # documented behaviour), and an equal top stays idempotent (cases 11-12 above).
+        vm.sync(root, "13.5.0", "2026-09-11")
+        cl = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+        expect(cl.index("## [13.5.0]") < cl.index("## [13.2.0]"),
+               f"a newer version is still prepended above the older top: {cl!r}")
+
     # 18-24. Rust manifests (Cargo.toml) are part of the single source of truth.
     ws_diverged = ('[workspace]\nmembers = ["crates/a", "crates/b"]\n\n[workspace.package]\n'
                    'version = "9.9.9"\nedition = "2021"\n')

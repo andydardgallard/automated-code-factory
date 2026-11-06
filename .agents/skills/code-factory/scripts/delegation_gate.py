@@ -19,9 +19,14 @@ the session wire.
 
 WHAT `check` DOES (one atomic read-modify-write of ONE counter)
 
+  0. a role WITHOUT a budget entry (analyzer, tester, business_tester, documenter,
+     security_auditor, ...) that IS a registered factory role PASSES THROUGH with `allow: true`
+     and `budgeted: false` — the budget is counted where the role has one, and the permit gate
+     audits the delegation itself; a role nobody registered stays an input error;
   1. reads `.code-factory/state/pipeline.yaml` and its `retry_counters` block (a missing file or a
      missing block is an ACTIONABLE error — `init` is the explicit way to materialize the block);
-  2. validates the inputs: `--role` must be a budgeted role, `--mode` hitl|auto, and every counter
+  2. validates the inputs: `--role` must be a budgeted role (a registered but UNBUDGETED role was
+     already passed through at step 0), `--mode` hitl|auto, and every counter
      value must be a non-negative integer (a bool, a numeric string, a negative value or junk is an
      input error, never silently read as zero);
   3. while `retry_counters.<role> < budget`: increments the counter by one, writes the file back
@@ -38,13 +43,22 @@ WHAT `check` DOES (one atomic read-modify-write of ONE counter)
      instead of being refused forever — while an UNauthorized call at budget + N is still refused.
      Every authorization is recorded here and nowhere else: no counter is ever hand-written.
 
+REVIEW ROUNDS (`check --role reviewer --round <id>`): a reviewer iteration is counted per LOGICAL
+REVIEW ROUND, not per shard. The first `check` carrying a round id consumes one iteration (the
+counter is incremented and the round is recorded in the checkpoint's `review_rounds` block); every
+later `check` with the SAME round id — the shard fan-out of one whole-repo review, a report-only
+review round, a calibration round — is one more delegation of the SAME round: it is allowed, the
+counter does NOT move, and the shard is recorded so the finish audit can still account for every
+spawn. A round id is a non-empty identifier (`[A-Za-z0-9._-]+`); `--round` is meaningful only for
+the reviewer role.
+
 The verdict is printed as ONE JSON object (`allow`, `role`, `mode`, `counter`, `budget`,
 `owner_authorized`, `authorizations`, `ceiling`, `reason`, `pipeline`), so the caller branches on
 data, not on parsing prose.
 
 SUBCOMMANDS
 
-  check --repo <root> --role <role> --mode hitl|auto [--owner-authorized]
+  check --repo <root> --role <role> --mode hitl|auto [--owner-authorized] [--round <id>]
         the pre-delegation gate (exit 0 allow / 1 refuse / 2 input error)
   init  --repo <root>
         materialize the `retry_counters` block for every budgeted role at 0 (existing values are
@@ -52,7 +66,9 @@ SUBCOMMANDS
   audit --repo <root> [--session <dir|auto>] [--home <path>]
         the FINISH audit: every BUDGETED-role spawn in the session wire must have a counter trail -
         `retry_counters.<role>` plus that role's refunded settlements at least the number of times
-        the wire spawned it. A malformed wire line fails closed; an absent session/wire is DEGRADED
+        the wire spawned it; for the reviewer the trail also adds the recorded shard delegations
+        of each logical review round (a round consumes ONE counter iteration but covers its whole
+        fan-out). A malformed wire line fails closed; an absent session/wire is DEGRADED
         (exit 3), and a missing `retry_counters` block reads as "nothing was counted".
   settle --repo <root> --role reviewer --round <id> --evidence <path> --refuted-all
         REFUND the one reviewer iteration a WHOLLY REFUTED review round consumed (proposal P-8):
@@ -62,13 +78,14 @@ SUBCOMMANDS
 
 EXIT CODES
 
-  0  the delegation is allowed (the counter was incremented and persisted; `init` reported its
-     state)
+  0  the delegation is allowed (the counter was incremented and persisted, the role has no budget
+     and passed through, or the round was already counted; `init` reported its state)
   1  the delegation is REFUSED (budget exhausted, or the one owner authorization was already used):
      the JSON verdict carries `allow: false` and the reason the mode requires
-  2  input error: a bad/absent `--role`, a role without a budget, an unknown `--mode`, a missing or
-     unreadable checkpoint, a missing `retry_counters` block, a malformed counter value, or
-     `--owner-authorized` outside hitl (a message naming the fix, never a traceback)
+  2  input error: a bad/absent `--role`, a role nobody registered, an unknown `--mode`, a missing or
+     unreadable checkpoint, a missing `retry_counters` block, a malformed counter value, a `--round`
+     outside the reviewer role, or `--owner-authorized` outside hitl (a message naming the fix,
+     never a traceback)
 
 Single-writer note: the main agent is the only writer of the checkpoint, so the read-modify-write is
 safe by construction; the atomic replace exists so an interrupted write can never corrupt a
@@ -85,6 +102,13 @@ import re
 import sys
 import tempfile
 
+_SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    # The gate may be loaded BY PATH (gate_all.py, a test harness): the sibling role registry it
+    # reuses must be importable without depending on the caller's sys.path.
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+from model_matrix import ROLES  # noqa: E402
+
 PIPELINE_REL = pathlib.Path(".code-factory") / "state" / "pipeline.yaml"
 
 # The ONE budget table — the same numbers the canonical rule `retry-budgets` states. A role without
@@ -100,6 +124,10 @@ AUTHORIZATIONS_HEADER = re.compile(r"^owner_authorizations:\s*(#.*)?$|^owner_aut
 # consumed reviewer iteration was refunded. It is what makes the settlement idempotent — the same
 # round can never refund twice, however often the flow retries the call.
 SETTLED_HEADER = re.compile(r"^settled_rounds:\s*(#.*)?$|^settled_rounds:\s*\[\s*\]\s*(#.*)?$")
+# The logical review rounds the reviewer budget is counted in (one note per shard delegation, so
+# the finish audit can account for every spawn of a fan-out): `round=<id>` per note.
+ROUNDS_HEADER = re.compile(r"^review_rounds:\s*(#.*)?$|^review_rounds:\s*\[\s*\]\s*(#.*)?$")
+ROUND_NOTE = re.compile(r"\bround=([A-Za-z0-9._-]+)\b")
 SETTLE_ROLE = "reviewer"
 ROUND_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 ENTRY = re.compile(r"^(\s+)([A-Za-z0-9_]+)\s*:\s*(.*?)\s*$")
@@ -142,11 +170,17 @@ def _read_pipeline(path: pathlib.Path) -> str:
 
 
 def validate_role(role: str) -> str:
-    """The role must be a budgeted one (a made-up budget would be a gate that enforces nothing)."""
-    if role not in BUDGETS:
-        raise GateError(f"role {role!r} has no retry budget: budgeted roles are "
+    """The role must be a REGISTERED factory role (a made-up role must never pass the gate).
+
+    A registered role WITHOUT a budget entry is not an error: `check` passes it through (the
+    budget is counted where the role has one; the permit gate audits the delegation itself).
+    """
+    if role not in BUDGETS and role not in ROLES:
+        raise GateError(f"role {role!r} is not a registered factory role and has no retry budget: "
+                        f"budgeted roles are "
                         f"{', '.join(sorted(BUDGETS))} (coder=1, ba=2, planner=2, diagnostician=1, "
-                        f"advisor=1, infrastructure=3, reviewer=2)")
+                        f"advisor=1, infrastructure=3, reviewer=2), registered unbudgeted roles "
+                        f"pass through ({', '.join(role for role in ROLES if role not in BUDGETS)})")
     return role
 
 
@@ -506,8 +540,24 @@ def init(repo: str | pathlib.Path) -> dict:
     return {"status": status, "pipeline": str(path), "counters": counters}
 
 
+def review_rounds(text: str) -> list[str]:
+    """Every recorded shard-delegation note of the checkpoint's `review_rounds` block."""
+    return _list_notes(text, ROUNDS_HEADER)
+
+
+def _round_note(round_id: str, shard: int) -> str:
+    stamp = datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"{stamp} round={round_id} role={SETTLE_ROLE} shard={shard}"
+
+
+def _shard_count(notes: list[str], round_id: str) -> int:
+    """How many shard delegations of `round_id` are already recorded (the fan-out so far)."""
+    return sum(1 for note in notes
+               if (match := ROUND_NOTE.search(note)) and match.group(1) == round_id)
+
+
 def check(repo: str | pathlib.Path, role: str, mode: str,
-          owner_authorized: bool = False) -> dict:
+          owner_authorized: bool = False, round_id: str | None = None) -> dict:
     """The pre-delegation gate: increment the role's counter, or REFUSE the delegation.
 
     Returns the verdict dict (which is also what the CLI prints). Raises `GateError` for an input
@@ -518,7 +568,25 @@ def check(repo: str | pathlib.Path, role: str, mode: str,
     if owner_authorized and mode != "hitl":
         raise GateError("--owner-authorized is only meaningful in hitl: auto mode has no budget "
                         "override — the run ends FAILED with the reason")
+    if round_id is not None:
+        if role != SETTLE_ROLE:
+            raise GateError(f"--round is meaningful only for the {SETTLE_ROLE} role (a reviewer "
+                            f"iteration is counted per LOGICAL REVIEW ROUND), got --role {role!r}")
+        if not ROUND_RE.fullmatch(round_id or ""):
+            raise GateError(f"--round must be a non-empty identifier ([A-Za-z0-9._-]+), got "
+                            f"{round_id!r}: it is what makes the shard fan-out of one logical "
+                            f"review round count as ONE iteration")
     root = _checked_repo(repo)
+    if role not in BUDGETS:
+        # A registered role WITHOUT a budget entry passes through: the budget is counted where the
+        # role has one, and the permit gate audits the delegation itself. Nothing is written —
+        # there is no counter to move.
+        return {"role": role, "mode": mode, "allow": True, "budgeted": False, "counter": None,
+                "budget": None, "owner_authorized": False,
+                "reason": (f"role {role!r} carries no retry budget: the delegation is allowed and "
+                           f"NOT counted here — the budget is counted where the role has one, and "
+                           f"the permit gate audits the delegation itself"),
+                "pipeline": str(root / PIPELINE_REL)}
     path = root / PIPELINE_REL
     text = _read_pipeline(path)
     counters = read_counters(text)
@@ -526,6 +594,24 @@ def check(repo: str | pathlib.Path, role: str, mode: str,
     current = counters.get(role, 0)
     verdict = {"role": role, "mode": mode, "allow": False, "counter": current, "budget": budget,
                "owner_authorized": bool(owner_authorized), "reason": "", "pipeline": str(path)}
+    if round_id is not None:
+        verdict["round"] = round_id
+
+    # A REPEATED round id is another shard delegation of the SAME logical review round: it is
+    # allowed, the counter does not move, and the shard is recorded so the finish audit can still
+    # account for every spawn of the fan-out.
+    notes = review_rounds(text) if round_id is not None else []
+    shard = _shard_count(notes, round_id) if round_id is not None else 0
+    if round_id is not None and shard:
+        lines = _append_note(_lines(text), ROUNDS_HEADER, "review_rounds",
+                             _round_note(round_id, shard + 1))
+        _write_atomic(path, _render(lines, text))
+        verdict.update(allow=True, round_counted=False,
+                       reason=(f"review round {round_id!r} is already counted: shard delegation "
+                               f"{shard + 1} of the SAME logical round consumes no new iteration "
+                               f"(the counter stays {current} of {budget}), and the shard is "
+                               f"recorded in {path}"))
+        return verdict
 
     # The allowance is PER OWNER DECISION: the budget plus one extra delegation for every
     # authorization already recorded for this role. A second `--owner-authorized` call is a NEW
@@ -536,19 +622,28 @@ def check(repo: str | pathlib.Path, role: str, mode: str,
     verdict.update(authorizations=authorizations, ceiling=ceiling)
 
     if current < ceiling:
-        _write_atomic(path, _render(_set_counter(_lines(text), role, current + 1), text))
+        lines = _set_counter(_lines(text), role, current + 1)
+        if round_id is not None:
+            lines = _append_note(lines, ROUNDS_HEADER, "review_rounds", _round_note(round_id, 1))
+        _write_atomic(path, _render(lines, text))
         band = (f"delegation {current + 1} of the {budget} allowed for role {role!r}"
                 if current < budget else
                 f"delegation {current + 1} of the {budget} allowed for role {role!r} "
                 f"+ {authorizations} owner-authorized extra delegation(s)")
+        if round_id is not None:
+            band += f" (review round {round_id!r}, shard 1: the ROUND consumes the iteration)"
         verdict.update(allow=True, counter=current + 1,
                        reason=f"{band}: the counter was incremented in {path}")
+        if round_id is not None:
+            verdict["round_counted"] = True
         return verdict
 
     if owner_authorized:
         note = (f"{datetime.datetime.now(tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} "
                 f"role={role} counter={current + 1} mode=hitl")
         lines = _append_authorization(_set_counter(_lines(text), role, current + 1), note)
+        if round_id is not None:
+            lines = _append_note(lines, ROUNDS_HEADER, "review_rounds", _round_note(round_id, 1))
         _write_atomic(path, _render(lines, text))
         verdict.update(allow=True, counter=current + 1, authorizations=authorizations + 1,
                        ceiling=ceiling + 1,
@@ -556,6 +651,8 @@ def check(repo: str | pathlib.Path, role: str, mode: str,
                                f"{authorizations} already authorized of role {role!r}: the counter "
                                f"is {current + 1} and authorization {authorizations + 1} is "
                                f"recorded in {path} (the next one needs a new owner decision)"))
+        if round_id is not None:
+            verdict["round_counted"] = True
         return verdict
 
     if mode == "hitl":
@@ -676,16 +773,35 @@ def audit(repo: str | pathlib.Path, session: str = "auto", home: str | None = No
         match = re.search(r"\brole=(\S+)", note)
         if match and "refunded=1" in note:
             refunded[match.group(1)] = refunded.get(match.group(1), 0) + 1
-    problems: list[str] = [f"malformed wire evidence: {entry}" for entry in malformed]
+    # Logical review rounds: each recorded round consumed ONE counter iteration but covers every
+    # shard delegation of its fan-out, so the trail adds the recorded shard notes back.
+    round_ids: set[str] = set()
+    shard_notes = 0
+    round_problems: list[str] = []
+    for note in review_rounds(text):
+        match = ROUND_NOTE.search(note)
+        if not match:
+            round_problems.append(f"unreadable review-round note: {note!r} (a review_rounds entry "
+                                  f"must name its round=<id>)")
+            continue
+        round_ids.add(match.group(1))
+        shard_notes += 1
+    problems: list[str] = ([f"malformed wire evidence: {entry}" for entry in malformed]
+                           + round_problems)
     for role in sorted(spawns):
         if role not in BUDGETS:
             continue                                    # a role without a budget: nothing to count
         counted = counters.get(role, 0) + refunded.get(role, 0)
+        detail = (f" (+{refunded[role]} refunded)" if refunded.get(role) else "")
+        if role == SETTLE_ROLE and (round_ids or shard_notes):
+            counted = counted - len(round_ids) + shard_notes
+            detail += (f" ({len(round_ids)} logical round(s) covering {shard_notes} shard "
+                       f"delegation(s))")
         if spawns[role] > counted:
             problems.append(f"uncounted delegation: the wire spawned role {role!r} "
                             f"{spawns[role]} time(s), but retry_counters.{role} is "
                             f"{counters.get(role, 0)}"
-                            + (f" (+{refunded[role]} refunded)" if refunded.get(role) else "")
+                            + detail
                             + " - the flow delegated without `delegation_gate.py check`")
     return {"status": "failed" if problems else "ok", "repo": str(root),
             "session": str(session_dir), "pipeline": str(path), "events": events,
@@ -712,6 +828,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="hitl (the owner stop is available) or auto (no override)")
     check_p.add_argument("--owner-authorized", action="store_true", dest="owner_authorized",
                          help="hitl only: the owner allowed ONE extra delegation beyond the budget")
+    check_p.add_argument("--round", default=None,
+                         help="reviewer only: the LOGICAL REVIEW ROUND id ([A-Za-z0-9._-]+) — the "
+                              "shard fan-out of one round counts as ONE iteration")
     check_p.set_defaults(func=_cmd_check)
 
     init_p = sub.add_parser("init", help="materialize the retry_counters block of the checkpoint")
@@ -744,7 +863,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
-    verdict = check(args.repo, args.role, args.mode, args.owner_authorized)
+    verdict = check(args.repo, args.role, args.mode, args.owner_authorized, args.round)
     _emit(verdict)
     return 0 if verdict["allow"] else 1
 

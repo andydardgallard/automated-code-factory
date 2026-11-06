@@ -35,6 +35,13 @@ Covers the User Sovereignty contract:
     (a backslash is literal and never keeps a string open), so `pwsh -Command 'echo "\\"; rm -rf /'`
     and `powershell -c 'echo "\\"; git push origin main'` are HARD_DENY in both modes, a balanced
     benign backslash string stays ALLOW, and cmd.exe / POSIX payloads keep their own escape rules,
+  - the decoded payload of a `cmd` `/c`|`/k` wrapper is split with CMD.EXE's own quoting rules —
+    `"` only, a single quote is an ordinary character — so `cmd /c 'x && del /q target.txt'` is
+    the deletion behind the `&&` (HARD_DENY), while a benign single-quoted payload stays ALLOW,
+  - a relative deletion/restore target is resolved against the same repository base as an absolute
+    `--scope` (symlink-aware), so `rm -f src/a.py` with `--scope <resolved repo>` CONFIRMs instead
+    of being HARD_DENYed as "outside scope", while `..` traversal, absolute paths outside the
+    repository and symlink escapes stay HARD_DENY,
   - the decision journal is created once, appended for EVERY check (timestamp/mode/class/decision),
     never rewritten, and its default path is honoured when `--journal` is omitted; an unwritable
     journal (e.g. its parent is an existing regular file, on POSIX and on Windows) is an
@@ -1613,6 +1620,105 @@ def main() -> int:
         check_rm_force()
         check_audit(tmp / "w2-audit")
 
+        # 31. C15 (vaccination): the canonical invocation declares --scope as the RESOLVED
+        #     repository path (absolute), while rollback commands name their targets relative to
+        #     that repository (`git checkout -- src/a.py`, `rm -f src/a.py`). Comparing the
+        #     relative target with the absolute scope lexically HARD_DENYed every legitimate
+        #     rollback path. Targets and scopes are now resolved against ONE common base — the
+        #     gate's working directory, run here from the fixture repository — with symlink-aware
+        #     containment: a relative in-scope target CONFIRMs, while `..` traversal, an absolute
+        #     path outside the repository and a target escaping through a symlinked component stay
+        #     HARD_DENY.
+        repo = tmp / "c15-repo"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src" / "a.py").write_text("print('x')\n", encoding="utf-8")
+        abs_scope = str(repo)
+        for action in ("rm -f src/a.py", "git checkout -- src/a.py", "git restore src/a.py",
+                       "git reset --hard src/", "git clean -fd src"):
+            res = run("--action", action, "--scope", abs_scope, "--journal", str(journal),
+                      cwd=str(repo))
+            expect(res.returncode == 2,
+                   f"{action!r} with the absolute repository --scope must be CONFIRM (in scope), "
+                   f"not {res.returncode}: {res.stdout!r}")
+            expect("decision: CONFIRM_REQUIRED" in res.stdout,
+                   f"{action!r} must report CONFIRM_REQUIRED: {res.stdout!r}")
+        #     ... and the same common base works in the other direction: an absolute target
+        #     inside a relative scope is in scope too.
+        res = run("--action", f"rm -f {abs_scope}/src/a.py", "--scope", "src",
+                  "--journal", str(journal), cwd=str(repo))
+        expect(res.returncode == 2,
+               f"an absolute target inside a relative scope must be CONFIRM: "
+               f"{res.returncode} {res.stdout!r}")
+        #     Real traversal and absolute paths outside the repository stay HARD_DENY.
+        for action in ("rm -f ../outside.py", "rm -rf ..",
+                       f"rm -f {tmp / 'c15-elsewhere' / 'x.py'}"):
+            res = run("--action", action, "--scope", abs_scope, "--journal", str(journal),
+                      cwd=str(repo))
+            expect(res.returncode == 1,
+                   f"{action!r} escapes the repository and must stay HARD_DENY: "
+                   f"{res.returncode} {res.stdout!r}")
+        #     Symlink-aware containment (where the platform grants symlink creation): a target
+        #     that escapes through a symlinked component resolves OUTSIDE the scope although its
+        #     lexical spelling sits inside it, and a scope spelled through a symlink to the
+        #     repository still covers the repository's real paths.
+        outside = tmp / "c15-outside"
+        outside.mkdir()
+        escape = repo / "linked"
+        repo_alias = tmp / "c15-repo-alias"
+        try:
+            escape.symlink_to(outside, target_is_directory=True)
+            repo_alias.symlink_to(repo, target_is_directory=True)
+        except OSError:
+            escape = None
+        if escape is not None:
+            res = run("--action", "rm -f linked/secret.txt", "--scope", abs_scope,
+                      "--journal", str(journal), cwd=str(repo))
+            expect(res.returncode == 1,
+                   f"a deletion escaping through a symlink must stay HARD_DENY: "
+                   f"{res.returncode} {res.stdout!r}")
+            res = run("--action", "rm -f src/a.py", "--scope", str(repo_alias),
+                      "--journal", str(journal), cwd=str(repo))
+            expect(res.returncode == 2,
+                   f"a scope spelled through a symlink to the repository must still cover its "
+                   f"real paths: {res.returncode} {res.stdout!r}")
+
+        # 32. C16 (vaccination): a cmd.exe payload is cmd TEXT, not POSIX text — cmd.exe quotes
+        #     with `"` only, so a single quote is an ordinary character and can never hide a
+        #     separator. Read as POSIX, `cmd /c 'x && del /q target.txt'` collapsed into ONE
+        #     single-quoted token and the deletion behind the `&&` was blind-ALLOWed while
+        #     cmd.exe really separates there. The payload now keeps cmd's own quoting rules
+        #     recursively (`split_commands_cmd`).
+        for action in ("cmd /c 'x && del /q target.txt'",
+                       "cmd /c 'x & del /q target.txt'",
+                       "cmd /k 'x && rmdir /s /q targetdir'",
+                       "cmd.exe /c 'echo ok && del /f target.txt'",
+                       "cmd /c 'x && git push origin main'",
+                       'cmd /c "cmd /c \'x && del /q target.txt\'"'):
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                expect(res.returncode == 1,
+                       f"{action!r} in {mode} hides a destructive command behind cmd.exe's "
+                       f"literal single quotes and must be HARD_DENY (exit 1): "
+                       f"{res.returncode} {res.stdout!r}")
+                expect("decision: HARD_DENY" in res.stdout,
+                       f"{action!r} must report HARD_DENY: {res.stdout!r}")
+        # 32b. `--scope` still decides behind cmd's literal single quotes: an in-scope deletion
+        #      CONFIRMs, an out-of-scope one stays HARD_DENY.
+        res = gate("--action", "cmd /c 'x && del /q src/old.py'", "--scope", "src")
+        expect(res.returncode == 2,
+               f"an in-scope deletion behind cmd quotes must be CONFIRM: {res.stdout!r}")
+        res = gate("--action", "cmd /c 'x && del /q other/data'", "--scope", "src")
+        expect(res.returncode == 1,
+               f"an out-of-scope deletion behind cmd quotes must be HARD_DENY: {res.stdout!r}")
+        # 32c. Negative controls: the fix is not a blanket deny of single quotes in cmd payloads —
+        #      a benign single-quoted payload and an apostrophe inside a double-quoted one stay
+        #      ALLOW, exactly like cmd.exe itself reads them.
+        for action in ("cmd /c 'echo hello'", "cmd /c 'git status'", "cmd /c 'x && echo ok'",
+                       "cmd /c \"echo it's fine\""):
+            res = gate("--action", action)
+            expect(res.returncode == 0 and "decision: ALLOW\n" in res.stdout,
+                   f"{action!r} is a benign cmd payload and must stay ALLOW: {res.stdout!r}")
+
     print("PASS - action_gate.py hard-denies pushes to main/master (also behind git global options) "
           "and root/out-of-scope deletions; fail-safe CONFIRMs unparsable/unknown git calls; "
           "confirms in-scope destruction in hitl, records an assumption in auto; classifies git "
@@ -1629,7 +1735,10 @@ def main() -> int:
           "journal (an unjournaled destructive command and one executed despite HARD_DENY fail, a "
           "malformed wire line fails closed, an absent wire is DEGRADED, and an audited command is "
           "never executed); --help and usage errors survive a legacy cp1251 console without a "
-          "traceback.")
+          "traceback; cmd /c|/k payloads are split with cmd.exe quoting rules, so a single quote "
+          "cannot hide a separator behind it; and scope containment resolves targets and scopes "
+          "against one repository base (symlink-aware), so a relative rollback path under an "
+          "absolute --scope CONFIRMs while traversal and symlink escapes stay HARD_DENY.")
     return 0
 
 

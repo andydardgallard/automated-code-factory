@@ -6,8 +6,12 @@ Verifies: content hashing (file and folder), the `--repo` anchor of local hashin
 resolved against the DECLARED repository root, never against the process working directory), manifest
 record/reuse/update (including recording a `--resolved-hash` materialization and rejecting a divergent
 one), the documented CLI of every subcommand, the missing-skill error contract for
-`reference_skills`, and the cache-failure contract of `resolve` (exit 1, a message naming the
-source and the reason, never a traceback).
+`reference_skills`, the cache-failure contract of `resolve` (exit 1, a message naming the
+source and the reason, never a traceback), the PUBLIC-destination guard of remote sources
+(loopback / private / link-local / cloud-metadata addresses and a DNS name resolving to one are
+rejected for the initial URL and every redirect hop — hermetically, with an injected resolver) and
+the `--timeout` / `--max-bytes` usage-error contract (a non-finite or non-positive timeout and a
+non-positive or overflowing byte cap are exit 2 BEFORE any transfer).
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -22,6 +26,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import urllib.request
 
 import skill_base as sb
 
@@ -160,9 +165,153 @@ def main() -> int:
                f"the message must name the source and the reason: {res.stderr!r}")
         expect(res.stdout.strip() == "", f"a failed resolve must print no JSON: {res.stdout!r}")
 
+        # 11. PUBLIC destination guard (hermetic: the resolver is injected, nothing touches the
+        #     network). A literal IP is its own resolution; a DNS name is rejected when ANY
+        #     resolved address is not globally routable, and an unresolvable host is rejected
+        #     because a destination that cannot be checked is not a public source.
+        def fake_resolver(mapping: dict) -> callable:
+            def resolve(host: str, port) -> list:
+                if host not in mapping:
+                    raise OSError(f"name or service not known: {host}")
+                return mapping[host]
+            return resolve
+
+        public = fake_resolver({"docs.example": ["93.184.216.34"]})
+        sb._validate_destination("https://docs.example/guide.md", "test URL", resolve=public)
+        sb._validate_destination("http://93.184.216.34/guide.md", "test URL")
+        for bad_url, resolver in (
+            ("http://127.0.0.1/doc.md", None),                      # loopback
+            ("http://[::1]/doc.md", None),                          # loopback v6
+            ("http://10.0.0.7/doc.md", None),                       # private
+            ("http://192.168.1.1/doc.md", None),                    # private
+            ("http://169.254.169.254/latest/meta-data", None),      # cloud metadata
+            ("http://[fe80::1]/doc.md", None),                      # link-local v6
+            ("https://internal.example/doc.md",
+             fake_resolver({"internal.example": ["10.1.2.3"]})),    # DNS -> private
+            ("https://mixed.example/doc.md",
+             fake_resolver({"mixed.example": ["93.184.216.34", "192.168.0.1"]})),
+        ):
+            try:
+                sb._validate_destination(bad_url, "test URL", resolve=resolver)
+                raise AssertionError(f"a non-public destination must be rejected: {bad_url}")
+            except sb.SourceError as exc:
+                expect("non-public" in str(exc), f"the reason must say non-public: {exc}")
+        try:
+            sb._validate_destination("https://gone.example/doc.md", "test URL", resolve=public)
+            raise AssertionError("an unresolvable host must be rejected")
+        except sb.SourceError:
+            pass
+
+        # Every redirect hop is re-validated with the SAME resolver: a public source must not jump
+        # to a loopback, a private DNS name or another scheme half way through a fetch.
+        handler = sb._ValidatingRedirectHandler(resolve=public)
+        request = urllib.request.Request("https://docs.example/start")
+        for newurl in ("http://127.0.0.1:8080/admin", "https://internal.example/x",
+                       "file:///etc/passwd"):
+            try:
+                handler.redirect_request(request, None, 302, "Found", {}, newurl)
+                raise AssertionError(f"a redirect to {newurl} must be refused")
+            except sb.SourceError:
+                pass
+        redirected = handler.redirect_request(request, None, 302, "Found", {},
+                                              "https://docs.example/next")
+        expect(redirected is not None and redirected.full_url == "https://docs.example/next",
+               "a redirect to a public target must be followed")
+        # End to end, still offline: a loopback source is refused before any socket is opened.
+        try:
+            sb.resolve_source("http://127.0.0.1:9/doc.md", cache=root / "cache-guard")
+            raise AssertionError("resolving a loopback source must be refused")
+        except sb.SourceError as exc:
+            expect("non-public" in str(exc), f"the refusal must say non-public: {exc}")
+
+        # 11b. REGRESSION (review R1, critical 36): the guard's resolution is the CONNECTION's
+        #      resolution — pinning the validated address closes the DNS-rebinding window (the
+        #      guard used to resolve, then `opener.open` resolved AGAIN for the real connection, so
+        #      a second answer could be a private one). Proven hermetically: the resolver is
+        #      injected, the dial seam is recorded, and no socket is ever opened.
+        class _Answer:
+            """A resolver that answers differently on each call (a rebinding attacker)."""
+
+            def __init__(self, answers: list[list[str]]) -> None:
+                self.answers = answers
+                self.calls: list[str] = []
+
+            def __call__(self, host: str, port) -> list[str]:
+                self.calls.append(host)
+                index = min(len(self.calls) - 1, len(self.answers) - 1)
+                return self.answers[index]
+
+        rebinding = _Answer([["93.184.216.34"], ["10.1.2.3"]])
+        address = sb._validate_destination("https://docs.example/guide.md", "test URL",
+                                           resolve=rebinding)
+        expect(address == "93.184.216.34",
+               f"the validated address must be RETURNED so the connection can pin it: {address!r}")
+        expect(len(rebinding.calls) == 1,
+               f"one resolution must serve the check and the connection: {rebinding.calls!r}")
+
+        original_connect = sb._connect_to
+        dialled: list[tuple] = []
+
+        def recording_connect(target: str, port, timeout, source_address=None):
+            dialled.append((target, port))
+            raise OSError("the test never opens a socket")
+
+        sb._connect_to = recording_connect
+        try:
+            with tempfile.TemporaryDirectory() as pin_dir:
+                # ONE resolution per hop: the second, private answer of this resolver is never
+                # asked for, and the socket dials the public address the guard validated.
+                transfer = _Answer([["93.184.216.34"], ["10.1.2.3"]])
+                try:
+                    sb._download_doc("https://docs.example/guide.md", pathlib.Path(pin_dir),
+                                     max_bytes=1024, timeout=5, resolve=transfer)
+                except sb.SourceError:
+                    pass                      # the dial was refused by the recording seam
+                expect(len(transfer.calls) == 1,
+                       f"the transfer must resolve the host exactly ONCE: {transfer.calls!r}")
+                expect(dialled and dialled[0][0] == "93.184.216.34",
+                       f"the transport must dial the VALIDATED address, never re-resolve the host: "
+                       f"{dialled!r}")
+                expect(all(entry[0] != "10.1.2.3" for entry in dialled),
+                       f"a second, private DNS answer must never reach the socket: {dialled!r}")
+
+                # Guard and transport disagreeing the other way round: the guard's answer is
+                # private, so nothing may be dialled at all.
+                dialled.clear()
+                try:
+                    sb._download_doc("https://docs.example/private.md", pathlib.Path(pin_dir),
+                                     max_bytes=1024, timeout=5,
+                                     resolve=fake_resolver({"docs.example": ["10.9.9.9"]}))
+                except sb.SourceError as exc:
+                    expect("non-public" in str(exc), f"the refusal must say non-public: {exc}")
+                else:
+                    raise AssertionError("a private destination must be refused before any transfer")
+                expect(dialled == [],
+                       f"a non-public destination must open NO socket: {dialled!r}")
+        finally:
+            sb._connect_to = original_connect
+
+        # 12. --timeout / --max-bytes are validated BEFORE any transfer: a non-finite or
+        #     non-positive timeout and a non-positive or overflowing byte cap are usage errors
+        #     (exit 2), never an uncaught ValueError deep in the transfer machinery. A local
+        #     source keeps the CLI hermetic.
+        for bad in (("--timeout", "-5"), ("--timeout", "0"), ("--timeout", "nan"),
+                    ("--timeout", "inf"), ("--max-bytes", "0"), ("--max-bytes", "-1"),
+                    ("--max-bytes", str(sys.maxsize))):
+            res = subprocess.run([sys.executable, str(script), "hash", str(f), *bad],
+                                 capture_output=True, text=True, errors="replace")
+            expect(res.returncode == 2 and "Traceback" not in res.stderr,
+                   f"{bad} must be a usage error (exit 2): {res.returncode} {res.stderr!r}")
+        res = subprocess.run([sys.executable, str(script), "hash", str(f),
+                              "--timeout", "5", "--max-bytes", str(sys.maxsize - 1)],
+                             capture_output=True, text=True, errors="replace")
+        expect(res.returncode == 0 and res.stdout.strip() == sb.hash_path(f),
+               f"valid limits must pass: {res.returncode} {res.stderr!r}")
+
     print("PASS - skill_base hashing, repo anchoring, resolved-hash recording, manifest, reuse, "
-          "cache-failure reporting (a message, never a traceback) and error contract behave as "
-          "expected.")
+          "cache-failure reporting (a message, never a traceback), the public-destination guard "
+          "(loopback/private/link-local rejected on the source and every redirect hop), the "
+          "--timeout/--max-bytes usage-error contract and error contract behave as expected.")
     return 0
 
 

@@ -36,7 +36,10 @@ Usage:
       [--run-id 20260922-442cd2f8]
 
 `--run-id` (`scripts/run_id.py`) is optional and only adds the line `run_id: <id>` to the header of
-the report, so the artifact names the run it belongs to; without it the output is unchanged.
+the report, so the artifact names the run it belongs to; without it the output is unchanged. It
+must have the canonical shape `YYYYMMDD`-`<8 lowercase hex>` (the shape `run_id.py check` demands
+of an artifact), otherwise it is a usage error (exit 2) — the report lives under a directory that
+gate scans, so a malformed value would be born unattributable.
 
 `--log <path>` (optional) appends ONE `calibration:` line to the append-only calibration log —
 `<repo>/skill-base/golden-set/calibration-log.md` by default — recording the SHA-256 of the
@@ -49,7 +52,15 @@ deterministic gate: it compares the CURRENT reviewer-prompt digest and the CURRE
 records since the last recorded calibration with the last line of the log and fails LOUDLY when a
 calibration is due.
 
-  python3 calibrate_reviewer.py status [--repo <root>] [--log <path>] [--max-runs 5]
+  python3 calibrate_reviewer.py status [--repo <root>] [--memory-root <root>] [--log <path>]
+      [--max-runs 5]
+
+`--repo` anchors the REVIEWER PROMPTS (they ship with the repository under review). The memory
+journal is anchored separately: canonical memory lives at the DEPLOYMENT root, so `--memory-root`
+(default: the deployment this script lives in) is where `memory/change-log.md` is read — with a
+subdirectory repo_path the journal beneath `--repo` simply does not exist, and counting runs from
+there would let the five-run trigger never fire. `score --log` computes its record from the same
+two roots.
 
 Exit 0 = the last recorded calibration is still current. Exit 1 = calibration is DUE (the prompt
 changed, the run interval elapsed, or no calibration is recorded at all) — each reason is printed.
@@ -89,6 +100,10 @@ REVIEW_TASK_TYPE = "review"
 RECORD_HEADING_RE = re.compile(r"^##\s+\d{4}-\d{2}-\d{2}T\S*", re.M)
 # The journal fields the run count needs: `run_id:` addresses a run, `task_type:` grades the run.
 RECORD_KEYS = ("run_id", "task_type")
+# The canonical run id: `YYYYMMDD`-`<8 lowercase hex>`, the shape `check_factory_model.RUN_ID_RE`
+# enforces and `run_id.py check` demands of an artifact. `--run-id` is stamped VERBATIM into the
+# report, so a malformed value would be born unattributable (its own gate rejects it).
+RUN_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{8}$")
 
 
 class InputError(Exception):
@@ -442,16 +457,19 @@ def read_log(path: pathlib.Path) -> list[dict[str, str]]:
 
 
 def calibration_status(root: pathlib.Path, log_path: pathlib.Path,
-                       max_runs: int) -> dict:
+                       max_runs: int, memory_root: pathlib.Path | None = None) -> dict:
     """Judge the recorded calibration against the tree: is a (re-)calibration due?
 
     Two triggers, both from `references/code-review.md` §7 and both computed from files on disk:
     the reviewer prompt digest changed since the recorded calibration, or `max_runs` run records
     of the journal were written after it. A log with no record is the third, honest answer: the
     obligation was never discharged, so a calibration is due.
+
+    The prompts resolve against `root` (the repository under review), the journal against
+    `memory_root` (the deployment root holding the canonical memory; default: `root`).
     """
     digest = prompt_digest(root)
-    records = journal_runs(root)
+    records = journal_runs(memory_root if memory_root is not None else root)
     total_runs, total_review_runs, _ = runs_since(records, "")
     entries = read_log(log_path)
     recorded = entries[-1] if entries else None
@@ -495,9 +513,14 @@ def calibration_status(root: pathlib.Path, log_path: pathlib.Path,
     }
 
 
-def calibration_record(root: pathlib.Path, report: dict, run_id: str) -> str:
-    """The one `calibration:` line `score --log` appends (paths, counts and metrics only)."""
-    records = journal_runs(root)
+def calibration_record(root: pathlib.Path, report: dict, run_id: str,
+                       memory_root: pathlib.Path | None = None) -> str:
+    """The one `calibration:` line `score --log` appends (paths, counts and metrics only).
+
+    The prompt digest is anchored to `root`, the run counts to `memory_root` (the deployment
+    root the canonical journal lives at; default: `root`) — the same split `status` applies.
+    """
+    records = journal_runs(memory_root if memory_root is not None else root)
     runs, review_runs, _ = runs_since(records, "")
     verdict = report["verdict"]
     return (f"{RECORD_PREFIX} run_id={run_id or '-'} prompt_sha256={prompt_digest(root)} "
@@ -533,12 +556,15 @@ def append_record(log_path: pathlib.Path, line: str) -> None:
 
 def cmd_status(args) -> int:
     root = pathlib.Path(args.repo).resolve() if args.repo else ROOT
+    # Canonical memory lives at the DEPLOYMENT root (default: the one this script ships with), so
+    # a subdirectory repo_path cannot hide the run journal from the §7 interval.
+    memory_root = pathlib.Path(args.memory_root).resolve() if args.memory_root else ROOT
     log_path = pathlib.Path(args.log) if args.log else root / LOG_REL
     if args.max_runs < 1:
         print("error: --max-runs must be at least 1", file=sys.stderr)
         return 2
     try:
-        status = calibration_status(root, log_path, args.max_runs)
+        status = calibration_status(root, log_path, args.max_runs, memory_root)
     except InputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -600,9 +626,10 @@ def cmd_score(args) -> int:
     # §7 interval; without it nothing is written and the CLI behaves exactly as before.
     if args.log:
         root = pathlib.Path(args.repo).resolve() if args.repo else ROOT
+        memory_root = pathlib.Path(args.memory_root).resolve() if args.memory_root else ROOT
         log_path = pathlib.Path(args.log)
         try:
-            append_record(log_path, calibration_record(root, report, args.run_id))
+            append_record(log_path, calibration_record(root, report, args.run_id, memory_root))
         except (OSError, InputError) as exc:
             print(f"error: cannot record the calibration in {log_path}: {exc}", file=sys.stderr)
             return 2
@@ -643,13 +670,23 @@ def main() -> int:
                        help="Append this calibration to the calibration log (append-only; the "
                             "record feeds `status`)")
     score.add_argument("--repo", default=None, metavar="ROOT",
-                       help="Repository root the log record is computed against (default: this repo)")
+                       help="Repository root the log record's prompt digest is computed against "
+                            "(default: this repo)")
+    score.add_argument("--memory-root", default=None, metavar="ROOT",
+                       help="Deployment root the memory journal (memory/change-log.md) is read "
+                            "from for the record's run counts (default: the deployment this "
+                            "script lives in)")
     score.set_defaults(func=cmd_score)
 
     status = sub.add_parser("status", help="Fail loudly when a reviewer calibration is due (§7)")
     status.add_argument("--repo", default=None, metavar="ROOT",
-                        help="Repository root the prompts and the memory journal resolve against "
+                        help="Repository root the reviewer prompts resolve against "
                              "(default: this repo)")
+    status.add_argument("--memory-root", default=None, metavar="ROOT",
+                        help="Deployment root the memory journal (memory/change-log.md) is read "
+                             "from — canonical memory lives at the deployment root, so a "
+                             "subdirectory --repo must not hide the run journal (default: the "
+                             "deployment this script lives in)")
     status.add_argument("--log", default="", metavar="PATH",
                         help=f"Calibration log (default: <repo>/{LOG_REL})")
     status.add_argument("--max-runs", type=int, default=MAX_RUNS_SINCE_CALIBRATION, metavar="N",
@@ -657,6 +694,11 @@ def main() -> int:
                              f"(default: {MAX_RUNS_SINCE_CALIBRATION})")
     status.set_defaults(func=cmd_status)
     args = ap.parse_args()
+    if getattr(args, "run_id", "") and not RUN_ID_RE.fullmatch(args.run_id):
+        # The value is stamped verbatim into the report header (and the calibration record): a
+        # malformed id would make the artifact born unattributable, so it is a usage error.
+        ap.error(f"--run-id must be YYYYMMDD-<8 lowercase hex> (see run_id.py): "
+                 f"{args.run_id!r} is not a run id")
     return args.func(args)
 
 

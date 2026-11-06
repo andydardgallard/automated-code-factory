@@ -14,6 +14,10 @@ missing file contributes `<relative path>:missing` and an unreadable one `:unrea
 deletion counts as a change instead of an error. The timestamp is the only non-deterministic
 field of an entry and is NOT part of the fingerprint.
 
+The `--files` of `sign` and `stamp` must be plain repository-relative paths: an absolute entry, a
+`..` segment or a path that resolves (symlinks included) outside `--repo` is rejected with exit 1
+— evidence covers the repository, so an external file is never signed under its own spelling.
+
 Ledger JSON (created on demand by `stamp`, written atomically: same-directory temp file +
 os.replace, so a crash can never leave a half-written ledger):
   {"version": 1,
@@ -24,6 +28,9 @@ os.replace, so a crash can never leave a half-written ledger):
 Re-stamping a name refreshes that entry, so one evidence name has exactly one current entry.
 `run_id` (see `run_id.py`) attributes an entry to the run that produced it; it is written from
 `--run-id` and defaults to "", so entries written before the field existed still load unchanged.
+A given `--run-id` must have the canonical shape `YYYYMMDD`-`<8 lowercase hex>` (the shape
+`run_id.py check` demands of an artifact): a malformed value is a usage error (exit 2), because the
+signed entry would otherwise carry an attribution no run-id check can ever match.
 
 Every entry also records the exact `--files` scope it was stamped with (`files`: repo-relative,
 sorted, de-duplicated). `check` recomputes the fingerprint of EACH entry against its own recorded
@@ -58,6 +65,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -71,6 +79,10 @@ MISSING = "missing"
 UNREADABLE = "unreadable"
 # Evidence name the acceptance gate requires to be FRESH and passing (see acceptance_blocker).
 REQUIRED_EVIDENCE = "regression"
+# The canonical run id: `YYYYMMDD`-`<8 lowercase hex>`, the shape `check_factory_model.RUN_ID_RE`
+# enforces and `run_id.py check` demands of an artifact. `--run-id` is recorded VERBATIM in the
+# entry, so a malformed value would sign evidence no run-id check can attribute to a run.
+RUN_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{8}$")
 
 
 def _abs(path, root: pathlib.Path) -> pathlib.Path:
@@ -85,6 +97,32 @@ def _relative(path: pathlib.Path, root: pathlib.Path) -> str:
         return path.resolve().relative_to(root.resolve()).as_posix()
     except (OSError, ValueError):
         return path.as_posix()
+
+
+def scope_problems(files, root) -> list[str]:
+    """One problem per `--files` entry that is not a plain repository-relative path.
+
+    An entry is rejected when it is absolute, carries a `..` segment, or resolves (symlinks
+    included) to a path outside `root`: evidence covers the repository, so an external file must
+    never be signed under its own spelling. An empty list of problems means every entry is
+    usable.
+    """
+    root = pathlib.Path(root).resolve()
+    problems: list[str] = []
+    for item in files:
+        path = pathlib.Path(item)
+        if path.is_absolute():
+            problems.append(f"{item}: absolute path (evidence files must be relative to --repo)")
+            continue
+        if ".." in path.parts:
+            problems.append(f"{item}: escapes --repo (`..` segment)")
+            continue
+        try:
+            if not (root / path).resolve().is_relative_to(root):
+                problems.append(f"{item}: resolves to a path outside --repo")
+        except (OSError, RuntimeError):
+            problems.append(f"{item}: cannot be resolved under --repo")
+    return problems
 
 
 def sha256_file(path: pathlib.Path) -> str:
@@ -322,11 +360,19 @@ def acceptance_blocker(rows: list[dict]) -> str:
 
 
 def cmd_sign(args: argparse.Namespace) -> int:
+    problems = scope_problems(args.files, args.repo)
+    if problems:
+        print("error: --files: " + "; ".join(problems), file=sys.stderr)
+        return 1
     print(fingerprint_files(args.files, pathlib.Path(args.repo)))
     return 0
 
 
 def cmd_stamp(args: argparse.Namespace) -> int:
+    problems = scope_problems(args.files, args.repo)
+    if problems:
+        print("error: --files: " + "; ".join(problems), file=sys.stderr)
+        return 1
     ledger = pathlib.Path(args.ledger)
     scope = normalize_scope(args.files, args.repo)
     if not scope:
@@ -423,6 +469,11 @@ def main() -> int:
     check.set_defaults(func=cmd_check)
 
     args = ap.parse_args()
+    if args.run_id and not RUN_ID_RE.fullmatch(args.run_id):
+        # The value is recorded verbatim in the signed entry: a malformed id would make the
+        # evidence unattributable (run_id.py check rejects exactly this value), so reject it here.
+        ap.error(f"--run-id must be YYYYMMDD-<8 lowercase hex> (see run_id.py): "
+                 f"{args.run_id!r} is not a run id")
     return args.func(args)
 
 

@@ -640,7 +640,63 @@ def main() -> int:
     finally:
         remove_tree(tmp)
 
-    # 24. stdlib-only contract (no third-party imports).
+    # 24. REGRESSION (review 20261104-b5b601f6, critical 33): a symlinked ANCESTOR directory must
+    #     not let --tracked read outside the repository. git tracks FILES, so a tracked directory
+    #     replaced by a symlink survives the final-component symlink check, and `docs/page.md`
+    #     would resolve to the OUTSIDE file of the same name. The path is skipped and counted as
+    #     a symlink instead, in both payloads. A host without the symlink privilege (an
+    #     unelevated Windows) gets the same ancestor-rejection policy proven with is_symlink
+    #     faked for the ancestor directory, exactly like run_with_fake_symlink fakes it for the
+    #     final component.
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="repo-inventory-escape-"))
+    try:
+        esc = tmp / "repo"
+        esc.mkdir()
+        outside = tmp / "outside"
+        outside.mkdir()
+        write(outside, "page.md", "outside secret\n")
+        write(esc, "docs/page.md", "inside\n")
+        write(esc, "readme.md", "hello\n")
+        git_ok(esc, "init", "-q")
+        git_ok(esc, "add", "-A")
+        git_ok(esc, *GIT_IDENTITY, "commit", "-q", "-m", "ancestor-symlink fixture")
+        restore_is_symlink = None
+        try:
+            remove_tree(esc / "docs")
+            os.symlink(outside, esc / "docs", target_is_directory=True)
+        except OSError:
+            original_is_symlink = pathlib.Path.is_symlink
+
+            def fake_is_symlink(self: pathlib.Path) -> bool:
+                return self.name == "docs" or original_is_symlink(self)
+
+            pathlib.Path.is_symlink = fake_is_symlink
+            restore_is_symlink = original_is_symlink
+        try:
+            inv = ri.inventory(esc, tracked=True)
+            expect([f["path"] for f in inv["files"]] == ["readme.md"],
+                   f"a file under a symlinked ancestor must stay out of the inventory: "
+                   f"{inv['files']}")
+            expect((inv["skipped_symlink"], inv["skipped"]) == (1, 1),
+                   f"the escaped path must be counted as a symlink skip: {inv}")
+            plan = ri.shards(esc, 20000, tracked=True)
+            expect([p for s in plan["shards"] for p in s["files"]] == ["readme.md"],
+                   f"a file under a symlinked ancestor must enter no shard: {plan}")
+            expect(plan["skipped_symlink"] == 1,
+                   f"the shard plan must count the escaped path as a symlink: {plan}")
+            # A path that RESOLVES outside the root is refused even without any symlink: the
+            # resolved target must stay under the resolved repository root.
+            expect(ri.escapes_root(esc, esc / ".." / "outside" / "page.md"),
+                   "a path resolving outside the root must escape")
+            expect(not ri.escapes_root(esc, esc / "readme.md"),
+                   "a plain file inside the root must not escape")
+        finally:
+            if restore_is_symlink is not None:
+                pathlib.Path.is_symlink = restore_is_symlink
+    finally:
+        remove_tree(tmp)
+
+    # 25. stdlib-only contract (no third-party imports).
     src = pathlib.Path(ri.__file__).read_text(encoding="utf-8")
     imported = set(re.findall(r"^(?:import|from)\s+([A-Za-z0-9_]+)", src, flags=re.M))
     # `subprocess` (stdlib) carries the single `git ls-files -z` call of --tracked.

@@ -23,7 +23,14 @@ COVERED, all through the shipped CLI (a subprocess, like the flow calls it):
     authorized call at the ceiling records its own timestamped note, so N recorded decisions allow
     budget + N delegations, while an UNauthorized call at that ceiling is refused;
   - the per-role budgets are enforced (coder=1, reviewer=2, infrastructure=3);
-  - the inputs are validated: an unbudgeted/unknown role, a missing checkpoint, a missing
+  - (C4) a REGISTERED role without a budget entry (analyzer, tester, business_tester, documenter,
+    security_auditor) PASSES THROUGH with `allow: true` and `budgeted: false` — the budget is
+    counted where the role has one — while a role nobody registered stays an exit-2 error;
+  - (C5) `--round <id>` counts a reviewer iteration per LOGICAL REVIEW ROUND: the shard fan-out of
+    one round consumes one iteration (every shard is recorded in `review_rounds`), a new round
+    consumes the next, the budget refuses the third ROUND, and the finish audit accounts for the
+    fan-out through the recorded round notes;
+  - the inputs are validated: an unregistered role, a missing checkpoint, a missing
     `retry_counters` block, and a counter that is not a non-negative integer (bool / negative /
     numeric string / junk) are exit-2 errors with an actionable message and never a traceback;
   - the write is surgical (unrelated keys and comments survive, CRLF is kept) and atomic (no
@@ -303,17 +310,135 @@ def test_per_role_budgets(tmp: pathlib.Path) -> None:
 
 
 # --------------------------------------------------------------------------------------------
+# Review rounds (C5): a reviewer iteration is counted per LOGICAL ROUND, not per shard
+# --------------------------------------------------------------------------------------------
+
+def test_review_rounds(tmp: pathlib.Path) -> None:
+    """The shard fan-out of ONE logical review round consumes ONE iteration, whatever its size."""
+    root = repo(tmp, "rounds")
+    # Round r1 fans out over three shards: only the first check consumes an iteration.
+    res, verdict = gate(root, "reviewer", "hitl", "--round", "r1")
+    expect_clean_cli(res, 0, "round r1, shard 1")
+    check(verdict["allow"] is True and verdict["counter"] == 1
+          and verdict["round_counted"] is True,
+          f"the first shard of a round counts the ROUND: {verdict}")
+    for shard in (2, 3):
+        res, verdict = gate(root, "reviewer", "hitl", "--round", "r1")
+        expect_clean_cli(res, 0, f"round r1, shard {shard}")
+        check(verdict["allow"] is True and verdict["counter"] == 1
+              and verdict["round_counted"] is False,
+              f"shard {shard} of the SAME round consumes no new iteration: {verdict}")
+        check("SAME logical round" in verdict["reason"],
+              f"the reason must say the round is already counted: {verdict['reason']!r}")
+    text = (root / PIPELINE_REL).read_text(encoding="utf-8")
+    check("review_rounds:" in text and text.count("round=r1") == 3,
+          f"every shard delegation is recorded under the round: {text!r}")
+    check(counters(root)["reviewer"] == 1, "the counter moved exactly once")
+
+    # A SECOND round consumes the second (and last) iteration; a third round is refused.
+    res, verdict = gate(root, "reviewer", "hitl", "--round", "r2")
+    expect_clean_cli(res, 0, "round r2, shard 1")
+    check(verdict["counter"] == 2, f"the second round is the second iteration: {verdict}")
+    res, verdict = gate(root, "reviewer", "hitl", "--round", "r2")
+    expect_clean_cli(res, 0, "round r2, shard 2")
+    check(verdict["counter"] == 2, f"r2's fan-out stays at 2: {verdict}")
+    before = (root / PIPELINE_REL).read_text(encoding="utf-8")
+    res, verdict = gate(root, "reviewer", "hitl", "--round", "r3")
+    expect_clean_cli(res, 1, "a THIRD logical round (budget exhausted)")
+    check(verdict["allow"] is False and verdict["counter"] == 2,
+          f"the third round is refused like any third iteration: {verdict}")
+    check((root / PIPELINE_REL).read_text(encoding="utf-8") == before,
+          "a refused round must write nothing")
+
+    # --round is reviewer-only and validated.
+    res = run("check", "--repo", str(root), "--role", "coder", "--mode", "hitl",
+              "--round", "r1")
+    expect_clean_cli(res, 2, "--round for a non-reviewer role")
+    check("reviewer" in res.stderr, f"the refusal must name the reviewer role: {res.stderr!r}")
+    res = run("check", "--repo", str(root), "--role", "reviewer", "--mode", "hitl",
+              "--round", "bad round!")
+    expect_clean_cli(res, 2, "--round with an unusable id")
+    res = run("check", "--repo", str(root), "--role", "reviewer", "--mode", "auto",
+              "--round", "r9", "--owner-authorized")
+    expect_clean_cli(res, 2, "--owner-authorized in auto, with a round")
+    check("--round" in run("check", "--help").stdout, "the help must document --round")
+
+
+def test_review_round_audit(tmp: pathlib.Path) -> None:
+    """The finish audit accounts for a round's shard fan-out through the recorded round notes."""
+    root = repo(tmp, "rounds-audit")
+    # Two logical rounds, five shard spawns in the wire: counter 2, rounds 2, shards 5 → PASS.
+    for round_id, shards in (("r1", 3), ("r2", 2)):
+        for _ in range(shards):
+            gate(root, "reviewer", "hitl", "--round", round_id)
+    check(counters(root)["reviewer"] == 2, "two rounds consumed two iterations")
+    directory = write_wire(root, [spawn(f"agent-r{i}", "factory-code-reviewer")
+                                  for i in range(5)])
+    res = run("audit", "--repo", str(root), "--session", str(directory))
+    expect_clean_cli(res, 0, "five shard spawns covered by two logical rounds")
+    check("reviewer=5" in res.stdout, f"the audit must see all five spawns: {res.stdout!r}")
+
+    # CONTROL: one shard MORE than the recorded notes cover is uncounted.
+    extra = repo(tmp, "rounds-audit-extra")
+    for round_id, shards in (("r1", 3), ("r2", 2)):
+        for _ in range(shards):
+            gate(extra, "reviewer", "hitl", "--round", round_id)
+    directory = write_wire(extra, [spawn(f"agent-x{i}", "factory-code-reviewer")
+                                   for i in range(6)])
+    res = run("audit", "--repo", str(extra), "--session", str(directory))
+    expect_clean_cli(res, 1, "six spawns against five recorded shard delegations")
+    check("uncounted delegation" in res.stdout and "reviewer" in res.stdout,
+          f"the audit must catch the spawn without a round note: {res.stdout!r}")
+
+    # A settlement still composes: a wholly refuted round refunds the ITERATION, the shards stay
+    # covered (accounted = counter + refunded - rounds + shards = 1 + 1 - 2 + 5 = 5).
+    artifact = round_artifact(root, "r1")
+    res, verdict = settle(root, "--role", "reviewer", "--round", "r1",
+                          "--evidence", artifact, "--refuted-all")
+    expect_clean_cli(res, 0, "settle round r1")
+    check(counters(root)["reviewer"] == 1, "the refund moves the counter, not the notes")
+    directory = write_wire(root, [spawn(f"agent-r{i}", "factory-code-reviewer")
+                                  for i in range(5)])
+    res = run("audit", "--repo", str(root), "--session", str(directory))
+    expect_clean_cli(res, 0, "five spawns still covered after the refund")
+    directory = write_wire(root, [spawn(f"agent-y{i}", "factory-code-reviewer")
+                                  for i in range(6)])
+    res = run("audit", "--repo", str(root), "--session", str(directory))
+    expect_clean_cli(res, 1, "six spawns after the refund")
+    check("uncounted delegation" in res.stdout,
+          f"after the refund the trail covers 5 spawns, not 6: {res.stdout!r}")
+
+
+# --------------------------------------------------------------------------------------------
 # Input validation: every bad input is a message + exit 2, never a traceback
 # --------------------------------------------------------------------------------------------
 
 def test_input_validation(tmp: pathlib.Path) -> None:
     root = repo(tmp, "inputs")
 
+    # (C4) A REGISTERED role without a budget entry PASSES THROUGH: the budget is counted where
+    # the role has one (and the permit gate audits the delegation itself).
     res, verdict = gate(root, "business_tester")
-    expect_clean_cli(res, 2, "an unbudgeted role")
-    check("no retry budget" in res.stderr and "reviewer" in res.stderr,
+    expect_clean_cli(res, 0, "an unbudgeted but registered role passes through")
+    check(verdict["allow"] is True and verdict["budgeted"] is False
+          and verdict["counter"] is None,
+          f"the pass-through verdict carries allow:true and budgeted:false: {verdict}")
+    check("no retry budget" in verdict["reason"] and "permit gate" in verdict["reason"],
+          f"the note must say where the budget is counted instead: {verdict['reason']!r}")
+    for role in ("analyzer", "tester", "documenter", "security_auditor"):
+        res, verdict = gate(root, role)
+        expect_clean_cli(res, 0, f"the unbudgeted role {role} passes through")
+        check(verdict["allow"] is True and verdict["budgeted"] is False,
+              f"{role} must pass through: {verdict}")
+    check(counters(root)["reviewer"] == 0,
+          "a pass-through must not move any counter")
+
+    # A role NOBODY registered stays an input error.
+    res, verdict = gate(root, "wizard")
+    expect_clean_cli(res, 2, "an unregistered role")
+    check("not a registered factory role" in res.stderr and "reviewer" in res.stderr,
           f"the error must name the budgeted roles: {res.stderr!r}")
-    check(verdict == {}, "an unbudgeted role prints no verdict")
+    check(verdict == {}, "an unregistered role prints no verdict")
 
     expect_clean_cli(run("check", "--repo", str(root), "--role", "reviewer"), 2,
                      "check without --mode")
@@ -808,6 +933,8 @@ def main() -> int:
         test_mode_semantics(tmp)
         test_owner_authorization(tmp)
         test_per_role_budgets(tmp)
+        test_review_rounds(tmp)
+        test_review_round_audit(tmp)
         test_input_validation(tmp)
         test_write_is_surgical(tmp)
         test_settle(tmp)
@@ -823,9 +950,13 @@ def main() -> int:
           "sends the main agent to the AskUserQuestion owner stop, auto names the FAILED run and "
           "has no override), --owner-authorized grants exactly one recorded extra delegation per "
           "owner decision (N recorded decisions allow budget + N delegations, a second decision was "
-          "refused forever before this fix), "
+          "refused forever before this fix), a registered role WITHOUT a budget passes through "
+          "with allow:true (the budget is counted where the role has one) while an unregistered "
+          "role is refused, --round counts a reviewer iteration per LOGICAL REVIEW ROUND (the "
+          "shard fan-out of one round consumes one iteration, every shard recorded for the finish "
+          "audit), "
           "init materializes the retry_counters block idempotently, and every bad input (an "
-          "unbudgeted role, a missing checkpoint or block, a counter that is not a non-negative "
+          "unregistered role, a missing checkpoint or block, a counter that is not a non-negative "
           "integer) is an actionable exit-2 error without a traceback; and `settle` refunds exactly "
           "ONE consumed reviewer iteration for a WHOLLY REFUTED round (never below 0, idempotent per "
           "round through the settled_rounds record, evidence mandatory, a mixed round and another "

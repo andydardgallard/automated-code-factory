@@ -8,7 +8,8 @@ file/line/title with different spacing/case and different details), several seve
   - title normalization and deduplication with sorted, unique `occurrences`,
   - the deterministic order (severity -> file -> line, null last),
   - the summary (per-severity counts, shard count) and the merged verdict rules
-    (any shard request_changes OR any critical finding -> request_changes, else approve),
+    (any contributing shard request_changes OR any active critical/major finding
+    -> request_changes, else approve),
   - the CLI contract (JSON on stdout, --report/--md files, exit 0/1/2, broken input names the
     file and the problem),
   - determinism: every permutation of the input order yields a byte-identical report,
@@ -150,10 +151,11 @@ def main() -> int:
                "shard_key must order shard-9 before shard-10")
         expect(mf.shard_key("shard-1") < mf.shard_key("shard-1a") < mf.shard_key("shard-2"),
                f"shard_key must keep text suffixes in order: {mf.shard_key('shard-1a')}")
+        # Minor findings keep this an approve merge — an active major would now block by itself.
         wide_two = write_findings(root, "wide-2.json", "shard-2", "approve", [
-            finding("major", "src/core.py", 99, "Shared title", "detail from shard-2")])
+            finding("minor", "src/core.py", 99, "Shared title", "detail from shard-2")])
         wide_ten = write_findings(root, "wide-10.json", "shard-10", "approve", [
-            finding("major", "src/core.py", 99, "shared   TITLE", "detail from shard-10")])
+            finding("minor", "src/core.py", 99, "shared   TITLE", "detail from shard-10")])
         wide = mf.merge([mf.load_shard_file(wide_ten), mf.load_shard_file(wide_two)])
         expect(len(wide["findings"]) == 1, f"the duplicate must collapse: {wide['findings']}")
         merged = wide["findings"][0]
@@ -186,16 +188,26 @@ def main() -> int:
         approve_only = mf.merge([mf.load_shard_file(two), mf.load_shard_file(three)])
         expect(approve_only["verdict"] == "request_changes",
                "a critical finding must block even without a request_changes shard")
-        # The merged verdict escalates on critical findings or an explicit shard
-        # request_changes only — major/minor/nit alone stay approve (the per-shard reviewer
-        # decides its own verdict from its severity policy).
+        # (M11) The merged verdict is DERIVED from the active findings, never trusted from the
+        # shards' verdicts: an active MAJOR finding blocks exactly like a critical one, so a shard
+        # that approved despite a live major finding cannot soften the round. Minor/nit alone stay
+        # approve (the per-shard reviewer decides its own severity policy below major).
         major_only = mf.merge([mf.load_shard_file(write_findings(
             root, "major.json", "shard-major", "approve",
             [finding("nit", "a.py", 1, "cosmetic", ""), finding("major", "b.py", 2, "big", "")]))])
-        expect(major_only["verdict"] == "approve",
-               f"major/nit alone must not change the merged verdict: {major_only['verdict']}")
+        expect(major_only["verdict"] == "request_changes",
+               f"an active major finding must block even when its shard approved: "
+               f"{major_only['verdict']}")
         expect(major_only["counts"] == {"critical": 0, "major": 1, "minor": 0, "nit": 1},
                f"major findings must still be counted: {major_only['counts']}")
+        # A REFUTED major does not block: the refutation (with its evidence) discharged it.
+        write_raw(root, "refute.md", "# refutation\n")
+        refuted_major = finding("major", "b.py", 2, "big")
+        refuted_major.update(finding_disposition="refuted", finding_evidence="refute.md")
+        discharged = mf.merge([mf.load_shard_file(write_findings(
+            root, "discharged.json", "shard-dis", "approve", [refuted_major]))])
+        expect(discharged["verdict"] == "approve" and discharged["refuted"] == 1,
+               f"a refuted major must not block: {discharged['verdict']!r}")
         soft = mf.merge([mf.load_shard_file(write_findings(
             root, "soft.json", "shard-soft", "approve", [finding("nit", "a.py", 1, "x", "")]))])
         expect(soft["verdict"] == "approve", f"a nit-only run must approve: {soft['verdict']}")
@@ -387,6 +399,35 @@ def main() -> int:
         merged_mixed = next(f for f in mixed["findings"] if f["file"] == "src/a.py")
         expect(merged_mixed["finding_disposition"] == "accepted" and mixed["refuted"] == 0,
                f"a single refuting shard must not suppress a live finding: {merged_mixed}")
+
+        #     (C27) Mixed dispositions on the SAME deduplicated finding: a shard's request_changes
+        #     is discharged by refuting ITS OWN occurrence even when the finding stays alive through
+        #     another shard — the blocking shard set comes from the individual unrefuted occurrence
+        #     records, not from the merged occurrence list. (A minor finding isolates this from the
+        #     critical/major blocking rule.)
+        own_refuted = finding("minor", "src/d.py", 4, "shared wording")
+        own_refuted.update(finding_disposition="refuted",
+                           finding_evidence=".code-factory/logs/code-review.md")
+        refuting = write_findings(root, "refuting.json", "shard-5", "request_changes",
+                                  [own_refuted])
+        asserting = write_findings(root, "asserting.json", "shard-6", "approve",
+                                   [finding("minor", "src/d.py", 4, "shared   WORDING")])
+        mixed_disp = mf.merge([mf.load_shard_file(refuting), mf.load_shard_file(asserting)])
+        merged_shared = mixed_disp["findings"][0]
+        expect(merged_shared["finding_disposition"] == "accepted"
+               and merged_shared["occurrences"] == ["shard-5", "shard-6"],
+               f"the dissenting shard keeps the finding alive: {merged_shared}")
+        expect(mixed_disp["verdict"] == "approve",
+               f"a shard whose own occurrence was refuted must not keep blocking: "
+               f"{mixed_disp['verdict']!r}")
+        #     …while the shard whose occurrence is still ACTIVE keeps its own request alive.
+        asserting_rc = write_findings(root, "asserting-rc.json", "shard-7", "request_changes",
+                                      [finding("minor", "src/d.py", 4, "shared wording")])
+        still_blocked = mf.merge([mf.load_shard_file(refuting),
+                                  mf.load_shard_file(asserting_rc)])
+        expect(still_blocked["verdict"] == "request_changes",
+               f"the shard with the active occurrence must still block: "
+               f"{still_blocked['verdict']!r}")
 
         #     A refutation without evidence, with a malformed path, or pointing at a missing
         #     artifact is refused (exit 2) — a suppression with a footnote is not a disposition.

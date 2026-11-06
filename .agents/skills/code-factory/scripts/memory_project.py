@@ -71,6 +71,10 @@ ownership explicit and machine-checkable:
                                  else the last record in file order; the report counts `carried`
                                  (open items re-declared there with a non-empty `reason:`) and
                                  `unmentioned` (open items that record does not mention at all).
+                                 A `--run-id` that does not select EXACTLY one record is a
+                                 validation error (`unknown-run-id` / `ambiguous-run-id`) instead of
+                                 a green gate for a run that was never found: with `current`
+                                 unknown the unmentioned check would measure the wrong run.
                                  `--check` exits 0 iff `unmentioned == 0` and every `closed:`
                                  element is valid — so the Finish node can accept a carried-over
                                  debt (an item in `unfinished` with a reason) while a debt that
@@ -80,16 +84,19 @@ ownership explicit and machine-checkable:
                                  all exit 1. The validation of the `closed:` blocks runs always,
                                  on any record. The two sections `compact` writes into the summary —
                                  `## Carried debt` and `## Closed with evidence` — are read back as
-                                 a synthetic FOLDED RECORD that precedes the journal (see
-                                 folded_summary_record): the debt the fold carried stays visible as
-                                 open debt, a closure that stayed in the journal still matches a
-                                 declaration the fold carried away, and the closures the fold carried
+                                 synthetic FOLDED RECORDS that precede the journal (see
+                                 folded_summary_records): one per folded source timestamp, so a
+                                 declare→close→redeclare history replays in its true order, the debt
+                                 the fold carried stays visible as open debt, a closure that stayed
+                                 in the journal still matches a declaration the fold carried away,
+                                 and the closures the fold carried
                                  away stay counted (`closed` includes them exactly once,
                                  `closed_in_summary` names the folded part). A `closed:` element is
                                  ALSO a declaration — it proves the item existed and was open — so an
                                  item only a `## Closed with evidence` bullet names is declared and
-                                 closed by that same folded record: a later fold that rewrites
-                                 `## Carried debt` to `- none` can never orphan a recorded closure.
+                                 closed by the folded record of the closure's own timestamp: a later
+                                 fold that rewrites `## Carried debt` can never orphan a recorded
+                                 closure.
   compact --repo <root> [--threshold 50] [--keep 20] [--dry-run]
                                  implement the 50/20 rule in code instead of in prose: read the
                                  journal raw (line endings preserved), split it at the dated `## `
@@ -100,7 +107,8 @@ ownership explicit and machine-checkable:
                                  folded record: timestamp, short title, run_id, closed count), a
                                  `## Carried debt` section listing EVERY item
                                  must_survive_compaction() requires (item, reason, severity,
-                                 follow_up, source timestamp) and a `## Closed with evidence` section
+                                 follow_up, source timestamp) plus the still-open debt an EARLIER
+                                 fold carried, and a `## Closed with evidence` section
                                  with one bullet per folded `closed:` element (how long ago it was
                                  closed, the item, its VERBATIM evidence, the source timestamp),
                                  because dropping the proof of a closure would leave a closure
@@ -118,7 +126,11 @@ ownership explicit and machine-checkable:
                                  still inside the closure bullet itself). A folded `closed:` element
                                  without `evidence:` is refused the same way (an invalid closure is
                                  never laundered into a valid-looking bullet). `--dry-run` prints the
-                                 plan and writes nothing.
+                                 plan and writes nothing. The write itself is ONE transaction
+                                 (commit_memory_files): both files are staged first, the summary is
+                                 committed BEFORE the journal — the folded journal records are
+                                 removed only once the summary preserving them is durably installed —
+                                 and a failure rolls every committed file back.
 
   compact-check --before <f> --after <f>
                                  verify that every unfinished item with severity=critical or
@@ -223,7 +235,7 @@ CARRIED_DEBT_HEADING = "## Carried debt"
 # proof of a folded debt must survive the fold, so it is written out instead of a bare count.
 CLOSED_WITH_EVIDENCE_HEADING = "## Closed with evidence"
 # The two summary sections that stand in for the records folded out of the journal, in the order
-# `backlog_report_text` reads them back (see folded_summary_record).
+# `backlog_report_text` reads them back (see folded_summary_records).
 FOLDED_SECTIONS = (CARRIED_DEBT_HEADING, CLOSED_WITH_EVIDENCE_HEADING)
 # The heading of the synthetic "folded record" those sections declare — a date-shaped heading, so
 # the very parser that reads the journal (`journal_blocks_text`) reads the summary sections too.
@@ -449,6 +461,47 @@ def write_text_atomic(path: pathlib.Path, text: str) -> None:
     with tmp.open("w", encoding="utf-8", newline="") as fh:
         fh.write(text)
     os.replace(tmp, path)
+
+
+def commit_memory_files(plan: list[tuple[pathlib.Path, str, str]]) -> None:
+    """Install related files as ONE transaction (best-effort two-phase commit).
+
+    `plan` is `[(path, new_text, original_text), …]` in COMMIT order. Every content is first
+    STAGED as a same-directory temp file — nothing is committed yet — and only then committed in
+    that order: `compact` passes the summary BEFORE the journal, so the folded journal records are
+    removed only once the summary that preserves their debt and closures is durably installed, and
+    a crash between the two commits loses nothing (the journal still holds every record and a
+    re-run of `compact` converges). A file whose content did not change is not touched at all.
+
+    A failure of any step removes the staged temp files, rolls every already-committed file back to
+    its original text — still in memory — and re-raises the OSError; a rollback that itself fails is
+    the best effort the process can give (the journal keeps its records, so `compact` is
+    re-runnable).
+    """
+    work = [(path, text, original) for path, text, original in plan if text != original]
+    staged: list[tuple[pathlib.Path, pathlib.Path, str]] = []
+    committed: list[tuple[pathlib.Path, str]] = []
+    try:
+        for path, text, original in work:
+            tmp = path.with_name(path.name + ".tmp")
+            staged.append((tmp, path, original))
+            with tmp.open("w", encoding="utf-8", newline="") as fh:
+                fh.write(text)
+        for tmp, path, original in staged:
+            os.replace(tmp, path)
+            committed.append((path, original))
+    except OSError:
+        for path, original in reversed(committed):
+            try:
+                write_text_atomic(path, original)
+            except OSError:
+                pass
+        for tmp, _path, _original in staged:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
 
 
 def read_text_raw(path: pathlib.Path) -> str:
@@ -1192,24 +1245,43 @@ def history_bullets(folded: list[dict]) -> list[str]:
     return bullets
 
 
-def carried_debt_lines(folded: list[dict]) -> list[str]:
-    """The `## Carried debt` body: EVERY must-survive item of the folded records, with its source.
+def debt_item_lines(item: dict[str, str], stamp: str) -> list[str]:
+    """One `## Carried debt` entry: the item with reason/severity/follow_up and its source stamp."""
+    return [f"- item: {item['item']}",
+            f"  reason: {item.get('reason', '').strip() or '(none recorded)'}",
+            f"  severity: {item.get('severity', '').strip() or 'warning'}",
+            f"  follow_up: {item.get('follow_up', '').strip() or 'false'}",
+            f"  source: {item.get('source', '').strip() or stamp}"]
+
+
+def carried_debt_lines(folded: list[dict],
+                       prior_open: dict[str, dict[str, str]] | None = None) -> list[str]:
+    """The `## Carried debt` body: EVERY must-survive item of the folded records, with its source,
+    preceded by the still-open debt an EARLIER fold carried.
+
+    The section is REWRITTEN on every fold (never accumulated), so the debt a previous fold left
+    open — `final_open_items` of the summary's folded records — must be carried forward
+    explicitly: a fold that only names its own declarations would make that debt silently
+    disappear. An item the folded records declare again takes its newest declaration (the fold
+    replays declarations in source-stamp order anyway).
 
     The `- item:` / `reason:` / `severity:` / `follow_up:` shape is the one
     `unfinished_items_text` reads, so `compact-check --before <old journal> --after <summary>`
     agrees with what this function writes.
     """
     lines: list[str] = []
+    redeclared = {normalize_item(item["item"])
+                  for record in folded for item in record["blocks"]["unfinished"]
+                  if is_open_item(item) and item["item"]}
+    for key, item in (prior_open or {}).items():
+        if key not in redeclared:
+            lines += debt_item_lines(item, "")
     for record in folded:
         stamp = record_timestamp(record)
         for item in record["blocks"]["unfinished"]:
             if not is_open_item(item) or not item["item"]:
                 continue
-            lines += [f"- item: {item['item']}",
-                      f"  reason: {item.get('reason', '').strip() or '(none recorded)'}",
-                      f"  severity: {item.get('severity', '').strip() or 'warning'}",
-                      f"  follow_up: {item.get('follow_up', '').strip() or 'false'}",
-                      f"  source: {stamp}"]
+            lines += debt_item_lines(item, stamp)
     return lines
 
 
@@ -1285,54 +1357,83 @@ def section_body(text: str, heading: str) -> list[str]:
     return body
 
 
-def folded_summary_record(summary_text: str) -> dict | None:
-    """The synthetic journal record the summary's two fold sections stand for (None when absent).
+def folded_summary_records(summary_text: str) -> list[dict]:
+    """The synthetic journal records the summary's two fold sections stand for ([] when absent).
 
     `compact` moves records out of the journal, so the memory would otherwise lose two facts with
     them: the debt the fold carried (`## Carried debt`) and the proofs of the closures it carried
-    (`## Closed with evidence`). This function turns those two sections back into a record shaped
-    exactly like a journal record (`journal_blocks_text` parses it), which `backlog_report_text`
-    reads as the OLDEST history — before the journal — so:
+    (`## Closed with evidence`). This function turns those two sections back into records shaped
+    exactly like journal records, which `backlog_report_text` reads as the OLDEST history —
+    before the journal — so:
       - every folded `closed:` element is validated and counted like a journal closure,
       - a closure that stayed in the journal still matches a declaration the fold carried away,
       - the carried debt stays in the open backlog instead of disappearing from the report.
 
+    ONE record cannot replay a declare→close→redeclare history — within a record the declarations
+    all apply before the closures, so a folded closure would close an item a LATER folded record
+    had re-declared and the debt would silently disappear. The sections are therefore replayed as
+    ONE RECORD PER SOURCE STAMP, in stamp order (every debt line and every closure bullet carries
+    the timestamp of the record it was folded from), the declarations of a stamp before its
+    closures — exactly like the journal records they came from. A closed-then-reopened item stays
+    OPEN (its redeclaration carries the newer stamp), a declared-then-closed item stays closed,
+    and an entry without a source stamp sorts first, degrading to the oldest history.
+
     A `closed:` element is ALSO a declaration: it records that the item EXISTED and was open, which
     is exactly what the closure proves. Every item a `## Closed with evidence` bullet names and
-    `## Carried debt` does not already declare is therefore declared here, as an open item the same
-    record then closes. Without that, a LATER fold that finds no open debt rewrites `## Carried
-    debt` to `- none` (the section is REPLACED, never accumulated) and the recorded closure loses
-    its declaration — `closed item '<text>' matches no follow_up/critical item of the journal`.
-
-    The declarations come first and the closures after, so an item the fold both carried and closed
-    reads as closed (it has evidence; the closing protocol makes a proven closure final), and an
-    item listed in BOTH sections is declared once and counted once: `open`/`closed` stay truthful.
+    `## Carried debt` does not already declare is therefore declared in the record of the closure's
+    own stamp, as an open item that record then closes. Without that, a LATER fold that finds no
+    open debt rewrites `## Carried debt` to `- none` (the section is REPLACED, never accumulated)
+    and the recorded closure loses its declaration — `closed item '<text>' matches no
+    follow_up/critical item of the journal`.
     """
-    debt = [line for line in section_body(summary_text, CARRIED_DEBT_HEADING)
-            if line.strip() != SECTION_NONE]
+    debt_items = unfinished_items_text("\n".join(
+        line for line in section_body(summary_text, CARRIED_DEBT_HEADING)
+        if line.strip() != SECTION_NONE))
     closures = parse_closure_bullets(section_body(summary_text, CLOSED_WITH_EVIDENCE_HEADING))
-    if not debt and not closures:
-        return None
-    parts = [FOLDED_HEADING, "timestamp: (folded into memory/summary.md)", "unfinished:"]
-    parts += debt or [SECTION_NONE]
-    parts.append("closed:")
-    for closure in closures:
-        parts += [f"- item: {closure['item']}", f"  evidence: {closure['evidence']}",
-                  f"  source: {closure['timestamp']}"]
-    records = journal_blocks_text("\n".join(parts) + "\n")
-    if not records:
-        return None
-    record = records[0]
-    declared = {normalize_item(item["item"]) for item in record["blocks"]["unfinished"]}
-    for closure in closures:
-        key = normalize_item(closure["item"])
-        if not key or key in declared:
-            continue
-        declared.add(key)
-        record["blocks"]["unfinished"].append(
-            {"item": closure["item"], "severity": "critical", "follow_up": "true",
-             "reason": "(declared by the folded closure - the item existed and was open)"})
-    return record
+    if not debt_items and not closures:
+        return []
+    declared = {normalize_item(item["item"]) for item in debt_items if item["item"]}
+    stamps = sorted({item.get("source", "").strip() for item in debt_items}
+                    | {closure["timestamp"] for closure in closures})
+    records: list[dict] = []
+    for stamp in stamps:
+        unfinished = [dict(item) for item in debt_items
+                      if item.get("source", "").strip() == stamp]
+        closed_here = [closure for closure in closures if closure["timestamp"] == stamp]
+        for closure in closed_here:
+            key = normalize_item(closure["item"])
+            if not key or key in declared:
+                continue
+            declared.add(key)
+            unfinished.append(
+                {"item": closure["item"], "severity": "critical", "follow_up": "true",
+                 "reason": "(declared by the folded closure - the item existed and was open)"})
+        records.append({"heading": FOLDED_HEADING, "start": 0, "end": 0,
+                        "fields": {"timestamp": "(folded into memory/summary.md)"},
+                        "blocks": {"unfinished": unfinished,
+                                   "closed": [{"item": closure["item"],
+                                               "evidence": closure["evidence"],
+                                               "source": closure["timestamp"]}
+                                              for closure in closed_here]}})
+    return records
+
+
+def final_open_items(records: list[dict]) -> dict[str, dict[str, str]]:
+    """Normalized item -> its latest declaration, for everything still OPEN after `records` fold.
+
+    The same per-record order as the backlog fold (a record's declarations first, then its valid
+    closures — an element without `evidence:` closes nothing), so `compact` can carry the debt an
+    earlier fold left open into the rewritten `## Carried debt` instead of dropping it.
+    """
+    open_items: dict[str, dict[str, str]] = {}
+    for record in records:
+        for item in record["blocks"]["unfinished"]:
+            if is_open_item(item) and item["item"]:
+                open_items[normalize_item(item["item"])] = item
+        for closed in record["blocks"]["closed"]:
+            if closed.get("item", "").strip() and closed.get("evidence", "").strip():
+                open_items.pop(normalize_item(closed["item"]), None)
+    return open_items
 
 
 def upsert_section(text: str, heading: str, body_lines: list[str]) -> str:
@@ -1390,7 +1491,10 @@ def cmd_compact(args: argparse.Namespace) -> int:
     folded = records[: total - args.keep]
     kept = records[total - args.keep:]
     history = history_bullets(folded)
-    debt = carried_debt_lines(folded)
+    summary_raw = read_text_raw(summary)
+    # The debt an earlier fold left open must be carried forward: `## Carried debt` is rewritten,
+    # never accumulated, so a fold that names only its own declarations would silently drop it.
+    debt = carried_debt_lines(folded, final_open_items(folded_summary_records(summary_raw)))
     closures = folded_closures(folded)
     required_folded = must_survive_compaction(
         [item for record in folded for item in record["blocks"]["unfinished"]])
@@ -1411,7 +1515,6 @@ def cmd_compact(args: argparse.Namespace) -> int:
     kept_lines = lines[kept[0]["start"] - 1: kept[-1]["end"]]
     tail = lines[kept[-1]["end"]:]
     new_journal = "".join(header + kept_lines + tail)
-    summary_raw = read_text_raw(summary)
     new_summary = upsert_section(summary_raw, CARRIED_DEBT_HEADING, debt or [SECTION_NONE])
     # The closures ACCUMULATE: the bullets of an earlier fold stay byte-identical (their age was
     # computed then), the closures of this fold are appended — the proof of an older closure is
@@ -1460,10 +1563,15 @@ def cmd_compact(args: argparse.Namespace) -> int:
         print("dry-run - nothing written")
         return 0
 
-    if new_journal != raw:
-        write_text_atomic(change_log, new_journal)
-    if new_summary != summary_raw:
-        write_text_atomic(summary, new_summary)
+    # Both files commit as ONE transaction, the summary FIRST: it is durably installed (it preserves
+    # the folded records) before the journal loses them, and a failure rolls both files back.
+    try:
+        commit_memory_files([(summary, new_summary, summary_raw),
+                             (change_log, new_journal, raw)])
+    except OSError as exc:
+        print(f"FAIL - compaction could not install the compacted memory ({exc}) - both files "
+              f"were rolled back to the pre-compaction state", file=sys.stderr)
+        return 1
     print(f"folded: {len(folded)}")
     print(f"kept: {len(kept)}")
     print(f"carried: {len(required_folded)}")
@@ -1552,7 +1660,7 @@ def backlog_report(root: pathlib.Path, run_id: str = "") -> dict:
     Reading is all this wrapper does, so the SAME fold can be applied to a would-be memory that is
     not on disk yet (`cmd_compact` validates its result with `backlog_report_text` before writing).
     A missing journal is folded as an empty journal and a summary that cannot be read as a summary
-    without fold sections, exactly like `folded_summary_record` always tolerated them.
+    without fold sections, exactly like `folded_summary_records` always tolerated them.
     """
     change_log = root / "memory" / "change-log.md"
     summary = root / "memory" / "summary.md"
@@ -1578,9 +1686,11 @@ def backlog_report_text(journal_text: str, summary_text: str, run_id: str = "") 
 
     The records `compact` folded away are NOT gone: `memory/summary.md` keeps their debt
     (`## Carried debt`) and their closures with their evidence (`## Closed with evidence`), and
-    `folded_summary_record` reads them back as the synthetic OLDEST record — before the journal, so
-    a closure that stayed in the journal still matches a declaration the fold carried away, the
-    carried debt stays in the open backlog, and the folded closures stay VALIDATED and COUNTED.
+    `folded_summary_records` reads them back as the synthetic OLDEST history — one record per
+    folded source timestamp, before the journal, so a folded declare→close→redeclare history
+    replays in its true order, a closure that stayed in the journal still matches a declaration
+    the fold carried away, the carried debt stays in the open backlog, and the folded closures
+    stay VALIDATED and COUNTED.
 
     The CURRENT record — the one whose `run_id` equals `run_id`, else the last record in file
     order — decides between a carried debt and a silent disappearance: every open item must be
@@ -1596,9 +1706,9 @@ def backlog_report_text(journal_text: str, summary_text: str, run_id: str = "") 
     stays truthful after a compaction and never double-counts a closure.
     """
     records = journal_blocks_text(journal_text) if journal_text else []
-    folded = folded_summary_record(summary_text)
-    # The summary's folded record is the OLDEST history: it precedes the journal.
-    history = ([folded] if folded is not None else []) + records
+    folded = folded_summary_records(summary_text)
+    # The summary's folded records are the OLDEST history: they precede the journal.
+    history = folded + records
 
     declared: set[str] = set()
     for record in history:
@@ -1648,13 +1758,25 @@ def backlog_report_text(journal_text: str, summary_text: str, run_id: str = "") 
                 open_items.pop(key, None)
 
     # The CURRENT record: the one carrying --run-id, else the last one written (journal only — the
-    # summary's folded record is never "current", it is the history behind the journal).
+    # summary's folded records are never "current", they are the history behind the journal). A
+    # --run-id that selects anything but EXACTLY one record is a validation error: with `current`
+    # unknown the unmentioned check would measure the WRONG run — and could report success for it.
     current: dict | None = None
-    for record in records:
-        if not run_id or record["fields"].get("run_id", "").strip() == run_id:
-            current = record
-            if run_id:
-                break
+    if run_id:
+        matching = [record for record in records
+                    if record["fields"].get("run_id", "").strip() == run_id]
+        if len(matching) == 1:
+            current = matching[0]
+        elif not matching:
+            errors.append({"kind": "unknown-run-id", "record": "", "item": "",
+                           "message": f"--run-id {run_id} matches no record of "
+                                      f"memory/change-log.md — the current record is unknown"})
+        else:
+            errors.append({"kind": "ambiguous-run-id", "record": "", "item": "",
+                           "message": f"--run-id {run_id} matches {len(matching)} records of "
+                                      f"memory/change-log.md — the current record is ambiguous"})
+    elif records:
+        current = records[-1]
     carried: set[str] = set()
     mentioned: set[str] = set()
     if current is not None:
@@ -1682,7 +1804,7 @@ def backlog_report_text(journal_text: str, summary_text: str, run_id: str = "") 
     return {
         "open": len(items),
         "closed": closed_total,
-        "closed_in_summary": len(folded["blocks"]["closed"]) if folded is not None else 0,
+        "closed_in_summary": sum(len(record["blocks"]["closed"]) for record in folded),
         "legacy_drift": drift,
         "carried": len(carried),
         "unmentioned": len(unmentioned_items),

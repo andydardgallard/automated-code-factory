@@ -31,7 +31,9 @@ repository ships (`git ls-files`):
     sibling cannot be imported exits 3 (`FAIL - the memory pass could not run`), never `ok`.
 
 Cases are printed as `PASS <case>` / `FAIL <case>: <reason>` and summarised at the end.
-Exit code 0 = every case passed, 1 = a case did not behave as expected.
+Exit code 0 = every case passed, 1 = a case did not behave as expected, 2 = the repository cases
+could not run because git is not on PATH (git is a required dependency of this test: a skipped
+matrix is a LOUD failure, never a vacuous green).
 """
 from __future__ import annotations
 
@@ -420,27 +422,30 @@ def case(name: str, fn) -> bool:
 
 def main() -> int:
     if shutil.which("git") is None:
-        print("SKIP - git is not on PATH: every repository case is skipped")
-        cases = [("help", check_help)]
-    else:
-        cases = [
-            ("help", check_help),
-            ("clean_repo", check_clean_repo),
-            ("planted_cyrillic", check_planted_cyrillic),
-            ("exceptions", check_exceptions),
-            ("extra_exclude", check_extra_exclude),
-            ("untracked_out_of_scope", check_untracked_out_of_scope),
-            ("infrastructure_error", check_infrastructure_error),
-            ("tool_source_is_clean", check_tool_source_is_clean),
-            ("memory_v2_hit", check_memory_v2_hit),
-            ("memory_pre_v2_exempt", check_memory_pre_v2_exempt),
-            ("memory_freeze", check_memory_freeze),
-            ("memory_opt_out", check_memory_opt_out),
-            ("memory_absent", check_memory_absent),
-            ("summary_hit", check_summary_hit),
-            ("summary_opt_out", check_summary_opt_out),
-            ("memory_infra_error", check_memory_infra_error),
-        ]
+        # git is a REQUIRED dependency of this test: every substantive case builds a throwaway
+        # repository, so without git the suite would prove nothing. A skipped matrix is a loud
+        # failure (exit 2, SKIP-FAIL) — never a vacuous green a pipeline can consume as PASS.
+        print("SKIP-FAIL - git is not on PATH: every repository case was skipped, so the suite "
+              "proves nothing (install git and re-run)", file=sys.stderr)
+        return 2
+    cases = [
+        ("help", check_help),
+        ("clean_repo", check_clean_repo),
+        ("planted_cyrillic", check_planted_cyrillic),
+        ("exceptions", check_exceptions),
+        ("extra_exclude", check_extra_exclude),
+        ("untracked_out_of_scope", check_untracked_out_of_scope),
+        ("infrastructure_error", check_infrastructure_error),
+        ("tool_source_is_clean", check_tool_source_is_clean),
+        ("memory_v2_hit", check_memory_v2_hit),
+        ("memory_pre_v2_exempt", check_memory_pre_v2_exempt),
+        ("memory_freeze", check_memory_freeze),
+        ("memory_opt_out", check_memory_opt_out),
+        ("memory_absent", check_memory_absent),
+        ("summary_hit", check_summary_hit),
+        ("summary_opt_out", check_summary_opt_out),
+        ("memory_infra_error", check_memory_infra_error),
+    ]
     passed = sum(1 for name, fn in cases if case(name, fn))
     failed = len(cases) - passed
     if failed:

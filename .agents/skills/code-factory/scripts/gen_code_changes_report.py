@@ -29,6 +29,9 @@ import sys
 
 MAX_BLOCK = 30  # max lines shown for a pure add/remove block
 
+# The canonical run-id grammar (same constant the sibling scripts carry locally).
+RUN_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{8}$")
+
 # One path token of a `diff --git` header: either C-quoted ("a/my file.txt") or a plain run.
 PATH_TOKEN_RE = re.compile(r'"(?:[^"\\]|\\.)*"|\S+')
 
@@ -203,6 +206,8 @@ def main() -> int:
     ap.add_argument("--run-id", default="",
                     help="Run id (see run_id.py); when given it is recorded in the report header")
     args = ap.parse_args()
+    if args.run_id and not RUN_ID_RE.fullmatch(args.run_id):
+        ap.error(f"--run-id must be YYYYMMDD-<8 lowercase hex>, got {args.run_id!r}")
 
     repo = pathlib.Path(args.repo).resolve()
     if not (repo / ".git").exists():

@@ -22,7 +22,11 @@ Usage:
   python3 validate_documentation.py baseline --repo <root> --files f1 f2 ...
 
 `snapshot` copies the listed files into <dir> preserving relative paths (the documenter runs it
-BEFORE editing). `check` compares the current files against that snapshot.
+BEFORE editing). `check` compares the current files against that snapshot. The `--files` of both
+must be repository-relative: a blank, absolute (POSIX root, Windows drive, UNC share) or
+`..`-escaping entry is a usage error (exit 2) BEFORE anything is read or written — `snapshot`
+reads <root>/<rel> and writes <dir>/<rel>, so an escaping entry would read outside the repository
+or write outside the baseline.
 
 `baseline` prints the state the orchestrator has to capture BEFORE the documenter starts: one
 `<path>=<sha256hex>` line per existing file, `<path>=-` for a file that does not exist (a deletion
@@ -550,9 +554,16 @@ def main() -> int:
 
     baseline = pathlib.Path(args.baseline).resolve()
 
+    # snapshot reads root/rel and writes baseline/rel, check reads both: the paths must be
+    # confined to the repository BEFORE any read or write, exactly like the `baseline`
+    # subcommand's --files (absolute and `..`-escaping entries are usage errors, exit 2).
+    rels, path_problems = normalize_path_list(args.files)
+    if path_problems:
+        ap.error("--files: " + "; ".join(path_problems))
+
     if args.cmd == "snapshot":
-        snapshot(root, baseline, args.files)
-        print(f"PASS - snapshot of {len(args.files)} file(s) saved to {baseline}")
+        snapshot(root, baseline, rels)
+        print(f"PASS - snapshot of {len(rels)} file(s) saved to {baseline}")
         return 0
 
     if args.baseline_files is not None and not args.derive:
@@ -561,13 +572,13 @@ def main() -> int:
     if entry_problems:
         ap.error("--baseline-files: " + "; ".join(entry_problems))
 
-    errors = check(root, baseline, args.files)
+    errors = check(root, baseline, rels)
     if args.derive:
         changed, reason = derive_changed_files(root)
         if reason:
             print(f"error: --derive cannot compute the changed set: {reason}", file=sys.stderr)
             return 2
-        declared = {pathlib.PurePath(f).as_posix() for f in args.files}
+        declared = set(rels)
         for rel in sorted(set(changed) - declared):
             if rel in recorded:
                 # A baseline path is exempt only while it still IS what the orchestrator captured:

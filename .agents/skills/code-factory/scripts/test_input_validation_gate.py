@@ -26,7 +26,11 @@ Two halves of one contract are pinned here, and neither is read by any other sel
         and the same argument without it does not;
       - a `#[serde(default = "fn")]` names a function the scan cannot evaluate, so it is UNKNOWN
         and never a zero default (the golden missing-validation case defaults to 5 this way), while
-        a bare `#[serde(default)]` and a literal `default = "0"` are provable zeros.
+        a bare `#[serde(default)]` and a literal `default = "0"` are provable zeros;
+      - a validation keyword counts only as a CALL or a statement shape, so a bare assignment
+        (`max_retries = args.max_retries`), a name merely containing max/check/range, and a keyword
+        that only APPEARS in the line (`print("max", args.max_retries)`) are not evidence, while a
+        real `clamp(...)` call over the input is.
 
     The two shipped golden diffs are replayed as well, and the purpose-fitted one is proven
     NON-VACUOUSLY: `check_golden_purpose_fitted` imports the gate module and asserts that it really
@@ -199,6 +203,32 @@ PY_NO_CHOICES = [
     '        "--format",',
     '        default="text",',
     "    )",
+]
+# A plain ASSIGNMENT: it copies the input and names it, but checks nothing. The old prefix match
+# read the `max` substring of `max_retries` as a validation keyword and blessed this line.
+PY_ASSIGNMENT = [
+    "    max_retries = args.max_retries",
+]
+# A helper NAME merely containing a keyword (`range`, `check`, `max`) is not a check either.
+PY_KEYWORD_NAME = [
+    "    range_checker = args.max_retries",
+    "    print(range_checker)",
+]
+# A real validation CALL over the input: a validation keyword used as a call, so it stays evidence.
+PY_CLAMP = [
+    "    max_retries = clamp(args.max_retries, 1, 100)",
+]
+# A keyword that merely OCCURS in the line — printed, logged, quoted — checks nothing. The token
+# alone used to count (review R1, critical 19), which turned any mention of `max` into a green.
+PY_PRINTED_KEYWORD = [
+    '    print("max", args.max_retries)',
+]
+PY_LOGGED_STRING = [
+    '    log.info("clamped between 1 and 100, checked", args.max_retries)',
+]
+# A comment that names the input and a keyword is a plan, not a check.
+PY_COMMENTED_CHECK = [
+    "    # TODO check args.max_retries before use",
 ]
 NOISE_DIFF = "\n".join([
     "diff --git a/farukon_core/src/settings.rs b/farukon_core/src/settings.rs",
@@ -484,6 +514,58 @@ def check_python_no_choices_caught() -> str:
     return "missing-validation: --format without choices (exit 1)"
 
 
+def check_python_assignment_is_not_validation() -> str:
+    """A bare assignment names the input and carries the substring `max` — but checks nothing.
+
+    Regression for the prefix-match defect: `max_retries = args.max_retries` used to count as
+    validation evidence, so an unvalidated numeric CLI input got a false green.
+    """
+    result = gate_on(python_diff(PY_ARGUMENT + PY_ASSIGNMENT))
+    expect(result.returncode == 1,
+           f"a plain assignment must not validate the argument: {got(result)}")
+    expect("missing-validation" in result.stdout and "--max-retries" in result.stdout,
+           f"the unvalidated argument must be reported: {report(result)}")
+    return "missing-validation: a bare assignment is not a check (exit 1)"
+
+
+def check_python_keyword_name_is_not_validation() -> str:
+    """A name merely CONTAINING a keyword (`range_checker`) is not a validation construct."""
+    result = gate_on(python_diff(PY_ARGUMENT + PY_KEYWORD_NAME))
+    expect(result.returncode == 1,
+           f"a keyword-containing helper name must not validate the argument: {got(result)}")
+    expect("missing-validation" in result.stdout,
+           f"the unvalidated argument must be reported: {report(result)}")
+    return "missing-validation: a name containing `range` is not a check (exit 1)"
+
+
+def check_python_full_token_call_ok() -> str:
+    """A full-token validation call over the input still counts as evidence."""
+    result = gate_on(python_diff(PY_ARGUMENT + PY_CLAMP))
+    expect(result.returncode == 0,
+           f"a real clamp(...) call over the input must exit 0: {got(result)}")
+    expect("ok" in result.stdout, f"the clean run must say ok: {report(result)}")
+    return "clamp(args.max_retries, 1, 100) passes (exit 0, ok)"
+
+
+def check_python_mentioned_keyword_is_not_validation() -> str:
+    """A keyword that merely APPEARS (printed, logged, commented) is not a check (R1, C19).
+
+    `print("max", args.max_retries)` names the input and contains the token `max` without checking
+    anything, so the argument must still be reported. The three shapes cover a quoted keyword, a
+    keyword inside a longer message, and a keyword in a comment.
+    """
+    for label, extra in (("printed keyword", PY_PRINTED_KEYWORD),
+                         ("logged message", PY_LOGGED_STRING),
+                         ("commented check", PY_COMMENTED_CHECK)):
+        result = gate_on(python_diff(PY_ARGUMENT + extra))
+        expect(result.returncode == 1,
+               f"a keyword that only appears ({label}) must not validate the argument: "
+               f"{got(result)}")
+        expect("missing-validation" in result.stdout and "--max-retries" in result.stdout,
+               f"the unvalidated argument must still be reported ({label}): {report(result)}")
+    return "a keyword that only appears (print/log/comment) is not evidence (exit 1)"
+
+
 def check_noise_ok() -> str:
     """Comments and ordinary code add no input, so the gate stays silent."""
     result = gate_on(NOISE_DIFF)
@@ -747,6 +829,12 @@ CHECKS = (
     ("11b. the wrapped call with a range check passes", check_python_multiline_ok),
     ("12a. argparse `choices=` is declarative validation", check_python_choices_ok),
     ("12b. the same argument without `choices=` is caught", check_python_no_choices_caught),
+    ("12c. a bare assignment is not validation", check_python_assignment_is_not_validation),
+    ("12d. a keyword-containing name is not validation",
+     check_python_keyword_name_is_not_validation),
+    ("12e. a full-token validation call still counts", check_python_full_token_call_ok),
+    ("12f. a keyword that only appears (print/log/comment) is not evidence",
+     check_python_mentioned_keyword_is_not_validation),
     ("13. comments and ordinary code stay silent", check_noise_ok),
     ("14. a malformed or non-UTF-8 diff never crashes", check_garbage_no_crash),
     ("15. --help exits 0", check_help),
@@ -789,7 +877,8 @@ def main() -> int:
 
     print(f"PASS - {len(CHECKS)} checks: check_input_validation.py catches a new unvalidated Rust "
           "field and CLI argument (wrapped calls included), accepts their fitted checks — a "
-          "comparison, a `== 0` rejection, an argparse `choices=` — flags the purpose-blind zero "
+          "comparison, a `== 0` rejection, an argparse `choices=`, a full-token validation call "
+          "(never a bare assignment or a keyword-containing name) — flags the purpose-blind zero "
           "default while treating a named serde default function as unknown and an upper bound "
           "that accepts zero as no contradiction, stays silent on noise and survives garbage "
           "input — and both shipped golden cases are replayed NON-VACUOUSLY: the missing one "

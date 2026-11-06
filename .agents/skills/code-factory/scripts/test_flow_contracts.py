@@ -1003,14 +1003,21 @@ def check_farukon_wiring(root: pathlib.Path) -> list[str]:
 # them without the check would spend a budget nobody counted.
 DELEGATION_SITES = (("E", "analyzer"), ("SC", "analyzer"), ("F", "planner"), ("PC", "planner"),
                     ("M", "coder"), ("N", "tester"), ("Q", "tester"), ("S", "tester"),
-                    ("BT", "business_tester"), ("CR", "reviewer"), ("CR0", "reviewer"),
+                    ("BT", "business_tester"), ("BTR0", "business_tester"),
+                    ("CR", "reviewer"), ("CR0", "reviewer"),
                     ("DG", "diagnostician"), ("ADV", "advisor"), ("DOC2", "documenter"),
-                    ("SA", "security_auditor"), ("BTR0", "business_tester"),
-                    ("BTR1", "business_tester"))
+                    ("SA", "security_auditor"), ("SWD", "supervisor"))
 # The fork/join of the business leg and the task-type paths into the adversarial node.
 FORK_EDGES = (("S", "TST"), ("S", "BT"), ("TST", "T"), ("BT", "T"))
-ADVERSARIAL_PATHS = (("CR0", "BTR0", "CRV0"), ("RF", "BTR1", "L"))
-# A write node the adversarial review/refactor branches must NOT reach (review-report-only).
+# (the node the adversarial probe hangs off, the adversarial node, the ONLY sanctioned continuation
+# after it). The probe sits ON the path to the verdict it feeds: a review run probes at BTR0 BEFORE
+# the reviewer merges (CR0) and the verdict is read (CRV0), so its breakages are review evidence;
+# an implement/refactor run probes only at the post-implementation fork (S -> BT -> T).
+ADVERSARIAL_PATHS = (("TT", "BTR0", "CR0"), ("S", "BT", "T"))
+# The refactor branch must RE-JOIN the shared mode split G, so hitl and auto keep implement's
+# business-test definition and plan approval instead of slipping past the HITL gates.
+REFACTOR_REJOIN = ("RF", "G")
+# A write node the adversarial branches must not reach by ANY path (review-report-only).
 WRITE_NODES = ("M",)
 
 
@@ -1047,6 +1054,21 @@ def _reachable(edges: set[tuple[str, str]], start: str) -> set[str]:
     return seen
 
 
+def _write_leaks(edges: set[tuple[str, str]], middle: str, target: str) -> list[str]:
+    """The write nodes an adversarial node reaches by ANY path but its sanctioned continuation.
+
+    A direct-edge check is not enough: `BTR0 --> X --> M` slipped past it, because the adversarial
+    branch may never reach a write node on ANY path. The sanctioned continuation is removed from the
+    graph first — whatever the verdict path legitimately reaches downstream (acceptance, the
+    finish node, the rework loop behind the review gate) is not the adversarial report's doing —
+    and everything still reachable from the adversarial node is a leak of its own.
+    """
+    trimmed = {(source, destination) for source, destination in edges
+               if (source, destination) != (middle, target)}
+    reachable = _reachable(trimmed, middle)
+    return [node for node in WRITE_NODES if node in reachable]
+
+
 def check_delegation_gates(root: pathlib.Path) -> list[str]:
     """The pre-delegation gate is a PRE-STEP of EVERY delegation, in the graph, not in prose.
 
@@ -1054,8 +1076,11 @@ def check_delegation_gates(root: pathlib.Path) -> list[str]:
     analyzer, the planner, the tester, the reviewer, the diagnostician, the advisor, the documenter or
     the auditor never reached the budget gate or the permit lifecycle at all — a mechanism the flow
     never reaches is not a control. The adversarial node is pinned the same way: it must be a real
-    FORK of node S (joined before the verdict) and reachable from `review` and `refactor` too, while
-    a review/refactor adversarial branch may never reach a write node.
+    FORK of node S (joined before the verdict) for implement/refactor, while a review run probes at
+    BTR0 BEFORE the reviewer's merge, so its breakages reach the verdict as review evidence; a
+    review/refactor adversarial branch may never reach a write node by ANY path (a direct-edge check
+    let `BTR0 --> X --> M` through), and the refactor branch re-joins the shared mode split G so
+    hitl and auto keep implement's approval gates.
     """
     problems: list[str] = []
     skill = Doc.load(root, SKILL, problems)
@@ -1096,12 +1121,25 @@ def check_delegation_gates(root: pathlib.Path) -> list[str]:
             if pair not in edges:
                 problems.append(f"{SKILL}:1: the {source} path must reach the adversarial node — "
                                 f"the \'{pair[0]} --> {pair[1]}\' edge is missing (the adversarial "
-                                f"business tester is never security_audit's, and never a rework order)")
-        for write_node in WRITE_NODES:
-            if (middle, write_node) in edges:
-                problems.append(f"{SKILL}:1: the {middle} branch leads straight into the write node "
-                                f"{write_node} — a review/refactor adversarial report is diagnostic "
-                                f"and may never authorise a code change")
+                                f"business tester runs ON the path to the verdict it feeds, is never "
+                                f"security_audit's, and never opens a rework order)")
+        for write_node in _write_leaks(edges, middle, target):
+            problems.append(f"{SKILL}:1: the {middle} branch reaches the write node {write_node} by "
+                            f"a path other than its sanctioned continuation {target} — a diagnostic "
+                            f"adversarial report is review evidence and may never authorise a code "
+                            f"change")
+    # The review probe runs BEFORE the merge and the verdict it feeds: a breakage produced after
+    # `merge_findings.py` can never reach CRV0, which is what made the finding real.
+    if ("CR0", "BTR0") in edges:
+        problems.append(f"{SKILL}:1: the `CR0 --> BTR0` edge puts the review's adversarial probe "
+                        f"AFTER the reviewer's merge — its breakages could never reach the verdict "
+                        f"CRV0; the probe runs before CR0")
+    # The refactor branch re-joins the shared mode split: hitl and auto keep implement's gates.
+    if REFACTOR_REJOIN not in edges:
+        problems.append(f"{SKILL}:1: the refactor branch must re-join the shared mode split — the "
+                        f"\'{REFACTOR_REJOIN[0]} --> {REFACTOR_REJOIN[1]}\' edge is missing (hitl and "
+                        f"auto keep implement's business-test definition and plan approval, and the "
+                        f"adversarial probe stays at the post-implementation fork)")
     if "BT" in by_id and "security_audit" not in " ".join(by_id["BT"][1].split()):
         problems.append(f"{SKILL}:{by_id['BT'][0]}: the adversarial node must exclude "
                         f"security_audit explicitly")
@@ -1349,8 +1387,20 @@ PROBES = (
      ((SKILL, "TST --> T{Business results match?", "TST --> T9{Business results match?"),),
      "the business leg must be a real FORK"),
     ("P: the review adversarial branch is wired straight into a write node", check_delegation_gates,
-     ((SKILL, "BTR0 --> CRV0", "BTR0 --> M"),),
-     "leads straight into the write node M"),
+     ((SKILL, "    BTR0 --> CR0[",
+       "    BTR0 --> M[the implementation node]\n    BTR0 --> CR0["),),
+     "reaches the write node M"),
+    ("P: the review adversarial branch reaches a write node through an intermediate node",
+     check_delegation_gates,
+     ((SKILL, "    BTR0 --> CR0[",
+       "    BTR0 --> X9[a bridge node]\n    X9 --> M[the implementation node]\n    BTR0 --> CR0["),),
+     "reaches the write node M"),
+    ("P: the review adversarial probe is moved after the reviewer's merge", check_delegation_gates,
+     ((SKILL, "    CR0 --> CRV0{", "    CR0 --> BTR0\n    CR0 --> CRV0{"),),
+     "AFTER the reviewer's merge"),
+    ("P: the refactor branch bypasses the shared approval gates", check_delegation_gates,
+     ((SKILL, "    RF --> G\n", "    RF --> L\n"),),
+     "re-join the shared mode split"),
     ("P: a resolvable role disappears from the orchestrator's registry", check_delegation_gates,
      ((CODE_FACTORY, "  - factory-supervisor\n", ""),),
      "factory-supervisor is a resolvable role"),

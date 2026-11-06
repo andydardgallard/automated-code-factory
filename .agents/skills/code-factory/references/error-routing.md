@@ -252,7 +252,7 @@ nowhere and is never counted as a pass.
 | INFRASTRUCTURE | 3 |
 | HUMAN | 0 (cannot auto-retry) |
 <!-- factory-rule: retry-budgets begin -->
-**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently The budget is counted by whoever EXECUTES the delegation, not by whoever reports it: `scripts/delegation_gate.py check` increments `retry_counters.<role>` itself BEFORE every delegation and REFUSES it once the budget is exhausted — in hitl the refusal forces the `AskUserQuestion` owner stop, in auto the run ends FAILED, and only an explicit `--owner-authorized` (hitl, every decision recorded in the checkpoint) grants ONE extra delegation PER OWNER DECISION — N recorded authorizations allow up to budget+N delegations; `delegation_gate.py audit` fails the finish when a budgeted-role spawn left no counted delegation. A review round whose findings were ALL refuted with evidence refunds the one iteration it consumed (`delegation_gate.py settle`, evidence mandatory, never below 0, idempotent per round); a mixed round is never refunded.
+**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently The budget is counted by whoever EXECUTES the delegation, not by whoever reports it: `scripts/delegation_gate.py check` increments `retry_counters.<role>` itself BEFORE every delegation and REFUSES it once the budget is exhausted — in hitl the refusal forces the `AskUserQuestion` owner stop, in auto the run ends FAILED, and only an explicit `--owner-authorized` (hitl, every decision recorded in the checkpoint) grants ONE extra delegation PER OWNER DECISION — N recorded authorizations allow up to budget+N delegations; `delegation_gate.py audit` fails the finish when a budgeted-role spawn left no counted delegation. A registered role WITHOUT a budget entry is passed through instead of counted (`allow: true`, `budgeted: false`) and stays audited by its permit, and the reviewer is counted per LOGICAL REVIEW ROUND (`check --role reviewer --round <id>`): the first check of a round consumes one iteration and every shard delegation of the SAME round is allowed without moving the counter, because one whole-repo review is one iteration. A review round whose findings were ALL refuted with evidence refunds the one iteration it consumed (`delegation_gate.py settle`, evidence mandatory, never below 0, idempotent per round); a mixed round is never refunded.
 <!-- factory-rule: retry-budgets end -->
 
 - Each retry increments the per-role counter in `.code-factory/state/pipeline.yaml`
@@ -260,8 +260,14 @@ nowhere and is never counted as a pass.
 - When a role's budget is exhausted → escalate to DIAGNOSTICIAN (append the attempt history);
   when the DIAGNOSTICIAN budget is exhausted and the fix still fails → escalate to the ADVISOR
   (§4.1), then to HUMAN.
-- DIAGNOSTICIAN, after its analysis, RESETS the recommended role's counter to 0 and re-runs it
-  with the diagnostic context (do NOT repeat the failed approach).
+- The DIAGNOSTICIAN NEVER resets a retry counter: its analysis produces a route and context, not
+  a budget change. The re-run of the recommended role (with the diagnostic context — do NOT
+  repeat the failed approach) is an ordinary delegation: `scripts/delegation_gate.py check`
+  increments `retry_counters.<role>` BEFORE it and REFUSES it once the budget is spent, exactly
+  like every other retry. The ONE place a counter may move besides `check` is the evidence-backed
+  reviewer-round settlement (`delegation_gate.py settle`, canonical rule `retry-budgets`): it
+  refunds the single iteration a review round consumed when EVERY finding was refuted with
+  evidence, never goes below 0 and is idempotent per round — nothing else may move a counter.
 
 ## 4. Diagnostician (LLM fallback)
 

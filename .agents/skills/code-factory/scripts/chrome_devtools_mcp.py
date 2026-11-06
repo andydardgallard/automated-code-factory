@@ -76,6 +76,7 @@ if str(SCRIPTS) not in sys.path:
     # shared sibling merge module has to be made importable here instead of being assumed.
     sys.path.insert(0, str(SCRIPTS))
 import mcp_json_merge  # noqa: E402  (the sibling path fix above must run first)
+import task_parser  # noqa: E402  (the sibling path fix above must run first)
 
 ASSETS = SCRIPTS.parent / "assets"
 DEFAULT_ASSET = ASSETS / "chrome-devtools.mcp.json"
@@ -1268,6 +1269,44 @@ def anchored(path: str | pathlib.Path, repo: str | None) -> pathlib.Path:
     return resolved
 
 
+# The fields of a PARSED task that say WHAT the task operates. Everything around them — YAML
+# comments, `models`, `repo_path`, `mode`, launch instructions — is wiring, and the classifier
+# never sees it: the shipped template's own instructional comments name the browser path, so
+# classifying them would activate browser tooling on an otherwise backend-only task.
+BUSINESS_SCOPE_SCALARS: tuple[str, ...] = ("title", "description", "user_story")
+BUSINESS_TEST_TEXT_KEYS: tuple[str, ...] = ("scenario", "expected_results")
+
+
+def business_scope(task: dict) -> str:
+    """The business-scope text of a PARSED task: only the fields that say WHAT the task operates.
+
+    A criterion's `verify` (a shell command) and a business test's `config` (a path) are machine
+    wiring, not business wording, so they stay out together with the metadata.
+    """
+    parts = [str(task.get(key) or "") for key in BUSINESS_SCOPE_SCALARS]
+    for item in task.get("acceptance_criteria") or []:
+        parts.append(str(item.get("criterion") or "") if isinstance(item, dict) else str(item))
+    for item in task.get("business_tests") or []:
+        if isinstance(item, dict):
+            parts.extend(str(item.get(key) or "") for key in BUSINESS_TEST_TEXT_KEYS)
+    return "\n".join(part for part in parts if part.strip())
+
+
+def _file_scope_text(raw: str) -> str:
+    """The classification text of a task FILE read from disk.
+
+    A file that parses as a task contributes only its normalized business-scope fields — comments
+    and metadata are dropped by the canonical parser, never re-parsed here. A file that is NOT a
+    task (plain text, or a task the strict parser refuses) is classified verbatim, exactly as
+    before.
+    """
+    try:
+        task, _warnings = task_parser.parse_text(raw)
+    except task_parser.TaskError:
+        return raw
+    return business_scope(task)
+
+
 def _task_text(args: argparse.Namespace) -> str:
     if args.text is not None:
         return args.text
@@ -1275,9 +1314,10 @@ def _task_text(args: argparse.Namespace) -> str:
     if not path.is_file():
         raise InputError(f"task file not found: {path}")
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise InputError(f"cannot read {path}: {exc}") from exc
+    return _file_scope_text(raw)
 
 
 def _emit(args: argparse.Namespace, payload: dict, human: str) -> None:

@@ -24,6 +24,15 @@ COVERED, through the shipped CLI (a subprocess, like the flow calls it):
     delegation, a scope violation, a denied-but-spawned agent, duplicate agent ids, an out-of-order
     verdict, an unused open permit, a malformed wire line, an unplanned task and a plan task with no
     declared files; an absent session wire is DEGRADED (exit 3);
+  - the run binding (C32): a permits file of ANOTHER run is rejected before any spawn is
+    evaluated;
+  - the supervisor bootstrap (C31): supervisor spawns are exempt from the permit-less check, and a
+    bound supervisor spawn is still audited;
+  - bootstrap permits (C2): `--kind bootstrap` is limited to analyzer/planner/supervisor, answers
+    the parsed TASK (`--task-id bootstrap`), and is never plan-checked by the audit;
+  - the load validation (C30): every field's type/vocabulary is validated when the file is read —
+    a malformed permit (a list `agent_id`, a string `scope`, an unknown verdict/role/phase/kind)
+    is an exit-2 input error, never a crash;
   - the CLI contract: `--help` exit 0 for every subcommand, usage errors exit 2, no traceback, and
     the help survives a legacy console code page.
 
@@ -43,6 +52,7 @@ TOOL = pathlib.Path(__file__).with_name("permit_gate.py")
 PERMITS_REL = pathlib.Path(".code-factory") / "state" / "permits.yaml"
 PLAN_REL = pathlib.Path(".code-factory") / "state" / "plan.md"
 PIPELINE_REL = pathlib.Path(".code-factory") / "state" / "pipeline.yaml"
+TASK_REL = pathlib.Path(".code-factory") / "state" / "task.yaml"
 RUN_ID = "20261103-8e939171"
 LEGACY_ENV = {**os.environ, "PYTHONIOENCODING": "cp1251"}
 
@@ -438,6 +448,8 @@ def test_cli_contract() -> None:
     expect_clean_cli(run(), 2, "no subcommand")
     expect_clean_cli(run("unknown-subcommand"), 2, "an unknown subcommand")
     expect_clean_cli(run("add", "--repo", "."), 2, "add without the required flags")
+    check("--kind" in run("add", "--help").stdout,
+          "the add help must document --kind (plan|bootstrap)")
     expect_clean_cli(run("verdict", "--repo", ".", "--permit-id", "P1"), 2,
                      "verdict without --verdict/--evidence")
     expect_clean_cli(run("audit"), 2, "audit without --repo")
@@ -495,8 +507,13 @@ def test_wire_times(tmp: pathlib.Path) -> None:
 
 
 def test_verdict_time(tmp: pathlib.Path) -> None:
-    """(R1-07) A permit whose verdict_at_ms is missing or not finite cannot prove the order."""
-    for index, bad in enumerate((None, "1", True, float("nan"), float("inf"))):
+    """(R1-07) A permit whose verdict_at_ms is missing or not finite cannot prove the order.
+
+    The LOAD validation (C30) owns the ill-TYPED stamps (a string, a bool): they are exit-2 input
+    errors the moment the file is read. The AUDIT owns the well-typed but unusable ones (missing,
+    NaN, infinity): they are exit-1 violations naming the unreadable stamp.
+    """
+    for index, bad in enumerate((None, float("nan"), float("inf"))):
         root = repo(tmp, f"verdict-time-{index}")
         allow(root, "P1", scope=("manifest.py",))
         mutate(root, "P1", agent_id="agent-v", verdict_at_ms=bad,
@@ -506,6 +523,55 @@ def test_verdict_time(tmp: pathlib.Path) -> None:
         expect_clean_cli(res, 1, f"a verdict_at_ms of {bad!r}")
         check("unreadable verdict time" in res.stdout,
               f"the audit must name the unreadable stamp: {res.stdout!r}")
+    for index, bad in enumerate(("1", True)):
+        root = repo(tmp, f"verdict-type-{index}")
+        allow(root, "P1", scope=("manifest.py",))
+        mutate(root, "P1", agent_id="agent-v", verdict_at_ms=bad,
+               verdict_at="2026-01-01T00:00:00Z")
+        res = run("verdict", "--repo", str(root), "--permit-id", "P1", "--verdict", "allow",
+                  "--evidence", "irrelevant: the file must fail to load first")
+        expect_clean_cli(res, 2, f"a verdict_at_ms of {bad!r} fails the load validation")
+        check("verdict_at_ms" in res.stderr,
+              f"the load error must name the field: {res.stderr!r}")
+
+
+def test_load_validation(tmp: pathlib.Path) -> None:
+    """(C30) read_permits validates EVERY field's type/vocabulary: malformed file = exit 2."""
+    root = repo(tmp, "load-validation")
+    allow(root, "P1", scope=("manifest.py",))
+    cases = (
+        ("agent_id-list", {"agent_id": ["agent-1"]}, "agent_id"),
+        ("agent_id-dict", {"agent_id": {"id": 1}}, "agent_id"),
+        ("scope-string", {"scope": "manifest.py"}, "scope"),
+        ("scope-items", {"scope": ["a.py", 3]}, "scope"),
+        ("constraints-string", {"constraints": "be good"}, "constraints"),
+        ("verdict-vocabulary", {"verdict": "maybe"}, "verdict"),
+        ("role-vocabulary", {"role": "wizard"}, "role"),
+        ("phase-vocabulary", {"phase": "deploy"}, "phase"),
+        ("task-id-type", {"task_id": 9}, "task_id"),
+        ("closed-shape", {"closed": "done"}, "closed"),
+        ("kind-vocabulary", {"kind": "informal"}, "kind"),
+    )
+    for name, fields, needle in cases:
+        mutate(root, "P1", **fields)
+        res = run("close", "--repo", str(root), "--permit-id", "P1", "--reason", "x")
+        expect_clean_cli(res, 2, f"a permit with {name}")
+        check(needle in res.stderr,
+              f"{name}: the load error must name the field: {res.stderr!r}")
+        data = permits(root)
+        original = {"permit_id": "P1", "kind": "plan", "task_id": "task_09", "role": "coder",
+                    "phase": "implement", "scope": ["manifest.py"], "constraints": [],
+                    "created_at": data["permits"][0]["created_at"], "verdict": "allow",
+                    "evidence": "task_09 is in the approved plan",
+                    "verdict_at": data["permits"][0]["verdict_at"],
+                    "verdict_at_ms": data["permits"][0]["verdict_at_ms"],
+                    "agent_id": None, "bound_at": None, "closed": None}
+        write_permits(root, {"run_id": RUN_ID, "permits": [original]})
+    # The control: the restored file loads and audits cleanly.
+    directory = session(root, [])
+    expect_clean_cli(audit(root, directory), 1, "the restored permit is unused (not malformed)")
+    res = run("close", "--repo", str(root), "--permit-id", "P1", "--reason", "deferred")
+    expect_clean_cli(res, 0, "the restored file loads")
 
 
 def test_atomic_write_failure(tmp: pathlib.Path) -> None:
@@ -523,23 +589,38 @@ def test_atomic_write_failure(tmp: pathlib.Path) -> None:
     check("cannot write the permits file" in res.stderr,
           f"init must name the write failure: {res.stderr!r}")
 
-    # A READ-ONLY permits file: the CLI fails, and the permits it already holds stay byte-identical
-    # (a half-written permit trail would make the finish audit read a state nobody approved).
+    # An UNWRITABLE permits location: the CLI fails, and the permits it already holds stay
+    # byte-identical (a half-written permit trail would make the finish audit read a state nobody
+    # approved). The write failure must be DETERMINISTIC on every platform: `chmod 0444` on the
+    # FILE is a Windows-only assumption — on POSIX the atomic replace is governed by the
+    # DIRECTORY's permissions, not the destination's mode, so a read-only directory (which refuses
+    # the temp file itself) is the portable POSIX counterpart of a read-only destination on
+    # Windows.
     frozen = repo(tmp, "permit-write-frozen")
     allow(frozen, "P1", scope=("manifest.py",))
     permits_file = frozen / PERMITS_REL
     before = permits_file.read_bytes()
-    os.chmod(permits_file, 0o444)
+    if os.name == "nt":
+        os.chmod(permits_file, 0o444)
+        restore = (permits_file, 0o644)
+    else:
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            print("note: skipping the read-only-directory case — root ignores directory modes")
+            return
+        os.chmod(permits_file.parent, 0o555)
+        restore = (permits_file.parent, 0o755)
     try:
         res = run("add", "--repo", str(frozen), "--permit-id", "P2", "--task-id", "task_09",
                   "--role", "coder", "--phase", "implement", "--scope", "test_manifest.py")
-        expect_clean_cli(res, 2, "add onto a read-only permits file")
+        expect_clean_cli(res, 2, "add onto an unwritable permits location")
         check("cannot write the permits file" in res.stderr,
               f"add must name the write failure: {res.stderr!r}")
         check(permits_file.read_bytes() == before,
               "a failed write must leave the permits file byte-identical")
+        check(not list(permits_file.parent.glob("permits.yaml.*.tmp")),
+              "a failed write must not leave a temp file behind")
     finally:
-        os.chmod(permits_file, 0o644)
+        os.chmod(*restore)
 
 
 def test_huge_stamps(tmp: pathlib.Path) -> None:
@@ -560,6 +641,181 @@ def test_huge_stamps(tmp: pathlib.Path) -> None:
     expect_clean_cli(res, 1, "a permit stamped 10**1000 judging an earlier spawn")
     check("out-of-order verdict" in res.stdout,
           f"the order rule must decide, not the conversion: {res.stdout!r}")
+
+
+def test_supervisor_bootstrap(tmp: pathlib.Path) -> None:
+    """(C31) The supervisor's own spawns are exempt from the permit-less check (wire-level).
+
+    The watchdog is launched at run start under the run's OWN authority: it can never carry a
+    verdict that precedes its own spawn. A supervisor spawn with no permit passes; a CODER spawn
+    in the same wire is still flagged (the exemption is role-specific); and a supervisor spawn
+    bound to a permit is still audited like any other.
+    """
+    future = int(time.time() * 1000) + 60000
+    root = repo(tmp, "audit-supervisor")
+    directory = session(root, [("agent-sup", "factory-supervisor", future)])
+    res = audit(root, directory)
+    expect_clean_cli(res, 0, "a supervisor spawn without a permit (the bootstrap exemption)")
+    check("PASS" in res.stdout, f"the audit must report the pass: {res.stdout!r}")
+
+    # The exemption is role-specific: a coder spawn in the same wire is still permit-less.
+    mixed = repo(tmp, "audit-supervisor-mixed")
+    directory = session(mixed, [("agent-sup2", "factory-supervisor", future),
+                                ("agent-c", "factory-coder", future)])
+    res = audit(mixed, directory)
+    expect_clean_cli(res, 1, "a coder spawn next to an exempt supervisor spawn")
+    check("permit-less delegation" in res.stdout and "agent-c" in res.stdout
+          and "agent-sup2" not in res.stdout,
+          f"only the coder spawn may be flagged: {res.stdout!r}")
+
+    # A supervisor spawn bound to a permit is audited like any other (role mismatch is caught).
+    bound = repo(tmp, "audit-supervisor-bound")
+    allow(bound, "P1", role="analyzer", scope=())
+    mutate(bound, "P1", agent_id="agent-sup3")
+    directory = session(bound, [("agent-sup3", "factory-supervisor", future)])
+    res = audit(bound, directory)
+    expect_clean_cli(res, 1, "a bound supervisor spawn with a role mismatch")
+    check("role mismatch" in res.stdout, f"the bound spawn is fully audited: {res.stdout!r}")
+
+
+def test_stale_permits(tmp: pathlib.Path) -> None:
+    """(C32) Permits of ANOTHER run never authorize this run's delegations."""
+    future = int(time.time() * 1000) + 60000
+    root = repo(tmp, "audit-stale")
+    allow(root, "P1")
+    expect_clean_cli(run("bind", "--repo", str(root), "--permit-id", "P1", "--agent-id",
+                         "agent-s"), 0, "bind")
+    # Another run reuses the repository: the pipeline moves on, the permits file stays.
+    (root / PIPELINE_REL).write_text("run_id: 20261104-b5b601f6\nphase: w3\n", encoding="utf-8")
+    directory = session(root, [("agent-s", "factory-coder", future)])
+    res = audit(root, directory)
+    expect_clean_cli(res, 1, "permits of a stale run")
+    check("stale permits" in res.stdout and "20261104-b5b601f6" in res.stdout,
+          f"the audit must reject the stale run binding before any spawn is evaluated: "
+          f"{res.stdout!r}")
+    check("permit-less" not in res.stdout,
+          f"the stale binding replaces the per-spawn evaluation: {res.stdout!r}")
+
+
+TASK_YAML = "title: t\nrepo_path: .\ndescription: d\n"
+
+
+def test_bootstrap_permits(tmp: pathlib.Path) -> None:
+    """(C2) A `--kind bootstrap` permit answers the TASK, for the pre-plan read-only roles."""
+    future = int(time.time() * 1000) + 60000
+    # The pre-plan reality: a checkpoint and a task, but NO approved plan yet.
+    root = tmp / "bootstrap"
+    state = root / ".code-factory" / "state"
+    state.mkdir(parents=True)
+    (root / PIPELINE_REL).write_text(f"run_id: {RUN_ID}\nphase: analysis\n", encoding="utf-8")
+    (root / TASK_REL).write_text(TASK_YAML, encoding="utf-8")
+    expect_clean_cli(run("init", "--repo", str(root)), 0, "init (no plan yet)")
+    for role in ("analyzer", "planner", "supervisor"):
+        res = run("add", "--repo", str(root), "--permit-id", f"B-{role}", "--kind", "bootstrap",
+                  "--task-id", "bootstrap", "--role", role, "--phase", "analysis")
+        expect_clean_cli(res, 0, f"a bootstrap permit for {role}")
+
+    # The limits: an implementation role, a plan task id, and a missing task are refused.
+    res = run("add", "--repo", str(root), "--permit-id", "B-coder", "--kind", "bootstrap",
+              "--task-id", "bootstrap", "--role", "coder", "--phase", "analysis")
+    expect_clean_cli(res, 2, "a bootstrap permit for a file-changing role")
+    check("limited to the pre-plan read-only roles" in res.stderr,
+          f"the limit must be stated: {res.stderr!r}")
+    res = run("add", "--repo", str(root), "--permit-id", "B-task", "--kind", "bootstrap",
+              "--task-id", "task_09", "--role", "analyzer", "--phase", "analysis")
+    expect_clean_cli(res, 2, "a bootstrap permit naming a plan task")
+    check("TASK itself" in res.stderr, f"the rule must be stated: {res.stderr!r}")
+    no_task = tmp / "bootstrap-no-task"
+    (no_task / ".code-factory" / "state").mkdir(parents=True)
+    (no_task / PIPELINE_REL).write_text(f"run_id: {RUN_ID}\nphase: analysis\n", encoding="utf-8")
+    expect_clean_cli(run("init", "--repo", str(no_task)), 0, "init (no task)")
+    res = run("add", "--repo", str(no_task), "--permit-id", "B1", "--kind", "bootstrap",
+              "--task-id", "bootstrap", "--role", "analyzer", "--phase", "analysis")
+    expect_clean_cli(res, 2, "a bootstrap permit without a task")
+    check("task" in res.stderr, f"the missing task must be named: {res.stderr!r}")
+    # …and a plan permit still requires the approved plan (the pre-plan failure mode of C2).
+    res = run("add", "--repo", str(root), "--permit-id", "B-plan", "--task-id", "task_09",
+              "--role", "coder", "--phase", "implement", "--scope", "a.py")
+    expect_clean_cli(res, 2, "a plan permit before the plan exists")
+    check("no approved plan" in res.stderr, f"the plan rule must hold: {res.stderr!r}")
+
+    # Once the plan IS approved, the bootstrap permit is judged by verdict order and role, never
+    # by the plan's task list ("bootstrap" is not a plan task and must not be flagged as one).
+    (root / PLAN_REL).write_text(PLAN, encoding="utf-8")
+    for permit_id in ("B-analyzer", "B-planner", "B-supervisor"):
+        expect_clean_cli(run("verdict", "--repo", str(root), "--permit-id", permit_id,
+                             "--verdict", "allow",
+                             "--evidence", "bootstrap permit against the parsed task"), 0,
+                         f"verdict {permit_id}")
+    expect_clean_cli(run("bind", "--repo", str(root), "--permit-id", "B-analyzer",
+                         "--agent-id", "agent-b"), 0, "bind")
+    expect_clean_cli(run("close", "--repo", str(root), "--permit-id", "B-planner",
+                         "--reason", "planning finished"), 0, "close planner")
+    expect_clean_cli(run("close", "--repo", str(root), "--permit-id", "B-supervisor",
+                         "--reason", "covered by the supervisor bootstrap exemption"), 0,
+                     "close supervisor")
+    directory = session(root, [("agent-b", "factory-analyzer", future)])
+    res = audit(root, directory)
+    expect_clean_cli(res, 0, "a judged bootstrap permit chain")
+    check("unplanned task" not in res.stdout,
+          f"a bootstrap permit must not be plan-checked: {res.stdout!r}")
+
+
+def test_owner_authorization_verified(tmp: pathlib.Path) -> None:
+    """(R1, critical) A self-attested `owner_authorized` flag never bypasses the order check.
+
+    The flag lives in the hand-editable `permits.yaml`, so a forged one used to discharge an
+    out-of-order verdict. The exception now requires the RUN-BOUND record: an
+    `owner_authorizations:` note in `.code-factory/state/pipeline.yaml` naming `permit=<id>`.
+    A flag without that record FAILS the audit; the record — not the flag — is the decision.
+    """
+    future = int(time.time() * 1000) + 60000
+    root = tmp / "owner-authz"
+    state = root / ".code-factory" / "state"
+    state.mkdir(parents=True)
+    (root / PIPELINE_REL).write_text(f"run_id: {RUN_ID}\nphase: analysis\n", encoding="utf-8")
+    (root / TASK_REL).write_text(TASK_YAML, encoding="utf-8")
+    (root / PLAN_REL).write_text(PLAN, encoding="utf-8")
+    expect_clean_cli(run("init", "--repo", str(root)), 0, "init (owner authorization)")
+    expect_clean_cli(run("add", "--repo", str(root), "--permit-id", "PB", "--kind", "bootstrap",
+                         "--task-id", "bootstrap", "--role", "analyzer", "--phase", "analysis"), 0,
+                     "add PB")
+    expect_clean_cli(run("verdict", "--repo", str(root), "--permit-id", "PB", "--verdict", "allow",
+                         "--evidence", "bootstrap permit against the parsed task"), 0, "verdict PB")
+    expect_clean_cli(run("bind", "--repo", str(root), "--permit-id", "PB", "--agent-id", "agent-b"),
+                     0, "bind PB")
+    # The abuse fixture: the permit is hand-edited to claim the owner authorized it retroactively,
+    # while its verdict is LATER than the spawn it permits. No checkpoint record exists.
+    mutate(root, "PB", owner_authorized=True, evidence="the owner said so",
+           verdict_at_ms=future + 60000)
+    directory = session(root, [("agent-b", "factory-analyzer", future)])
+    res = audit(root, directory)
+    expect_clean_cli(res, 1, "a forged owner_authorized flag")
+    check("unverified owner authorization" in res.stdout,
+          f"the audit must refuse the flag and name the missing record: {res.stdout!r}")
+    check("permit=PB" in res.stdout,
+          f"the refusal must name the record it looked for: {res.stdout!r}")
+
+    # The independent record — written by the owner's decision path, not by the permit — turns the
+    # same permit into a legitimate exception.
+    pipeline = root / PIPELINE_REL
+    pipeline.write_text(pipeline.read_text(encoding="utf-8")
+                        + "owner_authorizations:\n"
+                          "  - 2026-11-05T16:59:25Z permit=PB role=analyzer mode=hitl\n",
+                        encoding="utf-8")
+    res = audit(root, directory)
+    expect_clean_cli(res, 0, "the checkpoint records the authorization")
+    check("unverified owner authorization" not in res.stdout,
+          f"a recorded authorization must discharge the order violation: {res.stdout!r}")
+
+    # A record naming ANOTHER permit authorizes nothing.
+    pipeline.write_text(pipeline.read_text(encoding="utf-8").replace("permit=PB", "permit=PZ"),
+                        encoding="utf-8")
+    res = audit(root, directory)
+    expect_clean_cli(res, 1, "a record naming another permit")
+    check("unverified owner authorization" in res.stdout,
+          f"only the permit's OWN recorded authorization counts: {res.stdout!r}")
+    check(not (root / "permits-forged.json").exists(), "no fixture file may be left behind")
 
 
 def test_audit_helpers() -> None:
@@ -589,7 +845,7 @@ def test_audit_helpers() -> None:
     # …and the end-to-end rule never surprises: a huge verdict stamp simply orders last.
     huge = pg._verdict_order_problems({"permit_id": "P1", "verdict_at_ms": 10 ** 1000},
                                       "permit 'P1'",
-                                      {"agent_id": "a1", "time_ms": 5000, "wire": "wire:1"})
+                                      {"agent_id": "a1", "time_ms": 5000, "wire": "wire:1"}, set())
     check(len(huge) == 1 and "out-of-order verdict" in huge[0],
           f"a huge verdict stamp must be judged by the ORDER, never by a crash: {huge!r}")
 
@@ -598,16 +854,47 @@ def test_audit_helpers() -> None:
     spawn = {"agent_id": "a1", "time_ms": 5000, "wire": "wire:1"}
     for stamp in (None, True, False, "1", float("nan"), float("inf")):
         out = pg._verdict_order_problems({"permit_id": "P1", "verdict_at_ms": stamp}, "permit 'P1'",
-                                         spawn)
+                                         spawn, set())
         check(len(out) == 1 and "unreadable verdict time" in out[0],
               f"a verdict stamp of {stamp!r} must be unreadable: {out!r}")
     late = pg._verdict_order_problems({"permit_id": "P1", "verdict_at_ms": 9000}, "permit 'P1'",
-                                      spawn)
+                                      spawn, set())
     check(len(late) == 1 and "out-of-order verdict" in late[0],
           f"a verdict AFTER the spawn must be an order violation: {late!r}")
     check(pg._verdict_order_problems({"permit_id": "P1", "verdict_at_ms": 5000}, "permit 'P1'",
-                                     spawn) == [],
+                                     spawn, set()) == [],
           "an in-order verdict must be silent")
+    # (R3-1) The owner-authorized retroactive BOOTSTRAP exception: a hitl owner may authorize a
+    # bootstrap delegation that predates its permit (the pre-mechanism gap); the permit carries
+    # owner_authorized: true plus evidence, and the order violation is discharged. A plan-kind
+    # permit, a missing flag or missing evidence NEVER qualify.
+    ok_override = pg._verdict_order_problems(
+        {"permit_id": "PB", "kind": "bootstrap", "owner_authorized": True,
+         "evidence": "owner authorized retroactively", "verdict_at_ms": 9000}, "permit 'PB'", spawn,
+        {"PB"})
+    check(ok_override == [], f"an owner-authorized bootstrap override must be silent: {ok_override!r}")
+    # The flag is SELF-ATTESTED in the editable permits file (review R1, critical): without the
+    # checkpoint recording the decision the override is a forged flag and the order stands.
+    forged = pg._verdict_order_problems(
+        {"permit_id": "PB", "kind": "bootstrap", "owner_authorized": True,
+         "evidence": "owner authorized retroactively", "verdict_at_ms": 9000}, "permit 'PB'", spawn,
+        set())
+    check(len(forged) == 1 and "unverified owner authorization" in forged[0],
+          f"a flag the checkpoint does not record must be refused: {forged!r}")
+    other = pg._verdict_order_problems(
+        {"permit_id": "PB", "kind": "bootstrap", "owner_authorized": True,
+         "evidence": "owner authorized retroactively", "verdict_at_ms": 9000}, "permit 'PB'", spawn,
+        {"PC"})
+    check(len(other) == 1 and "unverified owner authorization" in other[0],
+          f"an authorization of ANOTHER permit must not discharge this one: {other!r}")
+    for broken in ({"permit_id": "PB", "kind": "plan", "owner_authorized": True,
+                    "evidence": "owner authorized retroactively", "verdict_at_ms": 9000},
+                   {"permit_id": "PB", "kind": "bootstrap", "evidence": "e", "verdict_at_ms": 9000},
+                   {"permit_id": "PB", "kind": "bootstrap", "owner_authorized": True,
+                    "evidence": "  ", "verdict_at_ms": 9000}):
+        out = pg._verdict_order_problems(broken, "permit 'PB'", spawn, {"PB"})
+        check(len(out) == 1 and "out-of-order verdict" in out[0],
+              f"only a bootstrap permit with flag AND evidence qualifies: {out!r}")
     check(pg._lifecycle_problems([{"permit_id": "P9", "verdict": "allow"}], {}, set())
           == ["unused permit: 'P9' was allowed but never spawned and is not closed — close it with "
               "the reason it was not executed"],
@@ -630,6 +917,11 @@ def main() -> int:
         test_verdict_time(tmp)
         test_atomic_write_failure(tmp)
         test_huge_stamps(tmp)
+        test_load_validation(tmp)
+        test_supervisor_bootstrap(tmp)
+        test_stale_permits(tmp)
+        test_bootstrap_permits(tmp)
+        test_owner_authorization_verified(tmp)
         test_audit_helpers()
         test_cli_contract()
 

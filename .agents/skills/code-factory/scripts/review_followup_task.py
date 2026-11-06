@@ -71,6 +71,11 @@ CLI:
   nothing to hand over: no file is written and the script reports it (exit 0). Every other report
   — any findings, or a non-accepted verdict — produces the task.
 
+  `--run-id` names the review run the findings came from (leading comment, title and description).
+  When given it must have the canonical shape `YYYYMMDD`-`<8 lowercase hex>` (the shape
+  `run_id.py check` demands of an artifact): the value is baked VERBATIM into the generated task,
+  so a malformed one is a usage error (exit 2) — the hand-over file would be born mis-attributed.
+
 Exit codes:
   0 — the task was written (`wrote <out> (<n> findings)`), or the accepted report had nothing to
       hand over, or `--check` found a valid file;
@@ -83,8 +88,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
+import shlex
 import sys
 import textwrap
 
@@ -106,6 +113,11 @@ DETAIL_INDENT = "      "
 # The full detail belongs to the description; a criterion stays readable and is capped.
 CRITERION_DETAIL_MAX = 400
 DEFAULT_VERDICT_OK = "approve"
+# The canonical run id: `YYYYMMDD`-`<8 lowercase hex>`, the shape `check_factory_model.RUN_ID_RE`
+# enforces and `run_id.py check` demands of an artifact. `--run-id` is baked VERBATIM into the
+# generated task (comment, title, description), so a malformed value would hand over a file that
+# is born mis-attributed.
+RUN_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{8}$")
 GENERATOR_PATH = ".agents/skills/code-factory/scripts/review_followup_task.py"
 GENERATOR_COMMAND = "python " + GENERATOR_PATH
 # Every key the generated file always carries; `--check` fails when one of them is missing.
@@ -143,6 +155,12 @@ FINAL_VERIFY_CRITERION_DEFAULT = ("The fix leaves the tree sound: every Python f
 DEFAULT_FINAL_VERIFY = "python -m compileall -q ."
 # Separator of the chained per-finding commands; `&&` works in cmd.exe and /bin/sh alike.
 CHAIN_SEPARATOR = " && "
+# cmd.exe expands a variable reference (`%NAME%`) even INSIDE double quotes, and a delayed-expansion
+# reference (`!NAME!`) whenever the shell runs with delayed expansion enabled. Neither can be
+# escaped on a `cmd /c` command line (`%%` is the escape inside a BATCH file only), and the
+# consumer of `verify` takes a shell STRING rather than an argv list — so a repo path carrying one
+# of these characters has no safe placeholder in a generated command and derives none at all.
+CMD_EXPANSION = re.compile(r"[%!]")
 
 # YAML subset emitted by this script and read back by parse_task(): a flat top-level mapping of
 # `key: value` scalars, `key:` + `- item` lists, mapping items inside a list, and `|`/`|-` blocks.
@@ -338,23 +356,53 @@ def sibling_test(file: str) -> str:
     return "/".join(parts)
 
 
+def shell_quote(path: str) -> str:
+    """Quote one repo-relative path for the shell that runs the verify command.
+
+    The generated task is executed on the machine that generated it (the final criterion chains
+    the commands with `&&`, which cmd.exe and /bin/sh both understand), so the quoting follows
+    the platform: double quotes for cmd.exe (inside them `& | < > ^` are literal, and `"` cannot
+    occur in a Windows file name at all), POSIX quoting via shlex elsewhere. A path that needs no
+    quoting is returned unchanged, so a plain `scripts/test_x.py` stays exactly that.
+
+    Two characters have NO quoting form here and are refused by `derived_verify` instead (see
+    `CMD_EXPANSION`): cmd.exe expands `%NAME%` even inside double quotes and `!NAME!` whenever
+    delayed expansion is enabled, so quoting alone never makes such a path literal.
+    """
+    if os.name == "nt":
+        return f'"{path}"' if re.search(r"\s|[&|<>^\"]", path) else path
+    return shlex.quote(path)
+
+
 def derived_verify(finding: dict, repo: pathlib.Path) -> str:
     """A verify command derived from the finding's location: run the module's sibling self-test.
 
     A finding usually points at a module (`.../action_gate.py`) and the factory keeps its
     deterministic self-tests beside it (`test_action_gate.py`), so re-running that test is a real
     proof that the finding is closed. No sibling test, no command: a fabricated check would be a
-    claim, not evidence.
+    claim, not evidence. The candidate is CONFINED to the repository (the resolved sibling test
+    must stay under the resolved `repo`), and the path is quoted for the platform shell, because
+    the command is interpolated into a shell line: an unquoted space would break it and a shell
+    metacharacter in a repository filename would be interpreted as a command separator.
+
+    A cmd.exe target (`os.name == "nt"`) additionally refuses a path carrying `%` or `!`
+    (`CMD_EXPANSION`): cmd expands those even inside double quotes, so the generated line would
+    silently run something else. The consumer of `verify` takes a shell STRING only (no argv
+    form), so refusing to derive a command is the honest answer — a `derived: true` criterion that
+    states no proof beats a command that runs the wrong file.
     """
     candidate = sibling_test(finding["file"])
     if not candidate:
         return ""
+    if os.name == "nt" and CMD_EXPANSION.search(candidate):
+        return ""
     try:
-        if (repo / candidate).is_file():
-            return f"python {candidate}"
-    except OSError:      # an unreadable path is simply not checkable
-        pass
-    return ""
+        resolved = (repo / candidate).resolve()
+        if not resolved.is_relative_to(repo.resolve()) or not resolved.is_file():
+            return ""    # outside the repository or absent: not checkable here
+    except (OSError, RuntimeError):      # an unreadable path is simply not checkable
+        return ""
+    return f"python {shell_quote(candidate)}"
 
 
 def build_criteria(findings: list[dict], repo: pathlib.Path = pathlib.Path(".")) -> list[dict]:
@@ -728,6 +776,11 @@ def main() -> int:
         ap.error("--findings is required unless --check is given")   # usage error: exit 2
     if not args.repo.strip():
         ap.error("--repo must not be empty: it becomes the task's repo_path")
+    if args.run_id and not RUN_ID_RE.fullmatch(args.run_id):
+        # The value is baked verbatim into the generated task: a malformed id would make the
+        # hand-over file born mis-attributed (run_id.py check rejects exactly this value).
+        ap.error(f"--run-id must be YYYYMMDD-<8 lowercase hex> (see run_id.py): "
+                 f"{args.run_id!r} is not a run id")
 
     try:
         verdict, findings = load_findings(pathlib.Path(args.findings))

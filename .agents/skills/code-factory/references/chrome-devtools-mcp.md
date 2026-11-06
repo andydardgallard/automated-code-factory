@@ -10,6 +10,12 @@ The decision is deterministic and carries a REASON (never a model call):
 
 - `applicable` / `not_applicable` plus the matched GUI/backend terms and repository signals; an
   explicit exclusion in the task text (`backend-only`, `no web UI`, `out of scope`) always wins.
+- Only the task's BUSINESS SCOPE is classified: a file that parses as a task contributes its
+  `title`, `description`, `user_story`, the acceptance-criterion texts and the business tests'
+  `scenario`/`expected_results`. YAML comments, `models:`, `repo_path:`, `commit_exclude:`, `mode:`,
+  `task_type:` and a criterion's `verify` command are wiring and never reach the classifier, so a
+  template's instructional comment can never activate browser tooling on a backend-only task; a
+  file that does not parse as a task is classified verbatim, with only the metadata keys stripped.
 - `discover-e2e --repo <root>` names the project's EXISTING browser/E2E stack (Playwright Test,
   Cypress, WebdriverIO, Selenium) and its config file.
 - `browser-matrix` derives the required matrix from the acceptance criteria — never assumed.

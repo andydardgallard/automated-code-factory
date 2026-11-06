@@ -128,6 +128,19 @@ failing check. Its claim lives in
 the canonical `factory-rule` blocks from the root it is pointed at — the same function serves both
 runs, so the block that is absent at the base commit fails there and passes here.
 
+The `RG` group closes the comprehensive self-review of THIS run (run 20261105-11a026da): the 60
+findings of review run 20261104-b5b601f6 — the supervisor watchdog and its bootstrap permits, the
+review/refactor flow contracts, the acceptance contract of a report-only task type, the convergence
+of the deployed memory, the disposition/verdict rules, the code-enforced permissions, the path
+confinement and SSRF limits, the portable write-failure fixtures and the vaccination guard itself
+(C37: a concrete disposition item is held to the full contract; C38: a later recorded release never
+replaces the pinned pre-fix base of the historical groups). Its 51 vaccines are replayed against
+`REVIEW_BASE_SHA` and claimed by `REVIEW_20261105_FINDINGS`; the remaining nine findings fix the
+ORACLE of a self-test (a fixture that must fail loudly, a duplicated scenario id, a sequential
+"race" probe) and cannot bite on a pre-fix tree at all — the harness copies the FIXED test module
+into that tree — so they are dispositioned `fixed-prose:` with the module they touch. Registering
+them would be exactly the tautology this harness exists to refuse.
+
 Cross-checks run before anything slow, and `--registry-only` stops after them:
   - every `vaccine: <ID>` of the disposition file is registered, and every registered vaccine is
     claimed by name (the disposition, a release claim list or a reconstructed claim) — reported both
@@ -146,10 +159,14 @@ Cross-checks run before anything slow, and `--registry-only` stops after them:
     clone cannot cover are reported as a note, never as a pass;
   - every registered test module (and the `test_prompt_structure.py` helper) exists in the
     working tree;
-  - `check_disposition_fixtures()` re-proves the cross-checks themselves: seven dispositions the
+  - `check_disposition_fixtures()` re-proves the cross-checks themselves: eight dispositions the
     harness MUST refuse (no claim, fixed without a vaccine, a claim on an unregistered vaccine, a
     prose claim on production code, a prose claim without `because:`, an incomplete inventory, an
-    enumerated group whose vaccines are unnamed) plus the shipped file, which must pass;
+    enumerated group whose vaccines are unnamed, and an unmarked CONCRETE item among valid
+    claims) plus the shipped file, which must pass;
+  - `check_base_fixtures()` re-proves the base guard: a later release recorded in
+    `.code-factory/state/git-head.txt` never replaces the pinned pre-fix base of the historical
+    groups, while a pinned constant this repository does not know still falls back to it;
   - `check_claim_fixtures()` does the same for the reconstructed claims: four claim lists the
     harness MUST refuse (a document that does not exist, an evidence anchor that rotted, an
     unregistered vaccine, a claim re-numbered instead of keyed by its vaccine) plus the shipped
@@ -170,13 +187,15 @@ line it does not claim is reported as a failure of THIS harness (a separate HARN
 category); none of them can end in a false pass, and none of them is ever counted as a bite.
 
 The base commit is resolved against git itself, never against the hand-maintained constant alone:
-without an explicit `--base` the release commit the flow recorded in
-`.code-factory/state/git-head.txt` leads and its PARENT is replayed as "before the change", so a
-`BASE_SHA` that drifted costs a printed note, not the proof; a fresh clone without the recorded
-file falls back to the constant and is still held to it. A base git cannot resolve, a recorded
-commit this repository does not know, and a base that is not an ancestor of HEAD are FAIL (exit 1)
-naming the reason — a wrong base proves the wrong release, which is a red, never a skip. The honest
-SKIP (exit 3) is kept for the single case where nothing can be answered at all: git is unavailable,
+without an explicit `--base` the PINNED base of the historical groups is replayed, because it is
+their demonstrated pre-fix commit — the release commit the flow recorded in
+`.code-factory/state/git-head.txt` names the run's OWN (later) release, whose parent already
+contains these fixes, so it is only a FALLBACK for a pinned constant this repository no longer
+knows (and the fallback is printed as a note). A fresh clone without the recorded file falls back
+to the constant and is still held to it. A base git cannot resolve, a recorded commit this
+repository does not know, and a base that is not an ancestor of HEAD are FAIL (exit 1) naming the
+reason — a wrong base proves the wrong release, which is a red, never a skip. The honest SKIP
+(exit 3) is kept for the single case where nothing can be answered at all: git is unavailable,
 or the history holds no previous release to replay.
 
 Exit code 0 = every vaccine bites and every cross-check holds, 1 = a vaccine did not bite, a
@@ -255,21 +274,26 @@ HELPER_TEST = "test_prompt_structure.py"
 # own helpers instead of re-inventing them, and its published check where the module has one). They
 # are copied into every pre-fix tree: no `module` vaccine remains (see check_focus), so these files
 # are the ONLY test code the harness ships into a pre-fix tree.
-PROBE_FIXTURES = ("test_action_gate.py", "test_check_english_only.py", "test_chrome_devtools_mcp.py",
-                  "test_evidence_ledger.py", "test_factory_model.py", "test_factory_rules.py",
-                  "test_farukon_mcp.py", "test_flow_contracts.py",
+PROBE_FIXTURES = ("test_action_gate.py", "test_calibrate_reviewer.py", "test_check_english_only.py",
+                  "test_chrome_devtools_mcp.py", "test_delegation_gate.py", "test_evidence_ledger.py",
+                  "test_factory_model.py", "test_factory_rules.py", "test_farukon_mcp.py",
+                  "test_flow_contracts.py", "test_gate_all.py",
                   "test_gen_code_changes_report.py", "test_input_validation_gate.py",
-                  "test_memory_project.py", "test_model_attribution.py",
-                  "test_model_precedence.py", "test_no_role_substitution.py",
+                  "test_manifest.py", "test_memory_project.py", "test_merge_findings.py",
+                  "test_model_attribution.py", "test_model_precedence.py",
+                  "test_no_role_substitution.py", "test_permit_gate.py",
                   "test_precedent_index.py", "test_review_followup_task.py",
-                  "test_review_report_only.py", "test_security_audit_guarantee.py",
+                  "test_review_report_only.py", "test_rollback.py",
+                  "test_security_audit_guarantee.py", "test_supervisor_watchdog.py",
                   "test_validate_documentation.py", "test_version_manager.py",
                   "test_verify_acceptance.py", "test_windows_scripts.py")
 
 # The disposition contract: every group of the task's sources, exhaustively. `RF` is an earlier
 # review follow-up group, `CC` the 12.19 clean-code release and `FX` THIS run's own fixes: a release
 # whose vaccines were only ever replayed against an older base proves nothing about the change set
-# being shipped now.
+# being shipped now. The `RG` group of the 12.24.0 review is NOT here: its claim ids are the review's
+# own finding ids (`C15`, `M2`, `N3`, ...), not a `RG-<n>` inventory, so `REVIEW_20261105_FINDINGS`
+# is where its complete id set is stated.
 EXPECTED_GROUPS = (("RV", 20), ("BL", 8), ("PR", 18), ("RF", 15), ("NM", 2), ("CC", 6), ("FX", 15),
                    ("DP", 12), ("FK", 6), ("FB", 37))
 # The id prefix that tags a registered vaccine with its group. The five historical groups below
@@ -2836,12 +2860,914 @@ CLEAN_CODE_FINDINGS: tuple[tuple[str, str, str], ...] = (
              "(--revision / --extra-source / `-`)", "V-cc-cli"),
 )
 
+# --------------------------------------------------------------------------------------------
+# THIS RELEASE (12.24.0, run 20261105-11a026da): the 60 findings of the comprehensive factory
+# self-review 20261104-b5b601f6, replayed against REVIEW_BASE_SHA (the v12.23.0 release commit
+# the run started from). One focused probe per finding that has a BEHAVIOUR to prove, so a
+# self-test module bundling several of them cannot validate its neighbours by accident. A
+# meta-TEST-only finding (a fixture or guard of a self-test, e.g. M7/M8/N1/N2) cannot bite on a
+# pre-fix tree at all — its own module is copied there, so the fixed fixture is what runs — and
+# is dispositioned `fixed-prose:` instead of being registered as a tautology.
+# --------------------------------------------------------------------------------------------
+PROBE_RG_WATCHDOG_LAUNCH = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+try:
+    import supervisor_watchdog as w
+except ImportError as exc:
+    raise AssertionError("the supervisor's monitoring is DETERMINISTIC and continuous: the run "
+                         "needs supervisor_watchdog.py, one zero-token scan pass plus a "
+                         f"blocking deny no phase gate may pass ({exc})") from None
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    (root / ".code-factory" / "state").mkdir(parents=True)
+    (root / ".code-factory" / "state" / "pipeline.yaml").write_text(
+        "run_id: 20261105-11a026da\\nretry_counters:\\n  coder: 0\\n", encoding="utf-8")
+    first = w.launch(str(root))
+    if first.get("run_id") != "20261105-11a026da":
+        raise AssertionError(f"launch must record the run's ONE watchdog launch: {first!r}")
+    try:
+        w.launch(str(root))
+    except Exception:
+        pass
+    else:
+        raise AssertionError("the watchdog is launched ONCE per run: a second launch must be "
+                             "refused instead of spawning a second background agent")
+'''
+
+PROBE_RG_BOOTSTRAP_PERMITS = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_permit_gate as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_bootstrap_permits(pathlib.Path(td))
+'''
+
+PROBE_RG_TESTER_RERUN = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+text = (root / ".agents/agents/sub-agents/tester.md").read_text(encoding="utf-8")
+if "canonical FULL regression suite runs after EVERY change" not in text:
+    raise AssertionError("the tester's memory INTERPRETS results, it never decides what to skip: "
+                         "the canonical FULL regression suite runs after EVERY change, so a "
+                         "change whose effects memory cannot see is never omitted")
+'''
+
+PROBE_RG_UNBUDGETED = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import delegation_gate as dg
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    (root / ".code-factory" / "state").mkdir(parents=True)
+    (root / ".code-factory" / "state" / "pipeline.yaml").write_text(
+        "run_id: 20261105-11a026da\\nretry_counters:\\n  coder: 0\\n", encoding="utf-8")
+    try:
+        verdict = dg.check(root, "supervisor", "hitl")
+    except Exception as exc:
+        raise AssertionError("a registered role WITHOUT a budget entry must pass the "
+                             "pre-delegation gate through (allow:true, budgeted:false) instead of "
+                             f"being an input error: {exc}") from None
+    if not (verdict.get("allow") is True and verdict.get("budgeted") is False):
+        raise AssertionError("a registered unbudgeted role must pass through with allow:true and "
+                             f"budgeted:false, got {verdict}")
+'''
+
+PROBE_RG_REVIEW_ROUNDS = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_delegation_gate as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_review_rounds(pathlib.Path(td))
+'''
+
+PROBE_RG_REVIEW_MERGE = '''\
+import pathlib, sys
+sys.path.insert(0, ".")
+import test_flow_contracts as t
+root = pathlib.Path(".").resolve().parents[3]
+problems = [problem for problem in t.check_delegation_gates(root)
+            if "TT path must reach the adversarial node" in problem]
+if problems:
+    raise AssertionError(f"the review's adversarial probe must sit ON the path to the verdict it "
+                         f"feeds: {problems[0]}")
+'''
+
+PROBE_RG_REFACTOR_REJOIN = '''\
+import pathlib, sys
+sys.path.insert(0, ".")
+import test_flow_contracts as t
+root = pathlib.Path(".").resolve().parents[3]
+problems = [problem for problem in t.check_delegation_gates(root)
+            if "re-join the shared mode split" in problem]
+if problems:
+    raise AssertionError(f"the refactor branch must re-join the shared mode split G instead of "
+                         f"bypassing the HITL/auto approval gates: {problems[0]}")
+'''
+
+PROBE_RG_INFRA_RETURN = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+text = (root / ".agents/skills/code-factory/SKILL.md").read_text(encoding="utf-8")
+if "return to the ORIGINATING failed verification node" not in text:
+    raise AssertionError("the infrastructure auto-fix must route back to the ORIGINATING failed "
+                         "verification node (N/Q/S) and re-run THAT check, not claim a re-run it "
+                         "does not perform")
+'''
+
+PROBE_RG_MISMATCH_MODES = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+text = (root / ".agents/skills/code-factory/SKILL.md").read_text(encoding="utf-8")
+if "never a stall on a question nobody answers" not in text:
+    raise AssertionError("a business-result mismatch must branch by mode: hitl asks the owner, auto "
+                         "records the mismatch and enters error routing — never an AskUserQuestion "
+                         "on a transport nobody answers")
+'''
+
+PROBE_RG_REVIEW_ACCEPTANCE = '''\
+import sys
+sys.path.insert(0, ".")
+import verify_acceptance as va
+results = [{"criterion": "the report exists", "command": "true", "status": "MET"}]
+verdict, reason = va.decide_verdict(results, "not-run", "review")
+if verdict != "SUCCESS":
+    raise AssertionError("a review/security_audit run has no regression stage it could sign, so "
+                         "its acceptance must be reachable on its own deliverable evidence instead "
+                         f"of being DEGRADED for a regression the flow never runs (got {verdict}: "
+                         f"{reason})")
+'''
+
+PROBE_RG_FINISH_REREGISTER = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+text = (root / ".agents/skills/code-factory/SKILL.md").read_text(encoding="utf-8")
+if "re-register FIRST, then audit" not in text:
+    raise AssertionError("every post-acceptance write (the documenter's documentation, the version "
+                         "sync, the AGENTS.md regeneration) must be re-registered with "
+                         "manifest.py add --changed AFTER the last content write and BEFORE the "
+                         "finish audit")
+'''
+
+PROBE_RG_VERSION_BEFORE_REVIEW = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+text = (root / ".agents/skills/code-factory/SKILL.md").read_text(encoding="utf-8")
+if "BEFORE the final review" not in text:
+    raise AssertionError("the version proposal must be computed BEFORE the final review and "
+                         "validated in that same reviewer handoff, not by a post-review delegation "
+                         "outside the two-round reviewer lifecycle")
+'''
+
+PROBE_RG_NO_COUNTER_RESET = '''\
+import pathlib
+root = pathlib.Path(".").resolve().parents[3]
+text = (root / ".agents/skills/code-factory/references/error-routing.md").read_text(
+    encoding="utf-8")
+if "NEVER resets a retry counter" not in text:
+    raise AssertionError("no route resets a retry counter: every retry passes through "
+                         "delegation_gate.py, so a counter a diagnosis reset is a bypass of the "
+                         "execution-counted budget")
+'''
+
+PROBE_RG_SCOPE_BASE = '''\
+import pathlib, subprocess, sys, tempfile
+repo = pathlib.Path(tempfile.mkdtemp()) / "repo"
+(repo / "src").mkdir(parents=True)
+(repo / "src" / "a.py").write_text("print('x')\\n", encoding="utf-8")
+res = subprocess.run([sys.executable, str(pathlib.Path("action_gate.py").resolve()),
+                      "check", "--action", "rm -f src/a.py",
+                      "--scope", str(repo), "--mode", "hitl"], cwd=str(repo),
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+if "decision: CONFIRM_REQUIRED" not in res.stdout:
+    raise AssertionError("a RELATIVE rollback target and the absolute resolved --scope must be "
+                         "resolved against ONE common base, so an in-scope rollback CONFIRMs "
+                         f"instead of being denied as outside scope: {res.stdout.strip()!r}")
+'''
+
+PROBE_RG_CMD_QUOTES = '''\
+import subprocess, sys
+res = subprocess.run([sys.executable, "action_gate.py", "check", "--action",
+                      "cmd /c 'x && del /q target.txt'", "--mode", "auto"],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+if "decision: HARD_DENY" not in res.stdout:
+    raise AssertionError("cmd.exe quotes with \\" only and a backslash escapes nothing: a single "
+                         "quote cannot hide the deletion behind it, so the payload must be "
+                         f"HARD_DENY (got {res.stdout.strip()!r})")
+'''
+
+PROBE_RG_DEPLOYMENT_MEMORY = '''\
+import sys
+sys.path.insert(0, ".")
+import test_calibrate_reviewer as t
+t.check_memory_root_split()
+'''
+
+PROBE_RG_MANDATORY_BIZTESTER = '''\
+import sys
+sys.path.insert(0, ".")
+import check_factory_model as m
+if "business_tester" not in m.MANDATORY_ROLES:
+    raise AssertionError("implement and refactor runs ALWAYS delegate the adversarial business "
+                         "tester, so business_tester belongs to MANDATORY_ROLES instead of the "
+                         f"conditional set: {m.MANDATORY_ROLES}")
+'''
+
+PROBE_RG_FULL_TOKEN = '''\
+import sys
+sys.path.insert(0, ".")
+import test_input_validation_gate as t
+t.check_python_assignment_is_not_validation()
+t.check_python_keyword_name_is_not_validation()
+'''
+
+PROBE_RG_CHROME_SCOPE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_chrome_devtools_mcp as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_business_scope_classification(pathlib.Path(td))
+'''
+
+PROBE_RG_FARUKON_SCOPE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_farukon_mcp as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_business_scope_classification(pathlib.Path(td))
+'''
+
+PROBE_RG_MANAGED_KEYS = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import farukon_mcp as f
+with tempfile.TemporaryDirectory() as td:
+    entry = {"command": f.COMMAND, "args": list(f.MANAGED_ARGS), "cwd": str(pathlib.Path(td))}
+    entry["env"] = {"FARUKON_TOKEN": "an-unreviewed-launch-setting"}
+    ok, problems = f.validate_config(data={"mcpServers": {f.SERVER_NAME: entry}})
+    if ok or not any("unmanaged key" in problem for problem in problems):
+        raise AssertionError("the managed entry carries EXACTLY command/args/cwd: an extra key is "
+                             "an unreviewed launch setting and must be refused "
+                             f"(got ok={ok}, {problems!r})")
+'''
+
+PROBE_RG_REPORT_ONLY_MANIFEST = '''\
+import pathlib, sys
+sys.path.insert(0, ".")
+import gate_all as g
+root = pathlib.Path(".").resolve().parents[3]
+gate = next(candidate for candidate in g.GATES if candidate.name == "manifest-audit")
+applicable, reason = g.applicability(gate, "Y", {"task_type": "review"}, "")
+if applicable:
+    raise AssertionError("the manifest audit is CHANGE-PRODUCING only: a review run never "
+                         f"initializes a manifest, so the gate must be skipped with that reason "
+                         f"({reason!r}) — {root}")
+'''
+
+PROBE_RG_REOPEN_ORDER = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_memory_project as t
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td) / "proj"
+    root.mkdir()
+    t.expect(t.run("init", "--repo", str(root)).returncode == 0, "init must exit 0")
+    item = "reopened after a proven closure"
+    evidence = "scripts/test_reopen.py:31 -> exit 0"
+    t.write_journal(
+        root,
+        t.journal_entry("2027-01-01T00:00:00Z", "proj", run_id="20270101-11112233",
+                        factory_version="12.9.0", marks=True,
+                        unfinished=t.unfinished_block((item, "critical", "true"))),
+        t.journal_entry("2027-01-02T00:00:00Z", "proj", run_id="20270102-22223333",
+                        factory_version="12.9.0", marks=True,
+                        closed=t.closed_block((item, evidence))),
+        t.journal_entry("2027-01-03T00:00:00Z", "proj", run_id="20270103-33334444",
+                        factory_version="12.9.0", marks=True,
+                        unfinished=t.unfinished_block((item, "critical", "true"))),
+        t.journal_entry("2027-01-04T00:00:00Z", "proj", run_id="20270104-44445555",
+                        factory_version="12.9.0", marks=True))
+    res = t.run("compact", "--repo", str(root), "--threshold", "1", "--keep", "1")
+    t.expect(res.returncode == 0, f"the fold of a reopened item must exit 0: {res.stderr!r}")
+    payload = __import__("json").loads(t.run("backlog", "--repo", str(root), "--json").stdout)
+    t.expect(payload["open"] == 1 and [entry["item"] for entry in payload["items"]] == [item],
+             f"a declare-close-REDECLARE history must replay stamp by stamp, so the reopened item "
+             f"stays OPEN after the fold: {payload!r}")
+'''
+
+PROBE_RG_COMPACT_TRANSACTION = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_memory_project as t
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td) / "proj"
+    root.mkdir()
+    t.expect(t.run("init", "--repo", str(root)).returncode == 0, "init must exit 0")
+    journal = root / "memory" / "change-log.md"
+    summary = root / "memory" / "summary.md"
+    t.write_journal(
+        root,
+        t.journal_entry("2027-03-01T00:00:00Z", "proj", run_id="20270301-11112233",
+                        factory_version="12.9.0", marks=True,
+                        unfinished=t.unfinished_block(("debt the failed fold must not lose",
+                                                       "critical", "true"))),
+        t.journal_entry("2027-03-02T00:00:00Z", "proj", run_id="20270302-22223333",
+                        factory_version="12.9.0", marks=True),
+        t.journal_entry("2027-03-03T00:00:00Z", "proj", run_id="20270303-33334444",
+                        factory_version="12.9.0", marks=True))
+    before = (journal.read_bytes(), summary.read_bytes())
+    blocked = root / "memory" / "summary.md.tmp"
+    blocked.mkdir()                       # the summary cannot be STAGED: portable failure
+    res = t.run("compact", "--repo", str(root), "--threshold", "1", "--keep", "1")
+    t.expect(res.returncode == 1,
+             f"a fold that cannot stage its summary must exit 1: {res.stdout!r} {res.stderr!r}")
+    t.expect((journal.read_bytes(), summary.read_bytes()) == before,
+             "summary and journal commit as ONE transaction: a fold that cannot install the "
+             "summary must leave every journal record in place, never remove history for a "
+             "summary that was not written")
+'''
+
+PROBE_RG_RUN_ID_SELECTION = '''\
+import json, pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_memory_project as t
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td) / "proj"
+    root.mkdir()
+    t.expect(t.run("init", "--repo", str(root)).returncode == 0, "init must exit 0")
+    t.write_journal(
+        root,
+        t.journal_entry("2027-04-01T00:00:00Z", "proj", run_id="20270401-aaaabbbb",
+                        factory_version="12.9.0", marks=True),
+        t.journal_entry("2027-04-02T00:00:00Z", "proj", run_id="20270402-ccccdddd",
+                        factory_version="12.9.0", marks=True))
+    res = t.run("backlog", "--repo", str(root), "--check", "--run-id", "20270409-99999999")
+    t.expect(res.returncode == 1,
+             f"a --run-id that matches NO record leaves the current record unknown, so `backlog "
+             f"--check` must fail instead of measuring nothing and reporting success: "
+             f"{res.stdout!r} {res.stderr!r}")
+'''
+
+PROBE_RG_MIXED_DISPOSITION = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_merge_findings as t
+import merge_findings as mf
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    t.write_raw(root, "refute.md", "# refutation\\n")
+    refuted = t.finding("minor", "src/d.py", 4, "shared wording")
+    refuted.update(finding_disposition="refuted", finding_evidence="refute.md")
+    refuting = t.write_findings(root, "refuting.json", "shard-5", "request_changes", [refuted])
+    asserting = t.write_findings(root, "asserting.json", "shard-6", "approve",
+                                 [t.finding("minor", "src/d.py", 4, "shared   WORDING")])
+    merged = mf.merge([mf.load_shard_file(refuting), mf.load_shard_file(asserting)])
+    if merged["verdict"] != "approve":
+        raise AssertionError("a shard's request_changes is discharged by refuting ITS OWN "
+                             "occurrence even while the deduplicated finding stays alive through "
+                             "another shard: the blocking set comes from the individual occurrence "
+                             f"records (got {merged['verdict']!r})")
+'''
+
+PROBE_RG_MAJOR_BLOCKS = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_merge_findings as t
+import merge_findings as mf
+with tempfile.TemporaryDirectory() as td:
+    shard = t.write_findings(pathlib.Path(td), "major.json", "shard-1", "approve",
+                             [t.finding("major", "a.py", 1, "big")])
+    merged = mf.merge([mf.load_shard_file(shard)])
+    if merged["verdict"] != "request_changes":
+        raise AssertionError("the merged verdict is DERIVED from the active findings: an active "
+                             "MAJOR finding blocks exactly like a critical one, so a shard that "
+                             f"approved despite it cannot soften the round (got "
+                             f"{merged['verdict']!r})")
+'''
+
+PROBE_RG_VENDOR_KEY = '''\
+import sys
+sys.path.insert(0, ".")
+import model_attribution as ma
+left, right = ma.canonical("kimi-k3"), ma.canonical("deepseek-k3")
+if left == right:
+    raise AssertionError("the vendor is part of the comparison key: a cross-vendor "
+                         f"same-version pair must never compare equal (both folded to {left!r})")
+'''
+
+PROBE_RG_MALFORMED_WIRE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_model_attribution as t
+with tempfile.TemporaryDirectory() as td:
+    try:
+        t.case_16_malformed_wire_records_never_pass(pathlib.Path(td))
+    except AssertionError:
+        raise
+    except Exception as exc:
+        raise AssertionError("a malformed or foreign wire record must make the attribution "
+                             "DEGRADED, never a PASS: an unparsed record could contain "
+                             f"another served model ({exc!r})") from None
+'''
+
+PROBE_RG_PERMIT_LOAD = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_permit_gate as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_load_validation(pathlib.Path(td))
+'''
+
+PROBE_RG_SUPERVISOR_SPAWN = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_permit_gate as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_supervisor_bootstrap(pathlib.Path(td))
+'''
+
+PROBE_RG_STALE_PERMITS = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_permit_gate as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_stale_permits(pathlib.Path(td))
+'''
+
+PROBE_RG_SYMLINK_ANCESTOR = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import repo_inventory as ri
+escapes = getattr(ri, "escapes_root", None)
+if escapes is None:
+    raise AssertionError("the TRACKED set needs more than a final-component symlink check: git "
+                         "tracks files, so a tracked directory replaced by a link survives it and "
+                         "reading root/link/evil.py reads outside the repository "
+                         "(repo_inventory.escapes_root is missing)")
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td) / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "a.py").write_text("a = 1" + chr(10), encoding="utf-8")
+    outside = pathlib.Path(td) / "outside"
+    outside.mkdir()
+    (outside / "evil.py").write_text("secret = 1" + chr(10), encoding="utf-8")
+    if not escapes(root, outside / "evil.py"):
+        raise AssertionError("a path whose RESOLVED target leaves the repository root must be "
+                             "skipped by the scan, never read")
+    if escapes(root, root / "src" / "a.py"):
+        raise AssertionError("a plain tracked file inside the repository is not an escape")
+    link = root / "link"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pass
+    else:
+        if not escapes(root, link / "evil.py"):
+            raise AssertionError("a tracked path with a SYMLINKED ANCESTOR must be skipped: a "
+                                 "swapped directory is never part of the repository")
+'''
+
+
+PROBE_RG_VERIFY_QUOTE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import review_followup_task as r
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td) / "repo"
+    (root / "scripts").mkdir(parents=True)
+    (root / "scripts" / "test_a b.py").write_text("", encoding="utf-8")
+    quoted = r.derived_verify({"file": "scripts/a b.py"}, root)
+    if not quoted or not any(f'"{path}"' in quoted or f"'{path}'" in quoted
+                             for path in ("scripts/test_a b.py",)):
+        raise AssertionError("a derived verify command interpolates a repository path into a shell "
+                             f"line, so a space must be quoted: {quoted!r}")
+'''
+
+PROBE_RG_RUN_ID_MARKER = '''\
+import sys
+sys.path.insert(0, ".")
+import run_id as rid
+for line in ("run_id: <id>", "run_id=nonsense", "run_id: 20200101-DEADBEEF",
+             "run_id: 20200101-deadbeef (synthetic)"):
+    if rid.has_run_id(line):
+        raise AssertionError("only a FULL marker line carrying a syntactically valid run id "
+                             f"(YYYYMMDD-8 lowercase hex) attributes an artifact: {line!r} does not")
+'''
+
+PROBE_RG_PUBLIC_DESTINATION = '''\
+import sys
+sys.path.insert(0, ".")
+import skill_base as sb
+check = getattr(sb, "_validate_destination", None)
+if check is None:
+    raise AssertionError("a public http(s) source must be proven PUBLIC at the DESTINATION, not "
+                         "only in the URL's shape: skill_base needs _validate_destination before "
+                         "a transfer starts")
+try:
+    check("http://localhost/doc.md", "reference_docs URL", resolve=lambda host, port: ["127.0.0.1"])
+except Exception:
+    pass
+else:
+    raise AssertionError("a source that resolves to loopback must be refused, never fetched")
+'''
+
+PROBE_RG_PARSE_DISPOSITION = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_vaccination as v
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    path = root / v.DISPOSITION
+    path.parent.mkdir(parents=True)
+    path.write_text("- FX-1: fixed: a harmless claim | vaccine: V-fx-rust-regex\\n"
+                    "- C1 error_router.py - fixed by hand, no vaccine\\n", encoding="utf-8")
+    problems = []
+    v.parse_disposition(root, problems)
+    if not any("carries neither" in problem for problem in problems):
+        raise AssertionError("a CONCRETE disposition item (`- C1 <subject> - ...`) must be held to "
+                             "the SAME fixed/fixed-prose/deferred contract as a `<ID>:` item: it "
+                             "was appended and skipped, so an unmarked claim can hide among the "
+                             f"valid ones ({problems!r})")
+'''
+
+PROBE_RG_PINNED_BASE = '''\
+import pathlib, subprocess, sys, tempfile
+sys.path.insert(0, ".")
+import test_vaccination as v
+
+
+def git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                          errors="replace")
+
+
+with tempfile.TemporaryDirectory() as td:
+    repo = pathlib.Path(td) / "repo"
+    repo.mkdir()
+    for args in (("init", "-q"), ("config", "user.email", "f@example.invalid"),
+                 ("config", "user.name", "factory")):
+        git(repo, *args)
+    (repo / "a.txt").write_text("1\\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "the historical release")
+    pinned = git(repo, "rev-parse", "HEAD").stdout.strip()
+    for text in ("2\\n", "3\\n"):
+        (repo / "a.txt").write_text(text, encoding="utf-8")
+        git(repo, "commit", "-qam", f"a later release ({text.strip()})")
+    later = git(repo, "rev-parse", "HEAD").stdout.strip()
+    state = repo / v.STATE_HEAD
+    state.parent.mkdir(parents=True)
+    state.write_text(later + "\\n", encoding="utf-8")
+    resolved, kind, message = v.resolve_base(repo, pinned, False)
+    if kind != "ok" or resolved != pinned:
+        raise AssertionError("the permanent historical registry is bound to its demonstrated "
+                             f"PRE-FIX commit: a later release recorded in {v.STATE_HEAD} must "
+                             f"not replace it with that release's parent (got {resolved[:7]} "
+                             f"{kind} {message})")
+'''
+
+PROBE_RG_OUT_CONFINEMENT = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_gate_all as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_out_confinement(pathlib.Path(td))
+'''
+
+PROBE_RG_STALE_MANIFEST = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_manifest as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_init_archives_stale_manifest(pathlib.Path(td))
+'''
+
+PROBE_RG_REMOTE_LIMITS = '''\
+import sys
+sys.path.insert(0, ".")
+import skill_base as sb
+limits = getattr(sb, "remote_limits", None)
+if limits is None:
+    raise AssertionError("--timeout/--max-bytes need purpose-fitted validation BEFORE a transfer "
+                         "starts: skill_base must expose remote_limits")
+
+
+class Args:
+    timeout = -1.0
+    max_bytes = 1024
+
+
+try:
+    limits(Args())
+except Exception:
+    pass
+else:
+    raise AssertionError("a negative --timeout must be a usage error, not a silently accepted "
+                         "limit that disables the guard")
+'''
+
+PROBE_RG_NEGATIVE_TIMEOUT = '''\
+import subprocess, sys, tempfile, pathlib
+td = pathlib.Path(tempfile.mkdtemp())
+criteria = td / "criteria.json"
+criteria.write_text('[{"criterion": "the tree is clean", "verify": "true"}]', encoding="utf-8")
+res = subprocess.run([sys.executable, "verify_acceptance.py", "--input", str(criteria),
+                      "--output", str(td / "acceptance.md"), "--repo", str(td),
+                      "--timeout", "-1"], capture_output=True, text=True, encoding="utf-8",
+                     errors="replace")
+if res.returncode != 2 or "--timeout" not in res.stderr:
+    raise AssertionError("only ZERO is the documented unlimited --timeout: a negative value is a "
+                         f"usage error (exit 2) naming the flag (got {res.returncode}: "
+                         f"{res.stderr.strip()[:160]!r})")
+'''
+
+PROBE_RG_EXAMPLE_ROLES = '''\
+import sys
+sys.path.insert(0, ".")
+import test_model_precedence as t
+t.case_15_example_task_lists_every_role()
+'''
+
+PROBE_RG_CHANGELOG_ORDER = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import version_manager as vm
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    changelog = root / "CHANGELOG.md"
+    changelog.write_text("# Changelog\\n\\n## [13.2.0] - 2026-09-09\\n\\n## [13.0.0] - 2026-09-08\\n",
+                         encoding="utf-8")
+    before = changelog.read_text(encoding="utf-8")
+    try:
+        vm.sync(root, "13.0.0", "2026-09-10")
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("a top CHANGELOG section NEWER than the synced version is a downgrade "
+                             "and must be refused, never prepended out of release order")
+    if changelog.read_text(encoding="utf-8") != before:
+        raise AssertionError("a refused downgrade must leave the CHANGELOG byte-identical")
+'''
+
+PROBE_RG_DEPLOYER_LINE = '''\
+import sys
+sys.path.insert(0, ".")
+import test_windows_scripts as t
+t.sh_memory_check_line_is_single_line()
+'''
+
+PROBE_RG_WHITESPACE_QUOTE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import verify_quotes as vq
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    (root / "logs").mkdir()
+    (root / "logs" / "baseline.md").write_text("a line\\n\\n\\n", encoding="utf-8")
+    claim = vq.check_claim(" \\n\\t ", "logs/baseline.md", root)
+    if "whitespace" not in claim.get("reason", ""):
+        raise AssertionError("a whitespace-only quote occurs in virtually any source, so it "
+                             f"verifies everywhere while proving nothing: {claim!r}")
+'''
+
+PROBE_RG_EVIDENCE_SCOPE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import evidence_ledger as el
+problems = getattr(el, "scope_problems", None)
+if problems is None:
+    raise AssertionError("evidence covers the REPOSITORY: a --files entry outside --repo must be "
+                         "rejected before anything is signed (evidence_ledger.scope_problems)")
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td) / "repo"
+    root.mkdir()
+    (pathlib.Path(td) / "outside.md").write_text("x\\n", encoding="utf-8")
+    for entry in ("../outside.md", str(pathlib.Path(td) / "outside.md")):
+        if not problems([entry], root):
+            raise AssertionError(f"an evidence file outside --repo must be refused, got {entry!r} "
+                                 "accepted")
+'''
+
+PROBE_RG_CONCURRENT_CLAIM = '''\
+import pathlib, subprocess, sys, tempfile
+sys.path.insert(0, ".")
+import task_graph as tg
+if not hasattr(tg, "acquire_claim_lock"):
+    raise AssertionError("a claim is a COMPARE-AND-CLAIM under an exclusive per-task lock: a "
+                         "sequential test cannot catch two workers that both observe `pending` "
+                         "and both claim the same task (task_graph.acquire_claim_lock is missing)")
+with tempfile.TemporaryDirectory() as td:
+    tasks = pathlib.Path(td) / "tasks"
+    tool = str(pathlib.Path("task_graph.py").resolve())
+    created = subprocess.run([sys.executable, tool, "create", "--dir", str(tasks), "--id",
+                              "task_01", "--title", "race"], capture_output=True, text=True,
+                             errors="replace")
+    if created.returncode != 0:
+        raise AssertionError(f"the race fixture must be created: {created.stderr!r}")
+    procs = [subprocess.Popen([sys.executable, tool, "claim", "--dir", str(tasks), "--id",
+                               "task_01", "--owner", owner], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, errors="replace")
+             for owner in ("racer-a", "racer-b")]
+    outcomes = []
+    for proc in procs:
+        out, err = proc.communicate()
+        outcomes.append((proc.returncode, out, err))
+    if sorted(code for code, _out, _err in outcomes) != [0, 1]:
+        raise AssertionError("exactly ONE of two concurrent claims may win: the claim is a "
+                             f"compare-and-claim under an exclusive lock ({outcomes!r})")
+'''
+
+
+PROBE_RG_ROLLBACK_HELPER = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+try:
+    import rollback as r
+except ImportError as exc:
+    raise AssertionError("the rollback is ONE portable Python helper that reads the manifest's "
+                         "path FIELDS and stays confined to the repository (the Bash example "
+                         f"crashed on the real manifest; never ran under cmd.exe): {exc}") from None
+with tempfile.TemporaryDirectory() as td:
+    for helper in ("validate", "rollback"):
+        if not hasattr(r, helper):
+            raise AssertionError(f"rollback.py must publish {helper}(): the file side of the "
+                                 "rollback is the helper's job, not the orchestrator's")
+'''
+
+
+PROBE_RG_DOC_PATH_CONFINEMENT = '''\
+import pathlib, subprocess, sys, tempfile
+root = pathlib.Path(tempfile.mkdtemp()) / "repo"
+root.mkdir()
+(root / "guide.md").write_text("a guide line", encoding="utf-8")
+baseline = root / ".code-factory" / "state" / "docs-baseline"
+baseline.mkdir(parents=True)
+res = subprocess.run([sys.executable, "validate_documentation.py", "snapshot", "--repo",
+                      str(root), "--baseline", str(baseline), "--files", "../escape.md"],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+if res.returncode != 2:
+    raise AssertionError("--files is user input: a `..`-escaping entry must be a usage "
+                         "error (exit 2) BEFORE anything is read or written outside the "
+                         f"repository (got {res.returncode}: "
+                         f"{(res.stdout + res.stderr).strip()[:120]!r})")
+'''
+
+PROBE_RG_FARUKON_OUT = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_farukon_mcp as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_probe_out_confinement(pathlib.Path(td))
+'''
+
+REVIEW_20261105_FINDINGS: tuple[tuple[str, str, str], ...] = (
+    ("C1", "the supervisor is a run-long background WATCHDOG (launched once, scanned "
+           "deterministically, blocking denies) instead of a synchronous per-delegation clerk",
+     "V-rg-watchdog-launch"),
+    ("C2", "a pre-plan BOOTSTRAP permit answers the parsed task for analyzer/planner/supervisor, "
+           "so the first delegations are reachable before any plan exists",
+     "V-rg-bootstrap-permits"),
+    ("C3", "the tester's memory interprets results and never decides what to skip: the full "
+           "regression suite runs after every change",
+     "V-rg-tester-rerun"),
+    ("C4", "a registered role WITHOUT a retry budget passes the pre-delegation gate through "
+           "(allow:true, budgeted:false) instead of failing as an input error",
+     "V-rg-unbudgeted"),
+    ("C5", "the reviewer budget counts ONE iteration per LOGICAL review round, so the shard "
+           "fan-out of one review no longer exhausts it",
+     "V-rg-review-rounds"),
+    ("C6", "the review's adversarial probe runs BEFORE the reviewer merge, on the path to the "
+           "verdict it feeds",
+     "V-rg-review-merge"),
+    ("C7", "the refactor branch re-joins the shared mode split G, so hitl and auto keep "
+           "implement's business-test definition and plan approval",
+     "V-rg-refactor-rejoin"),
+    ("C8", "the infrastructure auto-fix returns to the ORIGINATING failed verification node and "
+           "re-runs that check instead of a new implementation delegation",
+     "V-rg-infra-return"),
+    ("C9", "a business-result mismatch branches by mode: hitl asks the owner, auto records it and "
+           "enters error routing",
+     "V-rg-mismatch-modes"),
+    ("C10", "review/security_audit acceptance is task-type aware: those runs prove their "
+            "deliverables fresh instead of a regression baseline they never run",
+     "V-rg-review-acceptance"),
+    ("C11", "every post-acceptance write is re-registered with manifest.py BEFORE the finish audit",
+     "V-rg-finish-reregister"),
+    ("C12", "the version proposal is computed and validated BEFORE the final review, in that same "
+            "reviewer handoff",
+     "V-rg-version-before-review"),
+    ("C13", "no route resets a retry counter: every retry passes through delegation_gate.py",
+     "V-rg-no-counter-reset"),
+    ("C14", "the rollback is a portable Python helper that reads the manifest's path FIELDS and is "
+            "confined to the repository",
+     "V-rg-rollback-helper"),
+    ("C15", "a relative rollback target is resolved against the same repository base as the "
+            "absolute --scope, symlink-aware",
+     "V-rg-scope-base"),
+    ("C16", "a cmd.exe payload is split with cmd's own quoting rules, so a single quote cannot "
+            "hide a destructive command",
+     "V-rg-cmd-quotes"),
+    ("C17", "calibration reads the run journal from the DEPLOYMENT root (--memory-root) while the "
+            "prompts stay anchored to --repo",
+     "V-rg-deployment-memory"),
+    ("C18", "business_tester is part of MANDATORY_ROLES: implement and refactor runs always "
+            "delegate the adversarial business test",
+     "V-rg-mandatory-biztester"),
+    ("C19", "the input-validation gate accepts a validation keyword only as a FULL token, so a "
+            "bare assignment or a keyword-containing name is not evidence",
+     "V-rg-full-token"),
+    ("C20", "GUI-path applicability classifies only the task's business scope, never the YAML "
+            "comments or the wiring metadata",
+     "V-rg-chrome-scope"),
+    ("C21", "Farukon applicability classifies only the task's business scope, never the template's "
+            "instructional comments",
+     "V-rg-farukon-scope"),
+    ("C22", "the managed Farukon entry carries exactly command/args/cwd: an extra key is an "
+            "unreviewed launch setting",
+     "V-rg-managed-keys"),
+    ("C23", "the finish manifest audit is change-producing only: a report-only task type records "
+            "it skipped instead of failing on a manifest its flow never writes",
+     "V-rg-report-only-manifest"),
+    ("C24", "the summary's folded records replay stamp by stamp, so a declare-close-redeclare "
+            "history survives the fold in its true order",
+     "V-rg-reopen-order"),
+    ("C25", "compaction installs summary and journal as ONE transaction: the journal is never "
+            "shortened for a summary that was not written",
+     "V-rg-compact-transaction"),
+    ("C26", "backlog --check --run-id demands exactly one matching record instead of reporting "
+            "success for a run it never found",
+     "V-rg-run-id-selection"),
+    ("C27", "a shard's request_changes is discharged by refuting its OWN occurrence, even while "
+            "the deduplicated finding stays alive",
+     "V-rg-mixed-disposition"),
+    ("C28", "the vendor stays in the comparison key, so a cross-vendor same-version substitution "
+            "can never compare equal",
+     "V-rg-vendor-key"),
+    ("C29", "a malformed or foreign wire record makes the attribution DEGRADED, never a PASS",
+     "V-rg-malformed-wire"),
+    ("C30", "every field of a loaded permit is type- and vocabulary-validated: a malformed file is "
+            "a controlled input error, never a crash inside the audit",
+     "V-rg-permit-load"),
+    ("C31", "the supervisor's own spawns are exempt from the permit-less check, and a bound "
+            "supervisor spawn is audited like any other",
+     "V-rg-supervisor-spawn"),
+    ("C32", "a permits file of ANOTHER run never authorizes this run's delegations",
+     "V-rg-stale-permits"),
+    ("C33", "a tracked path with a symlinked ancestor, or one resolving outside the repository, is "
+            "skipped as a symlink",
+     "V-rg-symlink-ancestor"),
+    ("C34", "a derived verify command confines the sibling test to the repository and quotes the "
+            "path for the platform shell",
+     "V-rg-verify-quote"),
+    ("C35", "the run-id marker must be a FULL line with a syntactically valid id: a placeholder, a "
+            "non-id value or prose around it is not attribution",
+     "V-rg-run-id-marker"),
+    ("C36", "a remote reference source (and every redirect hop) must resolve to a PUBLIC address",
+     "V-rg-public-destination"),
+    ("C37", "a concrete disposition item is held to the same fixed/fixed-prose/deferred contract as "
+            "a `<ID>:` item",
+     "V-rg-parse-disposition"),
+    ("C38", "the permanent historical registry keeps its demonstrated pre-fix base: a later "
+            "recorded release never replaces it with that release's parent",
+     "V-rg-pinned-base"),
+    ("C39", "validate_documentation confines --files to the repository BEFORE any read or write",
+     "V-rg-doc-path-confinement"),
+    ("C40", "a whitespace-only quote is never verified evidence",
+     "V-rg-whitespace-quote"),
+    ("M1", "evidence files outside --repo are rejected instead of being signed under their "
+           "external spelling", "V-rg-evidence-scope"),
+    ("M2", "the Farukon probe result is confined to the repository, exactly like --target",
+     "V-rg-farukon-out"),
+    ("M3", "the aggregate gate's --out is confined to the repository through its nearest existing "
+           "ancestor", "V-rg-out-confinement"),
+    ("M4", "manifest init archives a FINISHED run's manifest as manifest.<run_id>.json instead of "
+           "blocking the next run", "V-rg-stale-manifest"),
+    ("M5", "--timeout/--max-bytes are purpose-fitted validated before a transfer starts",
+     "V-rg-remote-limits"),
+    ("M11", "the merged verdict is derived from the active findings: an active major blocks like a "
+            "critical one", "V-rg-major-blocks"),
+    ("M13", "a claim is a compare-and-claim under an exclusive per-task lock, so a concurrent race "
+            "has exactly one winner", "V-rg-concurrent-claim"),
+    ("M15", "a negative --timeout is a usage error, while zero keeps its documented unlimited "
+            "meaning", "V-rg-negative-timeout"),
+    ("M16", "the shipped example task names every registered role in its commented models matrix",
+     "V-rg-example-roles"),
+    ("N3", "CHANGELOG sync compares parsed semantic versions and refuses a downgrade instead of "
+           "prepending out of order", "V-rg-changelog-order"),
+    ("N4", "the bash deployer prints a one-line verdict plus a WARN count, keeping the full output "
+           "for parsing only", "V-rg-deployer-line"),
+)
+
+REVIEW_BASE_SHA = "d5ef373edcbe52fcbee1b02e205ee27c633b976f"
+
 # The shipped claim lists, each with the vaccine-id prefix it owns: (source name, prefix, findings).
 # One place, so the two-way cross-check runs over every list instead of growing a branch per release.
+
 RELEASE_CLAIMS: tuple[tuple[str, str, tuple[tuple[str, str, str], ...]], ...] = (
     ("CLEAN_CODE_FINDINGS", "V-cc-", CLEAN_CODE_FINDINGS),
     ("FARUKON_FINDINGS", "V-fk-", FARUKON_FINDINGS),
     ("FB_FINDINGS", "V-fb-", FB_FINDINGS),
+    ("REVIEW_20261105_FINDINGS", "V-rg-", REVIEW_20261105_FINDINGS),
 )
 
 
@@ -3350,6 +4276,114 @@ REGISTRY: tuple[Vaccine, ...] = (
             r"must be judged, not crash", FB_BASE_SHA),
     Vaccine("V-fb-round-fullmatch", PROBE, PROBE_FB_ROUND_FULLMATCH,
             r"a terminal newline must not be a valid round identifier", FB_BASE_SHA),
+    # ---- RG: THIS release (12.24.0, run 20261105-11a026da), replayed against
+    # REVIEW_BASE_SHA. One focused probe per finding that has a behaviour to prove, so a
+    # self-test module bundling several of them cannot validate the rest by accident.
+    Vaccine("V-rg-watchdog-launch", PROBE, PROBE_RG_WATCHDOG_LAUNCH,
+            r"the supervisor's monitoring is DETERMINISTIC and continuous", REVIEW_BASE_SHA),
+    Vaccine("V-rg-bootstrap-permits", PROBE, PROBE_RG_BOOTSTRAP_PERMITS,
+            r"bootstrap", REVIEW_BASE_SHA),
+    Vaccine("V-rg-tester-rerun", PROBE, PROBE_RG_TESTER_RERUN,
+            r"canonical FULL regression suite runs after EVERY change", REVIEW_BASE_SHA),
+    Vaccine("V-rg-unbudgeted", PROBE, PROBE_RG_UNBUDGETED,
+            r"registered role WITHOUT a budget entry must pass", REVIEW_BASE_SHA),
+    Vaccine("V-rg-review-rounds", PROBE, PROBE_RG_REVIEW_ROUNDS,
+            r"round r1, shard 1: expected exit 0", REVIEW_BASE_SHA),
+    Vaccine("V-rg-review-merge", PROBE, PROBE_RG_REVIEW_MERGE,
+            r"TT path must reach the adversarial node", REVIEW_BASE_SHA),
+    Vaccine("V-rg-refactor-rejoin", PROBE, PROBE_RG_REFACTOR_REJOIN,
+            r"re-join the shared mode split", REVIEW_BASE_SHA),
+    Vaccine("V-rg-infra-return", PROBE, PROBE_RG_INFRA_RETURN,
+            r"the infrastructure auto-fix must route back to the ORIGINATING", REVIEW_BASE_SHA),
+    Vaccine("V-rg-mismatch-modes", PROBE, PROBE_RG_MISMATCH_MODES,
+            r"must branch by mode: hitl asks the owner, auto records", REVIEW_BASE_SHA),
+    Vaccine("V-rg-review-acceptance", PROBE, PROBE_RG_REVIEW_ACCEPTANCE,
+            r"no regression stage it could sign", REVIEW_BASE_SHA),
+    Vaccine("V-rg-finish-reregister", PROBE, PROBE_RG_FINISH_REREGISTER,
+            r"every post-acceptance write", REVIEW_BASE_SHA),
+    Vaccine("V-rg-version-before-review", PROBE, PROBE_RG_VERSION_BEFORE_REVIEW,
+            r"BEFORE the final review", REVIEW_BASE_SHA),
+    Vaccine("V-rg-no-counter-reset", PROBE, PROBE_RG_NO_COUNTER_RESET,
+            r"no route resets a retry counter", REVIEW_BASE_SHA),
+    Vaccine("V-rg-rollback-helper", PROBE, PROBE_RG_ROLLBACK_HELPER,
+            r"the rollback is ONE portable Python helper", REVIEW_BASE_SHA),
+    Vaccine("V-rg-scope-base", PROBE, PROBE_RG_SCOPE_BASE,
+            r"RELATIVE rollback target", REVIEW_BASE_SHA),
+    Vaccine("V-rg-cmd-quotes", PROBE, PROBE_RG_CMD_QUOTES,
+            r"cmd\.exe quotes with", REVIEW_BASE_SHA),
+    Vaccine("V-rg-deployment-memory", PROBE, PROBE_RG_DEPLOYMENT_MEMORY,
+            r"unrecognized arguments: --memory-root", REVIEW_BASE_SHA),
+    Vaccine("V-rg-mandatory-biztester", PROBE, PROBE_RG_MANDATORY_BIZTESTER,
+            r"business_tester belongs to MANDATORY_ROLES", REVIEW_BASE_SHA),
+    Vaccine("V-rg-full-token", PROBE, PROBE_RG_FULL_TOKEN,
+            r"a plain assignment must not validate the argument", REVIEW_BASE_SHA),
+    Vaccine("V-rg-chrome-scope", PROBE, PROBE_RG_CHROME_SCOPE,
+            r"must never reach the classifier: \{'decision': 'applicable', 'reason'",
+            REVIEW_BASE_SHA),
+    Vaccine("V-rg-farukon-scope", PROBE, PROBE_RG_FARUKON_SCOPE,
+            r"must never reach the classifier: \{'decision': 'applicable', 'evidence'",
+            REVIEW_BASE_SHA),
+    Vaccine("V-rg-managed-keys", PROBE, PROBE_RG_MANAGED_KEYS,
+            r"the managed entry carries EXACTLY command/args/cwd", REVIEW_BASE_SHA),
+    Vaccine("V-rg-report-only-manifest", PROBE, PROBE_RG_REPORT_ONLY_MANIFEST,
+            r"manifest audit is CHANGE-PRODUCING only", REVIEW_BASE_SHA),
+    Vaccine("V-rg-reopen-order", PROBE, PROBE_RG_REOPEN_ORDER,
+            r"reopened item stays OPEN", REVIEW_BASE_SHA),
+    Vaccine("V-rg-compact-transaction", PROBE, PROBE_RG_COMPACT_TRANSACTION,
+            r"ONE transaction", REVIEW_BASE_SHA),
+    Vaccine("V-rg-run-id-selection", PROBE, PROBE_RG_RUN_ID_SELECTION,
+            r"matches NO record leaves the current record unknown", REVIEW_BASE_SHA),
+    Vaccine("V-rg-mixed-disposition", PROBE, PROBE_RG_MIXED_DISPOSITION,
+            r"discharged by refuting ITS OWN", REVIEW_BASE_SHA),
+    Vaccine("V-rg-vendor-key", PROBE, PROBE_RG_VENDOR_KEY,
+            r"vendor is part of the comparison key", REVIEW_BASE_SHA),
+    Vaccine("V-rg-malformed-wire", PROBE, PROBE_RG_MALFORMED_WIRE,
+            r"must make the attribution DEGRADED, never a PASS", REVIEW_BASE_SHA),
+    Vaccine("V-rg-permit-load", PROBE, PROBE_RG_PERMIT_LOAD,
+            r"the load error must name the field", REVIEW_BASE_SHA),
+    Vaccine("V-rg-supervisor-spawn", PROBE, PROBE_RG_SUPERVISOR_SPAWN,
+            r"a supervisor spawn without a permit \(the bootstrap exemption\)", REVIEW_BASE_SHA),
+    Vaccine("V-rg-stale-permits", PROBE, PROBE_RG_STALE_PERMITS,
+            r"permits of a stale run", REVIEW_BASE_SHA),
+    Vaccine("V-rg-symlink-ancestor", PROBE, PROBE_RG_SYMLINK_ANCESTOR,
+            r"the TRACKED set needs more than a final-component symlink check", REVIEW_BASE_SHA),
+    Vaccine("V-rg-verify-quote", PROBE, PROBE_RG_VERIFY_QUOTE,
+            r"space must be quoted", REVIEW_BASE_SHA),
+    Vaccine("V-rg-run-id-marker", PROBE, PROBE_RG_RUN_ID_MARKER,
+            r"only a FULL marker line", REVIEW_BASE_SHA),
+    Vaccine("V-rg-public-destination", PROBE, PROBE_RG_PUBLIC_DESTINATION,
+            r"must be proven PUBLIC at the DESTINATION", REVIEW_BASE_SHA),
+    Vaccine("V-rg-parse-disposition", PROBE, PROBE_RG_PARSE_DISPOSITION,
+            r"CONCRETE disposition item", REVIEW_BASE_SHA),
+    Vaccine("V-rg-pinned-base", PROBE, PROBE_RG_PINNED_BASE,
+            r"PRE-FIX commit", REVIEW_BASE_SHA),
+    Vaccine("V-rg-doc-path-confinement", PROBE, PROBE_RG_DOC_PATH_CONFINEMENT,
+            r"must be a usage error \(exit 2\) BEFORE anything is read or written",
+            REVIEW_BASE_SHA),
+    Vaccine("V-rg-whitespace-quote", PROBE, PROBE_RG_WHITESPACE_QUOTE,
+            r"whitespace-only quote", REVIEW_BASE_SHA),
+    Vaccine("V-rg-evidence-scope", PROBE, PROBE_RG_EVIDENCE_SCOPE,
+            r"outside --repo", REVIEW_BASE_SHA),
+    Vaccine("V-rg-farukon-out", PROBE, PROBE_RG_FARUKON_OUT,
+            r"probe --out escaping via '\.\.'", REVIEW_BASE_SHA),
+    Vaccine("V-rg-out-confinement", PROBE, PROBE_RG_OUT_CONFINEMENT,
+            r"must be refused, got", REVIEW_BASE_SHA),
+    Vaccine("V-rg-stale-manifest", PROBE, PROBE_RG_STALE_MANIFEST,
+            r"run 2 init over the stale manifest", REVIEW_BASE_SHA),
+    Vaccine("V-rg-remote-limits", PROBE, PROBE_RG_REMOTE_LIMITS,
+            r"remote_limits", REVIEW_BASE_SHA),
+    Vaccine("V-rg-major-blocks", PROBE, PROBE_RG_MAJOR_BLOCKS,
+            r"active MAJOR finding blocks", REVIEW_BASE_SHA),
+    Vaccine("V-rg-concurrent-claim", PROBE, PROBE_RG_CONCURRENT_CLAIM,
+            r"COMPARE-AND-CLAIM", REVIEW_BASE_SHA),
+    Vaccine("V-rg-negative-timeout", PROBE, PROBE_RG_NEGATIVE_TIMEOUT,
+            r"negative value is a usage error", REVIEW_BASE_SHA),
+    Vaccine("V-rg-example-roles", PROBE, PROBE_RG_EXAMPLE_ROLES,
+            r"the example must name every registered role exactly once", REVIEW_BASE_SHA),
+    Vaccine("V-rg-changelog-order", PROBE, PROBE_RG_CHANGELOG_ORDER,
+            r"downgrade", REVIEW_BASE_SHA),
+    Vaccine("V-rg-deployer-line", PROBE, PROBE_RG_DEPLOYER_LINE,
+            r"the memory output line\(s\) interpolate the whole", REVIEW_BASE_SHA),
 )
 
 # `- RV-12: fixed: ... | vaccine: V-memory-identity` — one item per finding, never wrapped. The id
@@ -3456,6 +4490,10 @@ def parse_disposition(root: pathlib.Path, problems: list[str]) -> tuple[list[Ite
     a note and skips the cross-checks that need the artifact. A file that IS there is held to the
     grammar it uses — `- <ID>: fixed: … | vaccine: <ID>` (claims) or `- <ID> <subject> — …`
     (concrete, no vaccine claims) — and an unparsable file is a problem, not a silent skip.
+
+    BOTH grammars are held to the SAME disposition contract. A dash-form item (`- C1 <subject> — …`)
+    is a finding like any other: the parser used to append it and `continue`, so every check below
+    was skipped for it and an unmarked claim could hide among the valid ones.
     """
     path = root / DISPOSITION
     if not path.is_file():
@@ -3464,31 +4502,45 @@ def parse_disposition(root: pathlib.Path, problems: list[str]) -> tuple[list[Ite
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         stripped = line.strip()
         match = ITEM_RE.match(stripped)
-        if match is None:
+        if match is not None:
+            item = Item(number, match.group(1), match.group(2))
+        else:
             concrete = ITEM_PROSE_RE.match(stripped)
-            if concrete is not None:
-                # A dash-form item (`- C1 <subject> — ...`): the id is recognised so the refusal
-                # below names it, instead of reporting an unreadable file. It carries no marker, so
-                # it fails the `fixed:`/`fixed-prose:`/`deferred:` contract like any other item.
-                items.append(Item(number, concrete.group(1), stripped))
-            continue
-        item = Item(number, match.group(1), match.group(2))
+            if concrete is None:
+                continue
+            # A dash-form item (`- C1 <subject> — ...`): the id is recognised so the shared
+            # contract below names it, instead of reporting an unreadable file. It carries no
+            # marker, so it fails the `fixed:`/`fixed-prose:`/`deferred:` contract like any
+            # other item.
+            item = Item(number, concrete.group(1), stripped)
         items.append(item)
-        if not (item.is_fixed or item.is_deferred or item.is_prose_fixed):
-            problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` carries neither `fixed:`, "
-                            "`fixed-prose:` nor `deferred:` — every finding is disposed of explicitly")
-        if item.is_deferred and "reason:" not in item.text:
-            problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` is deferred without "
-                            "`reason:` — a deferred finding says why it waits")
-        if item.is_fixed and not item.vaccine:
-            problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` is fixed without "
-                            "`vaccine: <ID>` — an unfrozen fix cannot be proven")
-        if item.is_prose_fixed:
-            problems += prose_fix_problems(item)
+        problems += disposition_item_problems(item)
     if not items:
         problems.append(f"{DISPOSITION}:1: no `- <ID>: …` or `- <ID> <subject> — …` item found — the "
                         "format changed")
     return items, True
+
+
+def disposition_item_problems(item: Item) -> list[str]:
+    """The disposition contract of ONE item, whatever grammar it arrived in.
+
+    Every finding is disposed of explicitly (`fixed:` with a `vaccine:`, `fixed-prose:` with
+    `files:` and `because:`, or `deferred:` with a `reason:`). The checks live here, in one place,
+    because a second copy is exactly how a grammar came to skip them.
+    """
+    problems: list[str] = []
+    if not (item.is_fixed or item.is_deferred or item.is_prose_fixed):
+        problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` carries neither `fixed:`, "
+                        "`fixed-prose:` nor `deferred:` — every finding is disposed of explicitly")
+    if item.is_deferred and "reason:" not in item.text:
+        problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` is deferred without "
+                        "`reason:` — a deferred finding says why it waits")
+    if item.is_fixed and not item.vaccine:
+        problems.append(f"{DISPOSITION}:{item.line}: `{item.ident}` is fixed without "
+                        "`vaccine: <ID>` — an unfrozen fix cannot be proven")
+    if item.is_prose_fixed:
+        problems += prose_fix_problems(item)
+    return problems
 
 
 def prose_fix_problems(item: Item) -> list[str]:
@@ -3815,6 +4867,28 @@ DISPOSITION_FIXTURES: tuple[tuple[str, str, str], ...] = (
      "".join(f"- FX-{n}: fixed: the same vaccine again | vaccine: V-fx-rust-regex\n"
              for n in range(1, 16)),
      "answer no `fixed:` item"),
+    # C37: the concrete grammar (`- C1 <subject> — …`) is a finding like any other, so it is held
+    # to the SAME contract. It used to be appended and skipped, which let an unmarked claim hide
+    # among valid vaccine claims — hence the mixed body: valid claims plus ONE unmarked concrete
+    # item that must be refused.
+    ("a concrete item with no disposition marker among valid vaccine claims",
+     "- FX-1: fixed: the Rust regex | vaccine: V-fx-rust-regex\n"
+     "- FX-2: fixed: the timeout split | vaccine: V-fx-timeout-split\n"
+     "- FX-3: fixed: the provider route | vaccine: V-fx-provider-route\n"
+     "- FX-4: fixed: the detach pathspec | vaccine: V-fx-detach-pathspec\n"
+     "- FX-5: fixed: the vendor pin | vaccine: V-fx-vendor-pin\n"
+     "- FX-6: fixed: the fix-task repo_path | vaccine: V-fx-fix-task-repo-path\n"
+     "- FX-7: fixed: the identity basis | vaccine: V-fx-identity-unverified\n"
+     "- FX-8: fixed: the v2 keys | vaccine: V-fx-v2-keys\n"
+     "- FX-9: fixed: the mixed model | vaccine: V-fx-mixed-model\n"
+     "- FX-10: fixed: the missing marker | vaccine: V-fx-missing-marker\n"
+     "- FX-11: fixed: the scalar task file | vaccine: V-fx-graph-scalar\n"
+     "- FX-12: fixed: the unterminated quote | vaccine: V-fx-unterminated-quote\n"
+     "- FX-13: fixed: the docstring residual | vaccine: V-fx-docstring-residual\n"
+     "- FX-14: fixed: the derived untracked file | vaccine: V-fx-derive-untracked\n"
+     "- FX-15: fixed: the title escape | vaccine: V-fx-title-escape\n"
+     "- C1 error_router.py — fixed by hand, no vaccine\n",
+     "`C1` carries neither `fixed:`, `fixed-prose:` nor `deferred:`"),
 )
 
 
@@ -3849,6 +4923,63 @@ def check_disposition_fixtures() -> list[str]:
         if found or more or drift:
             problems.append(f"{DISPOSITION}: the shipped disposition must pass its own cross-checks: "
                             f"{(found + more + drift)[0]}")
+    return problems
+
+
+# The base-resolution guard must REFUSE to move a pinned pre-fix commit. Each fixture builds a
+# throwaway repository whose history holds the pinned base and one NEWER release, records that
+# newer release in `.code-factory/state/git-head.txt`, and then asks `resolve_base` which commit it
+# would replay. C38: the recorded release used to REPLACE the pinned base with its parent, so the
+# historical vaccines ran against a tree that already contained their fixes.
+def check_base_fixtures() -> list[str]:
+    """Prove the pinned base survives a later recorded release, and that the fallback still works.
+
+    Two cases, because the fix must not turn the recorded release into a dead input: a pinned base
+    this repository KNOWS stays in force (the recorded release is another run's, and its parent
+    already contains the fixes), while a pinned base it does NOT know is the one case where the
+    recorded release's parent is used. Without this fixture both directions could rot silently.
+    """
+    problems: list[str] = []
+    if shutil.which("git") is None:
+        return [f"FIXTURE 'the pinned base': git is not on PATH, so {STATE_HEAD} cannot be replayed "
+                "and the guard proves nothing"]
+    with tempfile.TemporaryDirectory() as td:
+        repo = pathlib.Path(td) / "repo"
+        repo.mkdir()
+
+        def git(*args: str) -> str:
+            res = subprocess.run(["git", "-C", str(repo), *args], capture_output=True)
+            return res.stdout.decode("utf-8", "replace").strip()
+
+        git("init", "-q")
+        git("config", "user.email", "factory@example.invalid")
+        git("config", "user.name", "factory")
+        (repo / "a.txt").write_text("1\n", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-qm", "the historical release")
+        pinned = git("rev-parse", "HEAD")
+        for text in ("2\n", "3\n"):
+            (repo / "a.txt").write_text(text, encoding="utf-8")
+            git("commit", "-qam", f"a later release ({text.strip()})")
+        later = git("rev-parse", "HEAD")
+        state = repo / STATE_HEAD
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(f"{later}\n", encoding="utf-8")
+        resolved, kind, message = resolve_base(repo, pinned, False)
+        if kind != "ok" or resolved != pinned:
+            problems.append(f"FIXTURE 'the recorded release is newer than the historical one': "
+                            f"{STATE_HEAD} names {later[:7]}, whose parent is not the pinned base "
+                            f"{pinned[:7]} — the base must STAY the demonstrated pre-fix commit "
+                            f"instead of being replaced (got {resolved[:7]} {kind} {message})")
+        # …and the fallback is not inert: a pinned constant this repository does not know still
+        # resolves through the recorded release's parent rather than failing the whole proof.
+        resolved, kind, message = resolve_base(repo, "0" * 40, False)
+        expected_parent = git("rev-parse", f"{later}^")
+        if kind != "ok" or resolved != expected_parent:
+            problems.append(f"FIXTURE 'a drifted constant falls back to the recorded release': the "
+                            f"pinned base is not a commit of this repository, so the parent "
+                            f"{expected_parent[:7]} of {later[:7]} must be replayed (got "
+                            f"{resolved[:7]} {kind} {message})")
     return problems
 
 
@@ -4325,11 +5456,15 @@ def resolve_base(repo: pathlib.Path, base: str, explicit: bool) -> tuple[str, st
     kind "skip" — nothing can be answered at all: git is unavailable, or the history holds no
                   previous release (the recorded commit is the root commit).
 
-    Without an explicit `--base` the commit recorded in `.code-factory/state/git-head.txt` leads:
-    the flow records the release commit there, so its PARENT is the base — a `BASE_SHA` constant
-    that drifted costs a printed note, not the proof. Without the recorded file (a fresh clone
-    keeps no run artifact) the constant is the only input and is held to the same git checks, so
-    the staleness guard is not inert there.
+    Without an explicit `--base` the PINNED base is replayed — the demonstrated pre-fix commit of
+    the permanent historical registry (RV/BL/PR). The commit recorded in
+    `.code-factory/state/git-head.txt` is the flow's release record and answers a different
+    question: it names the run's OWN release, which is unrelated to the historical groups and, in a
+    later run, NEWER than them — its parent therefore already CONTAINS their fixes. It is consulted
+    for ONE thing: when the pinned constant is not a commit this repository knows (a drifted
+    constant), the recorded release's parent is the fallback, and a printed note says so. Without
+    the recorded file (a fresh clone keeps no run artifact) the constant is the only input and is
+    held to the same git checks, so the staleness guard is not inert there either.
     """
     if shutil.which("git") is None:
         return "", "skip", "git is not on PATH, so no base commit can be verified"
@@ -4341,14 +5476,24 @@ def resolve_base(repo: pathlib.Path, base: str, explicit: bool) -> tuple[str, st
             return "", "fail", (f"{STATE_HEAD} records {recorded}, which this repository does not "
                                 "know — the recorded release cannot be replayed")
         ok, parent = git_stdout(repo, "rev-parse", "--verify", f"{recorded}^")
-        if not ok:
+        pinned_known, _pinned_message = commit_exists(repo, base)
+        if parent == base:
+            pass                       # the recorded release IS the one the pinned base belongs to
+        elif pinned_known:
+            # The permanent historical registry keeps its demonstrated pre-fix commit: the recorded
+            # release belongs to another run, and replacing the base with its parent would replay a
+            # tree that already CONTAINS these fixes — a tautology dressed as a proof.
+            print(f"note - {STATE_HEAD} records the later release {recorded[:7]}, whose parent "
+                  f"{parent[:7]} is not the pinned base of the historical groups: the base stays "
+                  f"{base[:7]}, the demonstrated pre-fix commit of those fixes")
+        elif ok:
+            print(f"note - the base ({base[:7] if base else '-'}) is not a commit this repository "
+                  f"knows, so it falls back to the parent {parent[:7]} of the recorded release "
+                  f"{recorded[:7]} — a drifted constant no longer vetoes the proof")
+            base = parent
+        else:
             return "", "skip", (f"{STATE_HEAD} records the root commit {recorded}: the history "
                                 "holds no previous release to replay as the pre-fix tree")
-        if parent != base:
-            print(f"note - BASE_SHA ({base[:7]}) disagrees with the recorded release: {STATE_HEAD} "
-                  f"names {recorded[:7]}, so the base is resolved from git as its parent "
-                  f"{parent[:7]} — a stale constant no longer vetoes the proof")
-        base = parent
     known, message = commit_exists(repo, base)
     if not known:
         detail = f" ({message})" if message else ""
@@ -4371,10 +5516,11 @@ def main(argv: list[str]) -> int:
                         help="run the fast disposition/registry cross-checks and skip the slow runs")
     parser.add_argument("--base", default=None, metavar="SHA",
                         help="base commit of the HISTORICAL (RV/BL/PR) groups, replayed as their "
-                             "pre-fix tree (default: the parent of the release commit recorded in "
-                             ".code-factory/state/git-head.txt, or the pinned release base when no "
-                             "run artifact survives). The RF group always uses RUN_BASE_SHA, the "
-                             "commit this run started from")
+                             "pre-fix tree (default: the pinned release base, which a later release "
+                             "recorded in .code-factory/state/git-head.txt never replaces — that "
+                             "record only supplies the base when the pinned commit is unknown "
+                             "here). The RF/CC/FX/DP/FK/FB/RG groups always use their own pinned "
+                             "base, the commit their run started from")
     parser.add_argument("--timeout", type=int, default=900, metavar="SECONDS",
                         help="per-check budget; an overrun is a HARNESS FAILURE, never a green run")
     args = parser.parse_args(argv)
@@ -4384,6 +5530,7 @@ def main(argv: list[str]) -> int:
     registry_problems, drift = check_registry(items, disposed)
     problems.extend(registry_problems)
     problems.extend(check_disposition_fixtures())
+    problems.extend(check_base_fixtures())
     problems.extend(check_claim_fixtures())
     if problems:
         print(f"FAIL - {len(problems)} vaccination cross-check problem(s) under {REPO_ROOT}:")

@@ -30,7 +30,9 @@ worktree:
     and an unknown flag exits 2, both without a traceback.
 
 Cases are printed as `PASS <case>` / `FAIL <case>: <reason>` and summarised at the end.
-Exit code 0 = every case passed, 1 = a case did not behave as expected.
+Exit code 0 = every case passed, 1 = a case did not behave as expected, 2 = the repository cases
+could not run because git is not on PATH (git is a required dependency of this test: a skipped
+matrix is a LOUD failure, never a vacuous green).
 """
 from __future__ import annotations
 
@@ -424,22 +426,25 @@ def case(name: str, fn) -> bool:
 
 def main() -> int:
     if shutil.which("git") is None:
-        print("SKIP - git is not on PATH: every repository case is skipped")
-        cases = [("help", check_help)]
-    else:
-        cases = [
-            ("help", check_help),
-            ("translation_preserved", check_translation_preserved),
-            ("heading_removed", check_heading_removed),
-            ("def_removed", check_def_removed),
-            ("skipped_files", check_skipped_files),
-            ("deleted_file_fails", check_deleted_file_fails),
-            ("deleted_no_skeleton_file_fails", check_deleted_no_skeleton_file_fails),
-            ("text_family", check_text_family),
-            ("allow_added_rule", check_allow_added_rule),
-            ("exclude", check_exclude),
-            ("infrastructure_error", check_infrastructure_error),
-        ]
+        # git is a REQUIRED dependency of this test: every substantive case builds a throwaway
+        # repository, so without git the suite would prove nothing. A skipped matrix is a loud
+        # failure (exit 2, SKIP-FAIL) — never a vacuous green a pipeline can consume as PASS.
+        print("SKIP-FAIL - git is not on PATH: every repository case was skipped, so the suite "
+              "proves nothing (install git and re-run)", file=sys.stderr)
+        return 2
+    cases = [
+        ("help", check_help),
+        ("translation_preserved", check_translation_preserved),
+        ("heading_removed", check_heading_removed),
+        ("def_removed", check_def_removed),
+        ("skipped_files", check_skipped_files),
+        ("deleted_file_fails", check_deleted_file_fails),
+        ("deleted_no_skeleton_file_fails", check_deleted_no_skeleton_file_fails),
+        ("text_family", check_text_family),
+        ("allow_added_rule", check_allow_added_rule),
+        ("exclude", check_exclude),
+        ("infrastructure_error", check_infrastructure_error),
+    ]
     passed = sum(1 for name, fn in cases if case(name, fn))
     failed = len(cases) - passed
     if failed:

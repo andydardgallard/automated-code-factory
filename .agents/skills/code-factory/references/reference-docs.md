@@ -113,11 +113,24 @@ exactly as before and never grows remote-only keys.
 
 - **Public, unauthenticated `http(s)` only.** No other scheme, no embedded credentials, no SSH/scp
   form — all rejected before any fetch.
-- **Every redirect target is re-validated**, so an allowed source can never jump to `file://`, to an
-  unsupported scheme or to a credentials-bearing URL halfway through a fetch.
+- **The DESTINATION must be public too, not just the URL's shape.** The host is resolved before the
+  transfer starts and every returned address must be globally routable: loopback, private
+  (RFC 1918 / ULA), link-local and reserved ranges — the cloud-metadata endpoint
+  `169.254.169.254` included — are rejected, and a host that cannot be resolved at all is rejected
+  because a destination that cannot be checked is not a public source. The transfer connects to the
+  address that was validated (the check and the connection share ONE resolution, so a rebinding DNS
+  answer has no window), no proxy from the environment is consulted (a proxy would bypass the
+  pinning), and a Git clone follows NO redirect (`http.followRedirects=false`), because a hop git
+  follows for us cannot be re-validated — the operator re-points the source at the final URL.
+- **Every redirect target of a document download is re-validated** with the same destination check,
+  so an allowed source can never jump to `file://`, to an unsupported scheme, to a
+  credentials-bearing URL or to an internal address halfway through a fetch.
 - **Finite limits**: `--timeout <seconds>` (overall fetch limit), `--max-bytes <n>` (download and
   clone size cap), plus a git low-speed abort — a stalled or oversized source fails instead of
-  hanging the run. The cap is enforced DURING the transfer, not after it: a download is counted
+  hanging the run. Both limits are VALIDATED before any transfer starts: `--timeout` must be a
+  finite number greater than zero and `--max-bytes` a positive integer no larger than
+  `sys.maxsize - 1`, and an invalid value is a usage error (exit 2) instead of a silently disabled
+  guard. The cap is enforced DURING the transfer, not after it: a download is counted
   chunk by chunk and a clone is supervised while its temporary tree grows, so crossing the cap (or
   the deadline) kills the transfer, removes the partial content and reports the reason — an
   oversized source never has to land on disk complete first.

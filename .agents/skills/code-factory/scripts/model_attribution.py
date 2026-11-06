@@ -51,11 +51,13 @@ ALIAS NORMALISATION (the only two rules this script applies)
   1. `alias_of(event)`: `modelAlias` when present and non-empty, else `model`; lowercased; a
      provider-qualified name is reduced to its model part (`kimi-code/k3` -> `k3`). That is the
      key `models_served` counts are reported under.
-  2. `canonical(alias)`: the COMPARISON key — the same reduction as (1), plus the vendor family
-     word is folded off a version token (`kimi-k3` -> `k3`, `deepseek-v4-pro` -> `v4-pro`), so a
+  2. `canonical(alias)`: the COMPARISON key — the same reduction as (1), then normalized to
+     `<vendor>/<version>` for a versioned alias (`kimi-k3` -> `kimi/k3`, `k3` -> `kimi/k3`), so a
      claim written the way the pipeline writes it (`kimi-k3`) matches a wire that spells the same
-     model differently (`k3`). Both sides of every comparison go through it, so the fold can
-     never make two DIFFERENT models look equal (`kimi-k2` -> `k2` != `k3`).
+     model differently (`k3`). Only documented spellings of the SAME vendor are equivalent
+     (`moonshot` IS the Kimi vendor, `dashscope` the qwen provider); the vendor itself is never
+     folded away, so a cross-vendor same-version pair (`kimi-k3` vs `deepseek-k3`) can never look
+     equal, and neither can two versions of one vendor (`kimi/k2` != `kimi/k3`).
 
 ROLE RESOLUTION
 
@@ -99,9 +101,10 @@ STRICT ATTRIBUTION
   artifact, not a technical detail. `--strict` forces the same rule for `review`/`security_audit`
   runs, and there is deliberately NO opt-out that weakens it. A declared `task_type` outside the four
   is an input error (exit 2); a checkpoint without `task_type` keeps the historical behaviour. A
-  CONDITIONAL role (`gui_expert`, `farukon_expert`, `security_auditor`, `business_tester`) never
-  fails on its own: it must be listed in `required_roles` AND claimed, so a task that does not use it
-  produces no false failure.
+  CONDITIONAL role (`gui_expert`, `farukon_expert`, `security_auditor`) never
+  fails on its own: it must be listed in `required_roles` AND claimed, so a task that does not use
+  it produces no false failure. (business_tester is mandatory for implement/refactor via the
+  checkpoint contract of check_factory_model.py, not conditional.)
 
 CLI
 
@@ -138,7 +141,10 @@ EXIT CODES
   1  a claim the wire disproves (a role MISMATCH) or a `models_used` role the factory does not
      have — never hidden by a degradation
   2  input error: a bad path, an unreadable wire, an unwritable --out (message, no traceback)
-  3  DEGRADED: no session/wire found, a claimed role left no wire evidence, or `--pipeline` was
+  3  DEGRADED: no session/wire found, a claimed role left no wire evidence, a malformed or
+     foreign wire record was skipped (only a genuinely TRUNCATED, not newline-terminated final
+     JSON record of a wire being written is tolerated — unparsed evidence could hide a served
+     model), or `--pipeline` was
      given and its `models_used` block names NO role — an empty claim set confirms nothing, so it
      is never a PASS. The artifact is still written with `attribution_degraded: true` and the
      reason goes to stderr as ONE line, so the flow can record `models_warning` instead of staying
@@ -179,8 +185,18 @@ PROFILE_PREFIX = "factory-"
 ROLE_ALIASES = {"code-reviewer": "reviewer", "gui-expert": "gui_expert",
                 "farukon-expert": "farukon_expert",
                 "security-auditor": "security_auditor", "skill-manager": "skill_manager"}
-# Vendor family words folded off a version token by `canonical()` (`kimi-k3` -> `k3`).
-FAMILY_WORDS = ("kimi", "moonshot", "deepseek", "qwen", "dashscope")
+# Vendor identity behind the alias spellings the CLI and the pipeline use. Spellings of the SAME
+# vendor normalize to ONE vendor key (`kimi-k3` and `moonshot-k3` are one vendor's model; dashscope
+# is the qwen provider), and `canonical()` keeps that vendor in the comparison key, so a
+# cross-vendor same-version pair (`kimi-k3` vs `deepseek-k3`) can NEVER compare equal — reporting
+# that substitution as a match was exactly the defect this table closes.
+VENDOR_EQUIVALENTS = (("kimi", ("kimi", "moonshot")),
+                      ("deepseek", ("deepseek",)),
+                      ("qwen", ("qwen", "dashscope")))
+# A BARE version token (`k3`, `k3.1`) is how the wire spells a Kimi-line model whose CLI alias is
+# `kimi-k3` (see model_matrix's family table: a bare version token is a Kimi version). Every other
+# vendor's model carries its vendor word, so the vendor-less default is the Kimi line and only it.
+BARE_VERSION_VENDOR = "kimi"
 # The role registry of the factory (`model_matrix.ROLES`) plus the one key that is NOT a matrix
 # role: `models_used` also logs the main agent's own session model. A `models_used` key outside
 # this set is a RUN ERROR, not a degradation — the pipeline named a role the factory does not have,
@@ -209,10 +225,12 @@ STRICT_TASK_TYPES = ("implement", "refactor")
 # Roles whose presence depends on the task: they may be listed in `required_roles`, and a
 # conditional role that is NOT claimed in `models_used` never fails — only a CLAIMED required role
 # with no wire evidence does. The model check validates the list; this script only applies it.
-CONDITIONAL_ROLES = ("gui_expert", "farukon_expert", "security_auditor", "business_tester")
+# business_tester is NOT here: implement/refactor runs always delegate it, so it sits in the
+# mandatory set of check_factory_model.py instead.
+CONDITIONAL_ROLES = ("gui_expert", "farukon_expert", "security_auditor")
 # A version token at the head of an alias remainder (`k3`, `v4-pro`, `k3.1`): the only case in
-# which `canonical()` folds the vendor family word off, so `kimi-k3` and `k3` compare equal while
-# `qwen-max` / `deepseek-flash` stay as they are.
+# which `canonical()` normalizes an alias to its `<vendor>/<version>` key, so `kimi-k3` and `k3`
+# compare equal while `qwen-max` / `deepseek-flash` stay as they are.
 VERSION_HEAD = re.compile(r"^[a-z]{0,2}\d")
 
 
@@ -268,18 +286,28 @@ def alias_of(event: dict) -> str:
 def canonical(alias: str) -> str:
     """The COMPARISON key of an alias (see rule 2 of the module docstring).
 
-    Both sides of every claim-vs-wire comparison pass through it, so the vendor family word is
-    folded off a VERSION token (`kimi-k3` -> `k3`, `deepseek-v4-pro` -> `v4-pro`) without ever
-    making two DIFFERENT models equal (`kimi-k2` -> `k2` != `k3`, and a named model such as
-    `deepseek-flash` or `qwen-max` is left untouched). An empty alias stays empty.
+    Both sides of every claim-vs-wire comparison pass through it. The key is `<vendor>/<version>`
+    for a versioned alias, where the vendor comes from `VENDOR_EQUIVALENTS` — the ONLY equivalence
+    applied is between documented spellings of the same vendor (`kimi-k3` and `moonshot-k3` ->
+    `kimi/k3`), and a bare version token belongs to the Kimi line (`k3` -> `kimi/k3`), so the
+    pipeline spelling (`kimi-k3`) still matches the wire spelling (`k3`). The vendor is NEVER
+    folded away: two DIFFERENT vendors can never compare equal (`kimi-k3` -> `kimi/k3` !=
+    `deepseek/k3` <- `deepseek-k3`), and neither can two versions of one vendor (`kimi/k2` !=
+    `kimi/k3`). A named model (`deepseek-flash`, `qwen-max`) is left untouched. An empty alias
+    stays empty.
     """
     name = _text(alias).lower()
     if "/" in name:
         name = name.rsplit("/", 1)[1].strip()
-    for family in FAMILY_WORDS:
-        prefix = family + "-"
-        if name.startswith(prefix) and VERSION_HEAD.match(name[len(prefix):]):
-            return name[len(prefix):]
+    if not name:
+        return ""
+    for vendor, spellings in VENDOR_EQUIVALENTS:
+        for spelling in spellings:
+            prefix = spelling + "-"
+            if name.startswith(prefix) and VERSION_HEAD.match(name[len(prefix):]):
+                return f"{vendor}/{name[len(prefix):]}"
+    if VERSION_HEAD.match(name):
+        return f"{BARE_VERSION_VENDOR}/{name}"
     return name
 
 
@@ -514,13 +542,35 @@ def _absorb(records: dict, spawns: dict, wire_agent: str, event: dict) -> None:
         return
 
 
+def is_truncated_record(line: str) -> bool:
+    """True when `line` looks like a JSON OBJECT that was CUT OFF mid-record.
+
+    A wire being appended to right now can end in a half-written record, and that one case is
+    tolerated. Everything else is unparsed evidence. The shape is what separates the two: a
+    truncated record starts like a JSON object (`{` and, usually, a quoted key) and its braces never
+    balance — the writer died or had not finished. A line that merely fails to parse while looking
+    complete (`<garbage>`, `{...} trailing`) or that closes its object but still is not JSON is
+    malformed, never truncated.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("{"):
+        return False
+    return stripped.count("{") > stripped.count("}")
+
+
 def analyse_session(session_dir: pathlib.Path) -> dict:
     """Read every `agents/*/wire.jsonl` of one session: per-agent records plus the spawn map.
 
-    Returns `{"agents","spawns","skipped_lines","wires"}`. `skipped_lines` counts lines that are
-    not a JSON object (a wire being appended to right now ends in a partial line) — they are
-    reported, never fatal. A wire that cannot be READ at all is an input error (AttributionError,
-    exit 2); a session with no wire at all is Degraded (exit 3).
+    Returns `{"agents","spawns","skipped_lines","malformed_lines","wires"}`. The ONE tolerated
+    skip is a genuinely TRUNCATED final JSON record of a wire that is not newline-terminated
+    (`skipped_lines`): a wire being appended to right now can end in a half-written object
+    (`{"type": "llm.request", "model": "ki`). Everything else — an unparsable line ANYWHERE ELSE, an
+    unparsable final line that is newline-terminated (the writer finished that line) or that does
+    not even start like a JSON object, or a valid JSON value that is not an event object — is a
+    malformed/foreign record and lands in `malformed_lines`: unparsed evidence could contain another
+    served model or a substitution, so the caller turns ANY such record into a DEGRADED verdict,
+    never a PASS. A wire that cannot be READ at all is an input error (AttributionError, exit 2); a
+    session with no wire at all is Degraded (exit 3).
     """
     agents_dir = pathlib.Path(session_dir) / AGENTS_DIR
     wires = sorted(wire for wire in agents_dir.glob(f"*/{WIRE_FILE}") if wire.is_file()) \
@@ -530,24 +580,30 @@ def analyse_session(session_dir: pathlib.Path) -> dict:
                        f"{WIRE_FILE}: no wire evidence to attribute models from")
     records: dict[str, dict] = {}
     spawns: dict[str, dict] = {}
-    skipped = 0
+    partial = 0
+    malformed = 0
     for wire in wires:
         agent_id = wire.parent.name
         try:
             text = wire.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             raise AttributionError(f"cannot read the wire {wire}: {exc}") from exc
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        terminated = text.endswith(("\n", "\r"))
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        for index, line in enumerate(lines):
             try:
                 event = json.loads(line)
             except ValueError:
-                skipped += 1                       # a partial trailing line, or foreign content
+                # Only a NOT-newline-terminated final line that was CUT OFF mid-object is the
+                # half-written record of a wire being appended to; a terminated final line was
+                # written completely, and any other unparsable text is malformed.
+                if index == len(lines) - 1 and not terminated and is_truncated_record(line):
+                    partial += 1
+                else:
+                    malformed += 1
                 continue
             if not isinstance(event, dict):
-                skipped += 1
+                malformed += 1             # valid JSON but no wire event: foreign content
                 continue
             _absorb(records, spawns, agent_id, event)
 
@@ -560,8 +616,8 @@ def analyse_session(session_dir: pathlib.Path) -> dict:
         total = sum(record["tokens"].values())
         if total:
             record["tokens"]["total"] = total
-    return {"agents": records, "spawns": spawns, "skipped_lines": skipped,
-            "wires": [str(wire) for wire in wires]}
+    return {"agents": records, "spawns": spawns, "skipped_lines": partial,
+            "malformed_lines": malformed, "wires": [str(wire) for wire in wires]}
 
 
 def agent_roles(state: dict, records: dict, spawns: dict) -> dict[str, str]:
@@ -1009,7 +1065,7 @@ def build_report(repo: str, session: str, home: pathlib.Path | None,
 
     degraded_reason = ""
     session_info: dict = {}
-    analysis = {"agents": {}, "spawns": {}, "skipped_lines": 0, "wires": []}
+    analysis = {"agents": {}, "spawns": {}, "skipped_lines": 0, "malformed_lines": 0, "wires": []}
     try:
         session_info = resolve_session(repo, session, wire_home)
         analysis = analyse_session(session_info["session_dir"])
@@ -1030,6 +1086,17 @@ def build_report(repo: str, session: str, home: pathlib.Path | None,
         degraded_reason = degraded_reason or (
             f"{pipeline} declares no models_used role: there is no claimed model to confirm "
             f"against the wire")
+    malformed_lines = analysis["malformed_lines"]
+    if malformed_lines:
+        # An unexplained skipped record is unparsed evidence: it could contain another served
+        # model or a substitution, so the attribution can NEVER pass on it — DEGRADED, like a
+        # missing wire. Only a genuinely TRUNCATED, not newline-terminated final record is
+        # tolerated: a terminated final line was written completely, so it is malformed.
+        degraded_reason = degraded_reason or (
+            f"{malformed_lines} wire record(s) are malformed or foreign (only a truncated, not "
+            f"newline-terminated final JSON record of a wire being written is tolerated): unparsed "
+            f"evidence could hide a served model or a substitution, so the attribution must not "
+            f"pass on it")
     comparison, lines, flags = compare_claims(claims, roles, degraded_reason)
     bogus = unknown_roles(claims)
     if bogus:
@@ -1066,6 +1133,7 @@ def build_report(repo: str, session: str, home: pathlib.Path | None,
             "index_agrees": bool(session_info.get("index_agrees")),
             "wire_files": len(analysis["wires"]),
             "skipped_lines": skipped_lines,
+            "malformed_lines": malformed_lines,
             "home": str(wire_home),
             "repo": str(pathlib.Path(repo)),
         },

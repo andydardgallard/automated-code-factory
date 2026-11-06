@@ -616,6 +616,35 @@ def case_14_new_roles_are_registered_and_sided() -> None:
            f"a task-named role keeps its value: {resolved!r}")
 
 
+def case_15_example_task_lists_every_role() -> None:
+    """Regression (review 20261104-b5b601f6, major 16): the example task's models block.
+
+    The commented-out `models:` matrix of the shipped `.example.task.yaml` is what a copied task
+    starts from; a role it omits silently falls back to the default matrix. It must therefore
+    name EVERY role of the registry (`model_matrix.ROLES`), each with a one-line comment that
+    states the role's generator/judge side.
+    """
+    example = SCRIPTS.parents[3] / ".example.task.yaml"
+    expect(example.is_file(), f"the shipped example task must exist: {example}")
+    lines = example.read_text(encoding="utf-8").splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.strip() == "# models:"), None)
+    expect(start is not None, "the example must carry a commented models block")
+    block: list[tuple[str, str]] = []
+    for ln in lines[start + 1:]:
+        m = re.match(r"^#\s+([a-z_]+)\s*:\s*(\S.*)$", ln)
+        if not m:
+            break
+        block.append((m.group(1), ln))
+    named = [role for role, _ln in block]
+    expect(set(named) == set(mm.ROLES) and len(named) == len(mm.ROLES),
+           f"the example must name every registered role exactly once: "
+           f"missing={sorted(set(mm.ROLES) - set(named))}, "
+           f"extra={sorted(set(named) - set(mm.ROLES))}")
+    for role, ln in block:
+        expect(re.search(r"generator-side|judge-side|neither side", ln) is not None,
+               f"the example entry for {role} must state its generator/judge side: {ln!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -633,6 +662,7 @@ def main() -> int:
         case_12_same_side_collision_and_empty_side()
         case_13_empty_matrix_is_a_resolution_error(root)
         case_14_new_roles_are_registered_and_sided()
+        case_15_example_task_lists_every_role()
 
     print("PASS - model_matrix.py keeps the task's model verbatim on a collision (warning only), "
           "falls back to the default matrix for an unnamed role (error when the default matrix "

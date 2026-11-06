@@ -21,8 +21,9 @@ the generator through its CLI and checks the whole contract:
     the script's own reader byte-exactly;
   - the same argv produces a byte-identical file (determinism);
   - `--check` accepts a generated file and rejects one with a missing key, while the CLI keeps the
-    sibling contract: `--help` -> 0, usage error -> 2, unreadable `--findings` -> 1, invalid
-    content -> 2, no traceback;
+    sibling contract: `--help` -> 0, usage error -> 2 (a malformed `--run-id` is one — it would be
+    baked into the hand-over file, whose source run is then unattributable), unreadable
+    `--findings` -> 1, invalid content -> 2, no traceback;
   - VACCINATION: the same content emitted by a naive `f"{key}: {value}"` emitter is a document
     that does not parse, so the quoting cannot silently regress.
 
@@ -33,6 +34,7 @@ Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -110,6 +112,24 @@ def main() -> int:
                f"the CLI must report what it wrote: {res.stdout!r}")
         text = out.read_text(encoding="utf-8")
         first_bytes = out.read_bytes()
+
+        # 3b. A malformed --run-id is a USAGE error (exit 2, no traceback) and writes no task: the
+        #     value is baked verbatim into the generated file (comment, title, description), so an
+        #     id that is not `YYYYMMDD`-`<8 lowercase hex>` hands over a mis-attributed task the
+        #     factory's run-id check then rejects. (Regression: the pre-fix script accepted
+        #     `--run-id BOGUS!!` and `<id>` with exit 0 and baked them in.)
+        for bad_run_id in ("BOGUS!!", "<id>", "bogus", "20261025-D412A454", "2026102-d412a454"):
+            bad_out = tmp / "bad-run-id" / "fix-tasks.yaml"
+            res = run("--findings", str(merged), "--repo", str(repo), "--out", str(bad_out),
+                      "--run-id", bad_run_id)
+            expect(res.returncode == 2,
+                   f"--run-id {bad_run_id!r} must be a usage error, got {res.returncode}")
+            expect("--run-id" in res.stderr,
+                   f"the usage error must name the flag: {res.stderr!r}")
+            expect("Traceback" not in res.stderr,
+                   f"a malformed --run-id must not raise a traceback: {res.stderr!r}")
+            expect(not bad_out.exists(),
+                   f"no task may be written for --run-id {bad_run_id!r}")
 
         # 4. Every required key is present, the repo path and mode are the emitted ones.
         task = generator.parse_task(text)
@@ -388,6 +408,107 @@ def main() -> int:
                f"a generated task must pass the acceptance-shape check: "
                f"{generator.check_task(checked_text)}")
 
+        # 15b. REGRESSION (review 20261104-b5b601f6, critical 34): the derived verify command
+        #      interpolates the sibling-test path into a SHELL line, so the path must be quoted
+        #      for the platform shell — an unquoted space would split the command and a shell
+        #      metacharacter (`&` here) would be interpreted as a command separator (injection).
+        #      Both emitted commands must execute exactly their sibling test.
+        (checkable_repo / "scripts" / "with space.py").write_text("VALUE = 3\n",
+                                                                  encoding="utf-8")
+        (checkable_repo / "scripts" / "test_with space.py").write_text("print('ok - space')\n",
+                                                                       encoding="utf-8")
+        (checkable_repo / "scripts" / "a&b.py").write_text("VALUE = 4\n", encoding="utf-8")
+        (checkable_repo / "scripts" / "test_a&b.py").write_text("print('ok - meta')\n",
+                                                                encoding="utf-8")
+        hostile = write_json(tmp / "hostile.json", [
+            {"severity": "major", "file": "scripts/with space.py", "line": 1,
+             "title": "A module whose name carries a space", "detail": ""},
+            {"severity": "major", "file": "scripts/a&b.py", "line": 1,
+             "title": "A module whose name carries a shell metacharacter", "detail": ""},
+        ])
+        out_hostile = tmp / "hostile-task.yaml"
+        res = run("--findings", str(hostile), "--repo", str(checkable_repo),
+                  "--out", str(out_hostile))
+        expect(res.returncode == 0, f"hostile filenames must still generate: {res.stderr!r}")
+        hostile_criteria = generator.parse_task(
+            out_hostile.read_text(encoding="utf-8"))["acceptance_criteria"]
+        expected_verify = ["python " + generator.shell_quote("scripts/test_with space.py"),
+                           "python " + generator.shell_quote("scripts/test_a&b.py")]
+        expect([item.get("verify") for item in hostile_criteria[:2]] == expected_verify,
+               f"the derived commands must be quoted for the platform shell: "
+               f"{[item.get('verify') for item in hostile_criteria[:2]]!r}")
+        final_hostile = hostile_criteria[-2]
+        expect(final_hostile.get("verify") == generator.CHAIN_SEPARATOR.join(expected_verify),
+               f"the final criterion must re-run the quoted commands: {final_hostile!r}")
+        for item, marker in zip(hostile_criteria[:2], ("ok - space", "ok - meta")):
+            executed = subprocess.run(item["verify"], shell=True, cwd=str(checkable_repo),
+                                      capture_output=True, text=True, errors="replace")
+            expect(executed.returncode == 0 and marker in executed.stdout,
+                   f"the quoted verify command must execute exactly its sibling test (unquoted, "
+                   f"the space would split it and the metacharacter would inject): "
+                   f"{item['verify']!r} -> {executed.returncode} {executed.stdout!r} "
+                   f"{executed.stderr!r}")
+
+        # 15d. REGRESSION (review R1, critical 34): cmd.exe expands `%NAME%` even inside double
+        #      quotes and `!NAME!` under delayed expansion, so a quoted path is NOT enough for a
+        #      repository file whose name carries one of those characters. The consumer of `verify`
+        #      takes a shell string (no argv form), so no command is derived for such a path — and
+        #      the test proves WHY by executing the shell itself: both references are expanded, so
+        #      the old quoting would have run something other than the sibling test.
+        percent_repo = tmp / "percent repo"
+        percent_repo.mkdir()
+        (percent_repo / "scripts").mkdir()
+        (percent_repo / "scripts" / "check%TEMP%x.py").write_text("VALUE = 5\n", encoding="utf-8")
+        (percent_repo / "scripts" / "test_check%TEMP%x.py").write_text("print('ok - percent')\n",
+                                                                       encoding="utf-8")
+        (percent_repo / "scripts" / "check!TEMP!x.py").write_text("VALUE = 6\n", encoding="utf-8")
+        (percent_repo / "scripts" / "test_check!TEMP!x.py").write_text("print('ok - bang')\n",
+                                                                      encoding="utf-8")
+        for module in ("scripts/check%TEMP%x.py", "scripts/check!TEMP!x.py"):
+            hostile_finding = {"severity": "major", "file": module, "line": 1, "title": "t",
+                               "detail": "", "verify": "", "finding_disposition": "accepted",
+                               "finding_evidence": ""}
+            derived = generator.derived_verify(hostile_finding, percent_repo)
+            if os.name == "nt":
+                expect(derived == "",
+                       f"a path cmd.exe would expand must derive no command: {derived!r}")
+            else:
+                executed = subprocess.run(derived, shell=True, cwd=str(percent_repo),
+                                         capture_output=True, text=True, errors="replace")
+                expect(executed.returncode == 0,
+                       f"on POSIX the quoted path stays literal and must execute: {derived!r} -> "
+                       f"{executed.returncode} {executed.stderr!r}")
+        if os.name == "nt":
+            # The hazard itself, executed: cmd.exe expands both references inside double quotes,
+            # which is exactly why quoting cannot carry them literally.
+            for reference, prefix in (("%TEMP%", "cmd"), ("!TEMP!", "delayed")):
+                probe = subprocess.run(
+                    f'cmd /v:on /c echo "{reference}"', shell=True, capture_output=True,
+                    text=True, errors="replace")
+                expect(probe.returncode == 0 and reference.lower() not in probe.stdout.lower(),
+                       f"the {prefix} expansion must eat a quoted {reference} (this is the "
+                       f"hazard the refusal closes): {probe.stdout!r}")
+
+        # 15c. Confinement: a sibling test reachable only through a SYMLINKED directory derives NO
+        #      command — a verify command must never point outside --repo. (Skipped where the host
+        #      cannot create a directory symlink; the resolved-root comparison is platform code.)
+        outside_dir = tmp / "outside scripts"
+        outside_dir.mkdir()
+        (outside_dir / "test_check.py").write_text("print('ok - outside')\n", encoding="utf-8")
+        link_repo = tmp / "link repo"
+        link_repo.mkdir()
+        try:
+            os.symlink(outside_dir, link_repo / "scripts", target_is_directory=True)
+        except OSError:
+            pass            # no symlink privilege (unelevated Windows): skip the live fixture
+        else:
+            finding = {"severity": "major", "file": "scripts/check.py", "line": 1,
+                       "title": "t", "detail": "", "verify": "",
+                       "finding_disposition": "accepted", "finding_evidence": ""}
+            expect(generator.derived_verify(finding, link_repo) == "",
+                   "a sibling test outside --repo (via a symlinked directory) must derive no "
+                   "verify command")
+
         # 16. When nothing is checkable the final criterion still carries a REAL command (the
         #     tree-soundness gate) instead of an empty verify — the task is never doomed.
         final_default = criteria[-2]
@@ -414,7 +535,8 @@ def main() -> int:
 
     print("PASS - review_followup_task.py behaves as expected (flat factory task with quoted "
           "scalars, one criterion per finding plus a VERIFIED final criterion and the review "
-          "one, same input -> identical bytes, --check shape validation, exit codes 0/1/2, and "
+          "one, same input -> identical bytes, --check shape validation, exit codes 0/1/2 (a "
+          "malformed --run-id is a usage error that writes no task), and "
           "the naive-emitter vaccination).")
     return 0
 

@@ -166,19 +166,18 @@ acceptance_criteria:
 # routes requests to the corresponding API endpoint with the correct
 # authentication (see .agents/skills/code-factory/references/providers.md).
 # models:
-#   analyzer: deepseek-v4-flash
-#   planner: deepseek-v4-pro
-#   coder: kimi-k3
-#   gui_expert: deepseek-v4-flash   # Web GUI specialist (generator-side, secondary-class model)
-#   farukon_expert: deepseek-v4-flash  # Farukon platform specialist (generator-side, secondary-class model)
-#   tester: qwen-max
-#   diagnostician: deepseek-v4-pro
-#   reviewer: deepseek-v4-pro
-
-# --- Factory version ----------------------------------------------------------
-# You do NOT need to update the factory version manually: after every successful run
-# (implement/refactor) the factory itself determines the version type (major/minor/patch/none)
-# with a deterministic matrix, agrees it with the code reviewer and syncs the version in all
-# files (README, CHANGELOG, AGENTS.md, SKILL.md, the instruction). review and security_audit
-# tasks do not change the version.
-
+#   analyzer: kimi-code/k3.1-pro   # task analysis (neither side of the generator≠judge rule)
+#   planner: kimi-code/k3.1-pro      # planning (neither side of the generator≠judge rule)
+#   coder: deepseek-flash                # implementation (generator-side)
+#   tester: deepseek-flash             # code tests (generator-side)
+#   gui_expert: deepseek-flash   # Web GUI specialist (generator-side, secondary-class model)
+#   farukon_expert: deepseek-flash  # Farukon platform specialist (generator-side, secondary-class model)
+#   business_tester: kimi-code/k3  # adversarial business testing (generator-side)
+#   refactorer: kimi-code/k3.1-pro   # refactoring (neither side of the generator≠judge rule)
+#   reviewer: kimi-code/k3.1-pro     # code review (judge-side)
+#   supervisor: kimi-code/k3   # delegation permits and run watchdog (judge-side)
+#   diagnostician: kimi-code/k3.1-pro  # failure diagnosis (judge-side)
+#   advisor: deepseek-flash      # second opinion on hard decisions (judge-side)
+#   documenter: deepseek-flash  # documentation (neither side of the generator≠judge rule)
+#   security_auditor: kimi-code/k3.1-pro  # security audit (neither side of the generator≠judge rule)
+#   skill_manager: deepseek-flash  # skill-base maintenance (neither side of the generator≠judge rule)

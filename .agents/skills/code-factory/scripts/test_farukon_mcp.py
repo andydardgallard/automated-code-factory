@@ -6,16 +6,21 @@ Covers, with tempfile fixtures:
   - the applicability decision: a Farukon platform repository PLUS platform-operation task scope is
     `applicable` (crate manifest, workspace member and an existing config entry each count as host
     signature); host signature alone, scope alone, a missing repository and every explicit exclusion
-    (`no mcp`, `without farukon`) are `not_applicable` — every decision carries a non-empty reason,
+    (`no mcp`, `without farukon`) are `not_applicable`, and a task FILE classifies only its
+    normalized business-scope fields — YAML comments and wiring metadata never reach the
+    classifier — every decision carries a non-empty reason,
   - `merge-config`: refusal for a repository that is not a Farukon platform root and for a `--target`
     outside the repository, create, byte-for-byte preservation of unrelated servers/settings (LF and
     CRLF), idempotent second run, conflict preserved and reported with exit code 3, an invalid target
     left untouched, `--dry-run` never writing,
-  - `validate-config`: the managed command/args/cwd invariants, an absent entry being valid, and the
-    malformed variants (foreign command, wrong args, relative or missing cwd, non-object entry),
+  - `validate-config`: the managed command/args/cwd invariants — and that EVERY key outside that
+    managed schema (env, credentials, launch options) is rejected — an absent entry being valid,
+    and the malformed variants (foreign command, wrong args, relative or missing cwd, non-object
+    entry),
   - `probe`: the monkeypatchable `_which`/`_try_run` seams (a host without cargo degrades to DATA,
-    exit 0), the config capability of a merged project, `--out`, and the exit-1 input errors
-    (missing repository, `--target` escape),
+    exit 0), the config capability of a merged project, `--out` written inside the repository and
+    refused (exit 1) for a traversal, an absolute path or a symlink escape, and the exit-1 input
+    errors (missing repository, `--target` escape),
   - the bounded JSON-RPC handshake against a REAL spawned fake stdio server: all eight Farukon tools
     listed, a server missing tools, a server that never answers and a server that answers with an
     error — each bounded and each terminating its child process, and the timeout values themselves
@@ -109,6 +114,20 @@ models:
   coder: deepseek-flash
   farukon_expert: deepseek-flash
 mode: auto
+"""
+# A task whose YAML COMMENTS name the platform AND its operations while its business scope is
+# unrelated logging work (the shipped template's instructional comments have exactly this shape):
+# classified raw, the comments alone activate the specialist.
+COMMENTED_SCOPE_TASK = """\
+# Fix the Farukon platform: run it, test the connectors and restart the web instance.
+title: refactor the logging module
+repo_path: ./repo
+description: |
+  Replace the hand-rolled logging helper with the project logger and update its docstring.
+acceptance_criteria:
+  - "The logging module writes through the project logger."
+# models:
+#   farukon_expert: deepseek-flash
 """
 
 
@@ -357,6 +376,48 @@ def test_decide(tmp: pathlib.Path) -> None:
     res = run("decide", "--repo", str(repo), "--task-file", str(tmp / "nope.yaml"))
     expect_clean_cli(res, 1, "decide with a missing task file")
     check("task file not found" in res.stderr, f"a missing task file must be explained: {res.stderr!r}")
+
+
+def test_business_scope_classification(tmp: pathlib.Path) -> None:
+    """A task FILE contributes only its business-scope fields — never its comments or metadata."""
+    repo = platform_repo(tmp / "scope-repo")
+
+    # The raw file DOES activate the specialist — that is the pinned defect: the classifier must
+    # never see the comments or the wiring metadata of a task file.
+    raw = fm.decide_applicability(COMMENTED_SCOPE_TASK, repo=repo)
+    check(raw["decision"] == fm.APPLICABLE,
+          f"the fixture's comments must activate the raw classifier (the pinned defect): {raw}")
+
+    task_file = written(tmp / "commented-task.yaml", COMMENTED_SCOPE_TASK)
+    res = run("decide", "--repo", str(repo), "--task-file", str(task_file), "--json")
+    expect_clean_cli(res, 0, "decide --task-file with activating comments")
+    payload = json.loads(res.stdout)
+    check(payload["decision"] == fm.NOT_APPLICABLE,
+          f"comments and metadata must never reach the classifier: {payload}")
+    check(payload["evidence"]["scope_terms"] == [],
+          f"no platform term may survive the business-scope extraction: {payload['evidence']}")
+
+    # Positive control: platform scope in the BUSINESS fields still activates, comments or not.
+    real_scope = written(tmp / "real-scope-task.yaml",
+                         "# models:\n#   farukon_expert: deepseek-flash\n"
+                         "title: operate the platform\nrepo_path: ./repo\ndescription: |\n  "
+                         + SCOPE_TEXT + "\n")
+    res = run("decide", "--repo", str(repo), "--task-file", str(real_scope), "--json")
+    expect_clean_cli(res, 0, "decide --task-file with business-scope platform operation")
+    payload = json.loads(res.stdout)
+    check(payload["decision"] == fm.APPLICABLE and payload["evidence"]["scope_terms"],
+          f"platform scope in the business fields must stay applicable: {payload}")
+
+    # The extraction itself: business wording only — a criterion's `verify` command, a business
+    # test's `config` path, `models` and `repo_path` never classify.
+    scope = fm.business_scope({"title": "t", "repo_path": "./repo", "user_story": "story",
+                               "acceptance_criteria": [{"criterion": "c",
+                                                        "verify": "run farukon_build"}],
+                               "business_tests": [{"scenario": "s", "config": "x.toml",
+                                                   "expected_results": "e"}],
+                               "models": {"farukon_expert": "m"}})
+    check(scope == "t\nstory\nc\ns\ne",
+          f"verify/config/models/repo_path must stay out of the scope: {scope!r}")
 
 
 # --------------------------------------------------------------------- merge-config
@@ -756,12 +817,29 @@ def test_validate_config(tmp: pathlib.Path) -> None:
         ("nonexistent cwd", lambda e: e.update({"cwd": str(tmp / "not-there")}),
          "EXISTING directory"),
         ("cwd is a file", lambda e: e.update({"cwd": str(tmp / "task.yaml")}), "EXISTING directory"),
+        # The entry is EXACTLY command/args/cwd: every other key — env, credentials, launch
+        # options — is an unreviewed launch setting that makes the config unusable.
+        ("extra env key", lambda e: e.update({"env": {"FARUKON_TOKEN": "x"}}),
+         "exactly the managed keys"),
+        ("extra credentials key", lambda e: e.update({"credentials": {"token": "x"}}),
+         "exactly the managed keys"),
+        ("extra launch option", lambda e: e.update({"autoApprove": ["farukon_build"]}),
+         "exactly the managed keys"),
     )
     for label, mutate, needle in cases:
         ok, problems = variant(mutate, label)
         check(not ok, f"the {label} variant must be rejected")
         check(any(needle in p for p in problems),
               f"the {label} variant must explain {needle!r}: {problems}")
+
+    # The extra-key diagnostic NAMES the offending key but never echoes a value it carries.
+    ok, problems = fm.validate_config(
+        tmp / "variant.json",
+        {"mcpServers": {fm.SERVER_NAME: fm.managed_entry(repo) | {"env": {"TOKEN": SECRET}}}})
+    check(not ok and any("unmanaged key(s) env" in p for p in problems),
+          f"the env key must be named as the unmanaged key: {problems}")
+    check(all(SECRET not in p for p in problems),
+          f"the extra-key diagnostic must not echo the value: {problems}")
 
     non_object = {"mcpServers": {fm.SERVER_NAME: "cargo run"}}
     ok, problems = fm.validate_config(tmp / "non-object.json", non_object)
@@ -957,6 +1035,49 @@ def test_probe(tmp: pathlib.Path) -> None:
           f"an escaping --target must be refused: {res.stderr!r}")
 
 
+def test_probe_out_confinement(tmp: pathlib.Path) -> None:
+    """`--out` is confined to the repository with the same resolved-path rule as `--target`."""
+    repo = platform_repo(tmp / "out-repo")
+
+    res = run("probe", "--repo", str(repo), "--out", "../escape.json")
+    expect_clean_cli(res, 1, "probe --out escaping via '..'")
+    check("outside the repository root" in res.stderr,
+          f"a traversing --out must be refused: {res.stderr!r}")
+    check(not (tmp / "escape.json").exists(), "an escaping --out must never be written")
+
+    absolute = tmp / "absolute.json"
+    res = run("probe", "--repo", str(repo), "--out", str(absolute))
+    expect_clean_cli(res, 1, "probe --out at an absolute path outside the repository")
+    check("outside the repository root" in res.stderr,
+          f"an absolute --out outside the repository must be refused: {res.stderr!r}")
+    check(not absolute.exists(), "an escaping --out must never be written")
+
+    res = run("probe", "--repo", str(repo), "--out", "../out-dir")
+    expect_clean_cli(res, 1, "probe --out directory escaping via '..'")
+    check(not (tmp / "out-dir" / fm.PROBE_FILE_NAME).exists(),
+          "an escaping --out directory must never receive the probe file")
+
+    # Positive control: a contained --out still writes, as a directory and as a literal *.json.
+    res = run("probe", "--repo", str(repo), "--out", "state/probe.json")
+    expect_clean_cli(res, 0, "probe --out inside the repository")
+    check((repo / "state" / "probe.json").is_file(),
+          "a contained --out must be written")
+
+    # A link INSIDE the repository that points OUTSIDE it is not a contained --out either.
+    outside_real = tmp / "out-linked"
+    outside_real.mkdir()
+    linked = repo / "linked"
+    if make_directory_link(linked, outside_real):
+        res = run("probe", "--repo", str(repo), "--out", str(linked / "probe.json"))
+        expect_clean_cli(res, 1, "probe --out through a linked directory escaping the repository")
+        check("outside the repository root" in res.stderr,
+              f"a linked --out must be refused: {res.stderr!r}")
+        check(not (outside_real / "probe.json").exists(),
+              "a linked --out outside the repository must never be written")
+    else:
+        print("note: skipping the --out directory-link escape case — this host cannot create a link")
+
+
 # --------------------------------------------------------------------- stdio handshake
 
 GOOD_SERVER = '''
@@ -1105,10 +1226,14 @@ def test_handshake_timeout_validation(tmp: pathlib.Path) -> None:
                                       response_timeout=0)
     check(fm.TIMEOUT_REFUSAL not in immediate["message"],
           f"a zero timeout must be ACCEPTED as an immediate attempt: {immediate['message']!r}")
-    check(immediate["ok"] is False and "no initialize response" in immediate["message"],
-          f"an immediate attempt against a chatty server is a bounded failure: {immediate}")
-    check(marker.is_file(), "a legitimate timeout value must actually start the child process")
-    marker.unlink()
+    # The spawn proof is the MESSAGE, not a child-written marker: `_terminate_tree` kills the child
+    # on every path, so with a zero budget the child is reaped before it can write anything. The
+    # three messages are distinct — "cannot start" (Popen failed), TIMEOUT_REFUSAL (never started)
+    # and "no initialize response" (started, silent within the budget, then cleaned up).
+    check(immediate["ok"] is False and "no initialize response" in immediate["message"]
+          and "cannot start" not in immediate["message"],
+          "a zero timeout spawns the child and fails bounded (no initialize response), proving "
+          f"the child was started: {immediate}")
 
     # …and a finite positive value still performs a real handshake.
     accepted = fm.mcp_start_handshake(workdir, argv=argv, first_response_timeout=0.5,
@@ -1172,12 +1297,14 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         tmp = pathlib.Path(td)
         test_decide(tmp)
+        test_business_scope_classification(tmp)
         test_merge_config(tmp)
         test_merge_config_write_safety(tmp)
         test_target_confinement_follows_symlinks(tmp)
         test_diagnostics_never_echo_credentials(tmp)
         test_validate_config(tmp)
         test_probe(tmp)
+        test_probe_out_confinement(tmp)
         test_handshake(tmp)
         test_handshake_timeout_validation(tmp)
         test_handshake_is_bounded_and_cleans_up(tmp)
@@ -1185,12 +1312,13 @@ def main() -> int:
 
     print(f"PASS - farukon_mcp.py contract holds: {COUNTER['checks']} assertions over the "
           "host-signature + task-scope applicability decision (identity vocabulary alone stays off, "
-          "task metadata is not scope), the byte-preserving idempotent mcp.json merge with explicit "
-          "conflicts, atomic failure-reported writes, symlink-resolved target confinement and "
-          "redacted diagnostics, the managed entry invariants, the fail-soft capability probe with "
-          "its injectable seams (an unproven toolchain and a cwd outside the platform root are "
-          "unusable), the bounded JSON-RPC handshake for all eight Farukon tools and the argparse "
-          "CLI contract.")
+          "task metadata and YAML comments are not scope — a task file classifies only its "
+          "business-scope fields), the byte-preserving idempotent mcp.json merge with explicit "
+          "conflicts, atomic failure-reported writes, symlink-resolved target AND --out confinement "
+          "and redacted diagnostics, the exact managed entry invariants (no key outside "
+          "command/args/cwd), the fail-soft capability probe with its injectable seams (an unproven "
+          "toolchain and a cwd outside the platform root are unusable), the bounded JSON-RPC "
+          "handshake for all eight Farukon tools and the argparse CLI contract.")
     return 0
 
 

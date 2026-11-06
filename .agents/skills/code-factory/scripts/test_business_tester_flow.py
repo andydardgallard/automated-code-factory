@@ -398,6 +398,10 @@ def validate_report(report: object, fixture_matrix: list[tuple[str, str, str]] |
             problems.append(f"{where}: an UNVERIFIED scenario is never a pass — it may not be "
                             "classified 'no_defect'")
 
+    for scenario_id in sorted({i for i in ids if ids.count(i) > 1}):
+        problems.append(f"scenario id {scenario_id!r} is reported more than once — every scenario "
+                        "id is unique (a duplicate double-counts or hides a scenario)")
+
     breakages = report["breakages"]
     if not isinstance(breakages, list):
         return problems + ["breakages must be a list"]
@@ -438,7 +442,12 @@ def validate_report(report: object, fixture_matrix: list[tuple[str, str, str]] |
                                 f"{breakage['classification']!r} contradicts the scenario's "
                                 f"{reported.get(breakage['scenario'])!r}")
         covered.append(breakage["scenario"])
-    covered_ids = {c for c in covered if isinstance(c, str)}
+    covered_strings = [c for c in covered if isinstance(c, str)]
+    for scenario_id in sorted({c for c in covered_strings if covered_strings.count(c) > 1}):
+        problems.append(f"scenario {scenario_id!r} carries "
+                        f"{covered_strings.count(scenario_id)} breakage entries — exactly one "
+                        "breakage is recorded per broken scenario")
+    covered_ids = set(covered_strings)
     for scenario_id in sorted(broken - covered_ids):
         problems.append(f"scenario {scenario_id!r} broke but carries no breakage entry — every "
                         "broken scenario is reported")
@@ -576,6 +585,10 @@ def case_3_report_shape(report: dict) -> None:
         "a broken scenario with no breakage": mutate(breakages=[
             b for b in report["breakages"]
             if b["scenario"] != report["scenarios"][broken_index]["id"]]),
+        "a duplicated breakage entry": mutate(
+            breakages=report["breakages"] + [dict(report["breakages"][0])]),
+        "a duplicated scenario id": mutate_scenario(
+            held_index, id=report["scenarios"][broken_index]["id"]),
         "an unknown severity": mutate(breakages=[
             {**report["breakages"][0], "severity": "blocker"}] + report["breakages"][1:]),
         "a malformed run id": mutate(run_id="not-a-run-id"),
@@ -841,7 +854,7 @@ def main(argv: list[str] | None = None) -> int:
                   "malformed, huge, negative, repeated (double submit) and out-of-order input")
             case_3_report_shape(report)
             print("PASS 3 - the evidence report carries the documented shape, the card and the "
-                  "validator agree on every key, and all 17 mutated reports are rejected")
+                  "validator agree on every key, and all 19 mutated reports are rejected")
             case_4_routing(report, sandbox)
             print("PASS 4 - the breakage routes through error_router.py to the coder (ASSERTION, "
                   "a named pattern) and there is no separate business-tester retry budget")

@@ -1,4 +1,4 @@
-<!-- code-factory-version: 12.24.0 -->
+<!-- code-factory-version: 12.24.1 -->
 # Project: Autonomous Code Factory
 
 This project contains an autonomous code-writing factory for the Kimi Code CLI.
@@ -67,6 +67,10 @@ mandatory code review before acceptance.
   symlink-resolving `--target` confinement, fail-soft capability probe with the opt-in bounded
   `--check-mcp-start` JSON-RPC handshake, and `validate-config` invariants — no diagnostic echoes a
   value an MCP entry supplies),
+  `modern_web_guidance.py` (pinned Modern Web Guidance adapter: search/retrieve a corpus read as
+  DATA from ONE reviewed commit — never an `npx` command; freshness fails closed on the full commit
+  sha, unstable guidance needs an explicit `.mwgrc` opt-in plus a declared safe fallback, and
+  `check-session` demands this run's own recorded search→retrieval journal),
   `task_parser.py` (deterministic stdlib task.yaml parser/validator for Phase 0: the documented
   task schema incl. `business_tests` and multi-line `|` block scalars inside list items; verbatim
   texts; line-numbered actionable errors — exit 2 names the line and the fix, never a traceback),
@@ -77,8 +81,13 @@ mandatory code review before acceptance.
   delegation per owner decision, `settle` refunds a wholly refuted reviewer round, `audit`
   reconciles the counters with the session wire), `permit_gate.py` (`permits.yaml`
   `add`/`verdict`/`bind`/`close` + the finish audit: every spawn needs a unique allowed permit judged
-  BEFORE it, with a scope inside the plan task's files), `gate_all.py` (phase `K`|`Y` aggregator of
-  the deterministic gates — a gate record that is missing is a failure) and `mcp_json_merge.py` (the
+  BEFORE it, with a scope inside the plan task's files; every transition appends to the hash-chained
+  `permits.ledger.jsonl`, checked against the state on disk BEFORE every write, so a reset, a
+  truncated tail or a post-deny repair is refused; the supervisor's own permit precedes Phase 0
+  (`--launch-dir`) and is bound by `bind-run`), `gate_all.py` (phase `K`|`Y` aggregator of the
+  deterministic gates — a gate record that is missing is a failure, and the run's ONE explicit
+  `--session` is forwarded to the wire-auditing gates, a phase launched elsewhere FAILING CLOSED)
+  and `mcp_json_merge.py` (the
   text-preserving JSON merge both MCP helpers share); the siblings `test_manifest.py`,
   `test_delegation_gate.py`, `test_permit_gate.py`, `test_gate_all.py` and
   `test_business_tester_flow.py` pin them.
@@ -103,7 +112,9 @@ mandatory code review before acceptance.
   (`sub-agents/analyzer|planner|coder|gui-expert|farukon-expert|tester|business-tester|diagnostician|advisor|code-reviewer|supervisor|refactorer|security-auditor|documenter|skill-manager.md`)
   — `business-tester` is generator-side and attacks the delivered change as an ADVERSARIAL USER
   through the product's own interfaces, in parallel with the tester; `supervisor` is read-only and
-  judge-side and returns an allow|deny permit verdict against the rulebook and the approved plan —
+  judge-side, launched FIRST at run start as a run-long watchdog whose permit precedes Phase 0 (it
+  observes the task parse, the `repo_path` resolution, the memory read/write and the `run_id`) and
+  returns an allow|deny permit verdict against the rulebook and the approved plan —
   that verdict is MODEL-ENFORCED and `permit_gate.py audit` is the deterministic backstop, so a main
   agent that skips the permit step is DETECTED at the finish, never intercepted at call time
 - `VERSION` — single source of truth for the factory version (one line X.Y.Z)
@@ -316,7 +327,8 @@ mandatory code review before acceptance.
   `validate_documentation.py` with a budget of 1 retry, whose `--derive` scope guard recounts the
   changed files from git and includes untracked new ones, so an undeclared file fails the check —
   and excludes the orchestrator-supplied `--baseline-files` set (the manifest's files captured before
-  DOC2 as `path=sha256hex` by `validate_documentation.py baseline`), so the run's own changes do not
+  DOC2 as `path=sha256hex` by `validate_documentation.py baseline --include-changed`, so the owner's
+  pre-existing untracked files are captured WITH their state too), so the run's own changes do not
   fail the documenter — while an undeclared edit that changes a baseline file's content (protected
   ones included) still does;
   not invoked for review/security_audit.

@@ -25,7 +25,15 @@ test pins exactly that:
   - the record format: a `run_id:` line, the fixed five-column table, one row per gate in the gate
     table's order, deterministic across runs;
   - the CLI contract: `--phase` only K|Y (usage error otherwise), a malformed diff range is exit 2,
-    `--help` survives a legacy console code page, no traceback anywhere.
+    `--help` survives a legacy console code page, no traceback anywhere;
+  - `--verify-only` parses `--diff` like a phase run (failing-first, ADV-2): an empty, flag-like or
+    git-unknown commit-ish is an exit-2 usage error that leaves the record byte-identical, never a
+    `PASS` about an input the gate would refuse to run; a resolvable range still verifies;
+  - the CURRENT-SESSION propagation (failing-first, factory-defect-session-resolution.md): the
+    action, permit and delegation audits are invoked with the explicit `--session` of the run that
+    was launched outside its target repository, a real current defect stays visible, a run without
+    `--session` fails closed instead of auditing the stale target-cwd wire, and a blank
+    `--session` is an exit-2 input error.
 
 The fixture is a repository that carries a DEPLOYED factory (the rulebook and its carriers copied
 from this tree, as `prepare_factory` would) plus a git history, a WIP checkpoint, a manifest and a
@@ -42,6 +50,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import gate_all  # noqa: E402  (the gate table is read directly by the availability pins)
@@ -401,6 +410,40 @@ def test_record_verification(tmp: pathlib.Path) -> None:
           f"the gates that should have run must be listed: {res.stdout!r}")
 
 
+def test_verify_only_diff_validation(tmp: pathlib.Path) -> None:
+    """(failing-first, ADV-2) `--verify-only` validates `--diff` exactly like a phase run.
+
+    The read-only path never parsed the range it printed: `--diff '' HEAD` verified an intact
+    record and exited 0 with `PASS`, while the same argument in a real phase run is an exit-2 usage
+    error. A record attested against an input the gate would refuse to run is not attested at all,
+    so every malformed range answers `gate_all.py: malformed diff range ...` on stderr (exit 2, no
+    traceback), the record is left byte-identical, and a resolvable range still verifies.
+    """
+    home = tmp / "home-v2"
+    home.mkdir()
+    root = deployed_repo(tmp, "verify-diff", home=home)
+    expect_clean_cli(run("--repo", str(root), "--phase", "K", env=env_for(home)), 0, "phase K")
+    record = root / ".code-factory" / "logs" / "gate-K.md"
+    before = record.read_text(encoding="utf-8")
+
+    for diff in (("", "HEAD"), ("HEAD", ""), ("-p", "HEAD"), ("no-such-ref", "HEAD")):
+        res = run("--repo", str(root), "--phase", "K", "--verify-only", str(record),
+                  "--diff", diff[0], diff[1])
+        expect_clean_cli(res, 2, f"a malformed diff range {diff!r} under --verify-only")
+        check("malformed diff range" in res.stderr,
+              f"the refusal must name the malformed range: {res.stderr!r}")
+        check("PASS" not in res.stdout,
+              f"a refused verification must never print a pass: {res.stdout!r}")
+    check(record.read_text(encoding="utf-8") == before,
+          "a refused verification must leave the record byte-identical")
+
+    # The positive control: a resolvable range still verifies an intact record.
+    res = run("--repo", str(root), "--phase", "K", "--verify-only", str(record),
+              "--diff", "HEAD", "HEAD")
+    expect_clean_cli(res, 0, "verify an intact record over a resolvable range")
+    check("PASS" in res.stdout, f"an intact record must pass: {res.stdout!r}")
+
+
 # --------------------------------------------------------------------------------------------
 # The CLI contract
 # --------------------------------------------------------------------------------------------
@@ -454,6 +497,141 @@ def test_cli_contract(tmp: pathlib.Path) -> None:
           f"--help must survive a legacy console code page: {legacy.stderr!r}")
 
 
+# --------------------------------------------------------------------------------------------
+# The finish checkpoint audits the CURRENT run's session, not the old target-cwd one
+# --------------------------------------------------------------------------------------------
+
+def layout_session(home: pathlib.Path, cwd: pathlib.Path, session_id: str, lines: list[str], *,
+                   age_s: float = 0.0) -> pathlib.Path:
+    """One fixture session whose `state.json` cwd is `cwd` and whose wire holds `lines`."""
+    directory = home / ".kimi-code" / "sessions" / f"wd_{cwd.name}" / session_id
+    (directory / "agents" / "main").mkdir(parents=True, exist_ok=True)
+    (directory / "state.json").write_text(json.dumps({
+        "id": session_id, "cwd": str(cwd).replace("\\", "/"), "archived": False,
+        "agents": {"main": {"type": "main"}}}), encoding="utf-8")
+    (directory / "agents" / "main" / "wire.jsonl").write_text(
+        "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    if age_s:
+        stamp = time.time() - age_s
+        for path in [*directory.rglob("*"), directory]:
+            os.utime(path, (stamp, stamp))
+    return directory
+
+
+def launched_repo(tmp: pathlib.Path, name: str, wire: list[dict]) -> dict:
+    """A target repository whose run was LAUNCHED from a separate directory (the report's layout).
+
+    The pipeline carries the run's own evidence (`launch_dir`, `session_dir`, `started_at`); the
+    stale session's cwd is the target repository and its wire is a day old and clean, while the
+    current session's cwd is the launch directory and its wire is `wire`.
+    """
+    home = tmp / f"home-{name}"
+    launch = tmp / f"launch-{name}"
+    root = deployed_repo(tmp, name)
+    launch.mkdir(parents=True, exist_ok=True)
+    stale = layout_session(home, root, "session_48000000-0000-4000-8000-000000000048", [
+        json.dumps({"type": "tool.call", "tool": "shell",
+                    "arguments": {"command": "git status"}})], age_s=86400)
+    current = layout_session(home, launch, "session_48111111-1111-4111-8111-111111111111",
+                             [json.dumps(event) for event in wire])
+    started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+    with (root / ".code-factory" / "state" / "pipeline.yaml").open("a", encoding="utf-8") as stream:
+        stream.write(f'started_at: "{started}"\n'
+                     f'launch_dir: "{launch.as_posix()}"\n'
+                     f'session_dir: "{current.as_posix()}"\n')
+    return {"home": home, "root": root, "launch": launch, "stale": stale, "current": current}
+
+
+def test_session_propagation(tmp: pathlib.Path) -> None:
+    """(failing-first, factory-defect-session-resolution.md) gate_all must name the run's wire.
+
+    `gate_all.run_gate` builds each gate's argv from a template and used to emit no `--session`, so
+    the permit/delegation audits fell back to `auto` — which matched the OLD target-cwd session and
+    printed `bound but never spawned`/`uncounted delegation` about a finished run. The finish
+    checkpoint must forward ONE explicit current session, and with a launch outside the repository
+    it must fail closed rather than leave the audits guessing.
+    """
+    dirty = launched_repo(tmp, "sess-dirty", [
+        {"type": "subagent.spawned", "subagentId": "agent-9",
+         "subagentName": "factory-code-reviewer", "parentAgentId": "main",
+         "time": int(time.time() * 1000)}])
+    current = str(dirty["current"].resolve())
+
+    # The run's own wire is audited: a REAL current defect is visible, and the row names the wire.
+    res = run("--repo", str(dirty["root"]), "--phase", "Y", "--session", current,
+              env=env_for(dirty["home"]))
+    expect_clean_cli(res, 1, "phase Y over the current wire")
+    rows = rows_of(record_of(dirty["root"], "Y"))
+    for name in ("permit-audit", "delegation-audit"):
+        check(rows[name][1] == "1", f"{name} must record the run's real defect: {rows[name]}")
+        check("--session" in rows[name][4] and current in rows[name][4],
+              f"{name} must be invoked with the run's own session: {rows[name]}")
+        check(str(dirty["stale"].resolve()) not in rows[name][4],
+              f"{name} must not be pointed at the stale session: {rows[name]}")
+    check("FAIL" in res.stdout, f"the verdict must be reported: {res.stdout!r}")
+
+    # The same layout with a clean run wire: the explicit session makes the phase pass.
+    clean = launched_repo(tmp, "sess-clean", [
+        {"type": "tool.call", "tool": "shell", "arguments": {"command": "git status"}}])
+    clean_current = str(clean["current"].resolve())
+    res = run("--repo", str(clean["root"]), "--phase", "Y", "--session", clean_current,
+              env=env_for(clean["home"]))
+    expect_clean_cli(res, 0, "phase Y over a clean current wire")
+    rows = rows_of(record_of(clean["root"], "Y"))
+    for name in ("permit-audit", "delegation-audit"):
+        check(rows[name][1] == "0" and clean_current in rows[name][4],
+              f"{name} must pass on the run's own wire: {rows[name]}")
+
+    # …while the SAME repository without `--session` must fail closed: the launch directory is the
+    # run's identity, so the audits may not silently fall back to `auto` and audit the stale wire.
+    res = run("--repo", str(clean["root"]), "--phase", "Y", env=env_for(clean["home"]))
+    expect_clean_cli(res, 1, "phase Y without a session on a launched run")
+    rows = rows_of(record_of(clean["root"], "Y"))
+    for name in ("permit-audit", "delegation-audit"):
+        check(rows[name][1] != "0",
+              f"{name} must fail closed when no session is passed: {rows[name]}")
+    check("FAIL" in res.stdout, f"the phase must be reported as failed: {res.stdout!r}")
+
+    # A blank --session is an input error: blank never means `auto`.
+    res = run("--repo", str(clean["root"]), "--phase", "Y", "--session", "",
+              env=env_for(clean["home"]))
+    expect_clean_cli(res, 2, "a blank --session")
+
+
+def test_action_audit_session(tmp: pathlib.Path) -> None:
+    """(failing-first) the phase-Y action audit must audit the run's OWN wire.
+
+    `gate_all.GATES` declared the action audit as `action_gate.py audit --repo {repo}`, so phase Y
+    ran it without `--session`; `action_gate.py` then resolved the session itself (`auto`) and, on a
+    run launched outside its target repository, answered about another session — `DEGRADED` (exit 3)
+    although the same audit with the explicit session passes. The gate must carry the run's exact
+    explicit session, must see a real defect of the current wire, and must still fail closed when
+    no session is available instead of guessing.
+    """
+    run_repo = launched_repo(tmp, "action-sess", [
+        {"type": "tool.call", "tool": "shell", "arguments": {"command": "git status"}},
+        {"type": "tool.call", "tool": "shell", "arguments": {"command": "rm -rf build"}}])
+    current = str(run_repo["current"].resolve())
+
+    # The unjournaled deletion is on the CURRENT wire only: naming the session makes it visible.
+    res = run("--repo", str(run_repo["root"]), "--phase", "Y", "--session", current,
+              env=env_for(run_repo["home"]))
+    expect_clean_cli(res, 1, "phase Y over a run wire with an unjournaled deletion")
+    row = rows_of(record_of(run_repo["root"], "Y"))["action-audit"]
+    check("--session" in row[4] and current in row[4],
+          f"the action audit must be invoked with the run's own session: {row}")
+    check(str(run_repo["stale"].resolve()) not in row[4],
+          f"the action audit must not be pointed at the stale session: {row}")
+    check(row[1] == "1", f"the action audit must record the run's real defect: {row}")
+
+    # …and without `--session` it fails closed: `auto` would audit the stale, clean wire.
+    res = run("--repo", str(run_repo["root"]), "--phase", "Y", env=env_for(run_repo["home"]))
+    expect_clean_cli(res, 1, "phase Y without a session on a launched run")
+    row = rows_of(record_of(run_repo["root"], "Y"))["action-audit"]
+    check(row[1] != "0" and "no --session" in row[4],
+          f"the action audit must fail closed when no session is passed: {row}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as raw:
         tmp = pathlib.Path(raw)
@@ -464,6 +642,12 @@ def main() -> int:
         test_record_verification(tmp)
         test_gate_availability()
         test_cli_contract(tmp)
+    with tempfile.TemporaryDirectory() as raw:
+        test_verify_only_diff_validation(pathlib.Path(raw))
+    with tempfile.TemporaryDirectory() as raw:
+        test_session_propagation(pathlib.Path(raw))
+    with tempfile.TemporaryDirectory() as raw:
+        test_action_audit_session(pathlib.Path(raw))
 
     print("PASS - gate_all.py runs every deterministic gate that applies to a phase: phase K runs "
           "the input-validation diff gate (implement/refactor only), the English-only scan, the "

@@ -26,6 +26,15 @@ Covers, with tempfile fixtures:
     error — each bounded and each terminating its child process, and the timeout values themselves
     validated BEFORE a process is started (NaN/±inf/negative/bool/numeric string refused, zero a
     legitimate immediate attempt),
+  - the FAILURE EVIDENCE of a dead server: the protocol stage that was reached, the child's exit
+    code, its own stdout/stderr tails and the post-`tools/list` liveness of the process, so the
+    owner-visible symptom (a closed connection, which the client reports as JSON-RPC error `-32000`)
+    is diagnosed instead of guessed ("no initialize response … a cold cargo build takes long" is the
+    WRONG reading of a process that has already exited),
+  - the launcher SHAPES that really produce it: an exit-after-`tools/list` server, a server that dies
+    on the first `tools/call` (answered with `-32000`), a launcher that exits 1 after writing its
+    diagnostics to stderr and no protocol frame at all, and the platform's ACTUAL registration — a
+    real `node <launcher>.js` wrapper that spawns the server on inherited stdio,
   - the CLI contract: `--help` exit 0 for every subcommand, usage error exit 2, no traceback.
 
 Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
@@ -36,6 +45,7 @@ import contextlib
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1270,7 +1280,696 @@ def process_alive(pid: int) -> bool:
     return True
 
 
-# --------------------------------------------------------------------- CLI contract
+# A launcher that dies the way the platform's Node launcher dies on this host: it rebuilds, the
+# rebuild fails, every diagnostic goes to STDERR and NOT ONE protocol frame reaches stdout. An MCP
+# client sees a closed connection and reports JSON-RPC error -32000; the handshake must report the
+# stage, the exit code and these lines instead of guessing a cold build.
+LAUNCHER_FAILURE_SERVER = '''
+import sys
+print("farukon_mcp launcher: target/release/farukon_mcp.exe it is older than Cargo.lock; building "
+      "it once with cargo build --release -p farukon_mcp ...", file=sys.stderr, flush=True)
+print("error: the 'rustc.exe' binary, normally provided by the 'rustc' component, is not "
+      "applicable to the toolchain", file=sys.stderr, flush=True)
+print("farukon_mcp launcher: LAUNCH FAILED: the server binary could not be built, so no MCP "
+      "server was started.", file=sys.stderr, flush=True)
+sys.exit(1)
+'''
+
+_TOOL_NAMES = repr(list(fm.FARUKON_TOOLS))
+
+# Answers initialize and the FULL tools/list, then exits 1: the listing is green, the process is
+# gone. A probe that stops at the listing reports a healthy server that cannot serve one call.
+POST_LIST_EXIT_SERVER = '''
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    if message.get("id") is None:
+        continue
+    if message["method"] == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"protocolVersion": "2024-11-05",
+                                     "serverInfo": {"name": "post-list", "version": "0"}}}),
+              flush=True)
+    elif message["method"] == "tools/list":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"tools": [{"name": n} for n in %s]}}), flush=True)
+        print("farukon_mcp: transport closed after tools/list", file=sys.stderr, flush=True)
+        sys.exit(1)
+''' % _TOOL_NAMES
+
+# The second shape: the listing is fine, the first tools/call is answered with the OWNER-VISIBLE
+# -32000 error and the process then exits.
+TOOLS_CALL_EXIT_SERVER = '''
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    if message.get("id") is None:
+        continue
+    if message["method"] == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"protocolVersion": "2024-11-05",
+                                     "serverInfo": {"name": "call-dies", "version": "0"}}}),
+              flush=True)
+    elif message["method"] == "tools/list":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"tools": [{"name": n} for n in %s]}}), flush=True)
+    elif message["method"] == "tools/call":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "error": {"code": -32000, "message": "connection closed"}}), flush=True)
+        sys.exit(1)
+''' % _TOOL_NAMES
+
+# …and the healthy control for the same opt-in stage: initialize, tools/list and a tools/call that
+# really answers.
+TOOL_ANSWER_SERVER = '''
+import json, sys
+TOOLS = %s
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    if message.get("id") is None:
+        continue
+    if message["method"] == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"protocolVersion": "2024-11-05",
+                                     "serverInfo": {"name": "call-answers", "version": "0"}}}),
+              flush=True)
+    elif message["method"] == "tools/list":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"tools": [{"name": n} for n in TOOLS]}}), flush=True)
+    elif message["method"] == "tools/call":
+        name = (message.get("params") or {}).get("name")
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"content": [{"type": "text", "text": "called " + str(name)}],
+                                     "isError": False}}), flush=True)
+''' % _TOOL_NAMES
+
+
+def _tool_call_result_server(result_json: str) -> str:
+    """A fake MCP server whose `tools/call` answers with exactly `result_json` as its result."""
+    return '''
+import json, sys
+TOOLS = %s
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    if message.get("id") is None:
+        continue
+    if message["method"] == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"protocolVersion": "2024-11-05",
+                                     "serverInfo": {"name": "call-result", "version": "0"}}}),
+              flush=True)
+    elif message["method"] == "tools/list":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"tools": [{"name": n} for n in TOOLS]}}), flush=True)
+    elif message["method"] == "tools/call":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": %s}), flush=True)
+''' % (_TOOL_NAMES, result_json)
+
+
+# The four NON-SUCCESS shapes a 200-style tools/call response can carry: the JSON-RPC envelope is
+# fine, so only a validated MCP RESULT can tell a real call from an error or a malformed answer.
+TOOLS_CALL_ISERROR_SERVER = _tool_call_result_server(
+    '{"content": [{"type": "text", "text": "boom"}], "isError": True}')
+TOOLS_CALL_EMPTY_RESULT_SERVER = _tool_call_result_server("{}")
+TOOLS_CALL_MALFORMED_RESULT_SERVER = _tool_call_result_server('"just a string"')
+TOOLS_CALL_MISSING_RESULT_SERVER = '''
+import json, sys
+TOOLS = %s
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    if message.get("id") is None:
+        continue
+    if message["method"] == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"protocolVersion": "2024-11-05",
+                                     "serverInfo": {"name": "call-missing", "version": "0"}}}),
+              flush=True)
+    elif message["method"] == "tools/list":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"tools": [{"name": n} for n in TOOLS]}}), flush=True)
+    elif message["method"] == "tools/call":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"]}), flush=True)
+''' % _TOOL_NAMES
+
+# The platform's REAL registration shape: `node .kimi-code/farukon-mcp-launcher.js` — a Node wrapper
+# that starts the server on the INHERITED stdio and exits with its status. A probe that only knows
+# how to launch `cargo` cannot verify what the client actually runs.
+NODE_LAUNCHER = """\
+'use strict';
+const { spawnSync } = require('node:child_process');
+const SERVER = %(server)s;
+const result = spawnSync(SERVER[0], SERVER.slice(1), { cwd: %(cwd)s, stdio: 'inherit' });
+process.exit(result.status === null ? 1 : result.status);
+"""
+
+
+def handshake(workdir: pathlib.Path, argv: list[str], **kwargs) -> dict:
+    """`mcp_start_handshake` with an unaccepted argument reported as a readable spec failure.
+
+    The failure-evidence and post-`tools/list` contracts are arguments of the public function, so a
+    missing one must read as "this contract is not implemented", never as an opaque `TypeError`.
+    """
+    try:
+        return fm.mcp_start_handshake(workdir, argv=argv, **kwargs)
+    except TypeError as exc:
+        raise AssertionError(f"mcp_start_handshake must accept {sorted(kwargs)}: {exc}") from exc
+
+
+def test_handshake_reports_failure_evidence(tmp: pathlib.Path) -> None:
+    """A DEAD server is diagnosed, never misdiagnosed: stage, exit code and its own output.
+
+    The owner-visible symptom is a closed connection (`-32000`) with no hint of WHICH protocol stage
+    died, because the current result carries only a message and the probe cannot tell "still
+    building" from "already exited". The launcher shape below is the real one: diagnostics on stderr,
+    no protocol frame on stdout, exit 1.
+    """
+    workdir = tmp / "handshake-evidence"
+    workdir.mkdir()
+
+    dead = handshake(workdir, fake_server(tmp, "launcher-failure", LAUNCHER_FAILURE_SERVER),
+                     first_response_timeout=30, response_timeout=5)
+    check(dead["ok"] is False, f"a launcher that exits must be degraded: {dead}")
+    check(dead.get("stage") == "initialize",
+          f"the failure must name the protocol stage that was reached: {dead}")
+    check(dead.get("exit_code") == 1, f"the child's exit code must be reported: {dead}")
+    check(dead.get("stdout_tail") == [],
+          f"no protocol frame was ever written, and that must be visible: {dead}")
+    check(any("LAUNCH FAILED" in line for line in dead.get("stderr_tail") or []),
+          f"the server's OWN stderr lines must be captured as evidence: {dead}")
+    message = dead["message"]
+    check("initialize" in message and "exited with code 1" in message,
+          f"the message must name the stage and the exit code: {message!r}")
+    check("cold cargo build" not in message,
+          "a server that has ALREADY EXITED cannot be waiting for a cold build — the hint is a "
+          f"misdiagnosis here: {message!r}")
+    check(fm.TIMEOUT_REFUSAL not in message,
+          f"a dead server is not a refused budget: {message!r}")
+
+    # Positive control: a server that is still RUNNING and silent keeps the cold-build hint, and its
+    # exit code is unknown (nothing has exited).
+    silent = handshake(workdir, fake_server(tmp, "silent-alive", SILENT_SERVER),
+                       first_response_timeout=2, response_timeout=1)
+    check(silent["ok"] is False and "no initialize response" in silent["message"],
+          f"an alive-but-silent server must stay bounded: {silent}")
+    check(silent.get("exit_code") is None and silent.get("stage") == "initialize",
+          f"a running child has no exit code yet: {silent}")
+    check("cold cargo build" in silent["message"],
+          f"a server that is still running must keep the cold-build hint: {silent['message']!r}")
+
+
+def test_handshake_detects_post_list_exit(tmp: pathlib.Path) -> None:
+    """A server that answers the FULL listing and then dies is NOT a healthy server.
+
+    This is the regression class behind a late `-32000`: `tools/list` is green, the process is gone,
+    and every later call fails with a closed connection. The listing alone therefore cannot be the
+    verdict — the probe must report that the server is still alive after it (and say which stage the
+    death belongs to when it is not).
+    """
+    workdir = tmp / "handshake-post-list"
+    workdir.mkdir()
+
+    healthy = handshake(workdir, fake_server(tmp, "post-list-good", GOOD_SERVER),
+                        first_response_timeout=30, response_timeout=30)
+    check(healthy["ok"] is True and healthy["missing_tools"] == [],
+          f"the healthy control must stay green: {healthy}")
+    check(healthy.get("post_list_alive") is True,
+          f"a server that keeps serving after tools/list must report it: {healthy}")
+
+    dying = handshake(workdir, fake_server(tmp, "post-list-exit", POST_LIST_EXIT_SERVER),
+                      first_response_timeout=30, response_timeout=30)
+    check(dying["ok"] is False,
+          f"a server that exits right after tools/list must NOT be green: {dying}")
+    check(list(dying["tools"]) == list(fm.FARUKON_TOOLS),
+          f"the listing itself was complete — that is exactly why the liveness matters: {dying}")
+    check(dying.get("post_list_alive") is False,
+          f"the post-list liveness must be reported: {dying}")
+    check(dying.get("stage") == "tools/list",
+          f"the death must be attributed to the stage it happened in: {dying}")
+    check(dying.get("exit_code") == 1, f"the exit code must be reported: {dying}")
+    check("exited with code 1" in dying["message"] and "tools/list" in dying["message"],
+          f"the message must name the stage and the exit code: {dying['message']!r}")
+
+
+def test_handshake_opt_in_tool_call_stage(tmp: pathlib.Path) -> None:
+    """`probe_tool` exercises a real `tools/call` — the stage where the platform answers `-32000`.
+
+    `tools/list` says the tool EXISTS; only a call says the server can still answer. The call is
+    OPT-IN (a live platform may start an instance), and its failure must carry the server's own
+    JSON-RPC error and the stage, never a bare "no response".
+    """
+    workdir = tmp / "handshake-tool-call"
+    workdir.mkdir()
+
+    answered = handshake(workdir, fake_server(tmp, "call-answers", TOOL_ANSWER_SERVER),
+                         first_response_timeout=30, response_timeout=30,
+                         probe_tool="farukon_web_health")
+    check(answered["ok"] is True, f"a server that answers the tool call must stay green: {answered}")
+    check(answered.get("probed_tool") == "farukon_web_health",
+          f"the probed tool must be reported: {answered}")
+    # The CALL ITSELF is evidence: the server's own result text must be preserved, not just a flag.
+    check("called farukon_web_health" in json.dumps(answered),
+          f"a successful tools/call must preserve the server's result content as evidence: "
+          f"{answered}")
+
+    dead = handshake(workdir, fake_server(tmp, "call-dies", TOOLS_CALL_EXIT_SERVER),
+                     first_response_timeout=30, response_timeout=30,
+                     probe_tool="farukon_web_health")
+    check(dead["ok"] is False, f"a server that dies on the tool call must be degraded: {dead}")
+    check(dead.get("stage") == "tools/call",
+          f"the failure must be attributed to the tool call: {dead}")
+    check("-32000" in dead["message"],
+          f"the server's own JSON-RPC error code must reach the report: {dead['message']!r}")
+    check(dead.get("exit_code") == 1, f"the exit code must be reported: {dead}")
+
+    # The stage is OPT-IN: without `probe_tool` no tool is invoked, so a server that only fails on
+    # tools/call is reported green on the listing contract it actually proves.
+    unprobed = handshake(workdir, fake_server(tmp, "call-dies-unprobed", TOOLS_CALL_EXIT_SERVER),
+                         first_response_timeout=30, response_timeout=30)
+    check(unprobed["ok"] is True and unprobed.get("probed_tool") is None,
+          f"no tool may be called unless the caller asks for it: {unprobed}")
+
+
+def test_tools_call_result_validation(tmp: pathlib.Path) -> None:
+    """(review R4, critical) A tools/call is green only with a VALIDATED MCP result.
+
+    Any response without a JSON-RPC `error` used to count as a successful call, so a server that
+    answered `result.isError: true`, an empty result, a non-object result or NOTHING (`result`
+    absent) was recorded as a healthy proof — the exact `-32000` class the owner saw, hidden behind
+    a well-formed envelope. Each shape is answered by `tools/call` here, so the envelope is fine and
+    only the result can refuse it: `ok` is false, the stage is `tools/call`, no tool is marked as
+    probed, and the message names what the server actually returned.
+    """
+    workdir = tmp / "handshake-tool-result"
+    workdir.mkdir()
+
+    for label, source, needle in (
+            ("isError", TOOLS_CALL_ISERROR_SERVER, "isError"),
+            ("empty result", TOOLS_CALL_EMPTY_RESULT_SERVER, "content"),
+            ("malformed result", TOOLS_CALL_MALFORMED_RESULT_SERVER, "result"),
+            ("missing result", TOOLS_CALL_MISSING_RESULT_SERVER, "result"),
+    ):
+        result = handshake(workdir, fake_server(tmp, f"result-{label.split()[0]}", source),
+                           first_response_timeout=30, response_timeout=30,
+                           probe_tool="farukon_web_health")
+        check(result["ok"] is False,
+              f"a tools/call with a {label} must never be healthy: {result}")
+        check(result.get("stage") == "tools/call",
+              f"the {label} failure must be attributed to the call: {result}")
+        check(result.get("probed_tool") is None,
+              f"a {label} answer must not be recorded as a successful call: {result}")
+        check(needle in (result.get("message") or ""),
+              f"the {label} refusal must name what the server returned: {result['message']!r}")
+
+
+def test_node_launcher_registration_shape(tmp: pathlib.Path) -> None:
+    """The platform's ACTUAL registration is `node .kimi-code/farukon-mcp-launcher.js`.
+
+    The launcher starts the server on the INHERITED stdio, so the probe must be able to verify that
+    shape (a Node wrapper around the server) and must still terminate the whole process TREE — a
+    green handshake that leaks the spawned server is a leaked platform instance.
+    """
+    node = shutil.which("node")
+    if node is None:
+        print("note: skipping the Node launcher shape — node is not on PATH")
+        return
+    workdir = tmp / "node-launcher"
+    workdir.mkdir()
+    marker = tmp / "launcher-child.pid"
+    server = fake_server(tmp, "launcher-server",
+                        f"import os\nopen({str(marker)!r}, 'w', encoding='utf-8')"
+                        f".write(str(os.getpid()))\n" + GOOD_SERVER)
+    launcher = written(tmp / "farukon-mcp-launcher.js",
+                       NODE_LAUNCHER % {"server": json.dumps(server),
+                                        "cwd": json.dumps(str(workdir))})
+
+    result = handshake(workdir, [node, str(launcher)],
+                       first_response_timeout=30, response_timeout=30)
+    check(result["ok"] is True,
+          f"the real registration shape must be verifiable through the Node wrapper: {result}")
+    check(list(result["tools"]) == list(fm.FARUKON_TOOLS),
+          f"all eight tools must be listed through the wrapper: {result['tools']}")
+    check(result["cwd"] == str(workdir),
+          f"the wrapper must run in the platform root: {result['cwd']!r}")
+    check(marker.is_file(), "the wrapped server must really have started")
+    child = int(marker.read_text(encoding="utf-8").strip())
+    check(not process_alive(child),
+          f"the server spawned by the launcher ({child}) must be terminated with the tree")
+
+    # …and the FAILING registration — the launcher of this host, whose build dies before a single
+    # protocol frame exists — must be diagnosed through the wrapper: the client sees only a closed
+    # connection (`-32000`), so the probe is the only artifact that can say what happened.
+    broken = written(tmp / "farukon-mcp-launcher-broken.js",
+                     NODE_LAUNCHER % {
+                         "server": json.dumps(
+                             fake_server(tmp, "launcher-dead", LAUNCHER_FAILURE_SERVER)),
+                         "cwd": json.dumps(str(workdir))})
+    failed = handshake(workdir, [node, str(broken)],
+                       first_response_timeout=30, response_timeout=5)
+    check(failed["ok"] is False, f"a dead launcher must be degraded: {failed}")
+    check(failed.get("stage") == "initialize",
+          f"the failure must name the protocol stage: {failed}")
+    check(failed.get("exit_code") == 1,
+          f"the LAUNCHER's exit code must be reported: {failed}")
+    check(any("LAUNCH FAILED" in line for line in failed.get("stderr_tail") or []),
+          f"the launcher's own stderr must survive the wrapper: {failed}")
+    check("exited with code 1" in failed["message"] and "initialize" in failed["message"],
+          f"the message must name the stage and the exit code: {failed['message']!r}")
+
+
+# --------------------------------------------------------------------- live-session evidence
+
+def test_live_session_evidence(tmp: pathlib.Path) -> None:
+    """The plan's live proof is EVIDENCE, never a claim.
+
+    `record-session` captures ONE bounded session against the shape the MCP client really launches
+    (the project's own registration — the platform registers a Node launcher, not a cargo command),
+    and `verify-reproduction` / `verify-sessions` judge those records strictly: a failure must have
+    been OBSERVED (stage, exit code, zero protocol frames, the launcher's own stderr), the healthy
+    control must list all eight tools and still be serving, and five DISTINCT sessions of THIS
+    project are required — EACH of them proving a real `tools/call`, because a server that only
+    answers `tools/list` says nothing about the `-32000` class the owner saw — so an acceptance can
+    never be argued from a unit test instead. Only a
+    REVIEWED launch shape may be recorded at all: npx, inline code and scripts outside the platform
+    root are refused before anything is spawned.
+    """
+    node = shutil.which("node")
+    if node is None:
+        print("note: skipping the live-session evidence — node is not on PATH, and the platform's "
+              "real registration is a Node launcher")
+        return
+    repo = platform_repo(tmp / "evidence-repo")
+    launcher = repo / ".kimi-code" / "farukon-mcp-launcher.js"
+    launcher.parent.mkdir(parents=True, exist_ok=True)
+    config = repo / ".kimi-code" / "mcp.json"
+
+    def registration(server_argv: list[str]) -> None:
+        written(launcher, NODE_LAUNCHER % {"server": json.dumps(server_argv),
+                                           "cwd": json.dumps(str(repo))})
+        written(config, json.dumps({"mcpServers": {fm.SERVER_NAME: {
+            "command": node, "args": [".kimi-code/farukon-mcp-launcher.js"],
+            "cwd": str(repo)}}}, indent=2) + "\n")
+
+    good = fake_server(tmp, "evidence-good", GOOD_SERVER)
+    called_server = fake_server(tmp, "evidence-call-answers", TOOL_ANSWER_SERVER)
+    registration(called_server)
+    evidence = tmp / "evidence"
+
+    # 1. One live session against the PROJECT'S OWN registration: its own argv is what runs. The
+    #    session proves a real tools/call, because a listing alone is not a proven proof.
+    recorded = fm.record_session(repo, evidence, mode="registration", response_timeout=0.5,
+                                 probe_tool="farukon_web_health")
+    record = recorded["record"]
+    check(record["kind"] == fm.SESSION_KIND and record["mode"] == "registration",
+          f"the record must name its kind and mode: {record}")
+    check(record["ok"] is True and record["missing_tools"] == [] and record["post_list_alive"] is True
+          and record["probed_tool"] == "farukon_web_health",
+          f"a healthy live registration must record green with its protocol evidence: {record}")
+    check(record["command"] == [node, ".kimi-code/farukon-mcp-launcher.js"],
+          f"the registration's own argv must be launched: {record['command']}")
+    check(record["repo"] == str(repo) and pathlib.Path(recorded["path"]).is_file(),
+          f"the record must name its project and be persisted: {recorded}")
+
+    # 2. Only REVIEWED launch shapes are recorded: npx, inline code, a script outside the root and a
+    #    binary outside the platform root are all refused before a child process exists.
+    for label, entry, needle in (
+            ("npx", {"command": "npx", "args": ["@modelcontextprotocol/server"]}, "reviewed launcher"),
+            ("inline", {"command": node, "args": ["-e", "require('x')"]}, "inline code"),
+            ("credential", {"command": node, "args": ["--token=SECRET-VALUE",
+                                                      ".kimi-code/mcp.json"]}, "value-carrying"),
+            ("outside", {"command": node, "args": [str(tmp / "outside-launcher.js")]}, "INSIDE the "
+                                                                                      "platform root")):
+        written(config, json.dumps({"mcpServers": {fm.SERVER_NAME:
+                                                   entry | {"cwd": str(repo)}}}, indent=2) + "\n")
+        res = run("record-session", "--repo", str(repo), "--evidence", str(evidence),
+                  "--mode", "registration")
+        expect_clean_cli(res, 1, f"record-session of a {label} registration")
+        check(needle in res.stderr, f"the {label} refusal must name the boundary: {res.stderr!r}")
+        check("SECRET-VALUE" not in res.stdout + res.stderr,
+              f"the {label} refusal must never echo the stored value: {res.stderr!r}")
+    res = run("record-session", "--repo", str(repo), "--evidence", str(evidence), "--mode", "direct",
+              "--executable", sys.executable)
+    expect_clean_cli(res, 1, "record-session --mode direct with a binary outside the platform root")
+    check("inside the platform root" in res.stderr,
+          f"the confinement must be named: {res.stderr!r}")
+    res = run("record-session", "--repo", str(repo), "--evidence", str(evidence), "--mode", "direct")
+    expect_clean_cli(res, 1, "record-session --mode direct without --executable")
+    check("--executable" in res.stderr, f"the refusal must name the missing argument: {res.stderr!r}")
+    expect_clean_cli(run("record-session", "--repo", str(repo), "--evidence", str(evidence),
+                         "--mode", "sideways"), 2, "record-session with an unknown mode")
+
+    # 3. A record of ANOTHER project is not this project's proof, and neither is an unplaceable one:
+    #    one session fills one slot, and a record whose start stamp cannot be parsed (or whose schema
+    #    is unknown) is AMBIGUOUS evidence — it FAILS the gate instead of quietly filling a slot.
+    registration(good)
+    dirty = tmp / "evidence-dirty"
+    dirty.mkdir()
+    base = json.loads(pathlib.Path(recorded["path"]).read_text(encoding="utf-8"))
+    written(dirty / "base.json", json.dumps(base, indent=2) + "\n")
+    foreign = dict(base, session_id="foreign-session", repo=str(tmp / "other-project"))
+    written(dirty / "foreign-session.json", json.dumps(foreign, indent=2) + "\n")
+    ambiguous = dict(base, session_id="ambiguous-session", started_at="whenever")
+    written(dirty / "ambiguous.json", json.dumps(ambiguous, indent=2) + "\n")
+    unknown = dict(base, session_id="unknown-schema", schema=99)
+    written(dirty / "unknown-schema.json", json.dumps(unknown, indent=2) + "\n")
+    dirty_verdict = fm.verify_sessions(repo, dirty)
+    check(dirty_verdict["ok"] is False and len(dirty_verdict["healthy_sessions"]) == 1,
+          f"a foreign record must not count as this project's session: {dirty_verdict}")
+    check(len(dirty_verdict["rejected_sessions"]) == 2
+          and any("unparseable" in item for item in dirty_verdict["problems"]),
+          f"an ambiguous or unknown-schema record must FAIL the gate, not fill a slot: "
+          f"{dirty_verdict}")
+
+    # 4. …and the CLI's gate is the same verdict: exit 1, naming the shortfall, never a quiet pass.
+    res = run("verify-sessions", "--repo", str(repo), "--evidence", str(evidence), "--json")
+    expect_clean_cli(res, 1, "verify-sessions short of the five sessions")
+    payload = json.loads(res.stdout)
+    check(payload["ok"] is False and payload["required"] == fm.SESSIONS_REQUIRED
+          and len(payload["healthy_sessions"]) == 1,
+          f"the CLI must report the measured shortfall as data: {payload}")
+
+    # 5. EVERY one of the five sessions must prove a real tools/call, not only the listing: four
+    #    list-only sessions plus one called session still serve nothing but `tools/list`, so the
+    #    gate must FAIL them (failing-first, review R1 — a listing is not a call).
+    mixed = tmp / "evidence-mixed"
+    registration(good)
+    for _index in range(4):
+        fm.record_session(repo, mixed, mode="registration", response_timeout=0.5)
+    registration(called_server)
+    fm.record_session(repo, mixed, mode="registration", response_timeout=0.5,
+                      probe_tool="farukon_web_health")
+    mixed_verdict = fm.verify_sessions(repo, mixed)
+    check(mixed_verdict["ok"] is False,
+          f"four list-only sessions plus one called session must FAIL the gate: {mixed_verdict}")
+    check(any("tools/call" in problem for problem in mixed_verdict["problems"]),
+          f"the shortfall must name the missing tools/call evidence: {mixed_verdict}")
+    expect_clean_cli(run("verify-sessions", "--repo", str(repo), "--evidence", str(mixed)), 1,
+                     "verify-sessions over four list-only and one called session")
+
+    # …and five sessions that EACH answered a real tools/call are the proof.
+    called = tmp / "evidence-called"
+    registration(called_server)
+    for _index in range(fm.SESSIONS_REQUIRED):
+        fm.record_session(repo, called, mode="registration", response_timeout=0.5,
+                          probe_tool="farukon_web_health")
+    five = fm.verify_sessions(repo, called)
+    check(five["ok"] is True and len(set(five["healthy_sessions"])) == fm.SESSIONS_REQUIRED,
+          f"five distinct called sessions must satisfy the gate: {five}")
+    expect_clean_cli(run("verify-sessions", "--repo", str(repo), "--evidence", str(called)), 0,
+                     "verify-sessions with five called sessions")
+    # A record that listed every tool and stayed alive but never called one is NOT healthy.
+    list_only = fm.record_session(repo, tmp / "evidence-list-only", mode="registration",
+                                  response_timeout=0.5)["record"]
+    check(fm._healthy_session(list_only) is False,
+          f"a list-only session must never count as a healthy proof: {list_only}")
+
+    # 6. The reproduction needs an OBSERVED failure: a registration that is still running and silent
+    #    is a timeout, not proof of a launch that dies before `initialize`.
+    silent_dir = tmp / "evidence-silent"
+    registration(fake_server(tmp, "evidence-silent", SILENT_SERVER))
+    silent = fm.record_session(repo, silent_dir, mode="registration",
+                               first_response_timeout=0.3, response_timeout=0.3)["record"]
+    check(silent["ok"] is False and silent["exit_code"] is None
+          and silent["protocol_frames"] == 0,
+          f"a silent but living launcher must be recorded as such: {silent}")
+    check(fm.verify_reproduction(repo, silent_dir)["ok"] is False,
+          "a live-but-silent timeout must never count as the reproduction")
+
+    # 7. The REAL regression shape — a launcher whose build dies before a single protocol frame — is
+    #    recorded through the Node wrapper and proves the reproduction ONLY with the healthy control.
+    registration(fake_server(tmp, "evidence-dead", LAUNCHER_FAILURE_SERVER))
+    dead = fm.record_session(repo, silent_dir, mode="registration",
+                             first_response_timeout=5, response_timeout=0.5)["record"]
+    check(dead["ok"] is False and dead["stage"] == "initialize" and dead["exit_code"] == 1
+          and dead["protocol_frames"] == 0,
+          f"the dead launcher's evidence must be recorded, not guessed: {dead}")
+    check(any("LAUNCH FAILED" in line for line in dead["stderr_tail"]),
+          f"the launcher's own stderr must reach the record: {dead['stderr_tail']}")
+    check(fm.verify_reproduction(repo, silent_dir)["ok"] is False,
+          "the failure alone is not the reproduction: the healthy control session is required")
+    registration(good)
+    fm.record_session(repo, silent_dir, mode="registration", response_timeout=0.5)
+    proven = fm.verify_reproduction(repo, silent_dir)
+    check(proven["ok"] is True and proven["failure_session"] and proven["healthy_session"],
+          f"a dead launch AND a healthy control must prove the reproduction: {proven}")
+    expect_clean_cli(run("verify-reproduction", "--repo", str(repo), "--evidence", str(silent_dir)),
+                     0, "verify-reproduction with both halves proven")
+
+
+VALID_TOOL_RESULT = {"content": [{"type": "text", "text": "called farukon_web_health"}],
+                     "isError": False}
+
+
+def evidence_record(repo: pathlib.Path, session_id: str, started: str, *,
+                    healthy: bool = True, schema: int = 1, include_result: bool = True,
+                    result: object = None) -> dict:
+    """One session record for the verifier fixtures (the shape `record-session` writes)."""
+    record = {"kind": fm.SESSION_KIND, "schema": schema, "session_id": session_id,
+              "mode": "registration", "repo": str(repo), "started_at": started}
+    if healthy:
+        record.update({"ok": True, "tools": list(fm.FARUKON_TOOLS), "missing_tools": [],
+                       "post_list_alive": True, "exit_code": None,
+                       "probed_tool": "farukon_web_health"})
+        if include_result:
+            record["tool_result"] = json.loads(json.dumps(
+                VALID_TOOL_RESULT if result is None else result))
+    else:
+        record.update({"ok": False, "stage": "initialize", "protocol_frames": 0,
+                       "exit_code": 1, "tools": [], "missing_tools": list(fm.FARUKON_TOOLS),
+                       "post_list_alive": False, "probed_tool": None})
+    return record
+
+
+def test_consecutive_session_evidence(tmp: pathlib.Path) -> None:
+    """(review R4, critical) Only sessions AFTER the latest failed attempt count.
+
+    `verify_sessions` collected any five healthy records in the directory, so five healthy sessions
+    followed by an OBSERVED failure (or a malformed attempt) and then a single healthy one still
+    passed — the failure was silently skipped instead of restarting the mandated sequence. The five
+    required sessions must be five DISTINCT healthy sessions recorded AFTER the latest failed or
+    malformed attempt; a run that fails after its five sessions keeps failing until five more
+    consecutive sessions are recorded.
+    """
+    repo = platform_repo(tmp / "consecutive-repo")
+    stamps = [f"20261122T12{index:02d}00Z" for index in range(24)]
+
+    def write_dir(name: str, entries: list[tuple[str, bool, int]]) -> pathlib.Path:
+        directory = tmp / name
+        directory.mkdir()
+        for offset, (session_id, healthy, schema) in enumerate(entries):
+            record = evidence_record(repo, session_id, stamps[offset], healthy=healthy,
+                                     schema=schema)
+            written(directory / f"{offset:02d}-{session_id}.json", json.dumps(record, indent=2))
+        return directory
+
+    healthy_five = [(f"early-{index}", True, 1) for index in range(fm.SESSIONS_REQUIRED)]
+    after_two = [("late-0", True, 1), ("late-1", True, 1)]
+
+    # Five healthy sessions, then an OBSERVED failure, then only two healthy: NOT five in a row.
+    disrupted = write_dir("sessions-disrupted", healthy_five + [("failed-0", False, 1)] + after_two)
+    verdict = fm.verify_sessions(repo, disrupted)
+    check(verdict["ok"] is False,
+          f"five healthy sessions BEFORE a failure must not satisfy the gate: {verdict}")
+    problems = " ".join(verdict["problems"]).lower()
+    check(any(word in problems for word in ("after", "latest", "restart", "consecutive")),
+          f"the refusal must say the sessions predate the latest failure: {verdict['problems']}")
+    expect_clean_cli(run("verify-sessions", "--repo", str(repo), "--evidence", str(disrupted)), 1,
+                     "verify-sessions over sessions before a failure")
+
+    # A MALFORMED attempt is a failed attempt too: five healthy before it, none after.
+    malformed = write_dir("sessions-malformed", healthy_five + [("corrupt-0", True, 99)])
+    verdict = fm.verify_sessions(repo, malformed)
+    check(verdict["ok"] is False,
+          f"five healthy sessions BEFORE a malformed attempt must not satisfy the gate: {verdict}")
+
+    # The positive control: a failure first, then five consecutive healthy sessions.
+    clean = write_dir("sessions-clean", [("failed-0", False, 1)] + healthy_five)
+    verdict = fm.verify_sessions(repo, clean)
+    check(verdict["ok"] is True
+          and len(set(verdict["healthy_sessions"])) == fm.SESSIONS_REQUIRED,
+          f"five consecutive healthy sessions after the failure are the proof: {verdict}")
+    expect_clean_cli(run("verify-sessions", "--repo", str(repo), "--evidence", str(clean)), 0,
+                     "verify-sessions over five consecutive healthy sessions")
+
+
+def test_strict_session_evidence(tmp: pathlib.Path) -> None:
+    """(review R5) A counted session must keep a VALIDATED tool result, and broken evidence fails.
+
+    `_recorded_result_problem` tolerated a record with NO `tool_result` ("the format older
+    recordings use"), so five legacy records satisfied the gate without ever proving the call the
+    R1/R4 fixes require — the mandatory catch-up was bypassed by dropping the field. Every counted
+    session must carry the preserved, validated result. And `session_records` silently skipped a
+    file that is not valid JSON, so a malformed attempt BETWEEN healthy sessions neither failed the
+    gate nor restarted the sequence: invalid session evidence fails closed, naming the file, while
+    KNOWN non-record console artifacts (a `.log`/`.txt` capture) are explicitly ignored.
+    """
+    repo = platform_repo(tmp / "strict-evidence")
+    stamps = [f"20261122T13{index:02d}00Z" for index in range(12)]
+
+    def write(name: str, records: list[dict], raw: dict[str, str] | None = None) -> pathlib.Path:
+        directory = tmp / name
+        directory.mkdir()
+        for offset, record in enumerate(records):
+            written(directory / f"{offset:02d}-{record['session_id']}.json",
+                    json.dumps(record, indent=2))
+        for filename, text in (raw or {}).items():
+            written(directory / filename, text)
+        return directory
+
+    valid = [evidence_record(repo, f"valid-{index}", stamps[index]) for index in range(5)]
+    # The positive control: five consecutive sessions that each keep a validated call result.
+    baseline = write("evidence-valid", valid)
+    verdict = fm.verify_sessions(repo, baseline)
+    check(verdict["ok"] is True,
+          f"five valid, consecutive sessions must satisfy the gate: {verdict}")
+
+    # 1. The SAME five records without the preserved result prove no call: they never count.
+    legacy = [evidence_record(repo, f"legacy-{index}", stamps[index], include_result=False)
+              for index in range(5)]
+    dropped = write("evidence-legacy", legacy)
+    verdict = fm.verify_sessions(repo, dropped)
+    check(verdict["ok"] is False,
+          f"a record without the preserved tool result must never fill a slot: {verdict}")
+    check(any(word in " ".join(verdict["problems"]).lower()
+              for word in ("tool_result", "result", "tools/call")),
+          f"the refusal must name the missing call evidence: {verdict['problems']}")
+    expect_clean_cli(run("verify-sessions", "--repo", str(repo), "--evidence", str(dropped)), 1,
+                     "verify-sessions over records without tool_result")
+
+    # 2. Invalid JSON BETWEEN healthy sessions fails closed and names the file.
+    interrupted = write("evidence-broken-json", valid,
+                        raw={"02-broken.json": "{not json: [\n"})
+    verdict = fm.verify_sessions(repo, interrupted)
+    check(verdict["ok"] is False,
+          f"invalid session evidence must fail the gate, never be skipped: {verdict}")
+    check(any("broken" in problem for problem in verdict["problems"]),
+          f"the refusal must name the unreadable evidence file: {verdict['problems']}")
+    expect_clean_cli(run("verify-sessions", "--repo", str(repo), "--evidence",
+                         str(interrupted)), 1, "verify-sessions over invalid JSON evidence")
+
+    # 3. Known NON-RECORD console artifacts are explicitly ignored, not treated as evidence.
+    console = write("evidence-console", valid,
+                    raw={"console.log": "server exited with -32000\n",
+                         "stderr.txt": "Error: connection closed\n"})
+    verdict = fm.verify_sessions(repo, console)
+    check(verdict["ok"] is True,
+          f"a console capture is not session evidence and must not fail the gate: {verdict}")
+
 
 def test_cli_contract() -> None:
     res = run("--help")
@@ -1308,6 +2007,14 @@ def main() -> int:
         test_handshake(tmp)
         test_handshake_timeout_validation(tmp)
         test_handshake_is_bounded_and_cleans_up(tmp)
+        test_handshake_reports_failure_evidence(tmp)
+        test_handshake_detects_post_list_exit(tmp)
+        test_handshake_opt_in_tool_call_stage(tmp)
+        test_tools_call_result_validation(tmp)
+        test_node_launcher_registration_shape(tmp)
+        test_live_session_evidence(tmp)
+        test_consecutive_session_evidence(tmp)
+        test_strict_session_evidence(tmp)
         test_cli_contract()
 
     print(f"PASS - farukon_mcp.py contract holds: {COUNTER['checks']} assertions over the "
@@ -1318,7 +2025,14 @@ def main() -> int:
           "and redacted diagnostics, the exact managed entry invariants (no key outside "
           "command/args/cwd), the fail-soft capability probe with its injectable seams (an unproven "
           "toolchain and a cwd outside the platform root are unusable), the bounded JSON-RPC "
-          "handshake for all eight Farukon tools and the argparse CLI contract.")
+          "handshake for all eight Farukon tools (with the failure EVIDENCE of a dead server — the "
+          "protocol stage, the exit code, its own stderr/stdout and the post-tools-list liveness — "
+          "the exit-after-list and dying-tools/call shapes, the launcher's real `node` registration "
+          "shape and the opt-in tools/call stage, the recorded live-session evidence that "
+          "`verify-reproduction` judges strictly — an OBSERVED pre-initialize launch failure plus a "
+          "healthy eight-tool control — and the five distinct healthy sessions of THIS project that "
+          "`verify-sessions` requires, EACH proving a real tools/call rather than a listing alone) "
+          "and the argparse CLI contract.")
     return 0
 
 

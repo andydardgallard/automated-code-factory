@@ -31,21 +31,42 @@ Subcommands (all deterministic, stdlib only):
   decide           applicability of the farukon-expert role for a task (--repo, --text/--task-file)
   merge-config     idempotently merge the `farukon` server into <repo>/.kimi-code/mcp.json
                    (--target, --dry-run)
-  probe            fail-soft capability probe: cargo, farukon_mcp buildability, the managed config,
-                   and with --check-mcp-start a bounded newline-delimited JSON-RPC handshake that
-                   verifies all eight Farukon MCP tools and reports the protocol version the SERVER
-                   answers (--target, --out)
+  probe            fail-soft capability probe: cargo, farukon_mcp buildability, the managed config
+                   (a DRIFTED registration is reported as drift with the differing KEY names, never
+                   their values), and with --check-mcp-start a bounded newline-delimited JSON-RPC
+                   handshake that verifies all eight Farukon MCP tools, reports the protocol version
+                   the SERVER answers, the protocol STAGE a failure reached, the child's exit code,
+                   its own stdout/stderr tails, the post-tools/list liveness and (with --probe-tool)
+                   a real tools/call (--target, --out)
   validate-config  invariants of a managed `farukon` entry (--path)
+  record-session   run ONE bounded live MCP session — the managed cargo entry, the project's OWN
+                   registration (`--mode registration`: the shape the MCP client really launches,
+                   e.g. `node .kimi-code/farukon-mcp-launcher.js`; only a REVIEWED `cargo` or `node`
+                   launch is accepted, and a launcher script must live inside the platform root) or
+                   an already-built binary inside the platform root (`--mode direct --executable`) —
+                   and store it as an immutable evidence record (--repo, --evidence)
+  verify-reproduction  strict gate over those records: an OBSERVED launch failure before a single
+                   protocol frame (stage, exit code or JSON-RPC error, the launcher's own stderr) AND
+                   a healthy eight-tool control session (--repo, --evidence)
+  verify-sessions  strict gate over those records: five DISTINCT CONSECUTIVE healthy live sessions
+                   of this project, EACH proving a real `tools/call` answered with a well-formed MCP
+                   result (no `isError`, a `content` list, no JSON-RPC error) AND PRESERVING that
+                   result in the record — a list-only record or one without `tool_result` never
+                   counts, an unsuccessful attempt restarts the sequence, and evidence that cannot be
+                   parsed fails closed naming the file (.log/.txt console captures are ignored)
+                   (--repo, --evidence)
 
 Exit codes:
-  0  success — including a `not_applicable` decision and a DEGRADED `probe`: a missing capability or
-     an unusable platform path is DATA, never a crash or a failed run
+  0  success — including a `not_applicable` decision, a DEGRADED `probe`, a FAILED recorded session
+     (a missing capability or a dead server is DATA, never a crash or a failed run) and a passing
+     verification gate
   1  a real error: an unreadable input, a `--repo` that is not a directory, a `--target` that escapes
      the repository, a `--repo` that is not a Farukon platform root (merge-config refuses to write a
      server into a project that does not host the platform), a config that is not valid JSON (such a
-     target is then NEVER overwritten), or a write that cannot happen (a directory or an unwritable
+     target is then NEVER overwritten), a write that cannot happen (a directory or an unwritable
      target, reported instead of a traceback; the write is atomic, so an existing file keeps its
-     bytes)
+     bytes) — and a FAILED verification gate (`verify-reproduction`/`verify-sessions`: the live proof
+     is missing, weak or belongs to another project; the problems name exactly what is missing)
   2  usage error (argparse)
   3  `merge-config` conflict: a DIFFERENT `farukon` entry already exists — it is preserved
      byte-for-byte and reported, never silently replaced
@@ -66,7 +87,20 @@ Determinism and safety of the helpers themselves:
     KEY and the managed shape, never the stored value;
   - `probe` never runs a build unless `--check-mcp-start` is passed, and that handshake is BOUNDED
     (30 s protocol reads, up to 30 min for a cold cargo build) and always terminates the child
-    process tree; a cargo that is on PATH but cannot answer `--version` is UNUSABLE, not present;
+    process TREE (a Node launcher's server is a grandchild); a cargo that is on PATH but cannot
+    answer `--version` is UNUSABLE, not present. A DEAD server is DIAGNOSED, never misdiagnosed: the
+    result carries the protocol stage that was reached, the child's exit code, its own stdout/stderr
+    tails and the number of protocol frames, so a launcher whose build fails before `initialize` is
+    reported as a launch/build failure instead of a slow cold build. A server that answers the WHOLE
+    listing and then exits is not green either (`post_list_alive`), because the listing alone says
+    nothing about whether a later `tools/call` can be answered;
+  - the live proof is EVIDENCE, not a claim: `record-session` stores one bounded session as an
+    immutable JSON record and `verify-reproduction` / `verify-sessions` judge those records
+    STRICTLY (a failed launch must be OBSERVED, the healthy control must list all eight tools and
+    still be serving, and five distinct CONSECUTIVE sessions are required, EACH of them proving a
+    real `tools/call` answered with a well-formed MCP result — no `isError`, a `content` list, no
+    JSON-RPC error. A listing alone never fills a slot and a failed or malformed attempt restarts the
+    sequence). Both gates exit 1 naming what is missing;
   - an explicit exclusion phrase (`no mcp`, `without farukon`) wins over every platform keyword:
     deactivating the role by mistake costs a missed specialist run, activating it by mistake puts a
     cargo/MCP session on unrelated work — the conservative direction is deliberate.
@@ -111,6 +145,17 @@ HANDSHAKE_TIMEOUT = 30
 COLD_BUILD_TIMEOUT = 1800
 TERMINATE_TIMEOUT = 10
 STDERR_TAIL_LINES = 200
+STDOUT_TAIL_LINES = 200
+# How long an already-answered stage is watched for the death of the child before the stage is called
+# green. A server that exits right after `tools/list` keeps its listing, so the listing alone is never
+# the verdict; the process is gone and every later `tools/call` fails with a closed connection.
+LIVENESS_GRACE = 2.0
+# The number of distinct HEALTHY live sessions the platform proof requires (`verify-sessions`).
+SESSIONS_REQUIRED = 5
+SESSION_KIND = "farukon-mcp-session"
+SESSION_MODES: tuple[str, ...] = ("managed", "registration", "direct")
+SESSION_SCHEMA = 1
+SESSION_STAMP = "%Y%m%dT%H%M%SZ"
 
 # The eight tools the farukon-expert role is allowed to work through. A handshake that does not list
 # all of them is a degraded platform path, never a green one.
@@ -895,14 +940,25 @@ def _persisted_result(base: dict, target_path: pathlib.Path, merged_text: str, e
 
 # --------------------------------------------------------------------------- stdio MCP handshake
 
-def _pump(stream, sink: "queue.Queue") -> None:
-    """Forward every line of a child stdout pipe to a queue (EOF -> `None`)."""
+def _pump(stream, sink: "queue.Queue", state: dict) -> None:
+    """Forward every line of a child stdout pipe to a queue (EOF -> `None`).
+
+    `state` is the evidence record of the stream: the number of PROTOCOL frames (parsable JSON
+    lines) and the raw stdout tail. A failure report must be able to say that a dead server never
+    wrote a single frame, instead of guessing that it is still building.
+    """
     try:
         while True:
             line = stream.readline()
             if not line:
                 break
             sink.put(line)
+            state["tail"].append(line.rstrip("\r\n"))
+            try:
+                json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            state["frames"] = int(state["frames"]) + 1
     except (OSError, ValueError):
         pass
     finally:
@@ -997,9 +1053,31 @@ def _initialize_request(request_id: int) -> dict:
                        "clientInfo": {"name": "code-factory", "version": "1"}}}
 
 
-def _stderr_hint(errors: "collections.deque") -> str:
-    lines = [line.strip() for line in errors if line.strip()]
+def _stderr_lines(errors: "collections.deque") -> list[str]:
+    """The captured stderr lines as plain strings (empty lines dropped, newlines trimmed)."""
+    return [line.rstrip("\r\n") for line in errors if line.strip()]
+
+
+def _stderr_hint(lines: list[str]) -> str:
     return f" (last stderr line: {lines[-1]})" if lines else ""
+
+
+def _exit_code(proc: subprocess.Popen, grace: float) -> int | None:
+    """The child's exit code when it has exited within `grace` seconds, else `None`.
+
+    The grace is bounded on purpose: an ALIVE server must not be mistaken for a dead one (it keeps
+    the cold-build hint), and a dead one must not be mistaken for a slow build (that is exactly the
+    misdiagnosis behind the owner-visible `-32000`).
+    """
+    deadline = time.monotonic() + max(0.0, float(grace))
+    while True:
+        code = proc.poll()
+        if code is not None:
+            return code
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        time.sleep(min(0.05, remaining))
 
 
 def _timeout_problem(name: str, value: object) -> str | None:
@@ -1032,19 +1110,80 @@ def _timeout_problem(name: str, value: object) -> str | None:
     return None
 
 
+def _tool_result_problem(value: object) -> str | None:
+    """Why a `tools/call` RESULT is not a proven success, or `None` when it is.
+
+    A JSON-RPC envelope without an `error` member says nothing about the TOOL: an MCP result carries
+    `content` blocks, `isError` may mark a tool-level failure, and a server may answer an empty
+    object, a bare string or no `result` at all. Any of those used to be recorded as a successful
+    call — the exact `-32000` class hidden behind a well-formed envelope (review R4).
+    """
+    if value is None:
+        return ("the response carries no `result` member at all: nothing answered the tools/call")
+    if not isinstance(value, dict):
+        return (f"`result` is a {type(value).__name__}, not the MCP object with a `content` list, so "
+                "the answer cannot be read")
+    if "isError" in value and not isinstance(value.get("isError"), bool):
+        return ("the MCP result carries a non-boolean `isError`, so a tool-level failure cannot be "
+                "ruled out")
+    if value.get("isError") is True:
+        return ("the MCP result carries isError: true — the server reported a TOOL-level failure, so "
+                "the call did not succeed")
+    content = value.get("content")
+    if not isinstance(content, list) or not content:
+        return ("the MCP result carries no `content` list of content blocks, so the call answered "
+                "nothing")
+    for block in content:
+        if not isinstance(block, dict) or not isinstance(block.get("type"), str) \
+                or not block.get("type").strip():
+            return ("the MCP result carries a malformed `content` block (no `type`), so the answer is "
+                    "not a well-formed tool result")
+    return None
+
+
+def _bounded_result(value: object, limit: int = 4000) -> object:
+    """The tool result as EVIDENCE, bounded so one huge answer cannot bloat the record.
+
+    The response is preserved (the review asks for it): a value whose JSON exceeds `limit` characters
+    is replaced by a marked prefix instead of being dropped silently.
+    """
+    try:
+        text = json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return {"unserializable": type(value).__name__}
+    if len(text) <= limit:
+        return value
+    return {"truncated": True, "characters": len(text), "json_prefix": text[:limit]}
+
+
 def mcp_start_handshake(repo: str | pathlib.Path, argv: list[str] | None = None,
                         first_response_timeout: float = COLD_BUILD_TIMEOUT,
                         response_timeout: float = HANDSHAKE_TIMEOUT,
+                        probe_tool: str | None = None,
                         env: dict | None = None) -> dict:
     """Bounded newline-delimited JSON-RPC handshake against a stdio Farukon MCP server.
 
-    Starts `cargo run --quiet -p farukon_mcp --` in the repository root (or the injected `argv`, the
-    seam the offline tests use with a fake server), sends `initialize`, the initialized notification
-    and `tools/list`, and verifies that all eight Farukon tools are listed. Every read is bounded:
-    the first response may wait for a cold cargo build (up to 30 min), the protocol replies are
-    awaited for 30 s. The child process TREE is terminated on every path, so a failed probe never
-    leaves a platform instance behind. Failures are DATA: `ok=False` with a message, never an
-    exception.
+    Starts the managed `cargo run --quiet -p farukon_mcp --`, an injected `argv` (the seam the offline
+    tests use with a fake server), or the OWNER'S OWN registration — the platform really registers
+    `node .kimi-code/farukon-mcp-launcher.js`, a Node wrapper that starts the server on the INHERITED
+    stdio and exits with its status, so the probe must verify exactly the shape the client runs and
+    not only the cargo shape the factory would like it to be.
+
+    Then: `initialize`, the initialized notification, `tools/list` and — only when `probe_tool` names
+    one of the eight tools — a real `tools/call`. `tools/list` says a tool EXISTS; only a call says
+    the server can still answer, so that last stage is OPT-IN (a live platform may start an instance).
+
+    Every read is bounded. DEATH IS EVIDENCE, never a guess: the result reports the protocol `stage`
+    that was reached, the child's `exit_code` (None while it still runs), its own `stdout_tail` /
+    `stderr_tail`, the number of `protocol_frames` it wrote and its `error_code` when it answered with
+    a JSON-RPC error — so a launcher that dies before a single frame is reported as a launch/build
+    failure (stage `initialize`, exit 1, its stderr lines), never as a slow cold build. A server that
+    answers the WHOLE listing and then dies is not green either: `post_list_alive` records that the
+    process was gone right after `tools/list`.
+
+    The child process TREE is terminated on every path (a Node wrapper's server is a grandchild), so
+    a probe never leaves a platform instance behind. Failures are DATA: `ok=False` with a message,
+    never an exception.
 
     TIMEOUT POLICY (validated BEFORE any process is started, because a budget that defeats the
     bounded wait makes the probe hang instead of reporting): a timeout must be a real int/float
@@ -1057,11 +1196,21 @@ def mcp_start_handshake(repo: str | pathlib.Path, argv: list[str] | None = None,
     command = list(argv) if argv else [COMMAND, *MANAGED_ARGS]
     result = {"command": command, "cwd": os.path.abspath(str(repo)), "ok": False,
               "protocol_version": None, "server": None, "tools": [],
-              "missing_tools": list(FARUKON_TOOLS), "message": ""}
+              "missing_tools": list(FARUKON_TOOLS), "message": "",
+              "stage": None, "exit_code": None, "error_code": None,
+              "stdout_tail": [], "stderr_tail": [], "protocol_frames": 0,
+              "post_list_alive": None, "probed_tool": None, "tool_result": None}
     problem = (_timeout_problem("first_response_timeout", first_response_timeout)
                or _timeout_problem("response_timeout", response_timeout))
     if problem is not None:
         result["message"] = f"{TIMEOUT_REFUSAL} `{' '.join(command)}`: {problem}"
+        return result
+    if probe_tool is not None and probe_tool not in FARUKON_TOOLS:
+        # The probe only ever calls one of the eight platform tools: a name outside that contract is a
+        # caller mistake, refused before a child is started instead of silently probing nothing.
+        result["message"] = (f"probe_tool must name one of the {len(FARUKON_TOOLS)} Farukon tools "
+                             f"({', '.join(FARUKON_TOOLS)}): found {probe_tool!r}; omit probe_tool to "
+                             "skip the tools/call stage instead")
         return result
     try:
         proc = subprocess.Popen(command, cwd=str(repo), stdin=subprocess.PIPE,
@@ -1072,25 +1221,68 @@ def mcp_start_handshake(repo: str | pathlib.Path, argv: list[str] | None = None,
         result["message"] = (f"cannot start `{' '.join(command)}` in {result['cwd']}: "
                              f"{type(exc).__name__}: {exc}")
         return result
+    state = {"frames": 0, "tail": collections.deque(maxlen=STDOUT_TAIL_LINES)}
     lines: "queue.Queue" = queue.Queue()
     errors: "collections.deque" = collections.deque(maxlen=STDERR_TAIL_LINES)
-    threading.Thread(target=_pump, args=(proc.stdout, lines), daemon=True).start()
-    threading.Thread(target=_drain, args=(proc.stderr, errors), daemon=True).start()
+    out_thread = threading.Thread(target=_pump, args=(proc.stdout, lines, state), daemon=True)
+    err_thread = threading.Thread(target=_drain, args=(proc.stderr, errors), daemon=True)
+    out_thread.start()
+    err_thread.start()
+
+    def grace_of(budget: float) -> float:
+        """The bounded window in which a stage watches for its child's death."""
+        return min(LIVENESS_GRACE, max(float(budget), 0.0))
+
+    def snapshot(grace: float) -> int | None:
+        """Record the child's exit code and its OWN output; `None` while it still runs."""
+        exit_code = _exit_code(proc, grace)
+        if exit_code is not None:
+            # The pipes are closed once the child is gone, so both readers finish; the join is bounded
+            # anyway because a wrapper may have handed stdout to a process that is still alive.
+            wait = max(LIVENESS_GRACE, grace)
+            out_thread.join(timeout=wait)
+            err_thread.join(timeout=wait)
+        result["exit_code"] = exit_code
+        result["stdout_tail"] = list(state["tail"])
+        result["stderr_tail"] = _stderr_lines(errors)
+        result["protocol_frames"] = int(state["frames"])
+        return exit_code
+
+    def died(stage: str, grace: float, what: str) -> bool:
+        """`True` (and the failure is written into the result) when the child EXITED at `stage`."""
+        code = snapshot(grace)
+        result["stage"] = stage
+        if code is None:
+            return False
+        result["message"] = (
+            f"the server exited with code {code} during {what} (stage {stage}) from "
+            f"`{' '.join(command)}` in {result['cwd']}"
+            + _stderr_hint(result["stderr_tail"])
+            + f"; it never answered and only {result['protocol_frames']} protocol frame(s) were "
+              "written, so this is a launcher/build failure — not a slow cold build")
+        return True
+
     try:
         if not _write_line(proc.stdin, _initialize_request(1)):
+            result["stage"] = "initialize"
             result["message"] = "the server closed stdin before the initialize request"
             return result
         init = _await_response(lines, 1, first_response_timeout)
         if init is None:
+            if died("initialize", grace_of(first_response_timeout), "initialize"):
+                return result
             result["message"] = (f"no initialize response within {int(first_response_timeout)}s from "
                                  f"`{' '.join(command)}` in {result['cwd']}"
-                                 + _stderr_hint(errors)
-                                 + "; a cold cargo build takes long — warm the target directory and "
-                                   "re-run")
+                                 + _stderr_hint(result["stderr_tail"])
+                                 + "; the child is still running and a cold cargo build takes long — "
+                                   "warm the target directory and re-run")
             return result
         if "error" in init:
+            error = init.get("error")
+            result["stage"] = "initialize"
+            result["error_code"] = error.get("code") if isinstance(error, dict) else None
             result["message"] = (f"the server answered initialize with a JSON-RPC error: "
-                                 f"{json.dumps(init.get('error'))}")
+                                 f"{json.dumps(error)}")
             return result
         init_result = init.get("result") if isinstance(init.get("result"), dict) else {}
         result["protocol_version"] = init_result.get("protocolVersion")
@@ -1099,29 +1291,91 @@ def mcp_start_handshake(repo: str | pathlib.Path, argv: list[str] | None = None,
         _write_line(proc.stdin, {"jsonrpc": "2.0", "method": "notifications/initialized"})
         if not _write_line(proc.stdin, {"jsonrpc": "2.0", "id": 2, "method": "tools/list",
                                         "params": {}}):
+            result["stage"] = "tools/list"
             result["message"] = "the server closed stdin before the tools/list request"
             return result
         listing = _await_response(lines, 2, response_timeout)
         if listing is None:
+            if died("tools/list", grace_of(response_timeout), "tools/list"):
+                return result
             result["message"] = (f"no tools/list response within {int(response_timeout)}s"
-                                 + _stderr_hint(errors))
+                                 + _stderr_hint(result["stderr_tail"]))
             return result
         if "error" in listing:
+            error = listing.get("error")
+            result["stage"] = "tools/list"
+            result["error_code"] = error.get("code") if isinstance(error, dict) else None
             result["message"] = (f"the server answered tools/list with a JSON-RPC error: "
-                                 f"{json.dumps(listing.get('error'))}")
+                                 f"{json.dumps(error)}")
             return result
         listing_result = listing.get("result") if isinstance(listing.get("result"), dict) else {}
         tools = listing_result.get("tools") if isinstance(listing_result.get("tools"), list) else []
         names = [tool.get("name") for tool in tools
                  if isinstance(tool, dict) and isinstance(tool.get("name"), str)]
         missing = [name for name in FARUKON_TOOLS if name not in names]
-        result.update(ok=not missing, tools=names, missing_tools=missing)
+        result.update(tools=names, missing_tools=missing)
+        # LIVENESS: the listing is green while the process may already be gone. Watch the child for a
+        # bounded grace, so the verdict is never taken from the listing alone.
+        post_exit = snapshot(grace_of(response_timeout))
+        result["post_list_alive"] = post_exit is None
+        if post_exit is not None:
+            result["stage"] = "tools/list"
+            result["message"] = (f"the server answered tools/list ({len(names)} tool(s) listed) and "
+                                 f"then exited with code {post_exit}: the listing is green while the "
+                                 "process is gone, so every later tools/call fails with a closed "
+                                 "connection" + _stderr_hint(result["stderr_tail"]))
+            return result
         if missing:
+            result["stage"] = "tools/list"
             result["message"] = ("the server answered the handshake but does not expose every "
                                  f"Farukon tool: missing {', '.join(missing)}")
-        else:
+            return result
+        if probe_tool is None:
+            result["ok"] = True
             result["message"] = (f"all {len(FARUKON_TOOLS)} Farukon tools are listed by the server "
-                                 f"({', '.join(FARUKON_TOOLS)})")
+                                 f"({', '.join(FARUKON_TOOLS)}) and it is still serving after "
+                                 "tools/list")
+            return result
+        # The OPT-IN tools/call stage: the only stage where a server that answers the listing can
+        # still be dead, which is exactly the owner-visible `-32000` class.
+        result["stage"] = "tools/call"
+        if not _write_line(proc.stdin, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                        "params": {"name": probe_tool, "arguments": {}}}):
+            result["message"] = "the server closed stdin before the tools/call request"
+            return result
+        call = _await_response(lines, 3, response_timeout)
+        if call is None:
+            if died("tools/call", grace_of(response_timeout), f"the tools/call to {probe_tool!r}"):
+                return result
+            result["message"] = (f"no tools/call response within {int(response_timeout)}s"
+                                 + _stderr_hint(result["stderr_tail"]))
+            return result
+        if "error" in call:
+            error = call.get("error")
+            result["error_code"] = error.get("code") if isinstance(error, dict) else None
+            exit_code = snapshot(grace_of(response_timeout))
+            result["message"] = (
+                f"the server answered tools/call for {probe_tool!r} with a JSON-RPC error: "
+                f"{json.dumps(error)}"
+                + (f"; it then exited with code {exit_code}" if exit_code is not None else "")
+                + _stderr_hint(result["stderr_tail"]))
+            return result
+        # A well-formed ENVELOPE is not a successful CALL: the MCP RESULT is validated and preserved
+        # as evidence, so isError/empty/malformed/absent results are failures, never a healthy proof.
+        call_result = call.get("result")
+        result["tool_result"] = _bounded_result(call_result)
+        problem = _tool_result_problem(call_result)
+        if problem is not None:
+            result["stage"] = "tools/call"
+            result["message"] = (f"the server answered tools/call for {probe_tool!r} without a usable "
+                                 f"MCP result: {problem}")
+            return result
+        result["probed_tool"] = probe_tool
+        result["stage"] = None
+        result["ok"] = True
+        result["message"] = (f"all {len(FARUKON_TOOLS)} Farukon tools are listed and a real "
+                             f"tools/call to {probe_tool!r} was answered with a well-formed MCP "
+                             "result")
         return result
     finally:
         _close_stdin(proc)
@@ -1213,10 +1467,29 @@ def probe_capabilities(repo: str | pathlib.Path, target: str | pathlib.Path | No
                     "the eight Farukon MCP tools cannot be built or served here"))
 
     config_ok, config_problems, entry_present = managed_config_problems(target_path, expected_cwd=root)
+    # REGISTRATION DRIFT: an entry that EXISTS but is not the managed definition is a different
+    # finding from a missing one — the client launches something the factory never reviewed (the
+    # platform really registers `node .kimi-code/farukon-mcp-launcher.js`). Only the differing KEY
+    # names are reported: an entry may carry a credential in any value.
+    entry = _farukon_entry(target_path)
+    managed = managed_entry(root)
+    drift_keys = (sorted(key for key in set(entry) | set(managed) if entry.get(key) != managed.get(key))
+                  if isinstance(entry, dict) else [])
+    config_drift = bool(drift_keys)
     if config_ok:
         caps["mcp_config"] = _capability(
             True, f"the managed {SERVER_NAME!r} server entry in {target_path} matches the definition "
-                  f"({json.dumps(managed_entry(root))})", str(target_path))
+                  f"({json.dumps(managed)})", str(target_path))
+    elif config_drift and any(key != "cwd" for key in drift_keys):
+        # A launch DEFINITION that differs (command, args, an extra key) is DRIFT: the client would
+        # start something other than the reviewed crate. A `cwd` that merely names another directory
+        # keeps its own, more precise wording (the platform-root problem below).
+        caps["mcp_config"] = _capability(
+            False, f"drift: the managed config carries a {SERVER_NAME!r} entry that is NOT the "
+                   f"managed definition — differing key(s): {', '.join(drift_keys)} (values withheld: "
+                   f"an MCP entry may carry credentials). The factory manages command {COMMAND!r} "
+                   f"with args {json.dumps(MANAGED_ARGS)} and cwd = the platform root, so this entry "
+                   "launches a server the factory never reviewed", str(target_path))
     else:
         caps["mcp_config"] = _capability(
             False, f"the managed config {target_path} is not usable: {config_problems[0]}",
@@ -1247,6 +1520,8 @@ def probe_capabilities(repo: str | pathlib.Path, target: str | pathlib.Path | No
         "config_valid": config_ok,
         "config_problems": config_problems,
         "config_entry_present": entry_present,
+        "config_drift": config_drift,
+        "config_drift_keys": drift_keys,
         "handshake": handshake,
     }
 
@@ -1261,6 +1536,401 @@ def format_probe(result: dict) -> str:
     lines.append(f"  {'farukon_usable:':<24}{'yes' if result['farukon_usable'] else 'no'}")
     lines.append("  missing: " + (", ".join(_toggle(n) for n in result["missing"]) or "none"))
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- live-session evidence
+# The Farukon proof is a REAL session, not a unit test: a task that operates the platform is accepted
+# only against captured live sessions. `record-session` runs one BOUNDED handshake against the shape
+# the MCP client really launches (the managed cargo entry, the project's OWN registration — the
+# platform registers `node .kimi-code/farukon-mcp-launcher.js` — or an explicitly supplied binary) and
+# writes the result as one immutable record; `verify-reproduction` and `verify-sessions` then judge
+# those records STRICTLY. Recording is DATA (a failed session is a finding, exit 0); verifying is a
+# GATE (a missing or weak proof is exit 1, never a quiet pass). A counted session must prove the WORK,
+# not just the listing: all eight tools AND a real `tools/call` with a validated MCP result (review
+# R4), and the five must be CONSECUTIVE — an unsuccessful attempt restarts the sequence.
+
+def _evidence_dir(evidence: str | pathlib.Path, create: bool) -> pathlib.Path:
+    """The evidence directory: created by a recorder, required to exist by a verifier."""
+    path = pathlib.Path(os.path.abspath(str(evidence)))
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    if not path.is_dir():
+        raise InputError(f"evidence directory not found: {path}; capture the live sessions with "
+                         "`farukon_mcp.py record-session` before verifying them")
+    return path
+
+
+def registration_argv(repo: str | pathlib.Path) -> list[str]:
+    """The command the MCP client REALLY launches for this project, from its own `mcp.json`.
+
+    The platform's registration is `node .kimi-code/farukon-mcp-launcher.js`: no cargo arguments
+    describe it, so a probe that only knows the managed cargo shape cannot verify what the client
+    runs. Only REVIEWED launch shapes are accepted — `cargo` with the managed argument list, or a
+    `node` wrapper whose launcher script really exists INSIDE the platform root. `npx`, inline code
+    evaluation and arbitrary scripts are refused: this helper launches what it is told, and an
+    unreviewed registration is exactly what must never be launched. The stored values are read to
+    BUILD the launch, never echoed into a diagnostic.
+    """
+    root = _checked_repo(repo)
+    entry = _farukon_entry(root / CONFIG_RELPATH)
+    if entry is None:
+        raise InputError(f"{root / CONFIG_RELPATH} carries no {SERVER_NAME!r} server entry: there is "
+                         "no registration to reproduce — inspect the project's own MCP config")
+    command = entry.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise InputError(f"mcpServers.{SERVER_NAME}.command is not a usable executable name in "
+                         f"{root / CONFIG_RELPATH} (the value is not echoed: an entry may carry "
+                         "credentials)")
+    args = entry.get("args")
+    if args is not None and not isinstance(args, list):
+        raise InputError(f"mcpServers.{SERVER_NAME}.args is not a list in {root / CONFIG_RELPATH} "
+                         "(values are not echoed: an entry may carry credentials)")
+    argv = [command] + [arg for arg in (args or []) if isinstance(arg, str)]
+    _reviewed_registration(root, command, argv[1:])
+    return argv
+
+
+# The only launchers a registration may use: the managed cargo crate and the platform's Node wrapper.
+REVIEWED_LAUNCHERS: tuple[str, ...] = ("cargo", "node")
+# Node flags that INJECT code or read it from a string: a launcher script is a FILE inside the root.
+INLINE_CODE_FLAGS: frozenset[str] = frozenset({"-e", "--eval", "-p", "--print", "--input-type"})
+
+
+def _launcher_name(command: str) -> str:
+    """The executable's bare name (`C:\\...\\node.exe` -> `node`), so a full path is still reviewed."""
+    return pathlib.Path(command.strip().strip('"')).stem.lower()
+
+
+def _reviewed_registration(root: pathlib.Path, command: str, args: list[str]) -> None:
+    """Refuse a registration the factory never reviewed — BEFORE anything is launched.
+
+    Diagnostics name the SHAPE, never a stored value: an MCP entry may carry a credential, and these
+    messages land in logs and evidence.
+    """
+    name = _launcher_name(command)
+    if name not in REVIEWED_LAUNCHERS:
+        raise InputError(f"the registered command is not a reviewed launcher (one of "
+                         f"{', '.join(REVIEWED_LAUNCHERS)}): npx, inline code and arbitrary scripts "
+                         "are never launched by this probe (the command's value is not echoed: an "
+                         "entry may carry credentials)")
+    if name == "cargo":
+        if args != MANAGED_ARGS:
+            raise InputError(f"a cargo registration must use the managed argument list "
+                             f"{json.dumps(MANAGED_ARGS)}: another cargo invocation is not the "
+                             "reviewed platform launch (values are not echoed)")
+        return
+    inline = [flag for flag in args if flag.split("=", 1)[0] in INLINE_CODE_FLAGS]
+    if inline:
+        raise InputError("a node registration may not evaluate inline code "
+                         f"({', '.join(sorted(inline))}): the platform launcher is a script file "
+                         "inside the platform root")
+    valued = [flag.split("=", 1)[0] for flag in args if flag.startswith("-") and "=" in flag]
+    if valued:
+        # A `--flag=value` keeps its value inside the record this probe writes, and an MCP entry may
+        # carry a credential in any value: only the launcher script and value-less flags are reviewed.
+        raise InputError("a node registration may not pass a value-carrying flag "
+                         f"({', '.join(sorted(set(valued)))}): the reviewed launcher shape is the "
+                         "script plus value-less flags (values withheld: an entry may carry "
+                         "credentials)")
+    scripts = [arg for arg in args if not arg.startswith("-")]
+    if not scripts:
+        raise InputError("a node registration must name its launcher script: no non-flag argument "
+                         "was found (values are not echoed)")
+    for script in scripts:
+        path = pathlib.Path(os.path.abspath(str(root / script)))
+        if not _within(path, root):
+            raise InputError(f"a node registration must launch a script INSIDE the platform root "
+                             f"{root}: an argument that is not a flag resolves outside it (the value "
+                             "is not echoed: an entry may carry credentials)")
+        if not path.is_file():
+            raise InputError("a node registration must name an EXISTING launcher script inside the "
+                             "platform root: an argument that is not a flag is not a file on disk "
+                             "(the value is not echoed: an entry may carry credentials)")
+
+
+def session_argv(repo: str | pathlib.Path, mode: str, executable: str | None = None,
+                 extra_args: list[str] | tuple[str, ...] = ()) -> list[str]:
+    """The argv of one recorded session, per `mode` (one of `SESSION_MODES`)."""
+    if mode == "managed":
+        return [COMMAND, *MANAGED_ARGS]
+    if mode == "registration":
+        if executable is not None:
+            raise InputError("--executable is the `direct` mode's argument: the `registration` mode "
+                             "launches the project's own mcp.json entry")
+        return registration_argv(repo)
+    if mode == "direct":
+        if not executable:
+            raise InputError("the `direct` mode needs --executable: the path of an already-built "
+                             f"{CRATE} server binary (the healthy control of the reproduction)")
+        root = _checked_repo(repo)
+        binary = pathlib.Path(os.path.abspath(str(executable)))
+        if not binary.is_file():
+            raise InputError(f"--executable must be an EXISTING file (the already-built {CRATE} "
+                             "binary): no such file on this host")
+        if not _within(binary, root):
+            raise InputError(f"--executable must stay inside the platform root {root}: this probe "
+                             "launches the project's own build, never an arbitrary program")
+        return [str(binary), *[str(arg) for arg in extra_args]]
+    raise InputError(f"--mode must be one of {', '.join(SESSION_MODES)}: found {mode!r}")
+
+
+def record_session(repo: str | pathlib.Path, evidence: str | pathlib.Path, mode: str = "managed",
+                   executable: str | None = None, extra_args: list[str] | tuple[str, ...] = (),
+                   probe_tool: str | None = None,
+                   first_response_timeout: float = COLD_BUILD_TIMEOUT,
+                   response_timeout: float = HANDSHAKE_TIMEOUT) -> dict:
+    """Run ONE bounded live session and store it as an immutable evidence record.
+
+    The record is the handshake result plus the facts a verifier needs to be strict: `kind`,
+    `mode`, `repo`, `session_id`, `started_at` and `duration_s`. A failed session is still a RECORD
+    (exit 0): the verdict belongs to `verify-reproduction` / `verify-sessions`, which refuse a weak
+    proof — an unrecordable session is never "no evidence needed".
+    """
+    root = _checked_repo(repo)
+    command = session_argv(root, mode, executable=executable, extra_args=extra_args)
+    directory = _evidence_dir(evidence, create=True)
+    started = time.time()
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(started))
+    handshake = mcp_start_handshake(root, argv=command, first_response_timeout=first_response_timeout,
+                                    response_timeout=response_timeout, probe_tool=probe_tool)
+    session_id = f"{stamp}-{mode}"
+    path = directory / f"{session_id}.json"
+    index = 1
+    while path.exists():                 # never overwrite an earlier session's evidence
+        index += 1
+        session_id = f"{stamp}-{mode}-{index}"
+        path = directory / f"{session_id}.json"
+    record = {
+        "kind": SESSION_KIND, "schema": SESSION_SCHEMA, "session_id": session_id, "mode": mode,
+        "repo": os.path.abspath(str(root)), "started_at": stamp,
+        "duration_s": round(time.time() - started, 3), **handshake,
+    }
+    try:
+        _write_text_exact(path, json.dumps(record, indent=2, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        raise InputError(f"cannot write the session record {path}: {exc}") from exc
+    return {"record": record, "path": str(path)}
+
+
+def session_evidence(evidence: str | pathlib.Path, repo: str | pathlib.Path
+                     ) -> tuple[list[dict], list[str]]:
+    """`(records, problems)` — the session records of THIS repository and the defects of the DIRECTORY.
+
+    FAIL CLOSED on unreadable evidence: a `*.json` file that cannot be parsed is NAMED in `problems`
+    instead of being skipped, because a broken file can hide an attempt — including the failed one
+    that has to restart the mandated sequence — and a skipped file would let the gate pass over it.
+    Only `*.json` files are session evidence at all: a known console capture (`.log`/`.txt`) or any
+    other artifact in the same directory is explicitly not evidence and is ignored. A parseable JSON
+    file of another kind or of another project is another artifact too (it is not this platform's
+    proof); duplicates stay distinct by `session_id`, and the verifiers de-duplicate them so one
+    session can never satisfy two slots.
+    """
+    directory = _evidence_dir(evidence, create=False)
+    wanted = os.path.normcase(os.path.abspath(str(repo)))
+    records: list[dict] = []
+    problems: list[str] = []
+    for path in sorted(directory.iterdir()):
+        if not path.is_file() or path.suffix.lower() != ".json":
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            problems.append(f"{path.name} is not readable session evidence ({type(exc).__name__}: "
+                            f"{exc}): an unparseable record could hide an attempt, so the evidence "
+                            "fails closed instead of being skipped")
+            continue
+        if not isinstance(data, dict) or data.get("kind") != SESSION_KIND:
+            continue
+        if not isinstance(data.get("session_id"), str) or not data["session_id"].strip():
+            continue
+        if os.path.normcase(os.path.abspath(str(data.get("repo") or ""))) != wanted:
+            continue
+        records.append(data)
+    return records, problems
+
+
+def _serving_session(record: dict) -> bool:
+    """`True` when the record proves a COMPLETE eight-tool server that is still serving.
+
+    This is the LISTING half of the proof: `initialize` answered, all eight tools listed, the process
+    alive after `tools/list`. It says nothing about whether the server can answer a call.
+    """
+    tools = record.get("tools") if isinstance(record.get("tools"), list) else []
+    return (record.get("ok") is True
+            and record.get("missing_tools") == []
+            and all(name in tools for name in FARUKON_TOOLS)
+            and record.get("post_list_alive") is True
+            and record.get("exit_code") is None)
+
+
+def _recorded_result_problem(record: dict) -> str | None:
+    """Why the PRESERVED `tools/call` result of a record is not proof of a successful call.
+
+    A counted session keeps the answer it got (`tool_result`), and that answer must still be a
+    well-formed MCP result. A record that does not preserve the answer cannot show that a call was
+    ever validated, so the field is MANDATORY for a counted session — dropping it cannot bypass the
+    call requirement (review R5). A TRUNCATION marker is accepted: `_bounded_result` only truncates,
+    and the full answer was validated before it was stored.
+    """
+    if "tool_result" not in record or record.get("tool_result") is None:
+        return ("the record does not preserve its `tools/call` result (`tool_result`), so no "
+                "validated call is proven")
+    value = record.get("tool_result")
+    if isinstance(value, dict) and value.get("truncated") is True:
+        return None
+    return _tool_result_problem(value)
+
+
+def _healthy_session(record: dict) -> bool:
+    """`True` when the record proves the WHOLE session — including a real, successful `tools/call`.
+
+    A listing is not a call: `tools/list` says a tool EXISTS, and the owner-visible `-32000` is a
+    CALL failure. So a record only counts as one of the five sessions when the probe actually invoked
+    one of the eight tools (`probed_tool`), the server ANSWERED it without a JSON-RPC error and with
+    a well-formed MCP result (`isError` absent/false, a `content` list — re-checked when the answer
+    was preserved), and it was still serving. A list-only or errored record never fills a slot
+    (reviews R1/R4).
+    """
+    probed = record.get("probed_tool")
+    return (_serving_session(record)
+            and isinstance(probed, str) and probed in FARUKON_TOOLS
+            and record.get("error_code") is None
+            and _recorded_result_problem(record) is None)
+
+
+def _schema_problem(record: dict) -> str | None:
+    """`None` when the record's evidence schema is the one this helper writes."""
+    return None if record.get("schema") == SESSION_SCHEMA else "unknown evidence schema"
+
+
+def _stamp_of(record: dict) -> str | None:
+    """The record's position in the ordered sequence, or `None` when it cannot be placed in time."""
+    stamp = record.get("started_at")
+    try:
+        time.strptime(str(stamp), SESSION_STAMP)
+    except (TypeError, ValueError):
+        return None
+    return str(stamp)
+
+
+def _freshness_problem(record: dict) -> str | None:
+    """Why a record is not placeable, run-associated evidence, or `None` when it is.
+
+    A record of an unknown schema, or one whose start cannot be parsed, is AMBIGUOUS: it cannot be
+    placed in this run, so it never fills one of the five session slots and it FAILS the gate (an
+    unplaceable proof is not a proof). It is rejected BEFORE the sequence is evaluated, so an
+    ambiguous file can never restart — or silently continue — the mandated run of five.
+    """
+    return _schema_problem(record) or (None if _stamp_of(record) is not None
+                                       else "unparseable start timestamp")
+
+
+def _observed_failure(record: dict) -> bool:
+    """`True` when the record proves a failure that was OBSERVED (exit code or JSON-RPC error)."""
+    return (record.get("ok") is False
+            and record.get("stage") == "initialize"
+            and record.get("protocol_frames") == 0
+            and (record.get("exit_code") is not None or record.get("error_code") is not None))
+
+
+def verify_reproduction(repo: str | pathlib.Path, evidence: str | pathlib.Path) -> dict:
+    """Strict verdict on the reproduction evidence: the DEAD launch AND the healthy control.
+
+    The reproduction the platform demanded is a pair: (a) the real launch fails BEFORE any protocol
+    frame (stage `initialize`, zero frames, an observed exit code or JSON-RPC error such as `-32000`,
+    the launcher's own stderr captured) and (b) a healthy control lists all eight tools and is still
+    serving after `tools/list`. A missing half is a FAILURE of the gate, naming what is missing.
+    The control is the LISTING half on purpose: this gate proves WHICH failure was reproduced, while
+    the five-session gate below additionally requires a real `tools/call` in EVERY counted session.
+    """
+    root = _checked_repo(repo)
+    records, evidence_problems = session_evidence(evidence, root)
+    failures = [record for record in records if _observed_failure(record)]
+    healthy = [record for record in records if _serving_session(record)]
+    problems: list[str] = list(evidence_problems)
+    if not failures:
+        problems.append("no FAILED session record proves the real failure before initialize: expected "
+                        "a record with stage 'initialize', 0 protocol frames and an observed exit "
+                        "code or JSON-RPC error (capture it with `record-session --mode registration`)")
+    if not healthy:
+        problems.append("no HEALTHY control session proves the platform can serve: expected a record "
+                        "listing all eight Farukon tools with the process still alive after "
+                        "tools/list (capture it with `record-session --mode direct`)")
+    return {
+        "ok": not problems, "repo": str(root),
+        "evidence": os.path.abspath(str(evidence)),
+        "sessions": len(records),
+        "failure_session": failures[0]["session_id"] if failures else None,
+        "healthy_session": healthy[0]["session_id"] if healthy else None,
+        "problems": problems,
+        "message": ("reproduction proven: an observed pre-initialize launch failure AND a healthy "
+                    "eight-tool control session" if not problems else
+                    f"reproduction NOT proven ({len(problems)} missing piece(s))"),
+    }
+
+
+def verify_sessions(repo: str | pathlib.Path, evidence: str | pathlib.Path) -> dict:
+    """Strict verdict on the five live sessions: DISTINCT, placeable, consecutive, EACH with a call.
+
+    A counted session must prove the whole workflow, not just the listing: all eight tools listed, a
+    real `tools/call` answered with a well-formed MCP result (no `isError`, a `content` list) and no
+    JSON-RPC error, with the process still serving. On top of that the five must be CONSECUTIVE: the
+    records are read in start order and every unsuccessful attempt (a dead launch, a list-only
+    session, a malformed or error answer) RESETS the run, so five healthy sessions followed by a
+    failure and one more healthy session are NOT five (review R4 — a failed attempt is diagnostic and
+    restarts the mandated sequence). Every counted record must also PRESERVE the validated result it
+    got (review R5): dropping `tool_result` proves nothing, and evidence that cannot be parsed fails
+    closed naming the file instead of being skipped. Duplicates never fill a slot and an unplaceable
+    record fails the gate.
+    """
+    root = _checked_repo(repo)
+    records, problems = session_evidence(evidence, root)
+    seen: set[str] = set()
+    rejected: list[str] = []
+    ordered: list[tuple[str, str, dict]] = []
+    for record in records:
+        session_id = record["session_id"]
+        if session_id in seen:
+            continue                    # one session cannot fill two slots
+        seen.add(session_id)
+        problem = _freshness_problem(record)
+        if problem is not None:
+            rejected.append(f"{session_id} ({problem})")
+            continue
+        ordered.append((_stamp_of(record) or "", session_id, record))
+    ordered.sort(key=lambda item: (item[0], item[1]))
+    consecutive: list[str] = []
+    reset_at: str | None = None
+    for _stamp, session_id, record in ordered:
+        if _healthy_session(record):
+            consecutive.append(session_id)
+        else:
+            consecutive = []            # an unsuccessful attempt restarts the mandated sequence
+            reset_at = session_id
+    if rejected:
+        problems.append("these records are not FRESH, run-associated evidence and never fill a slot: "
+                        + ", ".join(rejected))
+    if len(consecutive) < SESSIONS_REQUIRED:
+        where = f" AFTER the latest unsuccessful attempt ({reset_at})" if reset_at else ""
+        problems.append(
+            f"only {len(consecutive)} of the {SESSIONS_REQUIRED} required live sessions{where} prove "
+            "the whole workflow — all eight tools listed, a SUCCESSFUL tools/call answered with a "
+            "well-formed MCP result (no isError, a content list) that the record PRESERVES "
+            "(`tool_result`) and no JSON-RPC error, and the process still serving: a listing alone is "
+            "not a call, a record without its result proves nothing, and an unsuccessful attempt "
+            "restarts the sequence, so five CONSECUTIVE sessions are required. Capture another one "
+            "with `farukon_mcp.py record-session --mode registration --probe-tool <tool>` (or "
+            "--mode direct for the built binary with --probe-tool)")
+    return {
+        "ok": not problems, "repo": str(root),
+        "evidence": os.path.abspath(str(evidence)),
+        "required": SESSIONS_REQUIRED, "healthy_sessions": consecutive,
+        "rejected_sessions": rejected, "sequence_reset_at": reset_at, "sessions": len(records),
+        "problems": problems,
+        "message": (f"{len(consecutive)} consecutive live sessions proven" if not problems else
+                    f"live-session proof NOT met ({len(problems)} problem(s))"),
+    }
 
 
 # --------------------------------------------------------------------------- CLI
@@ -1409,6 +2079,59 @@ def cmd_validate_config(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_record_session(args: argparse.Namespace) -> int:
+    recorded = record_session(args.repo, args.evidence, mode=args.mode,
+                              executable=args.executable, extra_args=args.arg or (),
+                              probe_tool=args.probe_tool,
+                              first_response_timeout=args.first_response_timeout,
+                              response_timeout=args.response_timeout)
+    record = recorded["record"]
+    if args.as_json:
+        print(json.dumps(recorded, indent=2, ensure_ascii=False))
+        return 0
+    state = "HEALTHY" if _healthy_session(record) else "DEGRADED"
+    hint = ("" if _healthy_session(record) else
+            "  [this record cannot count as one of the five sessions: pass --probe-tool <tool> so the "
+            "session proves a real tools/call]" if _serving_session(record) else "")
+    print(f"{state}: session {record['session_id']} ({record['mode']}) on {record['repo']} — "
+          f"stage {record['stage']}, exit code {record['exit_code']}, "
+          f"{record['protocol_frames']} protocol frame(s), {len(record['tools'])} tool(s) listed; "
+          f"{record['message']}{hint}")
+    print(f"  evidence: {recorded['path']}")
+    return 0
+
+
+def cmd_verify_reproduction(args: argparse.Namespace) -> int:
+    result = verify_reproduction(args.repo, args.evidence)
+    if args.as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(("OK" if result["ok"] else "FAIL") + f" {result['message']}")
+        print(f"  repo: {result['repo']}")
+        print(f"  evidence: {result['evidence']} ({result['sessions']} session record(s))")
+        print(f"  failure session: {result['failure_session'] or 'NONE'}")
+        print(f"  healthy session: {result['healthy_session'] or 'NONE'}")
+        for problem in result["problems"]:
+            print(f"  - {problem}")
+    return 0 if result["ok"] else 1
+
+
+def cmd_verify_sessions(args: argparse.Namespace) -> int:
+    result = verify_sessions(args.repo, args.evidence)
+    if args.as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(("OK" if result["ok"] else "FAIL") + f" {result['message']}")
+        print(f"  repo: {result['repo']}")
+        print(f"  evidence: {result['evidence']} ({result['sessions']} session record(s))")
+        print(f"  consecutive healthy sessions: {len(result['healthy_sessions'])}/"
+              f"{result['required']} — " + (", ".join(result["healthy_sessions"]) or "NONE"))
+        print(f"  latest unsuccessful attempt: {result.get('sequence_reset_at') or 'none'}")
+        for problem in result["problems"]:
+            print(f"  - {problem}")
+    return 0 if result["ok"] else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="farukon_mcp.py", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1449,6 +2172,49 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--path", required=True, help="config to check")
     p.add_argument("--json", action="store_true", dest="as_json", help="machine-readable output")
     p.set_defaults(func=cmd_validate_config)
+
+    p = sub.add_parser("record-session",
+                       help="run ONE bounded live MCP session and store it as evidence")
+    p.add_argument("--repo", required=True, help="Farukon platform repository root")
+    p.add_argument("--evidence", required=True,
+                   help="evidence directory receiving the session record (created if missing)")
+    p.add_argument("--mode", default="managed", choices=list(SESSION_MODES),
+                   help="managed = the reviewed cargo entry; registration = the project's OWN "
+                        "mcp.json entry (the shape the MCP client really launches: reviewed `cargo` "
+                        "or `node` launcher only); direct = an already-built binary given with "
+                        "--executable")
+    p.add_argument("--executable", default=None,
+                   help="the server binary to launch in `direct` mode; it must be an existing file "
+                        "inside the platform root")
+    p.add_argument("--arg", action="append", default=[],
+                   help="extra argument for the `direct` mode's binary (repeatable)")
+    p.add_argument("--probe-tool", dest="probe_tool", default=None,
+                   help="opt-in: also invoke this tools/call (one of the eight Farukon tools)")
+    p.add_argument("--first-response-timeout", dest="first_response_timeout",
+                   type=float, default=COLD_BUILD_TIMEOUT,
+                   help=f"budget for the first response, a cold build included "
+                        f"(default: {COLD_BUILD_TIMEOUT})")
+    p.add_argument("--response-timeout", dest="response_timeout", type=float,
+                   default=HANDSHAKE_TIMEOUT,
+                   help=f"budget for the later protocol replies (default: {HANDSHAKE_TIMEOUT})")
+    p.add_argument("--json", action="store_true", dest="as_json", help="machine-readable output")
+    p.set_defaults(func=cmd_record_session)
+
+    p = sub.add_parser("verify-reproduction",
+                       help="strict gate: the observed launch failure AND a healthy control session")
+    p.add_argument("--repo", required=True, help="Farukon platform repository root")
+    p.add_argument("--evidence", required=True,
+                   help="evidence directory with the session records to judge")
+    p.add_argument("--json", action="store_true", dest="as_json", help="machine-readable output")
+    p.set_defaults(func=cmd_verify_reproduction)
+
+    p = sub.add_parser("verify-sessions",
+                       help=f"strict gate: {SESSIONS_REQUIRED} distinct healthy live sessions")
+    p.add_argument("--repo", required=True, help="Farukon platform repository root")
+    p.add_argument("--evidence", required=True,
+                   help="evidence directory with the session records to judge")
+    p.add_argument("--json", action="store_true", dest="as_json", help="machine-readable output")
+    p.set_defaults(func=cmd_verify_sessions)
     return ap
 
 

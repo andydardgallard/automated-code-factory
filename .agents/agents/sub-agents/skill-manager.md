@@ -84,6 +84,28 @@ Read `.agents/skills/code-factory/references/reference-docs.md` first and follow
    content: say so plainly in the report and never claim the remote source was checked
    successfully.
 
+## Pinned Git sources (exact revision)
+
+When a `reference_docs` entry names a Git repository that is a reviewed, canonical catalog (a source
+whose content decides what other agents are allowed to do), pin it — never record whatever `HEAD`
+happened to be:
+
+1. Materialize with the exact full commit sha:
+   `python .agents/skills/code-factory/scripts/skill_base.py --repo <root> resolve <url> --revision <full-sha>`.
+   The printed `resolved_revision` must be that sha and `stale` must be `false`; a revision the source
+   cannot provide, or a cached copy at another revision, is exit 1 — re-pin, do not sign it.
+2. Read the materialized `local_path` and generate the skill so it states the canonical source URL,
+   the exact commit and the content `sha256` it was generated from, plus the catalog's on-disk layout
+   (where its files, ids and formats actually live) and the safe read path — enough for a reusing role
+   to work from the pin without the upstream tooling.
+3. Report the pinned `revision` in your handoff and record the entry with the SAME pin:
+   `record <name> <url> <hash> --repo <root> --revision <full-sha> --resolved-hash <sha256>`, so the
+   manifest carries `source`, `sha256`, `resolved_revision` together.
+4. Never let the pinned workflow reach for a moving source: no `npx`/`pnpx`/`npm` or any upstream
+   executable, no dependency installation, no git hooks — a pin that still runs upstream code at call
+   time is not a pin. Updating the guidance later means a NEW reviewed commit and a regenerated skill
+   with a new hash, never an in-place edit of a skill generated from an older revision.
+
 ## Report (your final message IS the handoff)
 
 Return ONLY this YAML:
@@ -94,6 +116,7 @@ generated:        # skills created from reference_docs
     source: <local path or canonical original URL>
     source_type: local | http_doc | http_git
     hash: <sha256 prefix>
+    revision: <full commit sha>   # Git sources only: the exact commit the skill was generated from
     action: created | reused | updated
     stale: true     # ONLY when a clearly marked offline/stale cached copy was used
 reused:           # skills referenced via reference_skills

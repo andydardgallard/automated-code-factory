@@ -44,6 +44,17 @@ Cases:
      model AND a substituted/fallback model is a `mismatch` (exit 1) — the membership test that
      accepted it passed exactly the substitution the anti-substitution gate must reject. The served
      canonical set must EQUAL the singleton claimed set (`k3` and `kimi-k3` are one model).
+ 14. FAILING-FIRST (violation N-3, run 20261107): a REQUIRED role leaves no wire trace and the
+     pipeline simply omits its `models_used` claim — the strict gate must still FAIL naming the role
+     (a mislabeled `coder` spawn is not planner evidence); conditional roles and roles the wire did
+     see stay green without a claim.
+ 15. FAILING-FIRST (factory-defect-session-resolution.md, run 20261109): the factory is launched
+     from its own directory and `repo_path` points at another project, so the run's session has
+     `cwd` = the launch directory while an OLDER session still has `cwd` = the target repository.
+     The pipeline names that launch directory, the run's session and the run start; `auto` must
+     never pick the stale target-cwd session — it resolves the one run-bound candidate or degrades —
+     a blank `--session` is an input error (never "auto"), and a run whose session is gone is
+     DEGRADED rather than audited from a wire that predates the run.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -56,6 +67,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
@@ -935,7 +947,8 @@ def case_14_strict_attribution(root: pathlib.Path) -> None:
                f"a forced strict run fails the required role: {artifact['comparison']!r}")
 
     # A required role WITH a wire trace passes, and an unused/conditional role never causes a
-    # false failure: only a CLAIMED required role is checked.
+    # false failure: a conditional role is checked only when the run claims it, while every other
+    # required role is checked against the wire whether it is claimed or not.
     good = contract_pipeline((("analyzer", "deepseek-flash"), ("gui_expert", "unused")),
                              task_type="implement",
                              required_roles=("analyzer", "gui_expert", "security_auditor"))
@@ -1102,6 +1115,181 @@ def case_16_malformed_wire_records_never_pass(root: pathlib.Path) -> None:
                f"the final line must not read PASS ({label}): {text!r}")
 
 
+def case_17_required_role_without_claim(root: pathlib.Path) -> None:
+    """(failing-first) A REQUIRED role needs wire evidence even when `models_used` omits it.
+
+    The defect this pins (violation N-3, run 20261107): the planner's claim was fabricated and the
+    wire held no planner spawn — the one k3.1-pro spawn was labelled `coder`. `required_unbacked`
+    only checks a role that CLAIMS a model, so a required role could leave no trace AND leave no
+    claim, and the run passed: omitting the claim was a way to bypass strict attribution entirely.
+    Strict means the wire must show every REQUIRED role; a conditional role still never fails on
+    its own, and a role with wire evidence needs no claim.
+    """
+    home, repo = standard_session(root / "planner-omitted")
+    # analyzer + coder are on the wire; `planner` is required and NOT claimed — the run "forgot"
+    # to log it, and the only kimi-k3 spawn is labelled coder.
+    omitted = contract_pipeline((("analyzer", "deepseek-flash"), ("coder", "kimi-k3")),
+                               task_type="implement",
+                               required_roles=("analyzer", "planner", "coder"))
+    spec = write(root, "pipeline-planner-omitted.yaml", omitted)
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(spec),
+                               name="planner-omitted.json")
+    expect(res.returncode == 1,
+           f"a required role with no wire trace must FAIL even without a models_used claim: "
+           f"{res.returncode} {text!r} {err(res)!r}")
+    expect(artifact["strict"] is True,
+           f"implement is strict by default: {artifact.get('strict')!r}")
+    expect(artifact["comparison"].get("planner") in ("unbacked", "missing"),
+           f"the required, unclaimed role must be unbacked: {artifact['comparison']!r}")
+    expect("planner" in artifact["flags"]["required_unbacked"],
+           f"the flag must name the role: {artifact['flags']!r}")
+    expect("planner" in text and ("models_used" in text or "claim" in text),
+           f"the per-role line must name the role and the missing claim: {text!r}")
+    summary_line = text.strip().splitlines()[-1]
+    expect(summary_line.startswith("FAIL - ") and "planner" in summary_line,
+           f"the summary must name the required role: {text!r}")
+
+    # The mislabeled spawn does not count as the planner: it is evidence for `coder` only.
+    claimed = contract_pipeline((("analyzer", "deepseek-flash"), ("coder", "kimi-k3"),
+                                 ("planner", "kimi-k3")),
+                                task_type="implement",
+                                required_roles=("analyzer", "planner", "coder"))
+    spec = write(root, "pipeline-planner-mislabeled.yaml", claimed)
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(spec),
+                               name="planner-mislabeled.json")
+    expect(res.returncode == 1 and artifact["comparison"].get("planner") == "unbacked",
+           f"a coder-labelled spawn must never satisfy the planner: {res.returncode} "
+           f"{artifact['comparison']!r}")
+
+    # Conditional roles are NOT required to appear: listing gui_expert/security_auditor in
+    # required_roles without a claim and without a wire trace keeps the run green.
+    conditional = contract_pipeline((("analyzer", "deepseek-flash"), ("coder", "kimi-k3")),
+                                    task_type="implement",
+                                    required_roles=("analyzer", "coder", "gui_expert",
+                                                    "security_auditor"))
+    spec = write(root, "pipeline-planner-conditional.yaml", conditional)
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(spec),
+                               name="planner-conditional.json")
+    expect(res.returncode == 0,
+           f"a conditional role with no wire and no claim must not fail the run: "
+           f"{res.returncode} {text!r} {err(res)!r}")
+    expect(artifact["flags"]["required_unbacked"] == [],
+           f"nothing is unbacked here: {artifact['flags']!r}")
+
+    # A required role WITH wire evidence needs no claim: the evidence is the artifact.
+    wired = contract_pipeline((("analyzer", "deepseek-flash"),), task_type="implement",
+                              required_roles=("analyzer", "coder"))
+    spec = write(root, "pipeline-planner-wired.yaml", wired)
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(spec),
+                               name="planner-wired.json")
+    expect(res.returncode == 0 and "coder" not in artifact["flags"]["required_unbacked"],
+           f"a required role the wire saw must not fail for the missing claim: "
+           f"{res.returncode} {artifact['flags']!r}")
+
+
+def case_18_current_session_resolution(root: pathlib.Path) -> None:
+    """(failing-first) A launch outside the target repository must not be audited from the old wire.
+
+    The reported defect: the factory ran from its deployment directory for the target project
+    `farukon_v3.1.0`; the run's session had `cwd` = the deployment directory, an older session had
+    `cwd` = the target repository, and `--session auto` matched the target repository — so every
+    finish gate answered about a run that had finished days earlier. The pipeline is the run's own
+    evidence of where it started (`launch_dir`, `session_dir`, `started_at`); the resolver must use
+    it, pick the one run-bound candidate (or refuse loudly), and never fall back to the stale wire.
+    """
+    home = root / "home18"
+    launch = root / "launch18"
+    repo = root / "repo18"
+    launch.mkdir(parents=True, exist_ok=True)
+    (repo / ".code-factory" / "state").mkdir(parents=True, exist_ok=True)
+    stale_id = "session_18000000-0000-4000-8000-000000000018"
+    current_id = "session_18111111-1111-4111-8111-111111111111"
+    # The stale session: the target repository as cwd, from an earlier day, serving another model.
+    stale = build_session(home, repo, stale_id, {
+        "main": [llm("main", "kimi-k3", at=T0),
+                 spawned("agent-old", "factory-coder", "kimi-k3", at=T0)],
+        "agent-old": [llm("agent-old", "kimi-k3", at=T0 + 10)]},
+        profiles={"agent-old": "factory-coder"})
+    # The run's own session: the LAUNCH directory as cwd, serving the claimed models.
+    current = build_session(home, launch, current_id, {
+        "main": [llm("main", "deepseek-flash", at=T0 + 5000),
+                 spawned("agent-0", "factory-analyzer", "deepseek-flash", at=T0 + 5000)],
+        "agent-0": [llm("agent-0", "deepseek-flash", at=T0 + 5010)]},
+        profiles={"agent-0": "factory-analyzer"})
+    # The stale wire really is older than the run start; the current one is younger.
+    now = time.time()
+    run_started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 3600))
+    for path in list(stale.rglob("wire.jsonl")) + [stale]:
+        os.utime(path, (now - 86400, now - 86400))
+    for path in list(current.rglob("wire.jsonl")) + [current]:
+        os.utime(path, (now - 60, now - 60))
+    spec = write(repo / ".code-factory" / "state", "pipeline.yaml", "\n".join([
+        "run_id: 20261122-ef747283",
+        "task_type: implement",
+        'phase: "5-implement"',
+        "status: in_progress",
+        f'updated_at: "{run_started}"',
+        f'started_at: "{run_started}"',
+        f'launch_dir: "{launch.as_posix()}"',
+        f'session_dir: "{current.as_posix()}"',
+        "models_used:",
+        "  main: deepseek-flash",
+        "  analyzer: deepseek-flash",
+        ""]))
+
+    # An explicit session is the run's own wire: the layout must never stand in the way of that.
+    explicit_out = root / "explicit18.json"
+    explicit = run("--session", str(current), "--repo", str(repo),
+                   "--out", str(explicit_out), "--home", str(home), "--pipeline", str(spec))
+    explicit_artifact = json.loads(explicit_out.read_text(encoding="utf-8")) \
+        if explicit_out.is_file() else {}
+    expect(explicit.returncode == 0,
+           f"the explicit current session must be read: {out(explicit)!r} {err(explicit)!r}")
+    expect(explicit_artifact.get("resolved_by") == "arg"
+           and explicit_artifact.get("session", {}).get("id") == current_id,
+           f"the explicit session must win: {explicit_artifact.get('session')!r}")
+
+    # `auto` with the pipeline: the stale target-cwd session must NEVER be the one audited.
+    auto, artifact, text = attr(root, home, repo, "--pipeline", str(spec), name="auto18.json")
+    expect(auto.returncode in (0, 3),
+           f"auto must resolve the run-bound session or degrade, never audit the stale wire: "
+           f"exit {auto.returncode} {text!r} {err(auto)!r}")
+    chosen = artifact.get("session", {})
+    expect(chosen.get("id") != stale_id,
+           f"auto picked the OLD target-cwd session the reported run was misjudged from: {chosen!r}")
+    expect(chosen.get("dir") != str(stale.resolve()),
+           f"the audited session must not be the stale target-cwd one: {chosen!r}")
+    if auto.returncode == 0:
+        expect(chosen.get("id") == current_id,
+               f"a resolved auto session must be the run's own: {chosen!r}")
+
+    # A blank session is an input error: "blank" is not a synonym for `auto`.
+    blank = run("--session", "", "--repo", str(repo), "--out", str(root / "blank18.json"),
+                "--home", str(home), "--pipeline", str(spec))
+    expect(blank.returncode == 2,
+           f"a blank --session must be an input error, not auto: exit {blank.returncode} "
+           f"{out(blank)!r} {err(blank)!r}")
+    try:
+        ma.resolve_session(str(repo), "   ", home)
+    except ma.AttributionError:
+        pass
+    else:
+        expect(False, "resolve_session must refuse a blank session instead of resolving `auto`")
+
+    # The run's session is gone: a wire older than `started_at` is DEGRADED, never a confident pick.
+    moved = root / "case18-moved-session"
+    current.rename(moved)
+    stale_only, stale_artifact, stale_text = attr(root, home, repo, "--pipeline", str(spec),
+                                                  name="stale18.json")
+    expect(stale_only.returncode == 3,
+           f"a stale wire with no run-bound session must DEGRADE: exit {stale_only.returncode} "
+           f"{stale_text!r} {err(stale_only)!r}")
+    expect("DEGRADED" in stale_text or "DEGRADED" in err(stale_only),
+           f"the degradation must be loud: {stale_text!r} {err(stale_only)!r}")
+    expect(stale_artifact.get("session", {}).get("id") != stale_id,
+           f"the stale session must not be audited as the run: {stale_artifact.get('session')!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -1121,6 +1309,8 @@ def main() -> int:
         case_14_strict_attribution(root)
         case_15_contract_reader(root)
         case_16_malformed_wire_records_never_pass(root)
+        case_17_required_role_without_claim(root)
+        case_18_current_session_resolution(root)
 
     print("PASS - model_attribution.py confirms every models_used claim against the CLI's own "
           "session wire: roles come from state.json (or subagent.spawned), the wire name is "

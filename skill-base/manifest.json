@@ -83,6 +83,18 @@
           "resolved_revision": "f65dafe93b3cb1b4e6bb02dbe41503ed05bd9ebf"
         }
       ]
+    },
+    "modern-web-guidance": {
+      "name": "modern-web-guidance",
+      "created_at": "2026-11-22T13:30:42+00:00",
+      "last_used": "2026-11-22T13:30:42+00:00",
+      "task_ids": [
+        "20261122-ef747283"
+      ],
+      "source": "https://github.com/GoogleChrome/modern-web-guidance.git",
+      "sha256": "fd1d4e999316b52bc5b959e8b63cf1750cb3720afbd54fade367217a5b63c7f9",
+      "source_type": "http_git",
+      "resolved_revision": "64a6d708f5a43f2cd3fde5d4d7db3905ba1bdf65"
     }
   }
 }

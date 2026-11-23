@@ -10,17 +10,15 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.24.0 — run 20261105-11a026da implemented all 60 accepted findings of review
-20261104-b5b601f6 (40 critical / 16 major / 4 minor): 77 files changed, new rollback.py and
-supervisor_watchdog.py (autonomous background watchdog, owner requirement), the full 15-role
-models matrix shipped in .example.task.yaml, verified-acceptance rule amended to the task-type
-split. Review 4 rounds to APPROVE with 0 open findings; acceptance SUCCESS (30/30 verify MET,
-regression 54/54, ledger 2/2 FRESH). Open backlog: 2 items (the farukon_v3.1.0 platform anomaly —
-carried, out of scope; the verify_acceptance long-output HANG defect — critical, follow_up,
-description in factory-defect-acceptance-hang.ru.md); the 60-findings item closed with
-evidence; 5 minor adversarial contract gaps carried with follow_up=false. Self-test files: 54.
-Latest run: implement 20261105-11a026da (fix-tasks.yaml, hitl) — v12.24.0, one commit on
-fix/review-20261104-b5b601f6.
+Factory v12.24.1 — run 20261123-9598a460 preserved and released the completed change set through
+a clean current-session lifecycle. Genuine factory roles, allowed/bound permits, strict model
+attribution, phase K/Y and action/manifest/delegation/permit audits all pass. Final regression is
+55/55 and vaccination 205/205; archived Farukon reproduction and five consecutive sessions validate.
+Review approved the patch, DOC2 passed derive-mode, and acceptance is SUCCESS with six FRESH
+mixed-scope evidence entries. Open backlog: 2 carried items (the Farukon workspace_saved anomaly and
+the pre-existing verify_acceptance long-output hang). Self-test files: 55.
+Latest run: implement 20261123-9598a460 (task_finish_factory.yaml, hitl) — SUCCESS acceptance and
+v12.24.1 release on factory/20261122-ef747283.
 
 ## Key decisions
 - The long-term memory `memory/` belongs to ONE target project (`repo_path`); the field

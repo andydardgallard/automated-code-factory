@@ -83,6 +83,32 @@ and every cache-metadata file are **excluded** from the content hash and from th
 only the reference content itself is hashed, so a repository's own Git bookkeeping is never part
 of the skill signature.
 
+## Pinned Modern Web Guidance catalog (Web GUI runs)
+
+Modern Web Guidance is a PINNED CATALOG, not an internet lookup and not an upstream CLI. The reviewed
+source `https://github.com/GoogleChrome/modern-web-guidance.git` is materialized through this skill
+base (canonical URL plus exact full commit sha recorded by `scripts/skill_base.py record` in
+`skill-base/manifest.json`), and the factory's stdlib adapter derives and reads the catalog from it —
+nothing downloaded is executed or installed, no dependency is fetched and no implicit `npx @latest`
+is ever run:
+
+- `python .agents/skills/code-factory/scripts/modern_web_guidance.py build --repo <repo>
+  --source-root <the materialized pinned tree> --revision <the full 40-hex reviewed commit sha>`
+  derives `catalog.json` and `pin.json` beside the materialized tree; a foreign source, a short or
+  moving revision and a missing pin are refused.
+- `python .agents/skills/code-factory/scripts/modern_web_guidance.py status --repo <repo>` reports
+  FRESH only when the catalog and `pin.json` agree on the canonical source and that exact revision; a
+  MISSING or STALE catalog makes every later read refuse instead of falling back to a web search.
+- `search` (one to five plain words), `retrieve --id` (only ids returned by this run's search),
+  `legacy-scan --target` (confined to the repository) and `check-session` (usage evidence under
+  `.code-factory/state/modern-web-guidance/usage.json`) are the GUI specialist's mandatory pre-code
+  workflow, quoted in full in `.agents/agents/sub-agents/gui-expert.md`.
+
+The runtime cache location is `.code-factory/cache/reference-docs/modern-web-guidance`
+(`reference_docs`/`reference_skills` kinds above), and a reusable English skill is generated into
+`skill-base/skills/modern-web-guidance/SKILL.md` — the catalog remains the source of truth; the skill
+points at it.
+
 ## Freshness, hash stability and the manifest
 
 Freshness stays deterministic and content-based: equal normalized content hash → **reuse**,

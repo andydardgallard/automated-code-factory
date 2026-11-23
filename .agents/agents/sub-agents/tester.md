@@ -69,6 +69,26 @@ evidence and never reuse the specialist's diagnostic artifacts as acceptance pro
 re-stamp this evidence after any later change; when cargo, the farukon MCP server or a tool is
 missing, the affected criteria stay UNVERIFIED — never MET — and no artifact is fabricated.
 
+The acceptance evidence is produced by the ADAPTER, not asserted in prose, and it targets the
+project's OWN registration — the real `node .kimi-code/farukon-mcp-launcher.js` launch, never a
+cargo-only substitute:
+
+1. `python .agents/skills/code-factory/scripts/farukon_mcp.py record-session --repo <resolved platform
+   root> --evidence .code-factory/logs/farukon/<run_id>/five-sessions --mode registration
+   --probe-tool <one of the eight safe tools>` — run it FIVE CONSECUTIVE times, each in a fresh CLI
+   session, and keep every record: a failed attempt stays diagnostic and RESTARTS the consecutive
+   sequence after remediation.
+2. `python .agents/skills/code-factory/scripts/farukon_mcp.py verify-sessions --repo <resolved
+   platform root> --evidence <the same directory>` — must exit 0: five DISTINCT healthy live
+   sessions, each initializing, listing all eight tools and completing a real safe `tools/call`.
+3. `python .agents/skills/code-factory/scripts/farukon_mcp.py verify-reproduction --repo <resolved
+   platform root> --evidence .code-factory/logs/farukon/<run_id>/reproduction` — must exit 0 when the
+   task requires a reproduced root cause: an OBSERVED launch failure before any protocol frame plus a
+   healthy eight-tool control session.
+
+A task that mandates live proof is never accepted by marking the criterion unverified: acceptance
+stays BLOCKED until those gates verify, and there is no unverified acceptance escape.
+
 **The adversarial business tester is DIAGNOSTIC, never a substitute for your acceptance.** On
 `implement` and `refactor` runs node S also runs `factory-business-tester`, in parallel with you, on
 the same code state; a `review` run probes the delivered product at node BTR0 before the review is

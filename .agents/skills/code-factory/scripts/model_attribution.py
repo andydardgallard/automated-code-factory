@@ -38,13 +38,23 @@ THE WIRE (measured on a real machine; re-checked before this script was written)
 
 SESSION RESOLUTION
 
-  There is no session-id environment variable. `--session auto` takes the candidates
-  `sessions/*/session_*/state.json` whose `cwd` equals the resolved `--repo` (path-normalised,
-  case-insensitively on Windows) and whose `archived` is not true, and picks the one with the
-  NEWEST `agents/*/wire.jsonl` mtime; ties break on the highest sessionId so the choice is
-  deterministic. The pick is corroborated with the LAST `session_index.jsonl` line whose
-  `workDir` matches the repo; a disagreement is FLAGGED (`session.index_agrees: false`), never
-  hidden. `--session <dir>` uses that session directory as-is (`resolved_by: "arg"`).
+  There is no session-id environment variable, and the run's session `cwd` is NOT the resolved
+  `--repo` whenever the factory is launched from its own directory for another project — the
+  reported defect. `--session auto` is therefore bound to the run's OWN evidence in
+  `pipeline.yaml` (`session_dir`, `launch_dir`, `started_at`, `run_id`): the declared
+  `session_dir` wins when it exists, runs in the launch directory or the target repository and is
+  not older than `started_at`; otherwise the candidates are the non-archived
+  `sessions/*/session_*/state.json` whose `cwd` is one of those two (path-normalised,
+  case-insensitively on Windows) AND whose newest `agents/*/wire.jsonl` mtime is at or after
+  `started_at`. Zero candidates is DEGRADED (a wire from a finished run must never be audited),
+  exactly one is the pick, and several are narrowed by the run's `run_id` occurring in the wire;
+  anything still ambiguous is DEGRADED, never a guess. Without that evidence the historical rule
+  stands (newest non-archived session of `--repo`). The pick is corroborated with the LAST
+  `session_index.jsonl` line whose `workDir` matches the session's own `cwd`; a disagreement is
+  FLAGGED (`session.index_agrees: false`), never hidden. An explicit `--session <dir>` is used
+  as-is (`resolved_by: "arg"`) but validated as the current run when the pipeline dates the run
+  (a wire written before `started_at` is DEGRADED), and a BLANK `--session` is an input error
+  (exit 2) — "blank" is never a synonym for `auto`.
 
 ALIAS NORMALISATION (the only two rules this script applies)
 
@@ -75,15 +85,20 @@ PUBLIC API
   alias_of(event)                         the served alias of a model-bearing wire event
   canonical(alias)                        the comparison key of an alias (see above)
   role_from_profile(name)                 `factory-code-reviewer` -> `reviewer`, "" when unnamed
-  session_candidates(home, repo)          matching, newest-last candidate sessions (auto mode)
+  session_candidates(home, repo, extra_dirs, since_ms)
+                                          matching, non-stale, newest-last candidate sessions
   index_session_id(home, repo)            session id of the last matching session_index line
-  resolve_session(repo, session, home)    {"session_dir","session_id","resolved_by",...}; raises
-                                          Degraded when nothing matches
+  resolve_session(repo, session, home, pipeline)
+                                          {"session_dir","session_id","resolved_by",...}; the
+                                          run-bound session, else Degraded (a blank session is
+                                          an input error)
   read_models_used(path)                  (run_id, {role: claim}) of a pipeline.yaml
-  read_pipeline_contract(path)            the same plus `task_type` and `required_roles`
+  read_pipeline_contract(path)            the same plus `task_type`, `required_roles` and the
+                                          run binding (`launch_dir`/`session_dir`/`started_at`)
   strict_decision(task_type, declared)    (strict, reason): the DEFAULT is implement/refactor
-  required_unbacked(comparison, claims, required_roles, strict)
-                                          REQUIRED roles whose claim the wire never confirmed
+  required_unbacked(comparison, claims, required_roles, strict, wired)
+                                          REQUIRED roles the session wire never confirmed
+  wired_roles(roles)                      the roles the wire actually traced (`spawn`/served)
   unknown_roles(claims)                   `models_used` keys the factory's registry does not have
   unknown_role_line(role)                 the one-line report of such a key (a run error)
   analyse_session(session_dir)            per-agent records + spawn map of one session
@@ -94,17 +109,22 @@ PUBLIC API
 
 STRICT ATTRIBUTION
 
-  A run that declares `task_type: implement|refactor` in `pipeline.yaml` is STRICT BY DEFAULT: a
-  role listed in `required_roles` that carries a `models_used` claim but left NO session-wire trace
-  (`subagent.spawned`) is a run FAILURE (exit 1, status `unbacked`, the role named in the summary),
-  never DEGRADED — the run declared that role mandatory, so "no wire for this role" is the missing
-  artifact, not a technical detail. `--strict` forces the same rule for `review`/`security_audit`
+  A run that declares `task_type: implement|refactor` in `pipeline.yaml` is STRICT BY DEFAULT:
+  EVERY role listed in `required_roles` must be backed by session-wire evidence
+  (`subagent.spawned`, or a model the wire served for that role). A role the wire never traced
+  FAILS the run (exit 1, status `unbacked`, the role named in the summary), never DEGRADED — the
+  run declared that role mandatory, so "no wire for this role" is the missing artifact, not a
+  technical detail. The check is on the WIRE, not on the claim: a required role that is OMITTED
+  from `models_used` is checked exactly like a claimed one, so dropping the claim is not a way to
+  bypass strict attribution (the reported violation: a planner that was required, claimed, had no
+  planner spawn, and whose claim could simply have been deleted to pass). A required role that IS
+  on the wire needs no claim. `--strict` forces the same rule for `review`/`security_audit`
   runs, and there is deliberately NO opt-out that weakens it. A declared `task_type` outside the four
   is an input error (exit 2); a checkpoint without `task_type` keeps the historical behaviour. A
   CONDITIONAL role (`gui_expert`, `farukon_expert`, `security_auditor`) never
-  fails on its own: it must be listed in `required_roles` AND claimed, so a task that does not use
-  it produces no false failure. (business_tester is mandatory for implement/refactor via the
-  checkpoint contract of check_factory_model.py, not conditional.)
+  fails on its own: it must be claimed (`models_used`) AND required before its wire is demanded, so
+  a task that does not use it produces no false failure. (business_tester is mandatory for
+  implement/refactor via the checkpoint contract of check_factory_model.py, not conditional.)
 
 CLI
 
@@ -126,6 +146,8 @@ CLI
     `role: unverified (claimed but no wire agent)`  no session/wire at all to confirm the claim
     `role: degraded (no wire for this role)`        the session exists, the role left no evidence
     `role: mismatch (claimed=unused wire=[Y:N])`    the pipeline says `unused`, the wire disagrees
+    `role: unbacked (claimed=X|no models_used claim, no subagent.spawned trace)`
+                                                    a REQUIRED role the strict run cannot confirm
     `role: run error -- not a role of the factory`  the pipeline invented a role (see below)
   The last line is always `PASS|FAIL|DEGRADED - <summary> (<out path>)`.
 
@@ -217,14 +239,25 @@ TRAILING_COMMENT = re.compile(r"\s+#.*$")
 TASK_TYPE_LINE = re.compile(r"^task_type:\s*(.*)$")
 REQUIRED_ROLES_LINE = re.compile(r"^required_roles:\s*(.*)$")
 REQUIRED_ROLE_ITEM = re.compile(r"^\s+-\s+(.*\S)\s*$")
+# The run's own evidence of WHERE it started and WHEN. `auto` session resolution is bound to these
+# instead of assuming the run's `cwd` is `--repo`: the factory is launched from its deployment
+# directory while `repo_path` points at another project, and the run's session carries the LAUNCH
+# directory as its `cwd`.
+LAUNCH_DIR_LINE = re.compile(r"^launch_dir:\s*(.*)$")
+SESSION_DIR_LINE = re.compile(r"^session_dir:\s*(.*)$")
+STARTED_AT_LINE = re.compile(r"^started_at:\s*(.*)$")
+# A wire file written this long before the run's `started_at` cannot belong to the run (mtime
+# granularity and a clock skew allowance).
+FRESH_SLACK_MS = 5000.0
 # The four task types the factory knows. Strict attribution is the DEFAULT for the two that
 # produce or preserve code (`implement`, `refactor`); `--strict` forces it for the other two and
 # there is no weakening opt-out — a claim the wire cannot confirm must never pass silently.
 TASK_TYPES = ("implement", "review", "refactor", "security_audit")
 STRICT_TASK_TYPES = ("implement", "refactor")
 # Roles whose presence depends on the task: they may be listed in `required_roles`, and a
-# conditional role that is NOT claimed in `models_used` never fails — only a CLAIMED required role
-# with no wire evidence does. The model check validates the list; this script only applies it.
+# conditional role that is NOT claimed in `models_used` never fails — its wire is demanded only when
+# the run itself claims it ran. Every NON-conditional required role is checked against the wire even
+# when `models_used` omits it. The model check validates the list; this script only applies it.
 # business_tester is NOT here: implement/refactor runs always delegate it, so it sits in the
 # mandatory set of check_factory_model.py instead.
 CONDITIONAL_ROLES = ("gui_expert", "farukon_expert", "security_auditor")
@@ -366,17 +399,24 @@ def _wire_mtime(session_dir: pathlib.Path) -> float:
         return 0.0
 
 
-def session_candidates(home: pathlib.Path, repo: str) -> list[dict]:
-    """Sessions whose `cwd` is `repo` and which are not archived, NEWEST LAST.
+def session_candidates(home: pathlib.Path, repo: str, extra_dirs=(),
+                       since_ms: float | None = None) -> list[dict]:
+    """Sessions whose `cwd` is `repo` (or one of `extra_dirs`) and which are not archived.
 
-    Each candidate is `{"session_dir","session_id","state","wire_mtime"}`. Ordering is by wire
-    mtime and then by sessionId, so the caller's `[-1]` pick is deterministic; the state object is
-    carried along because the role labels live in it.
+    Each candidate is `{"session_dir","session_id","state","wire_mtime"}`, NEWEST LAST: ordering is
+    by wire mtime and then by sessionId, so the caller's `[-1]` pick is deterministic; the state
+    object is carried along because the role labels live in it. `extra_dirs` widens the set to the
+    run's LAUNCH directory (the factory launched outside the target repository records that path as
+    the session `cwd`). `since_ms` keeps only a session whose newest wire was written at or after
+    that epoch-millisecond instant — the run's `started_at` — so an older run can never be a
+    candidate for the current one.
     """
-    target = norm_path(repo)
+    targets = [norm_path(value) for value in (repo, *extra_dirs)]
+    targets = [value for value in targets if value]
     root = pathlib.Path(home) / SESSIONS_DIR
-    if not target or not root.is_dir():
+    if not targets or not root.is_dir():
         return []
+    floor = (since_ms - FRESH_SLACK_MS) / 1000.0 if since_ms is not None else None
     found: list[dict] = []
     for state_path in root.glob(f"*/session_*/{STATE_FILE}"):
         try:
@@ -385,15 +425,220 @@ def session_candidates(home: pathlib.Path, repo: str) -> list[dict]:
             continue
         if not isinstance(state, dict) or state.get("archived") is True:
             continue
-        if norm_path(state.get("cwd")) != target:
+        if norm_path(state.get("cwd")) not in targets:
             continue
         session_dir = state_path.parent
+        wire_mtime = _wire_mtime(session_dir)
+        if floor is not None and wire_mtime < floor:
+            continue                              # written before this run started: another run
         found.append({"session_dir": session_dir,
                       "session_id": _text(state.get("id")) or session_dir.name,
                       "state": state,
-                      "wire_mtime": _wire_mtime(session_dir)})
+                      "wire_mtime": wire_mtime})
     found.sort(key=lambda item: (item["wire_mtime"], item["session_id"]))
     return found
+
+
+def _epoch_ms(value) -> float | None:
+    """An ISO-8601 timestamp (or an epoch number) as epoch MILLISECONDS, or None."""
+    raw = _text(value)
+    if not raw:
+        return None
+    if re.fullmatch(r"\d+(?:\.\d+)?", raw):
+        number = float(raw)
+        return number if number >= 1e11 else number * 1000.0
+    try:
+        stamp = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    return stamp.timestamp() * 1000.0
+
+
+def _binding_of(pipeline) -> dict:
+    """The run binding of a pipeline (a contract dict, a path, or None — never a guess)."""
+    empty = {"run_id": "", "launch_dir": "", "session_dir": "", "started_at": ""}
+    if pipeline is None:
+        return empty
+    if isinstance(pipeline, dict):
+        binding = pipeline.get("run_binding") if "run_binding" in pipeline else pipeline
+        if not isinstance(binding, dict):
+            return empty
+        return {key: _text(binding.get(key)) for key in empty}
+    try:
+        return read_pipeline_contract(pathlib.Path(pipeline))["run_binding"]
+    except AttributionError:
+        return empty
+
+
+def _candidate_at(session_dir: pathlib.Path) -> dict | None:
+    """The `session_candidates` record of ONE session directory (None when it is unusable)."""
+    session_dir = pathlib.Path(session_dir)
+    state = _read_state(session_dir)
+    if not isinstance(state, dict) or state.get("archived") is True:
+        return None
+    return {"session_dir": session_dir,
+            "session_id": _text(state.get("id")) or session_dir.name,
+            "state": state,
+            "wire_mtime": _wire_mtime(session_dir)}
+
+
+def _wire_contains(session_dir: pathlib.Path, needle: str) -> bool:
+    """Whether any `agents/*/wire.jsonl` of the session carries `needle` (the run's `run_id`)."""
+    if not needle:
+        return False
+    agents = pathlib.Path(session_dir) / AGENTS_DIR
+    if not agents.is_dir():
+        return False
+    for wire in agents.glob(f"*/{WIRE_FILE}"):
+        try:
+            if needle in wire.read_text(encoding="utf-8", errors="replace"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _run_bound(candidate: dict, repo: str, launch: str) -> bool:
+    """Whether the candidate session runs in the target repository or the run's launch directory."""
+    cwd = norm_path(candidate["state"].get("cwd"))
+    return bool(cwd) and cwd in {norm_path(repo), norm_path(launch)} - {""}
+
+
+def resolve_session(repo: str, session: str = "auto",
+                    home: pathlib.Path | None = None, pipeline=None) -> dict:
+    """The session directory the attribution reads: an explicit one, or the CURRENT RUN's one.
+
+    `session` is a directory (used as-is, `resolved_by: "arg"`) or `auto`; a BLANK value is an
+    input error — "blank" is not a synonym for `auto`. In auto mode the run is bound to its own
+    session with the pipeline's evidence (`pipeline` is the contract dict of
+    `read_pipeline_contract`, a pipeline path, or None):
+
+      - `session_dir` names the run's own session: when it exists, runs in the launch directory or
+        the target repository and is not older than `started_at`, it IS the pick;
+      - otherwise only sessions whose `cwd` is the target repository OR the launch directory and
+        whose newest wire was written at/after `started_at` are candidates. Zero of them is
+        DEGRADED (never a confident audit of an older run's wire), exactly one is the pick, and
+        several are narrowed by the run's `run_id` appearing in the wire — anything still
+        ambiguous is DEGRADED rather than a guess.
+
+    Without that evidence the historical behaviour stands (newest non-archived session of
+    `--repo`). The choice is corroborated with `session_index.jsonl` for the session's own
+    workDir, and a disagreement is recorded (`index_agrees: False`) instead of being hidden.
+    Raises Degraded when no current-run session can be established — the caller must then report
+    DEGRADED (exit 3), never a silent success.
+    """
+    wire_home = pathlib.Path(home) if home is not None else WIRE_HOME
+    wanted = _text(session)
+    if not wanted:
+        raise AttributionError(
+            "--session is empty: name the current run's session directory, or pass 'auto' — a "
+            "blank value is never a synonym for auto")
+    binding = _binding_of(pipeline)
+    launch = binding["launch_dir"]
+    since = _epoch_ms(binding["started_at"])
+    run_bound = bool(binding["session_dir"] or launch or since)
+    result = {"resolved_by": "auto", "session_dir": None, "session_id": "", "state": {},
+              "candidates": 0, "index_session_id": "", "index_agrees": False, "skipped": [],
+              "bound_by": "", "run_bound": run_bound}
+    if wanted.lower() != "auto":
+        directory = pathlib.Path(wanted).expanduser()
+        if not directory.is_dir():
+            raise AttributionError(f"session directory not found: {wanted}")
+        result["resolved_by"] = "arg"
+        result["session_dir"] = directory.resolve()
+        result["session_id"] = directory.name
+        state = _read_state(directory)
+        if isinstance(state, dict):
+            result["state"] = state
+            result["session_id"] = _text(state.get("id")) or directory.name
+        _require_current(result["session_dir"], binding, since)
+        result["bound_by"] = "arg"
+        return result
+
+    declared = _text(binding["session_dir"])
+    declared_dir = pathlib.Path(declared).expanduser() if declared else None
+    if declared_dir is not None and not declared_dir.is_dir():
+        declared_dir = None
+        result["bound_by"] = "pipeline.session_dir missing"
+    if declared_dir is not None:
+        chosen = _candidate_at(declared_dir)
+        if chosen is None:
+            result["bound_by"] = "pipeline.session_dir unusable"
+        elif not _run_bound(chosen, repo, launch):
+            raise Degraded(
+                f"the pipeline names {declared_dir} as the run's session, but that session runs in "
+                f"{_text(chosen['state'].get('cwd')) or 'an unknown directory'}, not in {repo} or "
+                f"{launch or repo}: it is another run's wire, so it must never be audited")
+        elif since is not None and chosen["wire_mtime"] < (since - FRESH_SLACK_MS) / 1000.0:
+            result["bound_by"] = "pipeline.session_dir too old"
+        else:
+            result["bound_by"] = "pipeline.session_dir"
+            result["candidates"] = 1
+            return _resolved(result, chosen, wire_home, repo, run_bound=True)
+
+    candidates = session_candidates(wire_home, repo, (launch,) if launch else (), since)
+    result["candidates"] = len(candidates)
+    if not candidates:
+        raise Degraded(_missing_reason(wire_home, repo, launch, since, run_bound))
+    chosen = candidates[-1]
+    if len(candidates) > 1:
+        traced = [item for item in candidates if _wire_contains(item["session_dir"],
+                                                               binding["run_id"])]
+        if len(traced) != 1:
+            raise Degraded(
+                f"{len(candidates)} session(s) under {wire_home / SESSIONS_DIR} could be this run "
+                f"({' and '.join(item['session_id'] for item in candidates)}): the run's evidence "
+                f"(session_dir/run_id) does not single one out, and auditing the wrong wire must "
+                f"never happen — name the run's session with --session")
+        chosen = traced[0]
+    result["bound_by"] = "pipeline.launch_dir" if launch else "wire mtime"
+    return _resolved(result, chosen, wire_home, repo, run_bound,
+                     gathered=[item["session_id"] for item in candidates])
+
+
+def _resolved(result: dict, chosen: dict, wire_home: pathlib.Path, repo: str,
+              run_bound: bool, gathered: tuple | list = ()) -> dict:
+    """Fill the resolution result from the chosen candidate (the one place the pick is recorded)."""
+    result["session_dir"] = chosen["session_dir"]
+    result["session_id"] = chosen["session_id"]
+    result["state"] = chosen["state"]
+    result["run_bound"] = run_bound
+    result["skipped"] = [item for item in gathered if item != chosen["session_id"]]
+    work_dir = _text(chosen["state"].get("cwd")) or repo
+    indexed = index_session_id(wire_home, work_dir)
+    result["index_session_id"] = indexed
+    result["index_agrees"] = bool(indexed) and indexed == result["session_id"]
+    return result
+
+
+def _require_current(session_dir: pathlib.Path, binding: dict, since: float | None) -> None:
+    """An explicit session must be the current run's wire, not another run's (Degraded if not)."""
+    if since is None:
+        return
+    declared = norm_path(binding["session_dir"]) if binding["session_dir"] else ""
+    if declared and declared == norm_path(session_dir):
+        return
+    if _wire_mtime(pathlib.Path(session_dir)) < (since - FRESH_SLACK_MS) / 1000.0:
+        raise Degraded(
+            f"the session {session_dir} was last written before this run started "
+            f"({binding['started_at']}): it belongs to another run, so its wire must not be "
+            f"audited as the current one")
+
+
+def _missing_reason(wire_home: pathlib.Path, repo: str, launch: str, since: float | None,
+                    run_bound: bool) -> str:
+    """Why `auto` found no candidate — naming the run evidence that was actually required."""
+    if not run_bound:
+        return (f"no session under {wire_home / SESSIONS_DIR} whose state.json cwd is "
+                f"{pathlib.Path(repo)} (archived sessions excluded)")
+    where = " or ".join(path for path in (repo, launch) if path)
+    started = _iso(since) if since is not None else "the run start"
+    return (f"no session under {wire_home / SESSIONS_DIR} started with this run (cwd {where} and a "
+            f"wire written since {started}): the current run's wire is missing, and an older "
+            f"run's wire must never be audited in its place")
+
 
 
 def index_session_id(home: pathlib.Path, repo: str) -> str:
@@ -418,50 +663,6 @@ def index_session_id(home: pathlib.Path, repo: str) -> str:
         if isinstance(entry, dict) and norm_path(entry.get("workDir")) == target:
             match = _text(entry.get("sessionId"))
     return match
-
-
-def resolve_session(repo: str, session: str = "auto",
-                    home: pathlib.Path | None = None) -> dict:
-    """The session directory the attribution reads: an explicit one, or the current one.
-
-    `session` is a directory (used as-is, `resolved_by: "arg"`) or `auto`. In auto mode the
-    candidates of `session_candidates` are ranked and the newest one wins; the choice is
-    corroborated with the last matching `session_index.jsonl` line, and a disagreement is recorded
-    (`index_agrees: False`) instead of being hidden. Raises Degraded when auto finds nothing —
-    the caller must then report DEGRADED (exit 3), never a silent success.
-    """
-    wire_home = pathlib.Path(home) if home is not None else WIRE_HOME
-    wanted = _text(session) or "auto"
-    result = {"resolved_by": "auto", "session_dir": None, "session_id": "", "state": {},
-              "candidates": 0, "index_session_id": "", "index_agrees": False, "skipped": []}
-    if wanted.lower() != "auto":
-        directory = pathlib.Path(wanted).expanduser()
-        if not directory.is_dir():
-            raise AttributionError(f"session directory not found: {wanted}")
-        result["resolved_by"] = "arg"
-        result["session_dir"] = directory.resolve()
-        result["session_id"] = directory.name
-        state = _read_state(directory)
-        if isinstance(state, dict):
-            result["state"] = state
-            result["session_id"] = _text(state.get("id")) or directory.name
-        return result
-
-    candidates = session_candidates(wire_home, repo)
-    result["candidates"] = len(candidates)
-    if not candidates:
-        raise Degraded(f"no session under {wire_home / SESSIONS_DIR} whose state.json cwd is "
-                       f"{pathlib.Path(repo)} (archived sessions excluded)")
-    chosen = candidates[-1]
-    result["session_dir"] = chosen["session_dir"]
-    result["session_id"] = chosen["session_id"]
-    result["state"] = chosen["state"]
-    # The newest is the pick; a tie on mtime is broken by the highest sessionId (see the sort).
-    result["skipped"] = [item["session_id"] for item in candidates[:-1]]
-    indexed = index_session_id(wire_home, repo)
-    result["index_session_id"] = indexed
-    result["index_agrees"] = bool(indexed) and indexed == result["session_id"]
-    return result
 
 
 def _read_state(session_dir: pathlib.Path) -> dict:
@@ -824,18 +1025,35 @@ def _parse_required_roles(text: str) -> list[str]:
     return [role for role in roles if role]
 
 
+def _parse_run_binding(text: str) -> dict:
+    """`{run_id, launch_dir, session_dir, started_at}` — the run's own session evidence, or ""."""
+    binding = {"run_id": "", "launch_dir": "", "session_dir": "", "started_at": ""}
+    for line in text.splitlines():
+        if line[:1].isspace():
+            continue                               # a nested key is not the run's own evidence
+        for key, pattern in (("run_id", RUN_ID_LINE), ("launch_dir", LAUNCH_DIR_LINE),
+                             ("session_dir", SESSION_DIR_LINE),
+                             ("started_at", STARTED_AT_LINE)):
+            match = pattern.match(line.rstrip())
+            if match and not binding[key]:
+                binding[key] = _scalar(match.group(1))
+    return binding
+
+
 def read_pipeline_contract(path: pathlib.Path) -> dict:
-    """`{run_id, claims, task_type, task_type_declared, required_roles}` of one checkpoint.
+    """`{run_id, claims, task_type, task_type_declared, required_roles, run_binding}`.
 
     ONE reader for the whole strict-attribution contract: the claim side (`models_used`), the run's
-    `task_type` (the default that decides whether strict attribution runs) and `required_roles` (the
-    roles whose claim the wire MUST confirm under strict attribution).
+    `task_type` (the default that decides whether strict attribution runs), `required_roles` (the
+    roles whose claim the wire MUST confirm under strict attribution) and `run_binding` (where the
+    run started, which session it is and when it started — the evidence `auto` resolution needs).
     """
     text = _pipeline_text(path)
     run_id, claims = _parse_models_used(text)
     task_type, declared = _parse_task_type(text)
     return {"run_id": run_id, "claims": claims, "task_type": task_type,
-            "task_type_declared": declared, "required_roles": _parse_required_roles(text)}
+            "task_type_declared": declared, "required_roles": _parse_required_roles(text),
+            "run_binding": _parse_run_binding(text)}
 
 
 def strict_decision(task_type: str, declared: bool, forced: bool = False) -> tuple[bool, str]:
@@ -861,20 +1079,50 @@ def strict_decision(task_type: str, declared: bool, forced: bool = False) -> tup
     return False, (f"task_type {task_type} is not strict by default — pass --strict to force it")
 
 
-def required_unbacked(comparison: dict[str, str], claims: dict[str, str],
-                      required_roles: list[str], strict: bool) -> list[str]:
-    """Required roles that CLAIM a model but left no session-wire trace, under strict attribution.
+def wired_roles(roles: dict[str, dict]) -> set[str]:
+    """The roles the session wire actually traced: a spawn, or a model it served for that role.
 
-    The defect this closes: a required role could be listed in `models_used`, run on nothing the CLI
-    ever recorded, and the run still exited 3 (DEGRADED) — "no wire for this role" is exactly the
-    evidence a required role must not be allowed to lack. A role the pipeline does not claim, or
-    claims as `unused`, is not a claim the wire has to confirm, so it never fails here.
+    A role entry exists for every agent the wire mentions, including one that only produced error
+    events, so bare presence in `roles` is NOT evidence of a delegation. What counts is the artifact
+    strict attribution happens to require: the `subagent.spawned` record (`spawn_model`) or a served
+    model (`models_served`).
+    """
+    return {role for role, entry in roles.items()
+            if (entry or {}).get("spawn_model") or _evidence(entry)}
+
+
+def required_unbacked(comparison: dict[str, str], claims: dict[str, str],
+                      required_roles: list[str], strict: bool,
+                      wired: set[str] | None = None) -> list[str]:
+    """Required roles the session wire never confirmed, under strict attribution.
+
+    The defect this closes has TWO halves. A required role could be claimed in `models_used`, run on
+    nothing the CLI ever recorded, and the run still exited 3 (DEGRADED). And — the bypass this
+    function closed second — a required role could leave no trace AND leave no claim, because only
+    CLAIMED required roles were checked: deleting the claim was a way to pass strict attribution
+    outright. So the wire is the thing checked, not the claim: every required role needs wire
+    evidence, whether `models_used` names it or not. A required role that IS on the wire needs no
+    claim (the evidence is the artifact).
+
+    Two documented exemptions keep the rule from producing false failures:
+      * a CONDITIONAL role (`gui_expert`, `farukon_expert`, `security_auditor`) that the run does not
+        claim never fails on its own — its wire is demanded only when the run says it ran;
+      * a role the pipeline claims as `unused` is not a claim the wire has to confirm for a
+        non-required comparison, but a REQUIRED role marked unused is still a required role, so it
+        is checked against the wire like any other (there is no "mark it unused" escape either).
+    `wired` is the role set the wire actually traced (see `wired_roles`); None keeps the historical
+    claim-only behaviour for a caller that supplies no wire evidence at all.
     """
     if not strict:
         return []
     unbacked: list[str] = []
     for role in required_roles:
-        if role not in claims or is_unused(claims.get(role, "")):
+        claimed = role in claims and not is_unused(claims.get(role, ""))
+        if not claimed:
+            if role in CONDITIONAL_ROLES or wired is None:
+                continue
+            if role not in wired:
+                unbacked.append(role)
             continue
         if comparison.get(role) in ("degraded", "unverified"):
             unbacked.append(role)
@@ -883,9 +1131,14 @@ def required_unbacked(comparison: dict[str, str], claims: dict[str, str],
 
 def strict_failure_line(role: str, raw_claim: str, strict_reason: str) -> str:
     """The one-line report of a required role the wire never saw."""
-    return (f"{role}: unbacked (claimed={claim_model(raw_claim)}, no subagent.spawned trace) -- a "
-            f"REQUIRED role whose claim the session wire cannot confirm FAILS the run, never "
-            f"DEGRADED ({strict_reason})")
+    if raw_claim and not is_unused(raw_claim):
+        return (f"{role}: unbacked (claimed={claim_model(raw_claim)}, no subagent.spawned trace) -- "
+                f"a REQUIRED role whose claim the session wire cannot confirm FAILS the run, never "
+                f"DEGRADED ({strict_reason})")
+    return (f"{role}: unbacked (no models_used claim, no subagent.spawned trace) -- a REQUIRED role "
+            f"must be visible on the session wire with or without a models_used claim, so omitting "
+            f"the claim cannot bypass strict attribution; this FAILS the run, never DEGRADED "
+            f"({strict_reason})")
 
 
 def claim_model(raw: str) -> str:
@@ -1008,9 +1261,9 @@ def verdict_of(comparison: dict[str, str], degraded_reason: str = "",
     A proven mismatch is NEVER hidden by a degradation: the wire disproving a claim is the one
     finding the owner must not lose, so it wins. A `models_used` role that is not in the factory's
     registry (`unknown_role`) is the same kind of finding — the pipeline invented a role — so it is
-    a run error (FAIL), never a degradation. An `unbacked` status (a REQUIRED role whose claim the
-    wire never confirmed, under strict attribution) is a FAIL for the same reason: the run declared
-    the role mandatory and produced no artifact proving it ran.
+    a run error (FAIL), never a degradation. An `unbacked` status (a REQUIRED role the session wire
+    never traced, under strict attribution, claimed in `models_used` or not) is a FAIL for the same
+    reason: the run declared the role mandatory and produced no artifact proving it ran.
 
     An EMPTY comparison is not a success while a claim set was required (`claims_required`, the
     default): with nothing compared, "every claimed role matches the wire" is vacuously true and
@@ -1067,7 +1320,7 @@ def build_report(repo: str, session: str, home: pathlib.Path | None,
     session_info: dict = {}
     analysis = {"agents": {}, "spawns": {}, "skipped_lines": 0, "malformed_lines": 0, "wires": []}
     try:
-        session_info = resolve_session(repo, session, wire_home)
+        session_info = resolve_session(repo, session, wire_home, contract)
         analysis = analyse_session(session_info["session_dir"])
     except Degraded as exc:
         degraded_reason = str(exc)
@@ -1106,11 +1359,13 @@ def build_report(repo: str, session: str, home: pathlib.Path | None,
             comparison[role] = "unknown_role"
             flags["unknown_roles"].append(role)
         lines = [unknown_role_line(role) for role in bogus] + lines
-    unbacked = required_unbacked(comparison, claims, contract["required_roles"], strict)
+    unbacked = required_unbacked(comparison, claims, contract["required_roles"], strict,
+                                 wired_roles(roles))
     if unbacked:
         # Strict attribution: a REQUIRED role the wire never confirmed is a run FAILURE, not a
         # degradation — the run declared the role mandatory, so "no wire for this role" is the
-        # missing artifact, never a technical detail.
+        # missing artifact, never a technical detail. The check reads the WIRE, so a required role
+        # that `models_used` simply omits is caught exactly like a claimed one.
         for role in unbacked:
             comparison[role] = "unbacked"
             flags["required_unbacked"].append(role)
@@ -1131,6 +1386,8 @@ def build_report(repo: str, session: str, home: pathlib.Path | None,
             "superseded": session_info.get("skipped", []),
             "session_index": session_info.get("index_session_id") or None,
             "index_agrees": bool(session_info.get("index_agrees")),
+            "run_bound": bool(session_info.get("run_bound")),
+            "bound_by": session_info.get("bound_by") or None,
             "wire_files": len(analysis["wires"]),
             "skipped_lines": skipped_lines,
             "malformed_lines": malformed_lines,
@@ -1173,13 +1430,16 @@ def _summary(verdict: str, report: dict, degraded_reason: str) -> str:
                     + " -- a pipeline may only name the factory's own roles")
         unbacked = [role for role, status in comparison.items() if status == "unbacked"]
         if unbacked:
-            return (f"{len(unbacked)} REQUIRED role(s) claim a model the session wire never "
-                    f"confirmed (no subagent.spawned trace): "
-                    + ", ".join(f"{role} claimed="
-                                f"{claim_model(report['claims']['models'].get(role, ''))}"
+            return (f"{len(unbacked)} REQUIRED role(s) left no session-wire trace "
+                    f"(no subagent.spawned trace): "
+                    + ", ".join(f"{role} "
+                                + (f"claimed={claim_model(report['claims']['models'][role])}"
+                                   if report["claims"]["models"].get(role) else
+                                   "has no models_used claim")
                                 for role in sorted(unbacked))
-                    + f" -- strict attribution ({report.get('strict_reason') or 'strict'}) fails "
-                      f"the run, never DEGRADED")
+                    + f" -- strict attribution ({report.get('strict_reason') or 'strict'}) requires "
+                      f"wire evidence for every required role, claimed or not, and fails the run, "
+                      f"never DEGRADED")
         bad = []
         for role, status in comparison.items():
             if status != "mismatch":
@@ -1215,9 +1475,9 @@ def main() -> int:
     ap.add_argument("--home", default=None,
                     help=f"The CLI's wire root (default: {WIRE_HOME})")
     ap.add_argument("--strict", action="store_true",
-                    help="Force strict attribution for every task_type (a REQUIRED role claimed "
-                         "without a session-wire trace FAILS the run); there is no weakening "
-                         "opt-out. It is the default already for implement/refactor")
+                    help="Force strict attribution for every task_type (a REQUIRED role with no "
+                         "session-wire trace FAILS the run, claimed in models_used or not); there "
+                         "is no weakening opt-out. It is the default already for implement/refactor")
     ap.add_argument("--quiet", action="store_true", help="Print only the final summary line")
     args = ap.parse_args()
 
@@ -1237,8 +1497,8 @@ def main() -> int:
             print("NOTE - served by the wire but not claimed in models_used: "
                   + ", ".join(flags["unclaimed_roles"]))
         if not report["session"]["index_agrees"] and report["session"]["session_index"]:
-            print(f"NOTE - session_index.jsonl names {report['session']['session_index']} for this "
-                  f"repo, the wire mtime pick is {report['session']['id']}")
+            print(f"NOTE - session_index.jsonl names {report['session']['session_index']} for the "
+                  f"audited session's work directory, the pick is {report['session']['id']}")
     if degraded_reason:
         print(f"model_attribution.py: DEGRADED - {degraded_reason}", file=sys.stderr)
 

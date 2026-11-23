@@ -39,12 +39,16 @@ degraded behavior is testable without touching the host.
 a nested `farukon` capability block (cargo present/version, whether the repository looks like a
 Farukon platform, whether the managed Farukon MCP config exists and validates against THIS root) by
 delegating to the sibling `farukon_mcp.py` probe logic WITHOUT a build and WITHOUT an MCP server
-start, with the verdict `usable` / `degraded` / `not_applicable`. The verdict is the delegated probe's
-OWN: `usable` only when that probe agrees, and `degraded` when a capability is missing OR the probe
-itself raises — an exception is recorded as `probe_error` and the capabilities report the failure,
-because an inspection that could not RUN is UNKNOWN, never evidence that the repository lacks the
-platform (so it is never `not_applicable`, and the affected criteria stay UNVERIFIED). Like the
-browser block it is fail-soft DATA and never changes the exit code.
+start, with the verdict `usable` / `degraded` / `not_applicable`. A `farukon` entry that EXISTS but
+is NOT the managed definition is reported as REGISTRATION DRIFT (`config_entry_present` true,
+`config_drift` true, the differing KEY names and never their values): the platform really registers
+`node .kimi-code/farukon-mcp-launcher.js`, and the client would launch something the factory never
+reviewed — a different finding from a missing deployment, and degraded either way. The verdict is the
+delegated probe's OWN: `usable` only when that probe agrees, and `degraded` when a capability is
+missing OR the probe itself raises — an exception is recorded as `probe_error` and the capabilities
+report the failure, because an inspection that could not RUN is UNKNOWN, never evidence that the
+repository lacks the platform (so it is never `not_applicable`, and the affected criteria stay
+UNVERIFIED). Like the browser block it is fail-soft DATA and never changes the exit code.
 
 The browser path is only usable for a repository that REALLY has one deployed: with `--repo` the
 resolved repository's managed `.kimi-code/mcp.json` is threaded into the delegated probe, and
@@ -390,6 +394,12 @@ def collect_farukon_capabilities(simulate_missing: list[str] | tuple[str, ...] =
     # three reported capabilities say — `usable` is never computed here.
     probe_usable = False
     buildable: dict = {}
+    # REGISTRATION facts of the project's own `.kimi-code/mcp.json`: an entry that is NOT the managed
+    # definition is DRIFT (the client launches something the factory never reviewed), which is a
+    # different finding from a missing deployment. Only the differing KEY names are carried.
+    entry_present = False
+    config_drift = False
+    drift_keys: list[str] = []
     try:
         helper = _load_farukon_helper()
         config = root / helper.CONFIG_RELPATH
@@ -404,6 +414,9 @@ def collect_farukon_capabilities(simulate_missing: list[str] | tuple[str, ...] =
         buildable = (capabilities.get("farukon_mcp_buildable")
                      if isinstance(capabilities.get("farukon_mcp_buildable"), dict) else {})
         probe_usable = result.get("farukon_usable") is True
+        entry_present = result.get("config_entry_present") is True
+        config_drift = result.get("config_drift") is True
+        drift_keys = [str(key) for key in result.get("config_drift_keys") or []]
         cargo_reason = str(cargo.get("reason") or "not reported by the probe")
         reported = {
             "cargo": {"present": cargo.get("present") is True,
@@ -468,6 +481,9 @@ def collect_farukon_capabilities(simulate_missing: list[str] | tuple[str, ...] =
         "farukon_usable": verdict == FARUKON_USABLE,
         "verdict": verdict,
         "verdict_reason": verdict_reason,
+        "config_entry_present": bool(entry_present),
+        "config_drift": bool(config_drift),
+        "config_drift_keys": list(drift_keys),
     })
     return block
 
@@ -521,6 +537,11 @@ def format_summary(caps: dict, out: pathlib.Path) -> str:
         lines.append("  farukon (conditional platform path):")
         lines.append(f"    repo: {block.get('repo')}")
         lines.append(f"    managed config: {block.get('managed_config') or 'not checked'}")
+        if block.get("config_drift") and any(key != "cwd"
+                                            for key in block.get("config_drift_keys") or []):
+            lines.append("    registration drift: DRIFTED — the managed config carries a "
+                         f"{'farukon'!r} entry that is not the managed definition; differing key(s): "
+                         f"{', '.join(block.get('config_drift_keys') or [])} (values withheld)")
         for name in FARUKON_CAPABILITIES:
             entry = (block.get("capabilities") or {}).get(name) or {}
             state = "present" if entry.get("present") else "missing"

@@ -68,8 +68,9 @@ Work in two steps so the validator has a baseline to diff against:
   when a changed file is missing from `--files`. Run it once after the plain `check` passes: your
   own list is not the authority on what you touched — the repository is. A file you changed but did
   not declare is a violation, not a footnote. The orchestrator hands you `--baseline-files`, the
-  `path=sha256hex` state of the run's own pre-DOC2 change set, captured from the manifest before you
-  start with `validate_documentation.py baseline --repo <root> --files <pre-DOC2 paths>`; pass it
+  `path=sha256hex` state of the run's own pre-DOC2 change set, captured from the manifest plus every
+  path git already reports (the `baseline` subcommand's `--include-changed`) before you start with
+  `validate_documentation.py baseline --repo <root> --files <pre-DOC2 paths> --include-changed`; pass it
   through unchanged so those files are excluded from the undeclared comparison — and only while
   their content still is the captured one, so any file YOU edit there is still reported:
   ```bash

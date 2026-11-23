@@ -751,14 +751,23 @@ def audit(repo: str | pathlib.Path, session: str = "auto", home: str | None = No
     delegation means the flow skipped `delegation_gate.py check`, and the budget enforced nothing.
     A missing `retry_counters` block is read as "nothing was counted" (every spawn is then
     uncounted); a malformed counter is an input error; an absent session/wire is DEGRADED.
+
+    The run's own checkpoint is handed to the resolver: a run launched OUTSIDE its target repository
+    has its session `cwd` at the launch directory, so `auto` needs `launch_dir`/`session_dir`/
+    `started_at` to find THIS run's wire instead of matching an older target-cwd session
+    (factory-defect-session-resolution.md).
     """
     attribution = _attribution()
     root = pathlib.Path(os.path.abspath(str(repo)))
     if not root.is_dir():
         raise GateError(f"repository root does not exist: {root}")
     wire_home = pathlib.Path(home) if home else attribution.WIRE_HOME
+    pipeline = root / PIPELINE_REL
+    # Run evidence is what `auto` needs to find the CURRENT run's wire; an explicit directory is
+    # the caller's declaration of which run is being closed, and is used as given.
+    binding = pipeline if str(session).strip().lower() == "auto" and pipeline.is_file() else None
     try:
-        info = attribution.resolve_session(str(root), session, wire_home)
+        info = attribution.resolve_session(str(root), session, wire_home, binding)
     except attribution.Degraded as exc:
         raise GateDegraded(str(exc)) from exc
     except attribution.AttributionError as exc:

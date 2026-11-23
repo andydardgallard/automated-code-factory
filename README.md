@@ -1,5 +1,5 @@
-# Autonomous Code Factory v12.24.0
-<!-- code-factory-version: 12.24.0 -->
+# Autonomous Code Factory v12.24.1
+<!-- code-factory-version: 12.24.1 -->
 
 An autonomous code-writing factory for the **Kimi Code CLI** (0.34+, Node).
 
@@ -33,10 +33,14 @@ green-field) — the stack is detected automatically.
 - **Conditional Web GUI path** — the `factory-gui-expert` subagent implements and debugs a Web UI in
   a real browser through Chrome DevTools MCP (pinned release, deployed by `prepare_factory`); the
   `factory-tester` independently proves the final scenario
+- **Pinned Modern Web Guidance** — the GUI specialist searches and retrieves the reviewed
+  Modern Web Guidance corpus (fixed commit, read as local data, never `npx`) before implementing a
+  UI, and records the search→retrieval evidence the run must carry
 - **Conditional Farukon platform path** — the `factory-farukon-expert` subagent builds, runs, tests
   and debugs the Farukon trading platform through the `farukon` MCP server (the `farukon_mcp` crate
   of the target repo, deployed by `prepare_factory`); the `factory-tester` independently replays the
-  final scenario, read-only in stage 1
+  final scenario, read-only in stage 1, and a mandated live proof needs five consecutive healthy
+  sessions verified by the adapter
 - **Remote `reference_docs`** — a public http(s) document or Git-repository URL becomes a reusable
   skill, with the same deterministic reuse/update as a local document
 
@@ -49,8 +53,10 @@ green-field) — the stack is detected automatically.
 │   │   ├── references/chrome-devtools-mcp.md  # conditional browser path (Chrome DevTools MCP)
 │   │   ├── references/farukon-mcp.md          # conditional platform path (Farukon MCP)
 │   │   ├── scripts/chrome_devtools_mcp.py     # browser-path decide/merge-config/probe (stdlib)
-│   │   ├── scripts/farukon_mcp.py             # platform-path decide/merge-config/probe (stdlib)
+│   │   ├── scripts/farukon_mcp.py             # platform-path decide/merge-config/probe + record-session/verify gates (stdlib)
+│   │   ├── scripts/modern_web_guidance.py     # pinned Modern Web Guidance adapter: search/retrieve/scan (stdlib)
 │   │   ├── scripts/test_chrome_devtools_mcp.py, scripts/test_farukon_mcp.py  # self-tests
+│   │   ├── scripts/test_modern_web_guidance.py  # self-test (pin freshness, ranking, session evidence)
 │   │   ├── scripts/test_remote_reference_docs.py  # self-test (remote reference_docs)
 │   │   ├── assets/chrome-devtools.mcp.json    # managed MCP server definition (pinned release)
 │   │   ├── assets/chrome-devtools-smoke.html  # opt-in real-Chrome smoke fixture
@@ -181,6 +187,19 @@ and review rework use the EXISTING coder route and `retry_counters.coder`: no se
 budget or task field. A non-Web-GUI task never invokes the specialist, launches Chrome or requires
 Node.js/Chrome for success.
 
+Before implementing a UI, `factory-gui-expert` works from the factory's PINNED **Modern Web
+Guidance** corpus rather than its own habits: it searches the catalog and retrieves the guides that
+fit the task (`modern_web_guidance.py status|search|retrieve|legacy-scan|check-session`), applies
+them, prefers modern platform capabilities over obsolete workarounds and extra JavaScript, and
+respects accessibility, performance and browser compatibility. The guidance is a reviewed commit
+materialized once into the run cache and read as inert DATA by that stdlib adapter — the upstream
+`npx -y modern-web-guidance@latest …` CLI is never run — freshness is fail-closed on the exact
+40-hex commit the pin records, unstable/Origin-Trial guidance needs an explicit `.mwgrc` opt-in AND
+a declared safe fallback, obsolete-pattern checks (`legacy-scan`) are part of the role's work, and
+`check-session` requires THIS run's own evidence (a recorded search followed by a retrieval), so a
+missing, empty or stale journal fails closed. The pinned skill lives in
+`skill-base/skills/modern-web-guidance/`.
+
 `prepare_factory` merges the managed `chrome-devtools` stdio server (pinned
 `chrome-devtools-mcp@1.11.0`, never `@latest`) into the project's `.kimi-code/mcp.json`: every other
 server and user setting is preserved byte-for-byte, and an existing DIFFERENT `chrome-devtools` entry
@@ -241,6 +260,15 @@ could not run — an exception is reported as `probe_error` and is never `not_ap
 `farukon_mcp.py probe --check-mcp-start` performs a bounded JSON-RPC handshake only when it is asked
 for, and reports the `protocol_version` the server answers rather than a version of its own.
 
+The live proof is a gate, not a claim: `farukon_mcp.py record-session --mode registration` records
+one bounded handshake per fresh CLI session in the platform's own working directory with its live
+MCP configuration, `verify-sessions` then demands FIVE DISTINCT, CONSECUTIVE healthy sessions (each
+initializing, listing all eight tools and completing a real safe `tools/call`, a failed attempt
+restarting the sequence), and `verify-reproduction` judges the root-cause evidence (an observed
+launch failure before a single protocol frame plus a healthy control session). Records are
+run-scoped and immutable, never synthesized, and a task that mandates live proof is never finished
+by leaving the criterion unverified — acceptance stays blocked until both verifiers exit 0.
+
 ## Remote reference_docs (public URLs)
 
 A `reference_docs[].path` is not limited to a local file or folder: `skill_base.py resolve` classifies
@@ -273,4 +301,4 @@ change to the beginning or middle of a prompt invalidates the cache.
 Versioning follows [Semantic Versioning](https://semver.org/). The [`VERSION`](./VERSION)
 file is the single source of truth — all other version mentions are synced from it by
 `scripts/version_manager.py`. Change history is in
-[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.24.0**.
+[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.24.1**.

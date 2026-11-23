@@ -49,12 +49,17 @@ Covers the User Sovereignty contract:
     printed — never a traceback, never a blindly lost verdict,
   - the help text survives a legacy Windows console: the module docstring used as the parser
     description carries `→`, which cp1251 cannot encode, so `--help` and a usage error are both
-    run under `PYTHONIOENCODING=cp1251` and must answer with help / exit 2 instead of a traceback.
+    run under `PYTHONIOENCODING=cp1251` and must answer with help / exit 2 instead of a traceback,
+  - the finish audit's `--session auto` resolution is bound to the run's OWN checkpoint
+    (`pipeline.session_dir`/`launch_dir`/`started_at`), so a repository whose wire home holds
+    several sessions of the same `cwd` audits the pipeline-bound one instead of answering DEGRADED;
+    an explicit `--session` stays authoritative and an unusable binding stays fail-closed.
 
 Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import pathlib
@@ -89,13 +94,13 @@ def class_of(res: subprocess.CompletedProcess[str]) -> str:
     return match.group(1) if match else ""
 
 
-def write_session(root: pathlib.Path, events: list, repo: pathlib.Path | None = None) -> pathlib.Path:
+def write_session(root: pathlib.Path, events: list, repo: pathlib.Path | None = None,
+                  session_id: str = "session_11111111-1111-4111-8111-111111111111") -> pathlib.Path:
     """A fixture session: `state.json` + `agents/main/wire.jsonl` (one JSON event per line)."""
-    session = (root / "home" / "sessions" / "wd_fixture"
-               / "session_11111111-1111-4111-8111-111111111111")
+    session = root / "home" / "sessions" / "wd_fixture" / session_id
     (session / "agents" / "main").mkdir(parents=True, exist_ok=True)
     (session / "state.json").write_text(json.dumps({
-        "id": "session_11111111-1111-4111-8111-111111111111",
+        "id": session_id,
         "cwd": str(repo or root).replace("\\", "/"), "archived": False,
         "agents": {"main": {"type": "main"}}}), encoding="utf-8")
     body = "\n".join(event if isinstance(event, str) else json.dumps(event) for event in events)
@@ -316,6 +321,72 @@ def check_audit(tmp: pathlib.Path) -> None:
     res = audit("--repo", str(tmp / "no-such-repo"), "--session", "auto")
     expect(res.returncode == 2 and "Traceback" not in res.stderr,
            f"an unusable --repo must be an input error: {res.returncode} {res.stderr!r}")
+
+
+def write_pipeline(root: pathlib.Path, session_dir: str = "", started_at: str = "",
+                   launch_dir: str = "") -> pathlib.Path:
+    """A run checkpoint at `<root>/.code-factory/state/pipeline.yaml` with a run binding.
+
+    Only the keys the session resolution reads are written; an empty argument omits its key, which
+    is how the "no usable binding" case is built.
+    """
+    path = root / ".code-factory" / "state" / "pipeline.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["run_id: 20261123-c0ffee00", "phase: K", "status: in_progress"]
+    for key, value in (("session_dir", session_dir), ("started_at", started_at),
+                       ("launch_dir", launch_dir)):
+        if value:
+            lines.append(f'{key}: "{value}"')
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def check_audit_run_bound_session(tmp: pathlib.Path) -> None:
+    """`audit --session auto` honours the pipeline's run-bound session when candidates are ambiguous.
+
+    The reported defect (run 20261123-9598a460): the run's own checkpoint named the current session
+    (`pipeline.session_dir`), yet the audit resolved the session WITHOUT that evidence, saw several
+    sessions under the wire home and answered DEGRADED, although an explicit `--session` passed.
+    Auto now prefers the validated `pipeline.session_dir`; an explicit `--session` stays
+    authoritative, and a pipeline without a usable binding stays fail-closed (ambiguous candidates
+    DEGRADE, they are never guessed).
+    """
+    root = tmp / "audit-run-bound"
+    root.mkdir(parents=True, exist_ok=True)
+    bound = write_session(root, [
+        {"type": "tool.call", "tool": "shell", "arguments": {"command": "git status"}}],
+        repo=root, session_id="session_22222222-2222-4222-8222-222222222222")
+    decoy = write_session(root, [
+        {"type": "tool.call", "tool": "shell", "arguments": {"command": "pkill -f pytest"}}],
+        repo=root, session_id="session_33333333-3333-4333-8333-333333333333")
+    started = (datetime.datetime.now(tz=datetime.timezone.utc)
+               - datetime.timedelta(minutes=5)).isoformat(timespec="seconds")
+    slashed = str(bound).replace("\\", "/")
+    write_pipeline(root, session_dir=slashed, started_at=started,
+                   launch_dir=str(root).replace("\\", "/"))
+    home = str(root / "home")
+
+    # 1. Two candidate sessions are ambiguous and the checkpoint singles out the current one, so
+    #    auto audits THAT wire — the decoy's unjournaled pkill would fail the run.
+    res = audit("--repo", str(root), "--home", home, "--session", "auto")
+    expect(res.returncode == 0,
+           f"auto must audit the pipeline-bound session, not DEGRADE: {res.returncode} "
+           f"{res.stdout!r} {res.stderr!r}")
+    expect(f"session: {bound}" in res.stdout,
+           f"auto must name the run-bound session: {res.stdout!r}")
+    expect("pkill" not in res.stdout, f"the decoy wire must not be audited: {res.stdout!r}")
+
+    # 2. An explicit --session stays authoritative: the decoy really does fail.
+    res = audit("--repo", str(root), "--home", home, "--session", str(decoy))
+    expect(res.returncode == 1 and "pkill -f pytest" in res.stdout,
+           f"an explicit session must stay authoritative: {res.returncode} {res.stdout!r}")
+
+    # 3. Fail-closed without a usable binding: the same two candidates, no session_dir/started_at,
+    #    so the audit DEGRADEs instead of guessing the newest wire.
+    write_pipeline(root)
+    res = audit("--repo", str(root), "--home", home, "--session", "auto")
+    expect(res.returncode == 3,
+           f"an ambiguous set with no run binding must DEGRADE: {res.returncode} {res.stdout!r}")
 
 
 def main() -> int:
@@ -1619,6 +1690,12 @@ def main() -> int:
         check_process_kills()
         check_rm_force()
         check_audit(tmp / "w2-audit")
+
+        # 30b. The audit's auto resolution honours the run's OWN session evidence: a checkpoint that
+        #      names the current session must single it out of several candidates instead of
+        #      answering DEGRADED; an explicit --session stays authoritative and an unusable binding
+        #      stays fail-closed.
+        check_audit_run_bound_session(tmp / "w2-run-bound")
 
         # 31. C15 (vaccination): the canonical invocation declares --scope as the RESOLVED
         #     repository path (absolute), while rollback commands name their targets relative to

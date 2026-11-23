@@ -19,7 +19,7 @@ Usage:
   python3 validate_documentation.py check --repo <root> --baseline <dir> --files f1 f2 ... \
       [--derive [--baseline-files path=sha256hex ...]]
   python3 validate_documentation.py snapshot --repo <root> --baseline <dir> --files f1 f2 ...
-  python3 validate_documentation.py baseline --repo <root> --files f1 f2 ...
+  python3 validate_documentation.py baseline --repo <root> --files f1 f2 ... [--include-changed]
 
 `snapshot` copies the listed files into <dir> preserving relative paths (the documenter runs it
 BEFORE editing). `check` compares the current files against that snapshot. The `--files` of both
@@ -30,7 +30,12 @@ or write outside the baseline.
 
 `baseline` prints the state the orchestrator has to capture BEFORE the documenter starts: one
 `<path>=<sha256hex>` line per existing file, `<path>=-` for a file that does not exist (a deletion
-the run already made). Its output is exactly the `--baseline-files` input.
+the run already made). Its output is exactly the `--baseline-files` input. `--include-changed`
+UNIONS the Git-known set into that list instead of replacing it: every path `git status --porcelain`
+reports (modified tracked files and untracked ones, ignored entries excluded) is captured next to
+the manifest's files, so pre-existing untracked owner files are not turned into DOC2 debt — while
+the capture stays content-bound, so a post-capture edit to one of them, or a file created after the
+capture, still fails as undeclared. Exit code 2 when git cannot answer, never a traceback.
 
 The doc-line classifier is LANGUAGE-AWARE: a leading `#` counts as a comment only in the languages
 where it is one (shell/python/ruby/...), never in the C family (a changed `#define`/`#include` is a
@@ -537,6 +542,13 @@ def main() -> int:
     sp.add_argument("--files", nargs="+", required=True,
                     help="Files the run changed before the documenter starts (the pre-DOC2 manifest "
                          "set); their `path=state` entries are printed, one per line")
+    sp.add_argument("--include-changed", action="store_true",
+                    help="UNION every path `git -C <repo> status --porcelain` reports (modified "
+                         "tracked files plus untracked ones, ignored entries excluded) into the "
+                         "manifest set, each with its captured state — never in place of it. A "
+                         "pre-existing untracked owner file then stops being DOC2 debt, while a "
+                         "post-capture edit to it, or a file created after the capture, is still "
+                         "undeclared. Exit 2 when git cannot answer")
 
     args = ap.parse_args()
     root = pathlib.Path(args.repo).resolve()
@@ -545,6 +557,17 @@ def main() -> int:
         rels, path_problems = normalize_path_list(args.files)
         if path_problems:
             ap.error("--files: " + "; ".join(path_problems))
+        if args.include_changed:
+            # UNION, not replacement: the manifest set stays, the Git-known set joins it. Both go
+            # through the same normalizer, so a path in both is captured once.
+            changed, reason = derive_changed_files(root)
+            if reason:
+                print(f"error: --include-changed cannot compute the changed set: {reason}",
+                      file=sys.stderr)
+                return 2
+            rels, union_problems = normalize_path_list(rels + changed)
+            if union_problems:
+                ap.error("--include-changed: " + "; ".join(union_problems))
         entries, entry_problems = baseline_entries(root, rels)
         if entry_problems:
             ap.error("--files: " + "; ".join(entry_problems))

@@ -39,6 +39,28 @@ calibration command, re-branch the Advisor on its recommended role, re-add the d
 drop the question tool from the manual, unwire the Farukon routing), and the checker must FAIL on
 that copy.
 
+The SUPERVISION ORDER is pinned the same way, and by GRAPH rather than by a sentence: the flow must
+begin the supervisor (`supervisor_watchdog.py begin`) BEFORE the node that parses the task, and that
+ordering is checked as DOMINANCE — remove the supervision node from the edge set and Phase 0 must
+become unreachable from the flow entry. Reachability alone proves nothing here, because the flow
+loops (`D --> B`) and the superseded order still reached the parse. Section R is the vaccination of
+the detector itself: it runs the dominance check over synthetic graphs and requires the old order
+(parse → supervisor launch) to be caught, the corrected order to pass and an activation that
+precedes the run id to be caught, so the assertion cannot degrade into a tautology.
+
+The five mechanisms of this release are implemented in the scripts, and the FLOW must reach them:
+section S pins that the pinned Modern Web Guidance catalog is derived (`build`) and freshness-
+checked (`status`) before UI code and that the specialist's search/retrieve/legacy-scan/check-session
+workflow is wired into the implement node; that the Farukon live proof targets the project's OWN
+registration (the real Node launcher) and is judged by `record-session`, `verify-reproduction` and
+`verify-sessions` over FIVE CONSECUTIVE fresh sessions with a real safe `tools/call`; that a
+mandated live proof carries no unverified acceptance escape; that DOC2 captures its pre-DOC2 scope
+with `validate_documentation.py baseline --include-changed`; and that the run's OWN `session_dir` is
+explicit at K, Y, both finish audits and the model attribution instead of `auto`, while the ONE
+legitimate `--session auto` (the initial resolution) is bound to this run's checkpoint with
+`--pipeline .code-factory/state/pipeline.yaml`. Each of those is vaccinated by a probe that removes
+it from a throwaway copy.
+
 Invariant: every command and every constraint pinned below is present in the shipped file, at the
 place where the mechanism lives (a flow node, a named section, a template block) — absence, or a
 restored old wording, is reported as `<file>:<line>: <what is missing>`.
@@ -74,16 +96,38 @@ CODE_REVIEW = ".agents/skills/code-factory/references/code-review.md"
 FARUKON_REF = ".agents/skills/code-factory/references/farukon-mcp.md"
 DELEGATION_GATE = ".agents/skills/code-factory/scripts/delegation_gate.py"
 TESTER = ".agents/agents/sub-agents/tester.md"
+REFERENCE_DOCS = ".agents/skills/code-factory/references/reference-docs.md"
+VERIFICATION = ".agents/skills/code-factory/references/verification-strategy.md"
 
 # Every file a contract reads: a probe copies exactly these, then breaks one of them.
 FILES = (SKILL, CODE_FACTORY, AGENTS, README, BRIEFING, PROVIDERS, ERROR_ROUTING, EXAMPLE_TASK,
          TASK_TEMPLATE, CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK, CODE_REVIEW, FARUKON_REF,
-         DELEGATION_GATE, TESTER)
+         DELEGATION_GATE, TESTER, REFERENCE_DOCS, VERIFICATION)
 
 FINISH_NODE = "Y"      # `Y[Finish: ...]` — the only place compaction/attribution are invoked
 CODER_NODE = "M"       # `M[Implement: ...]` — the coder delegation and its briefing
 PREFLIGHT_NODE = "PF"  # `PF[Pre-flight: ...]` — where the model matrix is resolved
 ACCEPTANCE_NODE = "S"  # `S[Business tests: ...]` — where acceptance is owned by the tester
+
+# The cross-workstream wiring: the five mechanisms of this release are implemented in the scripts,
+# and the flow documents must actually REACH them (a mechanism the flow never invokes protects
+# nothing). The lists are the shipped command spellings, so a renamed script or a dropped subcommand
+# is caught here instead of only by the script's own self-test.
+MWG_COMMANDS = ("modern_web_guidance.py build", "modern_web_guidance.py status",
+                "modern_web_guidance.py search", "modern_web_guidance.py retrieve",
+                "modern_web_guidance.py legacy-scan", "modern_web_guidance.py check-session")
+FARUKON_PROOF_COMMANDS = ("farukon_mcp.py record-session",
+                          "farukon_mcp.py verify-reproduction",
+                          "farukon_mcp.py verify-sessions")
+ACCEPTANCE_ESCAPE = "no unverified acceptance escape"
+SESSION_TOKEN = "--session <session_dir>"
+FINISH_ATTRIBUTION = "model_attribution.py --session <session_dir>"
+AUTO_ATTRIBUTION = "model_attribution.py --session auto --repo <resolved repo_path> --pipeline"
+# The one LEGITIMATE `--session auto`: the initial resolution, bound to THIS run's checkpoint. The
+# binding is what keeps `auto` from taking the newest session of the repository (another run's wire).
+INITIAL_ATTRIBUTION = ("model_attribution.py --session auto --pipeline "
+                       ".code-factory/state/pipeline.yaml --repo <resolved repo_path>")
+AUDIT_SESSION_RE = re.compile(r"permit_gate\.py audit\b(.{0,200})", re.S)
 
 # The Advisor gate: the agreement decision, and the role decision INSIDE `agree`.
 ADVISOR_NODE = "ADR"
@@ -251,6 +295,20 @@ def open_zero_demands(body: str) -> list[str]:
         if not NEGATION_RE.search(clause):
             demands.append(body[max(0, match.start() - 50):match.end() + 50].replace("\n", " "))
     return demands
+
+
+def _command_window(text: str, token: str, limit: int = 240) -> str:
+    """The flags of ONE command occurrence — never the next `permit_gate.py` command's."""
+    at = text.find(token)
+    if at < 0:
+        return ""
+    rest = text[at + len(token):at + len(token) + limit]
+    return rest.split("permit_gate.py")[0]
+
+
+def squash(text: str) -> str:
+    """Collapse every whitespace run to one space, so a phrase check survives line wrapping."""
+    return re.sub(r"\s+", " ", text)
 
 
 def indented_block(doc: Doc, key: str) -> list[tuple[int, str]]:
@@ -1183,9 +1241,430 @@ def _model_roles() -> tuple[tuple[str, str], ...]:
             sys.path.remove(scripts)
 
 
+# --------------------------------------------------------------------------------------------
+# Q. The supervisor BEGINS before Phase 0 and observes every Phase 0 operation
+# --------------------------------------------------------------------------------------------
+# The flow tokens the superseded order did not carry: the supervisor used to be LAUNCHED after the
+# parse (and its launch needed the run_id the parse precedes), so Phase 0 itself went unwatched.
+BEGIN_TOKEN = "supervisor_watchdog.py begin"
+OBSERVE_TOKEN = "supervisor_watchdog.py observe"
+ACTIVATE_TOKEN = "supervisor_watchdog.py activate"
+COMPLETE_TOKEN = "supervisor_watchdog.py complete"
+LAUNCH_INIT_TOKEN = "permit_gate.py init --launch-dir"
+LAUNCH_ADD_TOKEN = "permit_gate.py add --launch-dir"
+LAUNCH_VERDICT_TOKEN = "permit_gate.py verdict --launch-dir"
+LAUNCH_BIND_TOKEN = "permit_gate.py bind --launch-dir"
+BIND_RUN_TOKEN = "permit_gate.py bind-run"
+PARSE_TOKEN = "task_parser.py parse"
+RUN_ID_TOKEN = "run_id.py gen"
+FLOW_ENTRY = "A"
+# The closed Phase 0 vocabulary, each event named where its operation lives.
+PHASE0_EVENTS = ("parse", "resolve", "memory-read", "memory-write", "run-id")
+
+
+def supervisor_order_problems(edges: set[tuple[str, str]], begin: str, parse: str,
+                              activate: str | None = None, run_id: str | None = None,
+                              entry: str = FLOW_ENTRY) -> list[str]:
+    """Old-order detection over the FLOW GRAPH: the supervision node must DOMINATE Phase 0.
+
+    Reachability alone proves nothing — the flow loops (`D --> B`), so the parse stays reachable
+    from almost anywhere. The contract is dominance: drop the supervision node from the graph and
+    Phase 0 must become UNREACHABLE from the entry, i.e. EVERY path into the parse, the repo
+    resolution, the memory read and the run id passes through the supervisor that watches them.
+    Dropping the run id must disconnect the activation step the same way, because activation binds
+    the launch-scoped bootstrap to the run that only then exists.
+    """
+    problems: list[str] = []
+    if begin == entry:
+        problems.append(f"the supervision bootstrap must be its own flow step after {entry}: a "
+                        f"begin folded into the entry node cannot show that it precedes Phase 0")
+        return problems
+    reachable = _reachable(edges, entry)
+    if begin not in reachable:
+        problems.append(f"the supervision node {begin} is unreachable from the flow entry {entry}: "
+                        f"nothing ever begins the supervisor")
+    without_begin = {(source, target) for source, target in edges if begin not in (source, target)}
+    if parse in _reachable(without_begin, entry):
+        problems.append(f"Phase 0 ({parse}) is reachable from {entry} WITHOUT passing the "
+                        f"supervision node {begin} — the OLD ORDER: the flow parses, resolves the "
+                        f"repo and reads the memory before the supervisor exists, so those "
+                        f"operations are never watched")
+    if parse not in _reachable(edges, begin):
+        problems.append(f"the supervision node {begin} does not lead to Phase 0 ({parse}): the "
+                        f"supervisor could never observe the parse it must watch")
+    if activate is not None:
+        if activate not in reachable:
+            problems.append(f"the activation step {activate} is unreachable from {entry}: a "
+                            f"bootstrap nobody activates never binds to a run")
+        if run_id is not None:
+            without_run_id = {(source, target) for source, target in edges
+                              if run_id not in (source, target)}
+            if activate in _reachable(without_run_id, entry):
+                problems.append(f"the activation step {activate} is reachable from {entry} WITHOUT "
+                                f"the run id ({run_id}) — activation binds the launch to the run, so "
+                                f"it may not happen before the run id exists")
+    return problems
+
+
+def _flatten(body: str) -> str:
+    return " ".join(body.split())
+
+
+def _nodes_with(skill: "Doc", token: str) -> list[tuple[int, str, str]]:
+    _first, nodes = flow_nodes(skill)
+    return [(line, ident, _flatten(body)) for line, ident, body in nodes if token in _flatten(body)]
+
+
+def check_supervisor_first(root: pathlib.Path) -> list[str]:
+    """The supervisor must be WATCHING before Phase 0 runs, and the flow must say so by graph.
+
+    The finding this pins (mistakes.txt item 1): the flow launched the supervisor FROM the parse
+    node's successor, and `supervisor_watchdog.py launch` itself required the run_id — which is
+    computed after the parse, the repo resolution and the memory read. The required order was
+    therefore impossible: the supervisor's own launch watched nothing of Phase 0. The fix splits
+    the watchdog into `begin` (run-id independent, launch-scoped), `observe` (the closed Phase 0
+    vocabulary) and `activate` (the atomic binding once the run_id exists), and the flow graph must
+    put BEGIN before the parse node in a way reachability cannot fake. (review R2) The Finish node
+    and the executable order also COMPLETE that bootstrap: the completion is what frees the launch
+    directory for the next independent run, so a flow that only begins and activates blocks every
+    second run from the same directory. (review R3) The pre-run permit registry is launch-scoped:
+    `permit_gate.py init/add --launch-dir` must run before Phase 0 and `permit_gate.py bind-run` at
+    activation, because neither the parsed task nor the checkpoint run_id exists before the parse.
+    (review R5) The same launch-root arguments carry the supervisor's `verdict` and its spawn `bind`
+    before the transfer, and `bind-run` transfers the judged, bound registry to the resolved repo.
+    """
+    problems: list[str] = []
+    skill = Doc.load(root, SKILL, problems)
+    agent = Doc.load(root, CODE_FACTORY, problems)
+
+    for token, what in ((BEGIN_TOKEN, "the run-id-independent `supervisor_watchdog.py begin`"),
+                        (OBSERVE_TOKEN, "`supervisor_watchdog.py observe`"),
+                        (ACTIVATE_TOKEN, "`supervisor_watchdog.py activate`"),
+                        (COMPLETE_TOKEN, "`supervisor_watchdog.py complete` at the Finish")):
+        if token not in skill.text:
+            problems.append(f"{SKILL}:1: the flow must invoke {what} — the supervisor has to exist "
+                            f"BEFORE Phase 0 to watch it, and its COMPLETED bootstrap is what "
+                            f"frees the launch directory for the next independent run")
+    for event in PHASE0_EVENTS:
+        if f"--event {event}" not in skill.text:
+            problems.append(f"{SKILL}:1: the closed Phase 0 vocabulary must name the "
+                            f"`--event {event}` observation — an operation the supervisor cannot "
+                            f"record is an operation nobody watched")
+
+    begin_nodes = _nodes_with(skill, BEGIN_TOKEN)
+    parse_nodes = _nodes_with(skill, PARSE_TOKEN)
+    activate_nodes = _nodes_with(skill, ACTIVATE_TOKEN)
+    run_id_nodes = _nodes_with(skill, RUN_ID_TOKEN)
+    if not begin_nodes:
+        problems.append(f"{SKILL}:1: no flow NODE begins the supervisor (`{BEGIN_TOKEN}`) — a "
+                        f"command in prose is not a step the agent executes")
+    if not parse_nodes:
+        problems.append(f"{SKILL}:1: no flow node parses the task (`{PARSE_TOKEN}`)")
+    if not activate_nodes:
+        problems.append(f"{SKILL}:1: no flow node activates the bootstrap (`{ACTIVATE_TOKEN}`)")
+    if begin_nodes and parse_nodes:
+        begin_line, begin_id, begin_body = begin_nodes[0]
+        parse_line, parse_id, parse_body = parse_nodes[0]
+        activate = activate_nodes[0][1] if activate_nodes else None
+        run_id = run_id_nodes[0][1] if run_id_nodes else None
+        for problem in supervisor_order_problems(_edges(skill), begin_id, parse_id, activate,
+                                                 run_id):
+            problems.append(f"{SKILL}:{min(begin_line, parse_line)}: {problem}")
+        if OBSERVE_TOKEN not in parse_body:
+            problems.append(f"{SKILL}:{parse_line}: the parse node must record its own observation "
+                            f"(`{OBSERVE_TOKEN}`) — the parse is the first Phase 0 operation, so "
+                            f"it is the one the old order performed unwatched")
+        if activate_nodes and run_id_nodes and activate_nodes[0][0] <= run_id_nodes[0][0]:
+            problems.append(f"{SKILL}:{activate_nodes[0][0]}: the activation step is documented "
+                            f"BEFORE the run id ({RUN_ID_TOKEN}) it binds the launch to")
+        if activate_nodes and "run_id" not in activate_nodes[0][2]:
+            problems.append(f"{SKILL}:{activate_nodes[0][0]}: the activation step must state that "
+                            f"it binds the launch to the run's `run_id`")
+        if activate_nodes and activate_nodes[0][0] <= begin_nodes[0][0]:
+            problems.append(f"{SKILL}:{activate_nodes[0][0]}: the activation step is documented "
+                            f"before the begin step it activates")
+
+    # (review R2, critical) The Finish node COMPLETES the run's bootstrap. The completion is the
+    # transition that makes the next independent run possible, so both Finish carriers must invoke
+    # it: a flow that never completes leaves the launch directory blocked for the next run, and a
+    # second run cannot begin its own supervisor.
+    finish_line, finish_body = find_node(skill, FINISH_NODE)
+    if not finish_body:
+        problems.append(f"{SKILL}:1: no Finish node `{FINISH_NODE}[...]` — the bootstrap completion "
+                        f"cannot be wired into the finish")
+    elif COMPLETE_TOKEN not in finish_body:
+        problems.append(f"{SKILL}:{finish_line}: the Finish node must invoke `{COMPLETE_TOKEN} "
+                        f"--launch-dir <launch dir>` — the run's bootstrap is completed at Finish, "
+                        f"BEFORE any second independent run may begin from the same directory")
+    complete_at = skill.text.find(COMPLETE_TOKEN)
+    if complete_at >= 0 and "next independent run" not in skill.text[complete_at:complete_at + 800]:
+        problems.append(f"{SKILL}:{skill.line_of(complete_at)}: the completion must say it frees "
+                        f"the launch directory for the next independent run")
+
+    # (review R3/R5) The pre-run permit registry is LAUNCH-SCOPED: before Phase 0 there is neither
+    # a parsed task nor a checkpoint run_id, so the registry, the supervisor's permit, its verdict
+    # and the spawn binding are all recorded against `--launch-dir` — and only the activation's
+    # `bind-run` names the resolved repository, transferring that same registry to the run.
+    launch_tokens = (LAUNCH_INIT_TOKEN, LAUNCH_ADD_TOKEN, LAUNCH_VERDICT_TOKEN, LAUNCH_BIND_TOKEN)
+    for token in (*launch_tokens, BIND_RUN_TOKEN):
+        if token not in skill.text:
+            problems.append(f"{SKILL}:1: the flow must invoke `{token}` — the pre-run permit "
+                            f"lifecycle (registry, supervisor permit, verdict, spawn binding) is "
+                            f"anchored to the launch bootstrap, not to a run_id that does not "
+                            f"exist yet, and the activation transfers it")
+    parse_at = skill.text.find(PARSE_TOKEN)
+    for token in launch_tokens:
+        token_at = skill.text.find(token)
+        if token_at >= 0 and parse_at >= 0 and token_at > parse_at:
+            problems.append(f"{SKILL}:{skill.line_of(token_at)}: `{token}` is documented AFTER the "
+                            f"parse — the launch-scoped registry must exist BEFORE Phase 0, when "
+                            f"neither the task nor the run id exists")
+    # (review R4/R5) …and each is LAUNCH-ONLY: the unresolved target cannot be its --repo, because
+    # the task that names the target has not been parsed yet.
+    for token in launch_tokens:
+        token_at = skill.text.find(token)
+        if token_at < 0:
+            continue
+        window = _command_window(skill.text, token)
+        if "--repo" in window:
+            problems.append(f"{SKILL}:{skill.line_of(token_at)}: `{token}` must NOT take the "
+                            f"target `--repo` — at Phase 0a the target is not resolved; the "
+                            f"launch lifecycle names `--launch-dir` and is transferred later")
+    activate_nodes = _nodes_with(skill, ACTIVATE_TOKEN)
+    if activate_nodes and BIND_RUN_TOKEN not in activate_nodes[0][2]:
+        problems.append(f"{SKILL}:{activate_nodes[0][0]}: the activation node must invoke "
+                        f"`{BIND_RUN_TOKEN}` — activating the watchdog is what binds the "
+                        f"launch-scoped permit registry to the run its run_id now names")
+    elif activate_nodes:
+        window = _command_window(skill.text, BIND_RUN_TOKEN)
+        if "--launch-dir" not in window or "--repo" not in window:
+            problems.append(f"{SKILL}:{activate_nodes[0][0]}: `bind-run` must TRANSFER the launch "
+                            f"registry to the resolved repository — name BOTH `--launch-dir` and "
+                            f"the now-resolved `--repo`")
+
+    # The executor document carries the SAME order: the agent reads it while running Phase 0.
+    if not agent.text:
+        return problems
+    for token, what in ((BEGIN_TOKEN, "`supervisor_watchdog.py begin`"),
+                        (OBSERVE_TOKEN, "`supervisor_watchdog.py observe`"),
+                        (ACTIVATE_TOKEN, "`supervisor_watchdog.py activate`")):
+        if token not in agent.text:
+            problems.append(f"{CODE_FACTORY}:1: the executable order must name {what}")
+    begin_at = agent.text.find(BEGIN_TOKEN)
+    parse_at = agent.text.find(PARSE_TOKEN)
+    if begin_at < 0 or parse_at < 0:
+        problems.append(f"{CODE_FACTORY}:1: the executable order must name BOTH `{BEGIN_TOKEN}` "
+                        f"and `{PARSE_TOKEN}` — the supervision bootstrap runs before the parse")
+    elif begin_at > parse_at:
+        problems.append(f"{CODE_FACTORY}:{agent.line_of(parse_at)}: the parse is documented BEFORE "
+                        f"the supervisor begins — the OLD ORDER, which leaves the parse, the repo "
+                        f"resolution, the memory read and the run id unwatched")
+    activate_at = agent.text.find(ACTIVATE_TOKEN)
+    if activate_at >= 0 and "run_id" not in agent.text[activate_at:activate_at + 400]:
+        problems.append(f"{CODE_FACTORY}:{agent.line_of(activate_at)}: the activation step must "
+                        f"state that it binds the launch to the run's `run_id`")
+    # (review R2, critical) The executable Finish order completes the bootstrap too.
+    complete_at = agent.text.find(COMPLETE_TOKEN)
+    if complete_at < 0:
+        problems.append(f"{CODE_FACTORY}:1: the executable order must name `{COMPLETE_TOKEN} "
+                        f"--launch-dir <launch dir>` at the Finish — the run's bootstrap is "
+                        f"completed there, BEFORE a second independent run begins from the same "
+                        f"directory")
+    elif "next independent run" not in agent.text[complete_at:complete_at + 800]:
+        problems.append(f"{CODE_FACTORY}:{agent.line_of(complete_at)}: the completion must say it "
+                        f"frees the launch directory for the next independent run")
+
+    # (review R3) The executor order carries the launch-scoped permit wiring too.
+    agent_parse = agent.text.find(PARSE_TOKEN)
+    for token in (*launch_tokens, BIND_RUN_TOKEN):
+        if token not in agent.text:
+            problems.append(f"{CODE_FACTORY}:1: the executable order must name `{token}` — the "
+                            f"pre-run registry and its binding are part of the supervisor's "
+                            f"launch, not an implementation detail")
+    for token in launch_tokens:
+        token_at = agent.text.find(token)
+        if token_at >= 0 and agent_parse >= 0 and token_at > agent_parse:
+            problems.append(f"{CODE_FACTORY}:{agent.line_of(token_at)}: `{token}` is documented "
+                            f"AFTER the parse — it must run BEFORE Phase 0")
+    for token in launch_tokens:
+        token_at = agent.text.find(token)
+        if token_at >= 0 and "--repo" in _command_window(agent.text, token):
+            problems.append(f"{CODE_FACTORY}:{agent.line_of(token_at)}: `{token}` must NOT take "
+                            f"the target `--repo` — the target is not resolved at Phase 0a; name "
+                            f"`--launch-dir` and transfer the registry later")
+    agent_activate = agent.text.find(ACTIVATE_TOKEN)
+    if agent_activate >= 0 and BIND_RUN_TOKEN not in agent.text[agent_activate:agent_activate + 600]:
+        problems.append(f"{CODE_FACTORY}:{agent.line_of(agent_activate)}: the activation step must "
+                        f"invoke `{BIND_RUN_TOKEN}` to bind the launch-scoped registry to the run")
+    elif agent_activate >= 0:
+        window = _command_window(agent.text, BIND_RUN_TOKEN)
+        if "--launch-dir" not in window or "--repo" not in window:
+            problems.append(f"{CODE_FACTORY}:{agent.line_of(agent_activate)}: `bind-run` must "
+                            f"TRANSFER the launch registry to the resolved repository — name BOTH "
+                            f"`--launch-dir` and the now-resolved `--repo`")
+    return problems
+
+
+def check_supervisor_order_detector(_root: pathlib.Path | None = None) -> list[str]:
+    """Vaccination of the ORDER DETECTOR itself, on synthetic graphs (no file dependency).
+
+    A checker that only greps for a token cannot tell the old order from the new one. These three
+    graphs pin the dominance logic: the superseded order (parse → supervisor) must be caught, the
+    corrected order (supervisor begin → parse → … → run id → activate) must pass, and an activation
+    that runs before the run id must be caught.
+    """
+    problems: list[str] = []
+    old_order = {("A", "P"), ("P", "S"), ("S", "R"), ("R", "X")}
+    if not supervisor_order_problems(old_order, "S", "P", "X", "R"):
+        problems.append("the detector ACCEPTED the superseded order (parse → supervisor launch): "
+                        "the old order must never pass")
+    fixed = {("A", "S"), ("S", "P"), ("P", "R"), ("R", "X")}
+    found = supervisor_order_problems(fixed, "S", "P", "X", "R")
+    if found:
+        problems.append(f"the detector REJECTED the corrected order: {found}")
+    early = {("A", "S"), ("S", "P"), ("P", "X"), ("X", "R")}
+    if not supervisor_order_problems(early, "S", "P", "X", "R"):
+        problems.append("the detector ACCEPTED an activation that precedes the run id")
+    unwatched = {("A", "P"), ("P", "R")}
+    if not supervisor_order_problems(unwatched, "S", "P"):
+        problems.append("the detector ACCEPTED a flow that never reaches the supervision node")
+    return problems
+
+
+def check_cross_workstream_wiring(root: pathlib.Path) -> list[str]:
+    """The five mechanisms are implemented in the scripts; the flow must REACH them.
+
+    This section is the integration the individual suites cannot see. A script that is green in
+    isolation is invisible to the flow if no carrier invokes it, so every mechanism is pinned where
+    an agent actually reads it:
+
+    * the pinned Modern Web Guidance catalog is derived (`build`) and freshness-checked (`status`) on
+      an applicable GUI run, and the specialist's pre-code workflow (search → retrieve → legacy-scan
+      → check-session) is wired into the implement node and the reference;
+    * the Farukon live proof targets the project's OWN registration (the real Node launcher), calls a
+      safe tool and is judged by `record-session` / `verify-reproduction` / `verify-sessions` in the
+      tester, the reference and the verification strategy;
+    * a mandatory live-proof criterion that cannot be verified is never accepted as an unverified
+      label — the "no unverified acceptance escape" sentence is what makes that a contract;
+    * DOC2 captures the pre-DOC2 scope with `baseline --include-changed` (the union of the run's
+      changes and the owner's pre-existing untracked files), never a manifest-only capture;
+    * the run's own CLI session is resolved once and passed EXPLICITLY as `session_dir` to the K/Y
+      gate aggregation, both finish audits and the model attribution — `auto` is the initial
+      resolution, never a finish gate that could audit another run's wire.
+    """
+    problems: list[str] = []
+    skill = Doc.load(root, SKILL, problems)
+    agent = Doc.load(root, CODE_FACTORY, problems)
+    tester = Doc.load(root, TESTER, problems)
+    farukon = Doc.load(root, FARUKON_REF, problems)
+    verification = Doc.load(root, VERIFICATION, problems)
+    refdocs = Doc.load(root, REFERENCE_DOCS, problems)
+
+    # WS1 — the pinned catalog adapter is reachable from both flow carriers.
+    for doc in (skill, agent):
+        missing = [command for command in MWG_COMMANDS if command not in squash(doc.text)]
+        if missing:
+            problems.append(f"{doc.rel}:1: the pinned Modern Web Guidance adapter is not fully "
+                            f"wired — missing {', '.join(missing)}")
+    line, body = find_node(skill, CODER_NODE)
+    if not body:
+        problems.append(f"{SKILL}:1: no implement node `{CODER_NODE}[...]` to carry the GUI "
+                        "specialist's pre-code guidance workflow")
+    elif "modern_web_guidance.py legacy-scan" not in squash(body):
+        problems.append(f"{SKILL}:{line}: node M must invoke the pinned-catalog workflow "
+                        "(`modern_web_guidance.py legacy-scan` over the touched interface) — a "
+                        "guidance source nobody runs is a reference nobody reads")
+    for needle, what in (("modern_web_guidance.py build", "the catalog derivation"),
+                         ("modern_web_guidance.py status", "the catalog freshness check")):
+        if needle not in squash(refdocs.text):
+            problems.append(f"{REFERENCE_DOCS}:1: the reference guide must state {what} "
+                            f"(`{needle}`) — the catalog is derived and freshness-checked, never "
+                            f"assumed")
+
+    # WS2 — the Farukon live proof is an adapter gate over the REAL registration.
+    for doc in (tester, farukon, verification):
+        missing = [command for command in FARUKON_PROOF_COMMANDS if command not in squash(doc.text)]
+        if missing:
+            problems.append(f"{doc.rel}:1: the Farukon live proof is not wired — missing "
+                            f"{', '.join(missing)}")
+    for doc in (tester, farukon):
+        if "--mode registration" not in squash(doc.text):
+            problems.append(f"{doc.rel}:1: the Farukon proof must launch the project's OWN "
+                            "registration ('--mode registration') — a cargo-only probe is a "
+                            "diagnostic lead, never proof the registered server works")
+        if "--probe-tool" not in squash(doc.text):
+            problems.append(f"{doc.rel}:1: the Farukon proof must include a real safe tools/call "
+                            "('--probe-tool') — initialize and tools/list alone prove no working "
+                            "call")
+        if "FIVE CONSECUTIVE" not in squash(doc.text):
+            problems.append(f"{doc.rel}:1: the Farukon proof must demand FIVE CONSECUTIVE fresh "
+                            "sessions — one green run is not stability")
+    if "node .kimi-code/farukon-mcp-launcher.js" not in squash(farukon.text):
+        problems.append(f"{FARUKON_REF}:1: the reference must name the platform's REAL registration "
+                        "(`node .kimi-code/farukon-mcp-launcher.js`), not only the managed cargo "
+                        "entry")
+
+    # WS2b — no unverified acceptance escape, in EVERY carrier of the acceptance contract.
+    for doc in (skill, agent, tester, farukon, verification):
+        if ACCEPTANCE_ESCAPE not in squash(doc.text).lower():
+            problems.append(f"{doc.rel}:1: the acceptance contract must say there is "
+                            f"'{ACCEPTANCE_ESCAPE}' for a task that mandates live proof — a "
+                            "missing capability never finishes the run as an unverified label")
+
+    # WS4 — the DOC2 baseline captures the full pre-DOC2 scope.
+    line, body = find_node(skill, "DOC2")
+    if not body:
+        problems.append(f"{SKILL}:1: no documentation node `DOC2[...]`")
+    else:
+        if "validate_documentation.py baseline" not in squash(body):
+            problems.append(f"{SKILL}:{line}: DOC2 must capture a `validate_documentation.py "
+                            "baseline` before the documenter runs")
+        if "--include-changed" not in squash(body):
+            problems.append(f"{SKILL}:{line}: the DOC2 baseline must carry `--include-changed` — "
+                            "a manifest-only capture still blames the documenter for the owner's "
+                            "pre-existing untracked files")
+    if "--include-changed" not in squash(agent.text):
+        problems.append(f"{CODE_FACTORY}:1: the executable order must carry the DOC2 baseline "
+                        "`--include-changed` too")
+
+    # WS5 — the run's OWN session is explicit at K, Y, both audits and the attribution.
+    for doc in (skill, agent):
+        for phase in ("K", FINISH_NODE):
+            if f"--phase {phase} --session <session_dir>" not in squash(doc.text):
+                problems.append(f"{doc.rel}:1: node {phase} must pass the run's own `session_dir` "
+                                f"EXPLICITLY to gate_all.py (`--phase {phase} --session "
+                                f"<session_dir>`) — without it the wire-auditing gates resolve "
+                                "`auto` and can audit another run's session")
+        if FINISH_ATTRIBUTION not in squash(doc.text):
+            problems.append(f"{doc.rel}:1: the finish attribution must receive the explicit "
+                            f"`session_dir` (`{FINISH_ATTRIBUTION}`)")
+        if INITIAL_ATTRIBUTION not in squash(doc.text):
+            problems.append(f"{doc.rel}:1: the initial auto session resolution must bind to THIS "
+                            f"run's checkpoint (`{INITIAL_ATTRIBUTION}`) — `auto` without "
+                            "`--pipeline` takes the newest session of the repository and can pick "
+                            "another run's wire")
+        if AUTO_ATTRIBUTION in squash(doc.text):
+            problems.append(f"{doc.rel}:1: the finish attribution may not fall back to `--session "
+                            "auto` — at finish `auto` can resolve an older session of another "
+                            "directory")
+        audits = list(AUDIT_SESSION_RE.finditer(squash(doc.text)))
+        if not audits:
+            problems.append(f"{doc.rel}:1: the finish permit audit is not named")
+        elif not any(SESSION_TOKEN in found.group(1) for found in audits):
+            problems.append(f"{doc.rel}:1: the permit audit at finish must carry the explicit "
+                            f"`{SESSION_TOKEN}`")
+        if "--session <dir|auto>" in squash(doc.text):
+            problems.append(f"{doc.rel}:1: a wire-auditing command still offers `--session "
+                            "<dir|auto>` — a finish gate must never resolve `auto`")
+    for key in ("launch_dir", "session_dir", "started_at"):
+        if key not in squash(skill.text):
+            problems.append(f"{SKILL}:1: the checkpoint contract must name `{key}` — the run's "
+                            "session binding is what makes an explicit session verifiable")
+    return problems
+
+
 SECTIONS = (
-    ("A", "the Finish node wires the memory mechanisms", check_finish_node),
-    ("B", "the precedent index is built by the flow", check_precedent_index),
+    ("A", "the Finish node wires the memory mechanisms", check_finish_node),    ("B", "the precedent index is built by the flow", check_precedent_index),
     ("C", "the briefing carries memory facts", check_briefing_memory_facts),
     ("D", "the templates agree with the rulebook", check_templates),
     ("E", "model precedence is not restated in three voices", check_model_precedence),
@@ -1201,6 +1680,10 @@ SECTIONS = (
     ("O", "the W2/W3 machinery is reachable from the flow", check_w2_w3_wiring),
     ("P", "the pre-delegation gate binds every delegation and the adversarial leg is a fork",
      check_delegation_gates),
+    ("Q", "the supervisor begins before Phase 0 and observes it", check_supervisor_first),
+    ("R", "the old-order detector catches the superseded order", check_supervisor_order_detector),
+    ("S", "the cross-workstream mechanisms are wired into the flow",
+     check_cross_workstream_wiring),
 )
 
 
@@ -1267,7 +1750,8 @@ PROBES = (
      ((SKILL, "memory_project.py compact", "memory_project.py tighten"),),
      "memory_project.py compact"),
     ("A: the model-attribution command is deleted from the Finish node", check_finish_node,
-     ((SKILL, "model_attribution.py --session auto", "model_attrib.py --session auto"),),
+     ((SKILL, "model_attribution.py --session <session_dir>",
+       "model_attrib.py --session <session_dir>"),),
      "model_attribution.py"),
     ("A: `backlog --check` is made to mean `open: 0` again", check_finish_node,
      ((SKILL, "— never open: 0", "— exit 0 means open: 0"),),
@@ -1404,6 +1888,118 @@ PROBES = (
     ("P: a resolvable role disappears from the orchestrator's registry", check_delegation_gates,
      ((CODE_FACTORY, "  - factory-supervisor\n", ""),),
      "factory-supervisor is a resolvable role"),
+    ("Q: the supervisor falls back to the run-bound launch of the old order", check_supervisor_first,
+     ((SKILL, "supervisor_watchdog.py begin", "supervisor_watchdog.py launch"),
+      (CODE_FACTORY, "supervisor_watchdog.py begin", "supervisor_watchdog.py launch")),
+     "supervisor_watchdog.py begin"),
+    ("Q: the memory read stops being an observed Phase 0 event", check_supervisor_first,
+     ((SKILL, "--event memory-read", "--event memory"),),
+     "memory-read"),
+    ("Q: the run id stops being an observed Phase 0 event", check_supervisor_first,
+     ((SKILL, "--event run-id", "--event rid"),),
+     "run-id"),
+    ("Q: the Finish node stops completing the supervisor bootstrap", check_supervisor_first,
+     ((SKILL, "supervisor_watchdog.py complete", "supervisor_watchdog.py finish"),),
+     "supervisor_watchdog.py complete"),
+    ("Q: the executable order stops completing the supervisor bootstrap", check_supervisor_first,
+     ((CODE_FACTORY, "supervisor_watchdog.py complete", "supervisor_watchdog.py finish"),),
+     "supervisor_watchdog.py complete"),
+    ("Q: the launch-scoped permit init falls back to the run-bound form", check_supervisor_first,
+     ((SKILL, "permit_gate.py init --launch-dir", "permit_gate.py init"),),
+     "permit_gate.py init --launch-dir"),
+    ("Q: the launch-scoped supervisor permit add falls back to the run-bound form",
+     check_supervisor_first,
+     ((SKILL, "permit_gate.py add --launch-dir", "permit_gate.py add"),),
+     "permit_gate.py add --launch-dir"),
+    ("Q: the activation stops binding the launch-scoped permit registry", check_supervisor_first,
+     ((SKILL, "permit_gate.py bind-run", "permit_gate.py bind"),),
+     "permit_gate.py bind-run"),
+    ("Q: the executor loses the launch-scoped permit init", check_supervisor_first,
+     ((CODE_FACTORY, "permit_gate.py init --launch-dir", "permit_gate.py init"),),
+     "permit_gate.py init --launch-dir"),
+    ("Q: the executor loses the launch-scoped supervisor permit add", check_supervisor_first,
+     ((CODE_FACTORY, "permit_gate.py add --launch-dir", "permit_gate.py add"),),
+     "permit_gate.py add --launch-dir"),
+    ("Q: the executor activation stops binding the launch-scoped permit registry",
+     check_supervisor_first,
+     ((CODE_FACTORY, "permit_gate.py bind-run", "permit_gate.py bind"),),
+     "permit_gate.py bind-run"),
+    ("Q: the launch-only init takes the unresolved target --repo", check_supervisor_first,
+     ((SKILL, "permit_gate.py init --launch-dir",
+       "permit_gate.py init --launch-dir --repo <resolved repo_path>"),),
+     "must NOT take the target `--repo`"),
+    ("Q: the launch-only supervisor permit add takes the unresolved target --repo",
+     check_supervisor_first,
+     ((SKILL, "permit_gate.py add --launch-dir",
+       "permit_gate.py add --launch-dir --repo <resolved repo_path>"),),
+     "must NOT take the target `--repo`"),
+    ("Q: the activation binds the launch registry without transferring it", check_supervisor_first,
+     ((SKILL, "bind-run --launch-dir", "bind-run --launch"),),
+     "must TRANSFER"),
+    ("Q: the executor binds the launch registry without transferring it", check_supervisor_first,
+     ((CODE_FACTORY, "bind-run --launch-dir", "bind-run --launch"),),
+     "must TRANSFER"),
+    ("Q: the launch-scoped supervisor verdict disappears", check_supervisor_first,
+     ((SKILL, "permit_gate.py verdict --launch-dir", "permit_gate.py verdict"),),
+     "permit_gate.py verdict --launch-dir"),
+    ("Q: the launch-scoped verdict takes the unresolved target --repo", check_supervisor_first,
+     ((SKILL, "permit_gate.py verdict --launch-dir",
+       "permit_gate.py verdict --launch-dir --repo <resolved repo_path>"),),
+     "must NOT take the target `--repo`"),
+    ("Q: the launch-scoped spawn binding disappears", check_supervisor_first,
+     ((SKILL, "permit_gate.py bind --launch-dir", "permit_gate.py bind"),),
+     "permit_gate.py bind --launch-dir"),
+    ("Q: the executor loses the launch-scoped spawn binding", check_supervisor_first,
+     ((CODE_FACTORY, "permit_gate.py bind --launch-dir", "permit_gate.py bind"),),
+     "permit_gate.py bind --launch-dir"),
+    ("S: the catalog derivation disappears from the reference guide",
+     check_cross_workstream_wiring,
+     ((REFERENCE_DOCS, "modern_web_guidance.py build", "modern_web_guidance.py derive"),),
+     "modern_web_guidance.py build"),
+    ("S: the implement node loses the legacy scan of the touched UI",
+     check_cross_workstream_wiring,
+     ((SKILL, "modern_web_guidance.py legacy-scan over the touched interface",
+       "legacy scanning of the touched interface"),),
+     "node M must invoke the pinned-catalog workflow"),
+    ("S: the Farukon proof stops using the project's own registration",
+     check_cross_workstream_wiring,
+     ((TESTER, "--mode registration", "--mode managed"),),
+     "--mode registration"),
+    ("S: the root-cause gate disappears from the Farukon reference",
+     check_cross_workstream_wiring,
+     ((FARUKON_REF, "farukon_mcp.py verify-reproduction",
+       "farukon_mcp.py verify-root-cause"),),
+     "farukon_mcp.py verify-reproduction"),
+    ("S: the Farukon proof drops the real safe tools/call", check_cross_workstream_wiring,
+     ((TESTER, "--probe-tool", "--probe"),),
+     "--probe-tool"),
+    ("S: the five-consecutive-sessions demand is softened", check_cross_workstream_wiring,
+     ((TESTER, "FIVE CONSECUTIVE", "several"),),
+     "FIVE CONSECUTIVE"),
+    ("S: the DOC2 baseline loses --include-changed", check_cross_workstream_wiring,
+     ((SKILL, "--include-changed", "--files-only"),),
+     "--include-changed"),
+    ("S: the K checkpoint falls back to the auto session", check_cross_workstream_wiring,
+     ((SKILL, "--phase K --session <session_dir>", "--phase K --session auto"),),
+     "node K must pass"),
+    ("S: the initial auto session resolution stops binding to this run's checkpoint",
+     check_cross_workstream_wiring,
+     ((SKILL, "model_attribution.py --session auto --pipeline .code-factory/state/pipeline.yaml "
+              "--repo <resolved repo_path>",
+       "model_attribution.py --session auto --repo <resolved repo_path>"),),
+     "the initial auto session resolution must bind"),
+    ("S: the executable order's initial auto resolution stops binding to this run's checkpoint",
+     check_cross_workstream_wiring,
+     ((CODE_FACTORY, "--session auto --pipeline\n.code-factory/state/pipeline.yaml --repo",
+       "--session auto --repo"),),
+     "the initial auto session resolution must bind"),
+    ("S: the finish attribution falls back to the auto session", check_cross_workstream_wiring,
+     ((SKILL, "model_attribution.py --session <session_dir>",
+       "model_attribution.py --session auto"),),
+     "model_attribution.py --session <session_dir>"),
+    ("S: the no-escape guarantee is softened", check_cross_workstream_wiring,
+     ((VERIFICATION, "No unverified acceptance escape", "A documented acceptance exception"),),
+     "no unverified acceptance escape"),
 )
 
 
@@ -1455,7 +2051,17 @@ def main() -> int:
           f"(add → verdict → spawn → bind, with the model-enforced verdict and the deterministic "
           f"audit backstop), the blocking manifest gate, the K/Y gate aggregation, the "
           f"factory-business-tester at node S with its own evidence tree, the finding disposition "
-          f"and its settlement, the derived fingerprint state and the phase-role table — and all "
+          f"and its settlement, the derived fingerprint state and the phase-role table — the "
+          f"supervision bootstrap DOMINATES Phase 0 (the parse, the repo resolution, the memory "
+          f"read and the run id all follow the supervisor that observes them, and the run id "
+          f"precedes the activation that binds the launch to it) with the old-order detector "
+          f"vaccinated on synthetic graphs — the cross-workstream mechanisms are REACHED by the "
+          f"flow: the pinned Modern Web Guidance catalog is derived and read BEFORE UI code, the "
+          f"Farukon live proof targets the real Node registration with a safe `tools/call` and "
+          f"five consecutive sessions judged by the adapter gates, a mandated live proof has no "
+          f"unverified acceptance escape, DOC2 captures the full pre-DOC2 scope with "
+          f"`--include-changed`, and the run's own `session_dir` is explicit at K, Y and the finish "
+          f"attribution — and all "
           f"{caught} deliberately broken copies were caught.")
     return 0
 

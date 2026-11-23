@@ -26,8 +26,18 @@ Optional gates (the delegation and permit audits, the watchdog-deny gate) are pi
 automatically once the script
 EXISTS and advertises the subcommand: a gate script that is not present is recorded as
 `not present: skipped` with the reason and never fails the phase, while a gate that IS present and
-fails propagates a failure (exit 1). This is how `permit_gate.py` (task_16) joins without touching
-this file.
+fails propagates a failure (exit 1).
+
+THE SESSION OF THE WIRE-AUDITING GATES
+
+The action, delegation and permit audits read the CLI session wire, and `auto` is a guess: when the
+factory is launched from its deployment directory and the task's `repo_path` points elsewhere, the
+run's wire is the LAUNCH directory's session while an older session carries the TARGET repository as
+its `cwd` (factory-defect-session-resolution.md). This aggregator therefore forwards exactly ONE
+explicit session — the `--session` it was given — to those gates. Without `--session` their own
+`auto` applies only for a run launched FROM its repository; a run whose checkpoint names another
+`launch_dir` is recorded FAIL CLOSED for those gates instead of auditing somebody else's wire. A
+blank `--session` is an input error: blank is never a synonym for `auto`.
 
 USAGE
 
@@ -69,6 +79,9 @@ RECORD_REL = pathlib.Path(".code-factory") / "logs"
 PIPELINE_REL = pathlib.Path(".code-factory") / "state" / "pipeline.yaml"
 TASK_TYPE_LINE = re.compile(r"^task_type:\s*(.*)$")
 RUN_ID_LINE = re.compile(r"^run_id:\s*(.*)$")
+LAUNCH_DIR_LINE = re.compile(r"^launch_dir:\s*(.*)$")
+SESSION_DIR_LINE = re.compile(r"^session_dir:\s*(.*)$")
+STARTED_AT_LINE = re.compile(r"^started_at:\s*(.*)$")
 STRICT_TASK_TYPES = ("implement", "refactor")
 ROW_RE = re.compile(r"^\|\s*(?P<gate>[a-z0-9-]+)\s*\|(?P<rest>.*)\|\s*$")
 
@@ -82,7 +95,8 @@ class Gate:
 
     `optional` gates are the ones another task ships later: when the script is absent (or does not
     advertise the subcommand yet) the aggregator records `not present: skipped` and moves on.
-    `{repo}` / `{diff}` are the only placeholders the argument list may use.
+    `{repo}` / `{diff}` / `{session}` are the only placeholders the argument list may use; a gate
+    whose list names `{session}` is a WIRE-AUDITING gate and only ever sees an explicit session.
     """
 
     def __init__(self, name: str, script: str, phases: tuple[str, ...], args: tuple[str, ...],
@@ -105,12 +119,14 @@ GATES: tuple[Gate, ...] = (
     Gate("english-only", "check_english_only.py", PHASES, ("--root", "{repo}")),
     Gate("run-id", "run_id.py", PHASES, ("check", "--dir", ".code-factory", "--repo", "{repo}")),
     Gate("factory-rules", "check_factory_rules.py", PHASES, ("--root", "{repo}")),
-    Gate("action-audit", "action_gate.py", ("Y",), ("audit", "--repo", "{repo}")),
+    Gate("action-audit", "action_gate.py", ("Y",), ("audit", "--repo", "{repo}",
+         "--session", "{session}")),
     Gate("manifest-audit", "manifest.py", ("Y",), ("audit", "--repo", "{repo}"),
          change_producing=True),
-    Gate("delegation-audit", "delegation_gate.py", ("Y",), ("audit", "--repo", "{repo}"),
-         optional=True),
-    Gate("permit-audit", "permit_gate.py", PHASES, ("audit", "--repo", "{repo}"), optional=True),
+    Gate("delegation-audit", "delegation_gate.py", ("Y",), ("audit", "--repo", "{repo}",
+         "--session", "{session}"), optional=True),
+    Gate("permit-audit", "permit_gate.py", PHASES, ("audit", "--repo", "{repo}",
+         "--session", "{session}"), optional=True),
     Gate("watchdog-deny", "supervisor_watchdog.py", PHASES, ("status", "--repo", "{repo}"),
          optional=True),
 )
@@ -136,8 +152,17 @@ def _checked_repo(repo: str | pathlib.Path) -> pathlib.Path:
 
 
 def pipeline_contract(root: pathlib.Path) -> dict:
-    """`{task_type, run_id}` of the run's checkpoint — missing values stay empty (data, not an error)."""
-    contract = {"task_type": "", "run_id": ""}
+    """`{task_type, run_id, launch_dir, session_dir, started_at}` of the run's checkpoint.
+
+    Missing values stay empty strings: they are DATA, not an error — but an empty `launch_dir`
+    means the run has no evidence of being launched outside its repository, so the wire-auditing
+    gates may resolve their session themselves.
+    """
+    keys = ("task_type", "run_id", "launch_dir", "session_dir", "started_at")
+    contract = dict.fromkeys(keys, "")
+    patterns = {"task_type": TASK_TYPE_LINE, "run_id": RUN_ID_LINE,
+                "launch_dir": LAUNCH_DIR_LINE, "session_dir": SESSION_DIR_LINE,
+                "started_at": STARTED_AT_LINE}
     path = root / PIPELINE_REL
     if not path.is_file():
         return contract
@@ -148,11 +173,93 @@ def pipeline_contract(root: pathlib.Path) -> dict:
     for line in text.splitlines():
         if line[:1].isspace():
             continue
-        for key, pattern in (("task_type", TASK_TYPE_LINE), ("run_id", RUN_ID_LINE)):
-            match = pattern.match(line.rstrip())
+        for key in keys:
+            match = patterns[key].match(line.rstrip())
             if match and not contract[key]:
                 contract[key] = match.group(1).strip().strip("'\"")
     return contract
+
+
+def norm_path(value: str | pathlib.Path) -> str:
+    """A path normalised for comparison: absolute, forward slashes, case-folded on Windows."""
+    raw = str(value or "")
+    if not raw:
+        return ""
+    try:
+        raw = str(pathlib.Path(raw).expanduser().resolve())
+    except (OSError, RuntimeError, ValueError):      # an unparsable or vanishing path
+        pass
+    text = raw.replace("\\", "/").rstrip("/")
+    return text.casefold() if os.name == "nt" else text
+
+
+def checked_session(value: str | None) -> str:
+    """The ONE session forwarded to the wire-auditing gates: a directory, or `auto`.
+
+    A blank value is refused — "blank" is never a synonym for `auto`, and it is exactly how a
+    caller loses the run's identity by accident. A named directory must exist: a gate pointed at a
+    missing session would DEGRADE or, worse, resolve another one.
+    """
+    text = (value or "").strip()
+    if not text:
+        raise GateAllError("--session is empty: name the run's own session directory (or pass "
+                          "'auto' explicitly) — a blank value is never a synonym for auto")
+    if text.lower() == "auto":
+        return "auto"
+    directory = pathlib.Path(text).expanduser()
+    if not directory.is_dir():
+        raise GateAllError(f"--session {text!r} is not a session directory: the wire-auditing gates "
+                          f"must be given the run's own session, never a guess")
+    return str(directory.resolve())
+
+
+def session_blocked(root: pathlib.Path, contract: dict) -> str:
+    """Why the wire-auditing gates must NOT fall back to `auto` here, or "" when they may.
+
+    A run launched from ANOTHER directory owns a session whose `cwd` is that launch directory, so
+    matching on the target repository finds an OLDER run instead (the defect this file closes).
+    Without an explicit session such a phase FAILS CLOSED rather than auditing the wrong wire.
+    """
+    launch = contract.get("launch_dir") or ""
+    if not launch or norm_path(launch) == norm_path(root):
+        return ""
+    return (f"fail closed: this run was launched from {launch}, not from {root}, so its wire is "
+            f"the launch directory's session and `auto` could audit another run's — pass the run's "
+            f"own --session")
+
+
+def resolve_range(root: pathlib.Path, diff: tuple[str, str] | None) -> tuple[str, str] | None:
+    """`(base, head)` of a range git can actually resolve — a malformed one is an INPUT ERROR.
+
+    This is the ONE range check of the command: the running path materializes the diff from the
+    validated refs, and `--verify-only` calls it too, because a record attested against a range the
+    gate itself would refuse to run is not attested at all. The refs are probed with
+    `git diff --quiet` (no diff text is produced), so the read-only path stays read-only.
+    """
+    if diff is None:
+        return None
+    base, head = diff
+    for ref in (base, head):
+        if not ref or ref.startswith("-"):
+            raise GateAllError(f"malformed diff range {base!r}..{head!r}: a commit-ish may not be "
+                               f"empty or start with '-'")
+    try:
+        res = subprocess.run(["git", "-C", str(root), "diff", "--quiet", base, head],
+                             capture_output=True)
+    except OSError as exc:
+        raise GateAllError(f"cannot compute the diff range {base}..{head}: {exc}") from exc
+    # 0 = the refs resolve (no difference), 1 = they resolve and differ; anything else is git
+    # refusing the range, which is exactly the malformed case.
+    if res.returncode not in (0, 1):
+        detail = res.stderr.decode("utf-8", "replace").strip()
+        raise GateAllError(f"malformed diff range {base}..{head}: git answered "
+                           f"{detail or 'exit ' + str(res.returncode)}")
+    return base, head
+
+
+def range_reason(diff: tuple[str, str] | None) -> str:
+    """How the run's change range is described in a record (the default range has no refs)."""
+    return "the working tree against HEAD" if diff is None else f"{diff[0]}..{diff[1]}"
 
 
 def change_range(root: pathlib.Path, diff: tuple[str, str] | None) -> tuple[pathlib.Path | None, str]:
@@ -162,13 +269,10 @@ def change_range(root: pathlib.Path, diff: tuple[str, str] | None) -> tuple[path
     A range git cannot resolve is an INPUT ERROR: a gate that scans the wrong range would report a
     green verdict about changes nobody made.
     """
-    if diff is None:
-        return None, "the working tree against HEAD"
-    base, head = diff
-    for ref in (base, head):
-        if not ref or ref.startswith("-"):
-            raise GateAllError(f"malformed diff range {base!r}..{head!r}: a commit-ish may not be "
-                               f"empty or start with '-'")
+    wanted = resolve_range(root, diff)
+    if wanted is None:
+        return None, range_reason(None)
+    base, head = wanted
     try:
         res = subprocess.run(["git", "-C", str(root), "diff", base, head], capture_output=True)
     except OSError as exc:
@@ -180,7 +284,7 @@ def change_range(root: pathlib.Path, diff: tuple[str, str] | None) -> tuple[path
     handle, temp = tempfile.mkstemp(prefix="gate-all-", suffix=".diff")
     with os.fdopen(handle, "wb") as stream:
         stream.write(res.stdout)
-    return pathlib.Path(temp), f"{base}..{head}"
+    return pathlib.Path(temp), range_reason(wanted)
 
 
 def gate_available(gate: Gate) -> tuple[bool, str]:
@@ -199,10 +303,18 @@ def gate_available(gate: Gate) -> tuple[bool, str]:
             return False, f"not present: {gate.script} cannot be run ({exc})"
         # argparse lists its subcommands in the usage line (`usage: x [-h] {check,init} ...`) — the
         # ONLY reliable place: the help BODY of these scripts is their long docstring, where the
-        # word "audit" occurs for prose reasons.
-        usage_lines = (res.stdout + res.stderr).splitlines()
+        # word "audit" occurs for prose reasons. The usage block may WRAP onto continuation lines
+        # (permit_gate.py's subcommand list does), so the whole block — everything after `usage:`
+        # up to the first blank line — is searched, not only its first line.
+        lines = (res.stdout + res.stderr).splitlines()
+        start = next((i for i, line in enumerate(lines) if line.startswith("usage:")), None)
+        block: list[str] = []
+        for line in lines[start:] if start is not None else []:
+            if not line.strip():
+                break
+            block.append(line)
         choices: set[str] = set()
-        match = re.search(r"\{([a-z0-9,\-_ ]+)\}", usage_lines[0]) if usage_lines else None
+        match = re.search(r"\{([a-z0-9,\-_ ]+)\}", "\n".join(block))
         if match:
             choices = {part.strip() for part in match.group(1).split(",")}
         if subcommand not in choices:
@@ -357,14 +469,39 @@ def verify_record(path: pathlib.Path, phase: str, contract: dict,
 
 # -------------------------------------------------------------------------------------------- run
 
-def run_gate(gate: Gate, root: pathlib.Path, diff_file: pathlib.Path | None) -> dict:
+def gate_argv(gate: Gate, root: pathlib.Path, diff_file: pathlib.Path | None,
+              session: str) -> list[str]:
+    """The argument list of one gate, placeholders filled — `session` is the ONLY one forwarded.
+
+    A gate that takes no `{session}` placeholder never sees it. A wire-auditing gate invoked
+    WITHOUT a session drops the flag AND its value (the template's empty placeholder must never
+    become a stray argument), so the audited script's own default applies — which only happens for
+    a run launched inside its repository (`run_phase` refuses the case that would guess).
+    """
+    values = {"repo": str(root), "diff": str(diff_file) if diff_file else "", "session": session}
+    argv: list[str] = []
+    skip = False
+    for arg in gate.args:
+        if skip:                                  # the value of a dropped `--session` flag
+            skip = False
+            continue
+        if arg == "--session" and not session:
+            skip = True
+            continue
+        filled = arg.format(**values)
+        if filled:
+            argv.append(filled)
+    return argv
+
+
+def run_gate(gate: Gate, root: pathlib.Path, diff_file: pathlib.Path | None,
+             session: str = "") -> dict:
     """Run one gate as a subprocess and report its outcome (the command is data, never a shell)."""
     if gate.diff_scoped and diff_file is None:
         # No explicit range: scan the working tree against HEAD (both checkpoints mean this).
         argv = ["--base", "HEAD"]
     else:
-        argv = [arg.format(repo=str(root), diff=str(diff_file) if diff_file else "")
-                for arg in gate.args]
+        argv = gate_argv(gate, root, diff_file, session)
     command = [sys.executable, gate.script, *argv]
     stamp = datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
@@ -381,13 +518,20 @@ def run_gate(gate: Gate, root: pathlib.Path, diff_file: pathlib.Path | None) -> 
 
 
 def run_phase(root: pathlib.Path, phase: str, diff: tuple[str, str] | None,
-              out: str | None) -> dict:
-    """Run every applicable gate of `phase`, write the record and self-verify it."""
+              out: str | None, session: str | None = None) -> dict:
+    """Run every applicable gate of `phase`, write the record and self-verify it.
+
+    `session` is the run's own session, forwarded verbatim to the wire-auditing gates. When it is
+    absent and the run was LAUNCHED OUTSIDE its repository, those gates are recorded FAIL CLOSED:
+    their `auto` resolution would match an older target-cwd session and answer about another run.
+    """
     root = _checked_repo(root)
     if phase not in PHASES:
         raise GateAllError(f"unknown phase {phase!r}: the factory has exactly two gate checkpoints, "
                            f"{' and '.join(PHASES)}")
     contract = pipeline_contract(root)
+    session = checked_session(session) if session is not None else ""
+    blocked = "" if session else session_blocked(root, contract)
     diff_file, range_reason = change_range(root, diff)
     rows: list[dict] = []
     try:
@@ -399,7 +543,14 @@ def run_phase(root: pathlib.Path, phase: str, diff: tuple[str, str] | None,
                              .strftime("%Y-%m-%dT%H:%M:%SZ"),
                              "command": "-"})
                 continue
-            rows.append(run_gate(gate, root, diff_file))
+            if blocked and "{session}" in gate.args:
+                rows.append({"gate": gate.name, "exit": "2", "applicability": blocked,
+                             "ran_at": datetime.datetime.now(tz=datetime.timezone.utc)
+                             .strftime("%Y-%m-%dT%H:%M:%SZ"),
+                             "command": f"{gate.script} (not run: no --session)",
+                             "output": blocked})
+                continue
+            rows.append(run_gate(gate, root, diff_file, session))
     finally:
         if diff_file is not None:
             diff_file.unlink(missing_ok=True)
@@ -443,6 +594,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="the run's change range (default: the working tree against HEAD)")
     ap.add_argument("--out", default=None,
                     help=f"record file (default: <repo>/{RECORD_REL.as_posix()}/gate-<phase>.md)")
+    ap.add_argument("--session", default=None,
+                    help="the run's own session directory (or an explicit 'auto'), forwarded to the "
+                         "wire-auditing gates (action-audit, delegation-audit, permit-audit); a "
+                         "blank value is a usage error and an omitted one fails closed for a run "
+                         "launched outside its repository")
     ap.add_argument("--verify-only", default=None, metavar="RECORD",
                     help="only check an existing record against the phase's gate table")
     ap.add_argument("--json", action="store_true", dest="as_json", help="machine-readable output")
@@ -454,9 +610,13 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         root = _checked_repo(args.repo)
+        # The range is validated BEFORE anything reads or writes: `--verify-only` must refuse a
+        # malformed range exactly like a phase run (ADV-2) and leave the record untouched.
+        checked = resolve_range(root, tuple(args.diff) if args.diff else None)
         contract = pipeline_contract(root)
-        range_reason = "the working tree against HEAD" if args.diff is None else \
-            f"{args.diff[0]}..{args.diff[1]}"
+        range_reason = "the working tree against HEAD" if checked is None else \
+            f"{checked[0]}..{checked[1]}"
+        session = checked_session(args.session) if args.session is not None else None
         if args.verify_only:
             problems, rows = verify_record(pathlib.Path(args.verify_only), args.phase, contract,
                                            range_reason)
@@ -471,7 +631,8 @@ def main() -> int:
                 print(f"{'PASS' if not problems else 'FAIL'} - "
                       f"{len(rows)} recorded gate(s) for phase {args.phase}")
             return 0 if not problems else 1
-        result = run_phase(root, args.phase, tuple(args.diff) if args.diff else None, args.out)
+        result = run_phase(root, args.phase, tuple(args.diff) if args.diff else None, args.out,
+                           session)
     except GateAllError as exc:
         print(f"gate_all.py: {exc}", file=sys.stderr)
         return 2

@@ -141,6 +141,24 @@ ORACLE of a self-test (a fixture that must fail loudly, a duplicated scenario id
 into that tree — so they are dispositioned `fixed-prose:` with the module they touch. Registering
 them would be exactly the tautology this harness exists to refuse.
 
+The `WS` group is THIS run's own change set (run 20261122-ef747283): the five workstreams the task
+asked for — the pinned Modern Web Guidance adapter and its GUI workflow carrier, the Farukon MCP
+causal fix with its stage-named handshake evidence, drift reporting and evidence CLI, the supervisor
+bootstrap that runs before Phase 0 and the flow that reaches it, the no-retroactive-record controls
+(append-only permit ledger, strict attribution of EVERY required role, the Git-known DOC2 baseline)
+and the current-run session resolution propagated through the finish audits, plus the three
+adversarial regressions of the same run (a resumed agent's role correlation, `--verify-only` diff
+validation and the mandatory guidance-evidence precondition) and the production defects the R1
+adversarial review found and the run fixed (per-session tools/call proof, the run-anchored supervisor
+permit, the completed-bootstrap lifecycle, run/revision-bound guidance usage, and the empty-catalog
+and unreadable-scan refusals). The two R1 TEST-meta findings (a case missing from a suite's `main`,
+a fixture left outside its `TemporaryDirectory`) are not vaccinated: the harness copies the FIXED
+self-test into the pre-fix tree, so no probe over that file can bite there. Every one of them is a
+FOCUSED probe replayed against `WS_BASE_SHA`, the HEAD the run started from: the change set was still
+uncommitted there, so that tree is the real pre-fix state. Its claim lives in `WS_FINDINGS` next to
+the vaccines, as `CLEAN_CODE_FINDINGS`/`FARUKON_FINDINGS`/`FB_FINDINGS` do, because the run keeps no
+disposition artifact a clone could read.
+
 Cross-checks run before anything slow, and `--registry-only` stops after them:
   - every `vaccine: <ID>` of the disposition file is registered, and every registered vaccine is
     claimed by name (the disposition, a release claim list or a reconstructed claim) — reported both
@@ -260,6 +278,10 @@ FARUKON_BASE_SHA = "d5e535104a8e2bc697d809fe51c126f10f8bc6ff"
 # timeout validation, the complexity extraction and the shared merge module are proven against the
 # tree that predates them.
 FB_BASE_SHA = "4ad54efe8e5aa638cf2d78cddf38f7ca35b425f0"
+# The pre-fix HEAD of THIS run's five workstreams (run 20261122-ef747283 started from it): every `WS`
+# vaccine is replayed against that commit, so each workstream's fix is proven against the tree the
+# run really started from — the change set was still uncommitted when it was written.
+WS_BASE_SHA = "2b36c3589d4e40181db15046719e516deb031bae"
 
 # The four kinds of focused check a vaccine can name (see the module docstring).
 MODULE = "module"
@@ -278,8 +300,9 @@ PROBE_FIXTURES = ("test_action_gate.py", "test_calibrate_reviewer.py", "test_che
                   "test_chrome_devtools_mcp.py", "test_delegation_gate.py", "test_evidence_ledger.py",
                   "test_factory_model.py", "test_factory_rules.py", "test_farukon_mcp.py",
                   "test_flow_contracts.py", "test_gate_all.py",
-                  "test_gen_code_changes_report.py", "test_input_validation_gate.py",
-                  "test_manifest.py", "test_memory_project.py", "test_merge_findings.py",
+                  "test_factory_preflight.py", "test_gen_code_changes_report.py",
+                  "test_input_validation_gate.py", "test_manifest.py",
+                  "test_memory_project.py", "test_merge_findings.py", "test_modern_web_guidance.py",
                   "test_model_attribution.py", "test_model_precedence.py",
                   "test_no_role_substitution.py", "test_permit_gate.py",
                   "test_precedent_index.py", "test_review_followup_task.py",
@@ -299,7 +322,7 @@ EXPECTED_GROUPS = (("RV", 20), ("BL", 8), ("PR", 18), ("RF", 15), ("NM", 2), ("C
 # The id prefix that tags a registered vaccine with its group. The five historical groups below
 # carry no tag (their vaccines are the release-wide `V-memory-*`, `V-model-*`, ... entries).
 GROUP_TAGS = {"RF": "V-rf-", "NM": "V-nm-", "CC": "V-cc-", "FX": "V-fx-", "DP": "V-dp-",
-              "FK": "V-fk-", "FB": "V-fb-"}
+              "FK": "V-fk-", "FB": "V-fb-", "WS": "V-ws-"}
 # Groups whose per-run disposition artifact is NOT kept anywhere a clone can read: `.code-factory/`
 # is gitignored, so their item texts are gone. Their vaccines are still attributable by tag (RF/NM)
 # or by the shared historical release base (RV/BL/PR), and that attribution is what keeps the
@@ -3620,6 +3643,488 @@ with tempfile.TemporaryDirectory() as td:
     t.test_probe_out_confinement(pathlib.Path(td))
 '''
 
+# --------------------------------------------------------------------------------------------
+# THIS run's (WS) five workstreams (run 20261122-ef747283), replayed against WS_BASE_SHA. The run
+# started with the change set uncommitted, so the recorded HEAD IS the pre-fix tree of all five.
+# One focused probe per testable defect: the sibling self-tests bundle several of them (and
+# `test_modern_web_guidance.py` is new with the release), so a whole-module run would abort at its
+# first failing check and validate its neighbours by accident. Each probe re-executes exactly one
+# defect — the self-test's own named case where it has one, so a renamed case is a red here.
+# --------------------------------------------------------------------------------------------
+PROBE_WS_MWG_ADAPTER = '''\
+import sys
+sys.path.insert(0, ".")
+import test_modern_web_guidance as t
+t.test_missing_adapter()
+'''
+
+PROBE_WS_MWG_GUI = '''\
+import sys
+sys.path.insert(0, ".")
+import test_modern_web_guidance as t
+t.test_gui_workflow_contract()
+'''
+
+PROBE_WS_MWG_PIN = '''\
+import json, pathlib
+root = pathlib.Path(".").resolve().parents[3]
+manifest = json.loads((root / "skill-base" / "manifest.json").read_text(encoding="utf-8"))
+entry = (manifest.get("skills") or {}).get("modern-web-guidance")
+if not isinstance(entry, dict):
+    raise AssertionError("the Modern Web Guidance source must be registered in "
+                         "skill-base/manifest.json with its canonical source, exact revision and "
+                         "content hash")
+source = entry.get("source") or ""
+revision = entry.get("resolved_revision") or ""
+digest = entry.get("sha256") or ""
+if source != "https://github.com/GoogleChrome/modern-web-guidance.git":
+    raise AssertionError(f"the catalog source must be the reviewed upstream repository, got "
+                         f"{source!r}")
+if len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
+    raise AssertionError(f"the catalog must be pinned to an exact 40-hex commit, got {revision!r}")
+if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+    raise AssertionError(f"the generated skill must record its 64-hex content hash, got {digest!r}")
+skill = root / "skill-base" / "skills" / "modern-web-guidance" / "SKILL.md"
+if not skill.is_file() or "name: modern-web-guidance" not in skill.read_text(
+        encoding="utf-8")[:400]:
+    raise AssertionError("skill-base/skills/modern-web-guidance/SKILL.md must ship with its "
+                         "frontmatter name")
+'''
+
+PROBE_WS_FARUKON_STAGE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_farukon_mcp as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_handshake_reports_failure_evidence(pathlib.Path(td))
+'''
+
+PROBE_WS_FARUKON_DRIFT = '''\
+import json, pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_factory_preflight as t
+with tempfile.TemporaryDirectory() as raw:
+    tmp = pathlib.Path(raw)
+    helper = t.load_farukon_helper()
+    root = t.platform_repo(tmp / "platform-drift", helper, with_config=False)
+    config = root.joinpath(*t.MCP_RELPARTS)
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"mcpServers": {helper.SERVER_NAME: {
+        "command": "node",
+        "args": [str(root / ".kimi-code" / "farukon-mcp-launcher.js")],
+        "cwd": str(root)}}}, indent=2), encoding="utf-8")
+    bin_dir = tmp / "bin"
+    t.fake_cargo(bin_dir, tmp / "cargo.log")
+    block = t.farukon(tmp, "--repo", str(root), name="farukon-drift.json",
+                      env=t.farukon_env(bin_dir))
+    if block.get("config_drift") is not True or block.get("config_entry_present") is not True:
+        raise AssertionError("a `farukon` registration that is not the managed definition must be "
+                             "reported as DRIFT (`config_entry_present` and `config_drift`), not as "
+                             "a missing config")
+'''
+
+PROBE_WS_FARUKON_EVIDENCE = '''\
+import subprocess, sys
+for sub in ("record-session", "verify-reproduction", "verify-sessions"):
+    res = subprocess.run([sys.executable, "farukon_mcp.py", sub, "--help"],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if res.returncode != 0:
+        raise AssertionError("the Farukon proof needs a deterministic evidence CLI: "
+                             f"`farukon_mcp.py {sub}` does not exist "
+                             f"({res.stderr.strip()[:160]!r})")
+'''
+
+PROBE_WS_SUPERVISOR_BOOTSTRAP = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_supervisor_watchdog as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_bootstrap_precedes_phase0(pathlib.Path(td))
+'''
+
+PROBE_WS_SUPERVISOR_FLOW = '''\
+import sys
+sys.path.insert(0, ".")
+import test_flow_contracts as t
+problems = t.check_supervisor_first(t.ROOT)
+if problems:
+    raise AssertionError("the flow must run the supervisor BEFORE Phase 0: " + problems[0])
+'''
+
+PROBE_WS_PERMIT_LEDGER = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_permit_gate as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_ledger_reset_and_reinit(pathlib.Path(td))
+'''
+
+PROBE_WS_ATTRIBUTION_REQUIRED = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_model_attribution as t
+with tempfile.TemporaryDirectory() as td:
+    t.case_17_required_role_without_claim(pathlib.Path(td))
+'''
+
+PROBE_WS_DOC2_BASELINE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_validate_documentation as t
+with tempfile.TemporaryDirectory() as td:
+    t.doc2_baseline_include_changed(pathlib.Path(td))
+'''
+
+PROBE_WS_SESSION_ATTRIBUTION = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_model_attribution as t
+with tempfile.TemporaryDirectory() as td:
+    t.case_18_current_session_resolution(pathlib.Path(td))
+'''
+
+PROBE_WS_SESSION_PERMIT = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_permit_gate as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_current_session_resolution(pathlib.Path(td))
+'''
+
+PROBE_WS_SESSION_DELEGATION = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_delegation_gate as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_current_session_resolution(pathlib.Path(td))
+'''
+
+PROBE_WS_SESSION_GATE_ALL = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_gate_all as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_session_propagation(pathlib.Path(td))
+'''
+
+# The three ADV probes close the adversarial regressions of this same run (task_21/22). Each is the
+# focused case of its own module; the ADV-2 and ADV-3 cases are reproduced here so the bite cannot be
+# overtaken by an earlier assertion of the shared suite.
+PROBE_WS_ADV_RESUME = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_permit_gate as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_resumed_agent_role_correlation(pathlib.Path(td))
+'''
+
+PROBE_WS_ADV_VERIFY_DIFF = '''\
+import pathlib, re, subprocess, sys, tempfile
+td = pathlib.Path(tempfile.mkdtemp())
+
+
+def gate(*args):
+    return subprocess.run([sys.executable, "gate_all.py", "--repo", str(td), *args],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+
+record = td / ".code-factory" / "logs" / "gate-K.md"
+gate("--phase", "K")
+text = record.read_text(encoding="utf-8")
+record.write_text(re.sub(r"^(\\| [a-z-]+ \\| )\\d+( \\| )", r"\\g<1>0\\g<2>", text, flags=re.M),
+                  encoding="utf-8")
+if gate("--phase", "K", "--verify-only", str(record)).returncode != 0:
+    raise AssertionError("the fixture must start from an INTACT phase-K record, otherwise the "
+                         "diff validation is not what the probe measures")
+res = gate("--phase", "K", "--verify-only", str(record), "--diff", "", "HEAD")
+if res.returncode != 2 or "malformed diff range" not in res.stderr:
+    raise AssertionError("a malformed diff range under --verify-only must exit 2 naming "
+                         "`malformed diff range` (got "
+                         f"{res.returncode}: {(res.stdout + res.stderr).strip()[:160]!r}) — a "
+                         "read-only verification that never parses the range it prints attests a "
+                         "record against an input the phase run would refuse")
+'''
+
+PROBE_WS_ADV_GUIDANCE_EVIDENCE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_modern_web_guidance as t
+failure = ("check-session must refuse a session with no usage evidence: a run that never consulted "
+           "the pinned catalog cannot pass its own precondition")
+if t.mwg is None:
+    raise AssertionError(failure + " (the pre-fix tree has no adapter at all)")
+with tempfile.TemporaryDirectory() as td:
+    t.test_check_session_requires_evidence(pathlib.Path(td))
+'''
+
+PROBE_WS_R1_SESSION_CALL = '''\
+import pathlib, subprocess, sys, tempfile
+sys.path.insert(0, ".")
+import test_farukon_mcp as t
+res = subprocess.run([sys.executable, "farukon_mcp.py", "verify-sessions", "--help"],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+if res.returncode != 0:
+    raise AssertionError("every one of the five sessions must prove a real tools/call, not a "
+                         "listing: the session validator does not exist on this tree "
+                         f"({res.stderr.strip()[:120]!r})")
+with tempfile.TemporaryDirectory() as td:
+    t.test_live_session_evidence(pathlib.Path(td))
+'''
+
+PROBE_WS_R1_SUPERVISOR_PERMIT = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_permit_gate as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_supervisor_permit_before_task(pathlib.Path(td))
+'''
+
+PROBE_WS_R1_SEQUENTIAL_RUNS = '''\
+import pathlib, subprocess, sys, tempfile
+sys.path.insert(0, ".")
+import test_supervisor_watchdog as t
+res = subprocess.run([sys.executable, "supervisor_watchdog.py", "complete", "--help"],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+if res.returncode != 0:
+    raise AssertionError("a COMPLETED bootstrap must not block the next independent run: the "
+                         "lifecycle needs an explicit `complete` that keeps the run binding "
+                         f"({res.stderr.strip()[:120]!r})")
+with tempfile.TemporaryDirectory() as td:
+    t.test_sequential_runs(pathlib.Path(td))
+'''
+
+PROBE_WS_R1_USAGE_BINDING = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_modern_web_guidance as t
+failure = ("guidance usage must be bound to the CURRENT run and catalog revision: an unbound, "
+           "stale, mixed-run or stale-revision journal is not current proof")
+if t.mwg is None:
+    raise AssertionError(failure + " (the adapter is absent on this tree)")
+with tempfile.TemporaryDirectory() as td:
+    t.test_usage_binding(pathlib.Path(td))
+'''
+
+PROBE_WS_R1_EMPTY_CATALOG = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_modern_web_guidance as t
+failure = ("an empty catalog must be a controlled refusal, not an IndexError from "
+           "resolve_guidance_id")
+if t.mwg is None:
+    raise AssertionError(failure + " (the adapter is absent on this tree)")
+with tempfile.TemporaryDirectory() as td:
+    repo = t.new_repo(pathlib.Path(td), "legacy-empty-catalog")
+    catalog = t.write_catalog(repo / "catalog", entries=[])
+    (repo / "legacy.html").write_text(t.LEGACY_HTML, encoding="utf-8")
+    data = t.payload(t.run("status", "--repo", str(repo), "--catalog", str(catalog)),
+                     "empty catalog")
+    t.check(data.get("status") == "FRESH" and data.get("entries") == 0,
+            f"a pinned catalog with zero entries is still FRESH: {data!r}")
+    res = t.run("legacy-scan", "--repo", str(repo), "--catalog", str(catalog),
+                "--target", str(repo))
+    t.expect_error(res, 1, "legacy-scan against an empty catalog")
+    lowered = res.stderr.lower()
+    t.check("catalog" in lowered and any(w in lowered for w in ("empty", "no entr", "zero")),
+            f"{failure}: the refusal must name the empty catalog: {res.stderr!r}")
+    try:
+        t.mwg.resolve_guidance_id([], t.mwg.LEGACY_PATTERNS[0])
+    except t.mwg.CliError:
+        pass
+    except Exception as exc:
+        raise AssertionError(f"{failure}: it crashed with {type(exc).__name__}: {exc}") from None
+    else:
+        raise AssertionError(f"{failure}: it returned a fallback id instead of refusing")
+'''
+
+PROBE_WS_R1_UNREADABLE_SCAN = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_modern_web_guidance as t
+failure = "scan_file must report an unreadable input instead of counting it as scanned"
+if t.mwg is None:
+    raise AssertionError(failure + " (the adapter is absent on this tree)")
+with tempfile.TemporaryDirectory() as td:
+    repo = t.new_repo(pathlib.Path(td), "legacy-unreadable")
+    blocked = repo / "blocked.html"
+    blocked.mkdir()
+    patterns = [dict(pattern, guidance_id="dialog-focus-management")
+                for pattern in t.mwg.LEGACY_PATTERNS]
+    findings = []
+    try:
+        outcome = t.mwg.scan_file(blocked, repo, findings, patterns)
+    except t.mwg.CliError:
+        reported = True
+    else:
+        reported = outcome is False or (isinstance(outcome, dict) and outcome.get("ok") is False)
+    if not reported:
+        raise AssertionError(f"{failure} (returned {outcome!r})")
+'''
+
+PROBE_WS_R2_LAUNCH_PERMIT = '''\
+import pathlib, subprocess, sys, tempfile
+sys.path.insert(0, ".")
+import test_permit_gate as t
+res = subprocess.run([sys.executable, "permit_gate.py", "add", "--help"],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+if "--launch-dir" not in res.stdout:
+    raise AssertionError("the PRE-RUN supervisor permit needs NEITHER task NOR checkpoint run_id: "
+                         "`permit_gate.py add` must accept --launch-dir and anchor the supervisor "
+                         "permit to the launch bootstrap")
+with tempfile.TemporaryDirectory() as td:
+    t.test_supervisor_permit_without_run_id(pathlib.Path(td))
+'''
+
+PROBE_WS_R2_FINISH_COMPLETE = '''\
+import sys
+sys.path.insert(0, ".")
+import test_flow_contracts as t
+problems = [p for p in t.check_supervisor_first(t.ROOT) if "supervisor_watchdog.py complete" in p]
+if problems:
+    raise AssertionError("the Finish must COMPLETE the run's bootstrap in both flow carriers: "
+                         + problems[0])
+'''
+
+PROBE_WS_R2_COMPLETE_STATUS = '''\
+import pathlib, subprocess, sys, tempfile
+sys.path.insert(0, ".")
+import test_supervisor_watchdog as t
+res = subprocess.run([sys.executable, "supervisor_watchdog.py", "complete", "--help"],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+if res.returncode != 0:
+    raise AssertionError("the bootstrap completion is GATED by the run's Finish: `complete` must "
+                         "refuse while the checkpoint is still in_progress and succeed only at "
+                         f"`status: ok` ({res.stderr.strip()[:120]!r})")
+with tempfile.TemporaryDirectory() as td:
+    t.test_sequential_runs(pathlib.Path(td))
+'''
+
+PROBE_WS_R3_LAUNCH_PERMIT_FLOW = '''\
+import sys
+sys.path.insert(0, ".")
+import test_flow_contracts as t
+needles = ("permit_gate.py init --launch-dir", "permit_gate.py add --launch-dir",
+           "permit_gate.py bind-run")
+problems = [p for p in t.check_supervisor_first(t.ROOT) if any(n in p for n in needles)]
+if problems:
+    raise AssertionError("the pre-run permit registry must be LAUNCH-scoped in both carriers: "
+                         + problems[0])
+'''
+
+PROBE_WS_R4_LAUNCH_ONLY = '''\
+import pathlib, subprocess, sys, tempfile
+sys.path.insert(0, ".")
+import test_permit_gate as t
+with tempfile.TemporaryDirectory() as raw:
+    td = pathlib.Path(raw)
+    launch = td / "launch"
+    launch.mkdir()
+    subprocess.run([sys.executable, "supervisor_watchdog.py", "begin", "--launch-dir", str(launch)],
+                   capture_output=True, text=True)
+    res = subprocess.run([sys.executable, "permit_gate.py", "init", "--launch-dir", str(launch)],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if res.returncode != 0:
+        raise AssertionError("the pre-run permit registry is LAUNCH-ONLY and is TRANSFERRED at "
+                             "bind-run: `permit_gate.py init --launch-dir <dir>` must work with no "
+                             f"resolved target --repo yet ({res.stderr.strip()[:120]!r})")
+    t.test_launch_only_registry_transfer(td)
+'''
+
+PROBE_WS_R4_TOOL_RESULT = '''\
+import inspect, pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import farukon_mcp as fm
+import test_farukon_mcp as t
+try:
+    params = inspect.signature(fm.mcp_start_handshake).parameters
+except (TypeError, ValueError):
+    params = {}
+if "probe_tool" not in params:
+    raise AssertionError("a tools/call is green only with a VALIDATED MCP result: the handshake "
+                         "must be able to probe a tool and judge `result.isError`/empty/malformed/"
+                         "missing results instead of accepting any envelope")
+with tempfile.TemporaryDirectory() as td:
+    t.test_tools_call_result_validation(pathlib.Path(td))
+'''
+
+PROBE_WS_R4_CONSECUTIVE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import farukon_mcp as fm
+import test_farukon_mcp as t
+if not hasattr(fm, "SESSIONS_REQUIRED") or not hasattr(fm, "verify_sessions"):
+    raise AssertionError("only sessions AFTER the latest failed or malformed attempt count: the "
+                         "session gate must require five DISTINCT healthy sessions after that "
+                         "attempt, not any five in the directory")
+with tempfile.TemporaryDirectory() as td:
+    t.test_consecutive_session_evidence(pathlib.Path(td))
+'''
+
+PROBE_WS_R5_STRICT_EVIDENCE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import farukon_mcp as fm
+import test_farukon_mcp as t
+if not hasattr(fm, "verify_sessions") or not hasattr(fm, "_recorded_result_problem"):
+    raise AssertionError("a counted session must keep a VALIDATED tool_result and broken evidence "
+                         "must fail closed: the session gate must preserve the call result and "
+                         "refuse invalid JSON instead of skipping it")
+with tempfile.TemporaryDirectory() as td:
+    t.test_strict_session_evidence(pathlib.Path(td))
+'''
+
+PROBE_WS_R5_ATOMIC_TRANSFER = '''\
+import pathlib, subprocess, sys, tempfile
+sys.path.insert(0, ".")
+import test_permit_gate as t
+res = subprocess.run([sys.executable, "permit_gate.py", "verdict", "--help"],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+if "--launch-dir" not in res.stdout:
+    raise AssertionError("the launch permit transfer must be FAILURE-ATOMIC: `verdict`/`bind` act "
+                         "on the launch registry and `bind-run` moves it as one transaction that "
+                         "leaves both copies intact and retryable on a fault")
+with tempfile.TemporaryDirectory() as td:
+    t.test_transfer_failure_is_atomic(pathlib.Path(td))
+'''
+
+PROBE_WS_R5_LAUNCH_VERDICT_FLOW = '''\
+import sys
+sys.path.insert(0, ".")
+import test_flow_contracts as t
+needles = ("permit_gate.py verdict --launch-dir", "permit_gate.py bind --launch-dir")
+problems = [p for p in t.check_supervisor_first(t.ROOT) if any(n in p for n in needles)]
+if problems:
+    raise AssertionError("the launch-root verdict and spawn bind must be wired into both carriers "
+                         "before the transfer: " + problems[0])
+'''
+
+PROBE_WS_R6_RETIREMENT_ATOMIC = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import permit_gate as pg
+import test_permit_gate as t
+if not hasattr(pg, "bind_run"):
+    raise AssertionError("a SOURCE-RETIREMENT fault is inside the transfer transaction: a failed "
+                         "retirement must leave the launch registry intact and unbound, no target "
+                         "artifact and no half-written archive, and the same command retryable")
+with tempfile.TemporaryDirectory() as td:
+    t.test_retirement_failure_is_atomic(pathlib.Path(td))
+'''
+
+PROBE_WS_R7_ROLLBACK_REPORTING = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import permit_gate as pg
+import test_permit_gate as t
+if not hasattr(pg, "bind_run"):
+    raise AssertionError("a FAILED rollback must be reported truthfully, never as a clean restore: "
+                         "the transfer must propagate and aggregate archive-restoration and "
+                         "target-cleanup failures instead of swallowing them")
+with tempfile.TemporaryDirectory() as td:
+    t.test_rollback_restoration_failure_is_reported(pathlib.Path(td))
+    t.test_target_cleanup_failure_is_reported(pathlib.Path(td))
+'''
+
 REVIEW_20261105_FINDINGS: tuple[tuple[str, str, str], ...] = (
     ("C1", "the supervisor is a run-long background WATCHDOG (launched once, scanned "
            "deterministically, blocking denies) instead of a synchronous per-delegation clerk",
@@ -3758,6 +4263,119 @@ REVIEW_20261105_FINDINGS: tuple[tuple[str, str, str], ...] = (
            "for parsing only", "V-rg-deployer-line"),
 )
 
+# THIS run's (WS) five workstreams (run 20261122-ef747283), claimed next to the vaccines exactly as
+# the CC/FK/FB/RG groups are. The run left no disposition artifact, so this list IS the durable claim:
+# one item per testable defect, each naming the focused probe replayed against WS_BASE_SHA.
+WS_FINDINGS: tuple[tuple[str, str, str], ...] = (
+    ("WS-1", "the GUI specialist's guidance comes from a stdlib adapter over the PINNED cached "
+             "Modern Web Guidance catalog (`modern_web_guidance.py`), not from arbitrary web "
+             "search and not from executing downloaded code", "V-ws-mwg-adapter"),
+    ("WS-2", "`gui-expert.md` requires search/retrieve of the pinned catalog BEFORE UI code, the "
+             "`.mwgrc` unstable opt-in with a safe fallback, and a legacy-pattern review through "
+             "`legacy-scan`", "V-ws-mwg-gui"),
+    ("WS-3", "the catalog source is registered in `skill-base/manifest.json` with its canonical "
+             "HTTPS Git URL, an exact 40-hex revision, the generated skill's 64-hex content hash "
+             "and this run's task id", "V-ws-mwg-pin"),
+    ("WS-4", "a Farukon handshake failure names the protocol stage it reached, so the closed "
+             "connection a client reports as `-32000` is explained by the probe instead of guessed",
+     "V-ws-farukon-stage"),
+    ("WS-5", "the pre-flight reports a `farukon` registration that is NOT the managed definition "
+             "as REGISTRATION DRIFT (`config_entry_present` + `config_drift`, key names only), not "
+             "as a missing config", "V-ws-farukon-drift"),
+    ("WS-6", "the Farukon acceptance proof is deterministic evidence, not a claim: `record-session`, "
+             "`verify-reproduction` and `verify-sessions` exist and validate the captured sessions",
+     "V-ws-farukon-evidence"),
+    ("WS-7", "the supervisor's launch-scoped bootstrap runs BEFORE Phase 0 (`begin` needs no run "
+             "id, `observe` records the ordered events, `activate` binds fail-closed), so the parse, "
+             "the repo resolution, the memory access and the run-id computation are all watched",
+     "V-ws-supervisor-bootstrap"),
+    ("WS-8", "the shipped flow reaches that order: `supervisor_watchdog.py begin` precedes "
+             "`task_parser.py parse`, not only the subordinate instruction text",
+     "V-ws-supervisor-flow"),
+    ("WS-9", "the permit registry is append-only: a reset or truncated ledger refuses a later `add` "
+             "instead of accepting a post-hoc record", "V-ws-permit-ledger"),
+    ("WS-10", "strict attribution covers EVERY required role: a required role with no session-wire "
+              "trace fails the run even when `models_used` omits its claim", "V-ws-attribution-required"),
+    ("WS-11", "`validate_documentation.py baseline --include-changed` captures the Git-known set, so "
+              "the pre-DOC2 baseline can exclude proven pre-existing owner files without hiding a "
+              "new undeclared write", "V-ws-doc2-baseline"),
+    ("WS-12", "model attribution resolves the CURRENT run's session from the pipeline's launch "
+              "evidence and never audits the older target-cwd wire; a blank `--session` is an "
+              "input error, not `auto`", "V-ws-session-attribution"),
+    ("WS-13", "the permit audit receives the explicit current session and degrades loudly instead "
+              "of reporting false bound-but-never-spawned violations from a stale wire",
+     "V-ws-session-permit"),
+    ("WS-14", "the delegation audit receives the explicit current session and degrades loudly "
+              "instead of reporting an uncounted role from a stale wire", "V-ws-session-delegation"),
+    ("WS-15", "`gate_all.py` forwards one explicit current session to the audits and fails closed "
+              "when it is omitted", "V-ws-session-gate-all"),
+    ("WS-16", "a RESUMED agent is correlated to the role its permit answers: the CLI's second "
+              "`subagent.spawned` line for the same agent id is that same delegation, not a generic "
+              "`coder` role mismatch and not a permit-less spawn", "V-ws-adv-resume"),
+    ("WS-17", "`gate_all.py --verify-only` validates its `--diff` exactly like a phase run: a "
+              "malformed range is a usage error (exit 2, `malformed diff range`) that leaves the "
+              "record byte-identical instead of verifying it and printing PASS", "V-ws-adv-verify-diff"),
+    ("WS-18", "`check-session` requires usage EVIDENCE: no usage file, an empty journal and a search "
+              "never followed by a retrieval all fail, so a run that consulted no guidance cannot "
+              "pass its own precondition", "V-ws-adv-guidance-evidence"),
+    ("WS-19", "the five-session Farukon acceptance requires a REAL tools/call in EVERY session: "
+              "four list-only sessions plus one called session fail the gate naming the missing "
+              "tools/call evidence", "V-ws-r1-session-call"),
+    ("WS-20", "the supervisor's own bootstrap permit is anchored on the RUN's authority (the WIP "
+              "checkpoint's run_id), so it exists BEFORE Phase 0 parses the task; a clean checkout "
+              "with no task.yaml still permits the supervisor delegation", "V-ws-r1-supervisor-permit"),
+    ("WS-21", "a COMPLETED bootstrap never blocks the next independent run: an explicit `complete` "
+              "keeps the run binding, the finished run's state stays untouched and `begin` records "
+              "a fresh launch-scoped bootstrap", "V-ws-r1-sequential-runs"),
+    ("WS-22", "guidance usage is BOUND to the current run and catalog revision: the journal and "
+              "every event carry the recording run and revision, and unbound, stale, mixed-run and "
+              "stale-revision journals are refused", "V-ws-r1-usage-binding"),
+    ("WS-23", "an EMPTY pinned catalog is a controlled `ERROR:` refusal (exit 1, no IndexError "
+              "traceback from `resolve_guidance_id`) both through `legacy-scan` and in-process",
+     "V-ws-r1-empty-catalog"),
+    ("WS-24", "an UNREADABLE scan input is reported by `scan_file` itself (controlled error or an "
+              "explicit unsuccessful outcome) instead of discarding the OSError while the caller "
+              "counts the file as scanned", "V-ws-r1-unreadable-scan"),
+    ("WS-25", "the PRE-RUN supervisor permit needs NEITHER task NOR checkpoint: `init`/`add` accept "
+              "the launch-scoped `begin` bootstrap as its authority and leave the run binding to "
+              "the later `activate`", "V-ws-r2-launch-permit"),
+    ("WS-26", "BOTH flow carriers invoke `supervisor_watchdog.py complete` at the Finish, stating "
+              "that the completed bootstrap frees the launch directory for the next independent "
+              "run", "V-ws-r2-finish-complete"),
+    ("WS-27", "the completion is GATED by the run's Finish: `complete` refuses while the "
+              "checkpoint is still in_progress and closes the binding only at `status: ok`, once, "
+              "integrated with the sequential-run lifecycle", "V-ws-r2-complete-status"),
+    ("WS-28", "the launch-scoped permit API is WIRED into the flow: both carriers invoke "
+              "`permit_gate.py init/add --launch-dir` before the parse and `permit_gate.py "
+              "bind-run` at the activation, so the supervisor's pre-run permit exists without a "
+              "task or a run id", "V-ws-r3-launch-permit-flow"),
+    ("WS-29", "the pre-run registry is LAUNCH-ONLY and closed by a TRANSFER: `init/add` take no "
+              "unresolved target `--repo`, and `bind-run` MOVES the same permits and journal to the "
+              "resolved repository, archiving the launch copy", "V-ws-r4-launch-only"),
+    ("WS-30", "a `tools/call` is green only with a VALIDATED MCP result: `result.isError`, an "
+              "empty, malformed or missing result is refused at stage `tools/call`, and the call "
+              "evidence is preserved", "V-ws-r4-tool-result"),
+    ("WS-31", "only FIVE CONSECUTIVE healthy sessions after the latest failed or malformed attempt "
+              "count, so a later failure restarts the mandated sequence", "V-ws-r4-consecutive"),
+    ("WS-32", "every COUNTED session keeps a VALIDATED tool_result, and invalid JSON session "
+              "evidence fails closed naming the file while known non-record console artifacts are "
+              "explicitly ignored", "V-ws-r5-strict-evidence"),
+    ("WS-33", "the launch permit transfer is FAILURE-ATOMIC: a fault mid-transfer leaves no target "
+              "artifact, the launch registry byte-identical and unbound, and the same command "
+              "retryable", "V-ws-r5-atomic-transfer"),
+    ("WS-34", "the launch-root `verdict` and spawn `bind` are wired into both carriers before the "
+              "transfer, so the judged, bound launch registry is what `bind-run` moves",
+     "V-ws-r5-launch-verdict-flow"),
+    ("WS-35", "both SOURCE-RETIREMENT renames are inside the transfer transaction: a failed "
+              "retirement leaves the launch registry byte-identical and unbound, no target artifact "
+              "and no half-written archive, and the same command succeeds on retry",
+     "V-ws-r6-retirement-atomic"),
+    ("WS-36", "a FAILED rollback is reported truthfully: archive-restoration and target-cleanup "
+              "OSErrors are propagated and aggregated, an incomplete recovery never claims a clean "
+              "restore or a plain retry, and target evidence is kept when restoration failed",
+     "V-ws-r7-rollback-reporting"),
+)
+
 REVIEW_BASE_SHA = "d5ef373edcbe52fcbee1b02e205ee27c633b976f"
 
 # The shipped claim lists, each with the vaccine-id prefix it owns: (source name, prefix, findings).
@@ -3768,6 +4386,7 @@ RELEASE_CLAIMS: tuple[tuple[str, str, tuple[tuple[str, str, str], ...]], ...] = 
     ("FARUKON_FINDINGS", "V-fk-", FARUKON_FINDINGS),
     ("FB_FINDINGS", "V-fb-", FB_FINDINGS),
     ("REVIEW_20261105_FINDINGS", "V-rg-", REVIEW_20261105_FINDINGS),
+    ("WS_FINDINGS", "V-ws-", WS_FINDINGS),
 )
 
 
@@ -4384,6 +5003,101 @@ REGISTRY: tuple[Vaccine, ...] = (
             r"downgrade", REVIEW_BASE_SHA),
     Vaccine("V-rg-deployer-line", PROBE, PROBE_RG_DEPLOYER_LINE,
             r"the memory output line\(s\) interpolate the whole", REVIEW_BASE_SHA),
+    # ---- WS: THIS run's five workstreams (run 20261122-ef747283), replayed against WS_BASE_SHA --
+    # The run started with its change set uncommitted, so the recorded HEAD is the real pre-fix tree
+    # of every workstream. One focused probe per TESTABLE defect: the prose carriers and the extended
+    # self-test modules each bundle several, so a whole-module run would prove only the first.
+    Vaccine("V-ws-mwg-adapter", PROBE, PROBE_WS_MWG_ADAPTER,
+            r"the stdlib local adapter over the PINNED cached Modern Web Guidance catalog must exist",
+            WS_BASE_SHA),
+    Vaccine("V-ws-mwg-gui", PROBE, PROBE_WS_MWG_GUI,
+            r"the GUI specialist must be told to run `modern_web_guidance\.py status`", WS_BASE_SHA),
+    Vaccine("V-ws-mwg-pin", PROBE, PROBE_WS_MWG_PIN,
+            r"the Modern Web Guidance source must be registered in skill-base/manifest\.json",
+            WS_BASE_SHA),
+    Vaccine("V-ws-farukon-stage", PROBE, PROBE_WS_FARUKON_STAGE,
+            r"the failure must name the protocol stage that was reached", WS_BASE_SHA),
+    Vaccine("V-ws-farukon-drift", PROBE, PROBE_WS_FARUKON_DRIFT,
+            r"must be reported as DRIFT", WS_BASE_SHA),
+    Vaccine("V-ws-farukon-evidence", PROBE, PROBE_WS_FARUKON_EVIDENCE,
+            r"the Farukon proof needs a deterministic evidence CLI", WS_BASE_SHA),
+    Vaccine("V-ws-supervisor-bootstrap", PROBE, PROBE_WS_SUPERVISOR_BOOTSTRAP,
+            r"the refusal must name the begin the flow skipped", WS_BASE_SHA),
+    Vaccine("V-ws-supervisor-flow", PROBE, PROBE_WS_SUPERVISOR_FLOW,
+            r"the flow must run the supervisor BEFORE Phase 0", WS_BASE_SHA),
+    Vaccine("V-ws-permit-ledger", PROBE, PROBE_WS_PERMIT_LEDGER,
+            r"an add on top of a reset ledger: expected exit 2, got 0", WS_BASE_SHA),
+    Vaccine("V-ws-attribution-required", PROBE, PROBE_WS_ATTRIBUTION_REQUIRED,
+            r"a required role with no wire trace must FAIL even without a models_used claim",
+            WS_BASE_SHA),
+    Vaccine("V-ws-doc2-baseline", PROBE, PROBE_WS_DOC2_BASELINE,
+            r"`baseline --include-changed` must capture the Git-known set", WS_BASE_SHA),
+    Vaccine("V-ws-session-attribution", PROBE, PROBE_WS_SESSION_ATTRIBUTION,
+            r"auto must resolve the run-bound session or degrade, never audit the stale wire",
+            WS_BASE_SHA),
+    Vaccine("V-ws-session-permit", PROBE, PROBE_WS_SESSION_PERMIT,
+            r"auto: a confident audit of the stale wire is the defect", WS_BASE_SHA),
+    Vaccine("V-ws-session-delegation", PROBE, PROBE_WS_SESSION_DELEGATION,
+            r"auto: a confident audit of the stale wire is the defect", WS_BASE_SHA),
+    Vaccine("V-ws-session-gate-all", PROBE, PROBE_WS_SESSION_GATE_ALL,
+            r"phase Y over the current wire: expected exit 1, got 2", WS_BASE_SHA),
+    # ---- WS (task_21/22): the adversarial regressions of this same run, same pre-fix base.
+    Vaccine("V-ws-adv-resume", PROBE, PROBE_WS_ADV_RESUME,
+            r"a resumed agent under its own permit: expected exit 0, got 1", WS_BASE_SHA),
+    Vaccine("V-ws-adv-verify-diff", PROBE, PROBE_WS_ADV_VERIFY_DIFF,
+            r"a malformed diff range under --verify-only must exit 2", WS_BASE_SHA),
+    Vaccine("V-ws-adv-guidance-evidence", PROBE, PROBE_WS_ADV_GUIDANCE_EVIDENCE,
+            r"check-session must refuse a session with no usage evidence", WS_BASE_SHA),
+    # ---- WS (review R1): the production defects the adversarial review found and the run fixed.
+    Vaccine("V-ws-r1-session-call", PROBE, PROBE_WS_R1_SESSION_CALL,
+            r"every one of the five sessions must prove a real tools/call, not a listing",
+            WS_BASE_SHA),
+    Vaccine("V-ws-r1-supervisor-permit", PROBE, PROBE_WS_R1_SUPERVISOR_PERMIT,
+            r"a supervisor bootstrap permit before the task is parsed: expected exit 0, got 2",
+            WS_BASE_SHA),
+    Vaccine("V-ws-r1-sequential-runs", PROBE, PROBE_WS_R1_SEQUENTIAL_RUNS,
+            r"a COMPLETED bootstrap must not block the next independent run", WS_BASE_SHA),
+    Vaccine("V-ws-r1-usage-binding", PROBE, PROBE_WS_R1_USAGE_BINDING,
+            r"guidance usage must be bound to the CURRENT run and catalog revision", WS_BASE_SHA),
+    Vaccine("V-ws-r1-empty-catalog", PROBE, PROBE_WS_R1_EMPTY_CATALOG,
+            r"an empty catalog must be a controlled refusal, not an IndexError", WS_BASE_SHA),
+    Vaccine("V-ws-r1-unreadable-scan", PROBE, PROBE_WS_R1_UNREADABLE_SCAN,
+            r"scan_file must report an unreadable input instead of counting it as scanned",
+            WS_BASE_SHA),
+    # ---- WS (review R2): the pre-run supervisor authority and the Finish-integrated completion.
+    Vaccine("V-ws-r2-launch-permit", PROBE, PROBE_WS_R2_LAUNCH_PERMIT,
+            r"the PRE-RUN supervisor permit needs NEITHER task NOR checkpoint run_id",
+            WS_BASE_SHA),
+    Vaccine("V-ws-r2-finish-complete", PROBE, PROBE_WS_R2_FINISH_COMPLETE,
+            r"the Finish must COMPLETE the run's bootstrap in both flow carriers", WS_BASE_SHA),
+    Vaccine("V-ws-r2-complete-status", PROBE, PROBE_WS_R2_COMPLETE_STATUS,
+            r"the bootstrap completion is GATED by the run's Finish", WS_BASE_SHA),
+    # ---- WS (review R3): the launch-scoped permit API, wired into both flow carriers.
+    Vaccine("V-ws-r3-launch-permit-flow", PROBE, PROBE_WS_R3_LAUNCH_PERMIT_FLOW,
+            r"the pre-run permit registry must be LAUNCH-scoped in both carriers", WS_BASE_SHA),
+    # ---- WS (review R4): the launch-only registry transfer and the two session-evidence defects.
+    Vaccine("V-ws-r4-launch-only", PROBE, PROBE_WS_R4_LAUNCH_ONLY,
+            r"the pre-run permit registry is LAUNCH-ONLY and is TRANSFERRED at bind-run",
+            WS_BASE_SHA),
+    Vaccine("V-ws-r4-tool-result", PROBE, PROBE_WS_R4_TOOL_RESULT,
+            r"a tools/call is green only with a VALIDATED MCP result", WS_BASE_SHA),
+    Vaccine("V-ws-r4-consecutive", PROBE, PROBE_WS_R4_CONSECUTIVE,
+            r"only sessions AFTER the latest failed or malformed attempt count", WS_BASE_SHA),
+    # ---- WS (review R5): strict session evidence and the failure-atomic launch transfer.
+    Vaccine("V-ws-r5-strict-evidence", PROBE, PROBE_WS_R5_STRICT_EVIDENCE,
+            r"a counted session must keep a VALIDATED tool_result and broken evidence must fail",
+            WS_BASE_SHA),
+    Vaccine("V-ws-r5-atomic-transfer", PROBE, PROBE_WS_R5_ATOMIC_TRANSFER,
+            r"the launch permit transfer must be FAILURE-ATOMIC", WS_BASE_SHA),
+    Vaccine("V-ws-r5-launch-verdict-flow", PROBE, PROBE_WS_R5_LAUNCH_VERDICT_FLOW,
+            r"the launch-root verdict and spawn bind must be wired into both carriers",
+            WS_BASE_SHA),
+    # ---- WS (review R6): both source-retirement renames belong to the transfer transaction.
+    Vaccine("V-ws-r6-retirement-atomic", PROBE, PROBE_WS_R6_RETIREMENT_ATOMIC,
+            r"a SOURCE-RETIREMENT fault is inside the transfer transaction", WS_BASE_SHA),
+    # ---- WS (review R7): a failed rollback is reported truthfully.
+    Vaccine("V-ws-r7-rollback-reporting", PROBE, PROBE_WS_R7_ROLLBACK_REPORTING,
+            r"a FAILED rollback must be reported truthfully, never as a clean restore", WS_BASE_SHA),
 )
 
 # `- RV-12: fixed: ... | vaccine: V-memory-identity` — one item per finding, never wrapped. The id
@@ -4696,8 +5410,8 @@ def check_release_claims() -> list[str]:
     """The shipped claim lists and REGISTRY must name each other, one vaccine per claim.
 
     A release or run whose per-run disposition artifact a clone does not keep needs its claim
-    written down somewhere durable: `CLEAN_CODE_FINDINGS`, `FARUKON_FINDINGS` and `FB_FINDINGS` are
-    that place, and `RELEASE_CLAIMS` is the one list they are read through. The check is the same
+    written down somewhere durable: `CLEAN_CODE_FINDINGS`, `FARUKON_FINDINGS`, `FB_FINDINGS` and
+    `WS_FINDINGS` are that place, and `RELEASE_CLAIMS` is the one list they are read through. The check is the same
     two-way contract the disposition gets: a claim with no registered vaccine is never executed, and
     a registered vaccine of that claim list's own prefix that no claim answers could be removed
     without anyone noticing.

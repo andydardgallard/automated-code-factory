@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.24.0 -->
+<!-- code-factory-version: 12.24.1 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -58,7 +58,7 @@ projects or creates projects from scratch.
 │       │   ├── test_precedent_index.py     # precedent index self-test
 │       │   ├── model_matrix.py             # the single model-precedence resolver: task matrix > default matrix, family check, committee second planner; `resolve` exits 1 on an ERROR — a role with NO model (source `none`) or a default matrix that breaks generator != judge
 │       │   ├── test_model_precedence.py    # model precedence self-test
-│       │   ├── model_attribution.py        # artifact-backed model attribution from the CLI session wire (cross-checks models_used; STRICT by default for implement/refactor — a role named in pipeline.yaml required_roles that claims a model but leaves no wire trace FAILS)
+│       │   ├── model_attribution.py        # artifact-backed model attribution from the CLI session wire (cross-checks models_used; STRICT by default for implement/refactor — a role named in pipeline.yaml required_roles that claims a model but leaves no wire trace FAILS; the run's OWN session is resolved from the pipeline binding, an explicit --session <dir> is used verbatim and a blank one is an input error, and a wire that cannot be attributed to this run is DEGRADED with the reason, never a confident verdict about another run)
 │       │   ├── test_model_attribution.py   # model attribution self-test
 │       │   ├── review_followup_task.py     # deterministic review follow-up task generator (.code-factory/review/fix-tasks.yaml; a refuted finding is omitted with its evidence stated, never silently)
 │       │   ├── test_review_followup_task.py # review follow-up task generator self-test
@@ -79,6 +79,8 @@ projects or creates projects from scratch.
 │       │   ├── test_chrome_devtools_mcp.py # Chrome DevTools MCP helper self-test
 │       │   ├── farukon_mcp.py              # conditional platform path: decide (requires an explicit platform SUBJECT, not identity vocabulary alone), merge-config, probe (--check-mcp-start opt-in; the timeout must be finite and non-negative, zero = immediate), validate-config
 │       │   ├── test_farukon_mcp.py         # Farukon MCP helper self-test (decide, merge, conflict exit 3, handshake, invariants)
+│       │   ├── modern_web_guidance.py      # pinned Modern Web Guidance adapter: status/search/retrieve/legacy-scan/check-session + `build` as the only writer — the corpus is read as DATA from the run cache, freshness is fail-closed on the full 40-hex pinned commit, and the usage journal is bound to THIS run
+│       │   ├── test_modern_web_guidance.py # Modern Web Guidance adapter self-test (pin freshness, ranking, unstable gating, scan, session evidence)
 │       │   ├── mcp_json_merge.py           # shared text-preserving JSON merge of the two MCP helpers (library only, no CLI)
 │       │   ├── manifest.py                 # change set with COMPUTED sha256: init / require (pre-edit gate) / add --changed|--created (backup first) / audit
 │       │   ├── test_manifest.py            # manifest enforcement self-test
@@ -86,11 +88,11 @@ projects or creates projects from scratch.
 │       │   ├── test_rollback.py            # rollback helper self-test
 │       │   ├── delegation_gate.py          # per-role retry budgets counted at EXECUTION: check (increment or refuse; a registered UNBUDGETED role passes through allow:true, budgeted:false, and --round <id> counts one reviewer iteration per LOGICAL round so a shard fan-out spends none more), init, settle (refund a wholly refuted reviewer round), audit (counters vs session wire); --owner-authorized grants one extra delegation per owner decision
 │       │   ├── test_delegation_gate.py     # delegation gate self-test
-│       │   ├── permit_gate.py              # supervisor permits: add/verdict/bind/close + finish audit (every spawn = a unique allowed permit judged before it, scope ⊆ the plan task's files; a `--kind bootstrap` permit answers the pre-plan task for analyzer/planner/supervisor, the permits file must belong to THIS run, and a supervisor spawn carries the run's own authority)
+│       │   ├── permit_gate.py              # supervisor permits: add/verdict/bind/close + finish audit (every spawn = a unique allowed permit judged before it, scope ⊆ the plan task's files; every transition also appends to the append-only hash-chained permits.ledger.jsonl, whose head must equal the state on disk before every write, so a reset, a truncated tail or a post-deny repair is refused; a `--kind bootstrap` permit answers the pre-plan task for analyzer/planner/supervisor, the supervisor's own permit is written before Phase 0 via --launch-dir and bound to the run by `bind-run` when activate writes the checkpoint, and a supervisor spawn carries the run's own authority)
 │       │   ├── test_permit_gate.py         # permit gate self-test
-│       │   ├── gate_all.py                 # phase K|Y aggregator of the deterministic gates: a gate that ran leaves a record, a missing record is a failure (the watchdog-deny row fails the phase while a supervisor deny is unresolved; the manifest audit is skipped as not applicable for a report-only run)
+│       │   ├── gate_all.py                 # phase K|Y aggregator of the deterministic gates: a gate that ran leaves a record, a missing record is a failure (the watchdog-deny row fails the phase while a supervisor deny is unresolved; the manifest audit is skipped as not applicable for a report-only run; the ONE explicit --session of this run is forwarded to the wire-auditing gates, and a phase launched from another directory FAILS CLOSED instead of auditing another session)
 │       │   ├── test_gate_all.py            # gate aggregator self-test
-│       │   ├── supervisor_watchdog.py      # run-long supervisor watchdog: launch/scan/status/deny/resolve — a deterministic anomaly scan at every phase transition, an unresolved deny blocking the gate_all watchdog-deny row
+│       │   ├── supervisor_watchdog.py      # run-long supervisor watchdog: begin/observe/activate/scan/status/deny/resolve — the bootstrap starts BEFORE Phase 0 (launch-scoped, run-id independent) and records the parse/resolve/memory-read/memory-write/run-id order, a deterministic anomaly scan runs at every phase transition, and an unresolved deny blocks the gate_all watchdog-deny row
 │       │   ├── test_supervisor_watchdog.py # supervisor watchdog self-test
 │       │   ├── test_business_tester_flow.py # business-tester role wiring self-test
 │       │   ├── version_manager.py          # single version source: get/bump/sync/validate/set/suggest
@@ -613,6 +615,20 @@ fix or visually validate a browser-based Web GUI, and is invisible for every oth
   browser/E2E stack and its config file (Playwright Test, Cypress, WebdriverIO, Selenium), and
   `browser-matrix` derives the required matrix from the acceptance criteria — it is never assumed. The
   decision, the discovered stack and the reasons are recorded in the run plan/state.
+- **Modern Web Guidance comes first**: before implementing a UI, `factory-gui-expert` searches the
+  factory's PINNED Modern Web Guidance catalog and retrieves the guides that fit the task —
+  `modern_web_guidance.py status|search|retrieve|legacy-scan|check-session --repo <resolved repo_path>`.
+  The corpus is a reviewed commit materialized once into the run cache
+  (`.code-factory/cache/reference-docs/modern-web-guidance`) and read as DATA by that stdlib adapter;
+  the upstream `npx -y modern-web-guidance@latest …` CLI is never run. Freshness is fail-closed on the
+  exact 40-hex commit `pin.json` records (a divergent, short, moving or absent revision, a foreign
+  source or a missing pin is never FRESH, and every read refuses to answer), so the guidance is the
+  reviewed revision, not whatever `latest` happens to be. Unstable/Origin-Trial guidance is gated
+  behind an explicit `.mwgrc` boolean AND a declared safe fallback; obsolete-pattern checks are part
+  of the role's work (`legacy-scan`, zero findings being SUCCESS and never a claim of modern code);
+  and `check-session` demands this run's OWN evidence — a recorded search followed by a retrieval —
+  so a missing, empty, stale-run or unfollowed journal fails closed. A link to an external resource
+  is not a substitute.
 - **Roles and evidence split**: `factory-gui-expert` (coder-class) implements and interactively debugs
   the ASSIGNED UI files, may capture a baseline, and writes DIAGNOSTIC artifacts under
   `.code-factory/logs/browser/` (run_id-stamped); `factory-tester` independently executes the FINAL
@@ -726,6 +742,16 @@ Reference: `references/farukon-mcp.md`.
   stop in a `try/finally` and a leaked instance counts as a failure, secrets are redacted before any
   evidence is written, and instance state, logs and snapshots stay run artifacts under
   `.code-factory/logs/farukon/`, never committed into `memory/`.
+- **The live proof is an ADAPTER gate, not prose**: the real check runs in the platform's own working
+  directory with its live MCP configuration — `farukon_mcp.py record-session --mode registration`
+  runs one bounded handshake per fresh CLI session and writes an immutable run-scoped record, and
+  `farukon_mcp.py verify-sessions` then demands FIVE DISTINCT, CONSECUTIVE healthy live sessions,
+  each initializing, listing all eight tools and completing a real safe `tools/call` (a failed
+  attempt stays diagnostic and RESTARTS the sequence, and a record that never invoked a tool fills no
+  slot). `farukon_mcp.py verify-reproduction` judges the root-cause evidence (an OBSERVED launch
+  failure before a single protocol frame, plus a healthy eight-tool control session). Records are
+  never synthesized, and a task that MANDATES live proof is never finished by leaving the criterion
+  unverified: acceptance stays BLOCKED until both verifiers exit 0.
 - **Pre-flight and degradation**: `farukon_mcp.py probe` (a WORKING cargo — present on PATH and
   answering `--version`, since an unproven toolchain is not a build path — whether the repository
   really is a Farukon platform root, the managed config entry whose `cwd` must be THIS platform root,
@@ -755,7 +781,9 @@ from `.code-factory/manifest.json` and brings the documentation in line with the
 doc comments and `.md` files, never code/tests/configs. The result is checked by the built-in
 validator `scripts/validate_documentation.py` (budget 1 retry); before DOC2 the orchestrator
 captures the manifest's files as `path=sha256hex` entries (`validate_documentation.py baseline
---repo <root> --files <pre-DOC2 paths>`) and passes them as `--baseline-files`, so the validator's
+--repo <root> --files <pre-DOC2 paths> --include-changed`, so the owner's pre-existing untracked
+files are captured WITH their state instead of becoming undeclared-file debt) and passes them as
+`--baseline-files`, so the validator's
 `--derive` scope guard excludes the run's own pre-DOC2 scope from the undeclared-file comparison
 only while each file's content still is the captured one — an undeclared documenter edit to a
 baseline file (protected ones included) and any undeclared/untracked documenter edit still fail. On
@@ -798,6 +826,13 @@ In the reviewer reference these gates are the standing `## 2.2 Metric gates` sec
 "not measured + why", before the findings, and a missing tool is neither a silent pass nor a reason
 to reject the change. Neither skill installs, vendors or executes anything from its source
 repositories.
+
+The base also carries the pinned `modern-web-guidance` skill
+(`skill-base/skills/modern-web-guidance/SKILL.md`, recorded in `skill-base/manifest.json` with its
+source commit and content hash): the reviewed corpus `factory-gui-expert` works from, materialized
+into the run cache and read by `scripts/modern_web_guidance.py`. Like the clean-code skills it
+installs, vendors and executes nothing — the upstream `npx -y modern-web-guidance@latest …` CLI is
+never run.
 
 `reference_docs[].path` may also be a PUBLIC http(s) URL, so the `{path, skill}` task schema is
 unchanged: `skill_base.py resolve` classifies the source deterministically as a local path, an HTTP(S)

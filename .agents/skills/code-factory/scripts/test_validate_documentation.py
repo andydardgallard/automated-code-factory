@@ -17,7 +17,10 @@ undeclared-file comparison only, and only while the file still is in the state c
 already-changed (even protected) file cannot hide behind its name (declared documenter edits pass,
 undeclared ones and explicitly declared protected files still fail, and the option's input boundary
 rejects name-only, absolute/`..`/blank and bad-hash entries and use without `--derive` with exit 2).
-The `baseline` subcommand is the producer of exactly those entries.
+The `baseline` subcommand is the producer of exactly those entries. A failing-first case pins the
+complete pre-DOC2 capture: `baseline --include-changed` takes the manifest set PLUS every path Git
+reports (untracked included, ignored excluded), so pre-existing untracked owner files are not DOC2
+debt — while a post-capture modification of one, or a file created after the capture, still fails.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -34,6 +37,99 @@ import validate_documentation as vd
 def expect(cond: bool, msg: str) -> None:
     if not cond:
         raise AssertionError(msg)
+
+
+def doc2_baseline_include_changed(root: pathlib.Path) -> None:
+    """(failing-first) The DOC2 baseline must cover what Git already knew, not only the manifest.
+
+    The defect (violation N-3, run 20261107): `baseline` captured just the manifest's files, so a
+    repository with pre-existing untracked owner files (task_*.yaml, skill-base/, an mcp.json
+    backup) reported 19 undeclared files on every `check --derive` — debt the documenter could
+    never discharge. `--include-changed` must capture the manifest PLUS every path Git reports as
+    changed/untracked (ignored ones stay out), yet the exemption must remain content-bound: a
+    post-capture modification of a captured owner file, or a file created after the capture, is
+    still an undeclared DOC2 write and must FAIL.
+    """
+    repo = root / "doc2repo"
+    script = pathlib.Path(vd.__file__)
+    for sub in ("docs", "scripts", "owner-notes"):
+        (repo / sub).mkdir(parents=True)
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+    git("init")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Self Test")
+    (repo / "docs" / "guide.md").write_text("old guide\n", encoding="utf-8")
+    (repo / "scripts" / "run_test.py").write_text("# base test\nassert 1\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "base")
+    # An ignored build output and the OWNER's pre-existing untracked files (they predate DOC2).
+    (repo / "build").mkdir()
+    (repo / "build" / "out.py").write_text("x = 1\n", encoding="utf-8")
+    owner_rel = "owner-notes/task_owner.yaml"
+    (repo / "owner-notes" / "task_owner.yaml").write_text("owner: k\n", encoding="utf-8")
+    (repo / "owner-notes" / "notes.md").write_text("owner notes\n", encoding="utf-8")
+
+    base = root / "doc2base"
+    vd.snapshot(repo, base, ["docs/guide.md"])
+    # The run's own pre-DOC2 change from the manifest (a protected test file).
+    (repo / "scripts" / "run_test.py").write_text("# run test\nassert 2\n", encoding="utf-8")
+
+    def capture(*extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(script), "baseline", "--repo", str(repo),
+                               "--files", "scripts/run_test.py", *extra],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    def icheck(entries: list[str]) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(script), "check", "--repo", str(repo),
+                               "--baseline", str(base), "--files", "docs/guide.md", "--derive",
+                               "--baseline-files", *entries],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    r = capture("--include-changed")
+    expect(r.returncode == 0,
+           f"`baseline --include-changed` must capture the Git-known set: {r.returncode} "
+           f"{r.stderr!r}")
+    entries = r.stdout.split()
+    paths = {entry.partition("=")[0] for entry in entries}
+    expect("scripts/run_test.py" in paths,
+           f"the manifest file must stay in the capture: {r.stdout!r}")
+    expect(owner_rel in paths,
+           f"a pre-existing untracked owner file must be captured too: {r.stdout!r}")
+    expect("build/out.py" not in paths,
+           f"an ignored path stays out of scope: {r.stdout!r}")
+
+    # The documenter's declared, documentation-only edit passes with that baseline.
+    (repo / "docs" / "guide.md").write_text("new guide\n", encoding="utf-8")
+    r = icheck(entries)
+    expect(r.returncode == 0,
+           f"unchanged pre-existing owner files must not be DOC2 debt: {r.returncode} "
+           f"{r.stderr!r}")
+    # A post-capture modification of a captured owner file is a DOC2 write: it must FAIL.
+    (repo / "owner-notes" / "task_owner.yaml").write_text("owner: somebody else\n",
+                                                          encoding="utf-8")
+    r = icheck(entries)
+    expect(r.returncode != 0 and owner_rel in r.stderr
+           and "modified since the pre-DOC2 baseline was captured" in r.stderr,
+           f"a captured owner file modified after capture must fail: {r.returncode} "
+           f"{r.stderr!r}")
+    (repo / "owner-notes" / "task_owner.yaml").write_text("owner: k\n", encoding="utf-8")
+    expect(icheck(entries).returncode == 0,
+           "restoring the captured owner file must heal the check")
+    # A file created AFTER the capture is not in the baseline: an undeclared DOC2 write FAILS.
+    (repo / "scripts" / "new_owner.py").write_text("created_after = 1\n", encoding="utf-8")
+    r = icheck(entries)
+    expect(r.returncode != 0 and "scripts/new_owner.py" in r.stderr,
+           f"a file created after the capture must fail as undeclared: {r.returncode} "
+           f"{r.stderr!r}")
+    # `--include-changed` is discoverable, and it is the producer's own option.
+    r = subprocess.run([sys.executable, str(script), "baseline", "--help"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    expect(r.returncode == 0 and "--include-changed" in r.stdout,
+           f"--include-changed must be discoverable in the help: {r.stdout[:400]!r}")
 
 
 def main() -> int:
@@ -606,6 +702,8 @@ def main() -> int:
                             "--files", "docs/c.md"], capture_output=True, text=True)
         expect(r.returncode == 0,
                f"a confined check must still work: {r.returncode} {r.stderr!r}")
+
+        doc2_baseline_include_changed(root)
 
     print("PASS - documentation validator allows only documentation-only changes.")
     return 0

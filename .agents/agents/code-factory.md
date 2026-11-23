@@ -126,8 +126,46 @@ on Windows `python3` usually does not exist.
 **Environment pre-flight (canonical wording):** before the first commands the factory probes the real environment via `scripts/factory_preflight.py --out .code-factory/state/preflight.json` — a working python command (`python`/`python3`/`py`), git, bash/sh, OS and `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL`. Further commands are emitted for the FOUND capabilities, so a guess about `python3` on Windows does not break the run. A missing secondary model does not stop the run, it yields `models_warning` in pipeline.yaml and report.md.
 <!-- factory-rule: preflight end -->
 
+### Phase 0a — Bootstrap the supervision FIRST (before anything is parsed)
+
+The supervisor has to be WATCHING before Phase 0 runs (rule `supervisor-first`): a supervisor
+launched after the parse watches nothing of the parse, the `repo_path` resolution, the memory read
+or the `run_id` — and a launch that itself requires the `run_id` can never be first at all. Begin it
+BEFORE the parse, run-id independently:
+`python .agents/skills/code-factory/scripts/supervisor_watchdog.py begin --launch-dir <launch directory>`
+records the launch-scoped bootstrap (the LAUNCH directory is known before anything is parsed; the
+resolved `repo_path` and the `run_id` are not, so neither may be an input). The supervisor's own
+delegation still passes the pre-delegation gate first — `delegation_gate.py check --role supervisor`
+passes through (`allow:true`, `budgeted:false`), and the LAUNCH-SCOPED permit registry covers the
+spawn, because the watchdog cannot judge its own permit before it exists and no run exists yet:
+`permit_gate.py init --launch-dir <launch directory>` creates the registry UNBOUND (empty
+`run_id`) in the LAUNCH tree, `permit_gate.py add --launch-dir <launch directory> --permit-id <id>
+--kind bootstrap --task-id bootstrap --role supervisor --phase analysis` anchors the supervisor's
+permit to the bootstrap's `begun_at`, and the launch-only lifecycle closes around the spawn: the
+supervisor's `allow|deny` verdict is recorded with `permit_gate.py verdict --launch-dir <launch
+directory> --permit-id <id> --verdict allow --evidence "<the verdict's evidence>"` BEFORE the spawn,
+and the spawn is bound with `permit_gate.py bind --launch-dir <launch directory> --permit-id <id>
+--agent-id <id>` AFTER it. None of these commands names the target repository: at Phase 0a the
+target named by the task is NOT resolved, so the registry is anchored to the launch bootstrap and
+the activation transfers it into the resolved repository; the run-bound forms of `init`, `add`,
+`verdict` and `bind` cannot name the run this launch is supervising.
+
+Every Phase 0 operation is then RECORDED as it happens, in the closed vocabulary and in this order,
+with a strictly increasing `--seq`:
+`supervisor_watchdog.py observe --launch-dir <launch directory> --event <parse|resolve|memory-read|run-id> --seq <n> --detail "<what happened>"`.
+A re-entry of Phase 0 (a clarifying answer that changes the task) records the next free positions
+instead of rewriting an earlier one. A resume of a run already in progress finds the recorded
+bootstrap of THIS run and never begins a second supervisor.
+
 ### Phase 0 — Accept the task
-Read the user's message or `task.yaml`. Parse: title, repo_path (REQUIRED except for a
+Read the user's message or `task.yaml`. Parse it deterministically FIRST, before any extraction:
+`python .agents/skills/code-factory/scripts/task_parser.py parse --task <the task file AS HANDED
+OVER> --out .code-factory/state/task.json`, then record the observation
+(`supervisor_watchdog.py observe --launch-dir <launch directory> --event parse --seq 0`). The
+normalized `task.json` is the input of every later stage, so nothing is retyped by hand; a parse
+error (exit 2) names the offending line and is shown to the owner verbatim in hitl, and stops the
+run in auto.
+Extract FROM that normalized `task.json`: title, repo_path (REQUIRED except for a
 green-field task — a brand-new project created in place), description,
 user_story (optional but strongly used), mode (hitl/auto, default hitl),
 task_type (implement default | review | refactor | security_audit), acceptance_criteria (each
@@ -138,7 +176,9 @@ and the two optional knowledge fields `reference_docs` (list of
 `{path, skill}` documents) and `reference_skills` (names of existing skills). (There is NO
 priority field — every task is HIGH by default.)
 **Resolve `repo_path` (mandatory, first step)**: resolve the task's `repo_path` ONCE to an absolute
-path relative to the launch directory and make that resolved repository the scope of the whole run —
+path relative to the launch directory and record that the supervisor watched it
+(`supervisor_watchdog.py observe --launch-dir <launch directory> --event resolve --seq 1 --detail
+"<the resolved absolute path>"`), then make that resolved repository the scope of the whole run —
 every later artifact path and every command is relative to it: `.code-factory/` (state, plan,
 pipeline.yaml, acceptance.md, logs, backups, manifest.json, reports), backups, git operations and
 rollback all live there, and the launch directory is never silently used as the root. The documented
@@ -165,7 +205,9 @@ questions via `AskUserQuestion` (never coding questions).
 `repo_path` — one memory belongs to exactly one project, and it is NOT the memory of the factory
 (when the task targets this repository, the target project is the factory itself). Read
 `memory/summary.md` and the most recent `memory/change-log.md` entries so the project's history
-(decisions, fixes, past results) is not re-derived from git or scratch. `memory/` always lives IN
+(decisions, fixes, past results) is not re-derived from git or scratch — and record that read
+(`supervisor_watchdog.py observe --launch-dir <launch directory> --event memory-read --seq 2`), so
+the supervisor sees whether the project's history reached the plan. `memory/` always lives IN
 THE DEPLOYMENT ROOT (the directory handed to `prepare_factory.sh` — or to `prepare_factory.cmd` on
 Windows, which runs `prepare_factory.ps1` without Git Bash), where the base project name is the
 basename of that root — but when the task's `repo_path` points to a SUBDIRECTORY of the
@@ -189,7 +231,19 @@ from the recorded phase. Every run carries the deterministic
 it is stamped into `.code-factory/state/pipeline.yaml`, `state/acceptance.md`, `logs/*.md`,
 `report.md` and this run's `memory/change-log.md` entry, so all artifacts of one run are linked by
 one id (`python .agents/skills/code-factory/scripts/run_id.py check --dir .code-factory` lists the
-artifacts that carry none). The checkpoint `.code-factory/state/pipeline.yaml` carries the
+artifacts that carry none) — and the run id is the last thing Phase 0 owes the supervisor: record it
+(`supervisor_watchdog.py observe --launch-dir <launch directory> --event run-id --seq 3 --detail
+"<the computed run_id>"`) and then BIND the supervision to the run,
+`python .agents/skills/code-factory/scripts/supervisor_watchdog.py activate --launch-dir <launch
+directory> --repo <resolved repo_path>`, which ties the launch-scoped bootstrap to this run's
+`run_id` and exits 1 when the parse, the `repo_path` resolution, the memory read or the run id went
+unobserved or out of order — an old-order run (parse first, supervise later) can therefore never
+activate. A resumed run that is already activated continues with the recorded supervisor. The SAME
+activation binds the launch-scoped permit registry to the run it just named:
+`python .agents/skills/code-factory/scripts/permit_gate.py bind-run --launch-dir <launch directory>
+--repo <resolved repo_path>` — once, atomically and journaled, TRANSFERRING the launch-anchored
+registry into the resolved repository and matching the checkpoint activation wrote, so the pre-run
+supervisor permit enters the run's history with the timestamp it was recorded at. The checkpoint `.code-factory/state/pipeline.yaml` carries the
 REQUIRED keys `run_id`, `phase`, `status` (`ok|failed|in_progress`) and `updated_at`, plus the
 optional `files_touched`, `pending_decision`, `resume_hint`, `retry_counters` and `models_used`;
 `scripts/check_factory_model.py --repo <resolved repo_path>` validates it whenever the file exists (a
@@ -247,6 +301,15 @@ EXISTING browser/E2E stack and its config
 (`chrome_devtools_mcp.py discover-e2e --repo <resolved repo_path>`), and which implementation files a
 specialist would own; `not_applicable` keeps the specialist, the browser tools and any Chrome/Node
 requirement off for the whole run. Reference: `references/chrome-devtools-mcp.md`.
+**Modern Web Guidance catalog (applicable Web GUI runs)**: materialize the reviewed Modern Web
+Guidance source through the skill base (`references/reference-docs.md`) and derive the pinned catalog
+ONCE — `python .agents/skills/code-factory/scripts/modern_web_guidance.py build --repo
+<resolved repo_path> --source-root <the materialized pinned tree> --revision <the full 40-hex
+reviewed commit sha>` — then require `python
+.agents/skills/code-factory/scripts/modern_web_guidance.py status --repo <resolved repo_path>` to
+report FRESH. A MISSING or STALE catalog (divergent, short, moving or absent revision, foreign
+source, missing pin) is a defect reported to the owner and routed as one: the specialist's every
+later read refuses, so the run never substitutes a web search, an upstream CLI or memory.
 
 **Farukon platform applicability (conditional platform path)**: decide whether THIS task needs the
 Farukon path and record the decision WITH its reason in the plan/state —
@@ -414,9 +477,27 @@ a blocking error — or `manifest.py add --created <path>` (a file that predates
 never created). The sha256 is the script's, never typed by hand.
 Write `task_type` and `required_roles` into `.code-factory/state/pipeline.yaml` now, so strict model
 attribution has its contract at finish.
+**Resolve the run's OWN CLI session ONCE and record it**: `python
+.agents/skills/code-factory/scripts/model_attribution.py --session auto --pipeline
+.code-factory/state/pipeline.yaml --repo <resolved repo_path> --out .code-factory/state/session.json`
+is a wire REPORT that names the run's session. `--pipeline` is what BINDS that initial resolution to
+THIS run: the checkpoint already carries the run's `run_id` (written above), so when more than one
+session of the repository could be the run's, only the one whose wire carries that `run_id` is
+picked and anything still ambiguous is DEGRADED (exit 3), never a guess — `auto` WITHOUT the
+binding would simply take the newest session whose `cwd` is the repository, possibly another run's
+wire. Write the result's `session.dir`, the session's `cwd` and the run's start time as
+`session_dir`, `launch_dir` and `started_at` into `pipeline.yaml`: from then on those three keys are
+the run's own session evidence, and every resolution is checked against them (a session that runs
+elsewhere or is older than `started_at` is refused, never silently audited). Every wire-auditing gate
+afterwards — `gate_all.py --session`, `permit_gate.py audit --session`, `delegation_gate.py audit
+--session` — and the finish attribution receive that `session_dir` EXPLICITLY: `auto` is the one
+initial resolution, never a finish gate, because at finish it could resolve an older session whose
+`cwd` is the target repository and audit another run's wire. A DEGRADED resolution (exit 3) is
+recorded as `models_warning` and leaves those gates FAIL CLOSED on the missing session rather than
+silently on `auto`.
 **Deterministic gate aggregation (phase K)**: run
 `python .agents/skills/code-factory/scripts/gate_all.py --repo <resolved repo_path> --phase K
-[--diff <base> <head>]` — the input-validation diff gate, the English-only scan, the run-id check,
+--session <session_dir> [--diff <base> <head>]` — the input-validation diff gate, the English-only scan, the run-id check,
 the rulebook reconciler and the permit audit — and treat a phase whose record
 (`.code-factory/logs/gate-K.md`) is missing a gate that should have run, or shows a failing one, as
 a FAILURE. A green phase is never claimed from a skipped gate.
@@ -457,10 +538,14 @@ verdict WITH its evidence, record it with `permit_gate.py verdict` BEFORE the sp
 `permit_gate.py bind --agent-id <id>`. A DENIED permit is never spawned and never acquires an agent
 id; an allowed permit that ends unused is closed with its reason. The verdict is MODEL-ENFORCED (this
 is a mandatory step, not an interceptor); the deterministic backstop is `permit_gate.py audit
---repo <resolved repo_path> --session <dir|auto>` at finish, which fails a permit-less delegation, a
+--repo <resolved repo_path> --session <session_dir>` at finish — the run's OWN session, never `auto`,
+which at finish could audit an older session of another launch directory — which fails a permit-less delegation, a
 scope wider than the plan task, a denied-but-spawned agent, a duplicate agent id, an out-of-order
 verdict, an unused permit and a malformed wire line. A bypassing main agent is DETECTED, not stopped
 at call time.
+<!-- factory-rule: supervisor-first begin -->
+**Supervision first (canonical wording):** the supervisor exists BEFORE Phase 0 and watches every Phase 0 operation — `supervisor_watchdog.py begin --launch-dir <launch directory>` is issued after the pre-delegation gate and BEFORE the task is parsed, `supervisor_watchdog.py observe` records each operation of the closed vocabulary in the mandated order (parse → resolve → memory-read → run-id, with memory-write at the Finish) under a strictly increasing sequence, and `supervisor_watchdog.py activate --launch-dir <launch directory> --repo <resolved repo_path>` binds the launch-scoped bootstrap to the run's `run_id` only once that run_id exists; `activate` refuses a journal in which any of those operations went unobserved or out of order, so a run that parses, resolves its repository, reads the memory or mints its run id before the supervisor began can never activate. The supervisor's own launch is never run-id dependent, and a resume continues with the recorded supervisor instead of beginning a second one.
+<!-- factory-rule: supervisor-first end -->
 
 **Web GUI implementation (conditional)**: when the task's Web GUI path is `applicable`, the UI files
 go to `factory-gui-expert` (coder-class) instead of `factory-coder`: it implements, reproduces and
@@ -474,6 +559,19 @@ suffice, and complex visual analysis may be handed to a read-only primary role W
 role the implementer (generator ≠ judge is preserved). Implementation failures and review rework use
 the EXISTING coder route and `retry_counters.coder`. The specialist never self-accepts: the final
 browser scenario belongs to `factory-tester` (Phase 8).
+**Pinned-catalog workflow BEFORE any UI edit (applicable Web GUI runs)**: `factory-gui-expert` runs,
+in order, `python .agents/skills/code-factory/scripts/modern_web_guidance.py status --repo
+<resolved repo_path>`, `python .agents/skills/code-factory/scripts/modern_web_guidance.py search
+--repo <resolved repo_path> --query "<one to five plain words>"`, `python
+.agents/skills/code-factory/scripts/modern_web_guidance.py retrieve --repo <resolved repo_path> --id
+<id>` (only ids returned by THAT search), `python
+.agents/skills/code-factory/scripts/modern_web_guidance.py legacy-scan --repo <resolved repo_path>
+--target <path inside the repository>` and, after the edits, `python
+.agents/skills/code-factory/scripts/modern_web_guidance.py check-session --repo <resolved
+repo_path>`. The catalog is inert reference text: nothing downloaded is executed or installed,
+unstable guidance is applied only with the repository's JSON boolean opt-in and a declared safe
+fallback, and `check-session` fails when a guide was retrieved without a preceding search — so
+guidance evidence is produced BEFORE the code, never written up after it.
 
 **Farukon platform implementation (conditional)**: when the task's Farukon path is `applicable`, the
 platform files go to `factory-farukon-expert` (coder-class) instead of `factory-coder`: it
@@ -536,6 +634,19 @@ never issues the PASS; any later change makes the evidence STALE, so the scenari
 re-stamped (`references/verification-strategy.md` §3.2), and on a missing cargo/MCP capability the
 affected platform criteria stay UNVERIFIED with an infrastructure diagnosis
 (`references/error-routing.md` §1 rows F1–F2) — never MET, and never silently skipped.
+The acceptance evidence is produced by the adapter, not asserted in prose: `python
+.agents/skills/code-factory/scripts/farukon_mcp.py record-session --repo <resolved platform root>
+--evidence .code-factory/logs/farukon/<run_id>/five-sessions --mode registration --probe-tool <one
+of the eight safe tools>` runs FIVE CONSECUTIVE fresh CLI sessions against the project's OWN
+registration — the real `node .kimi-code/farukon-mcp-launcher.js` launch, never a cargo-only
+substitute — each initializing, listing all eight tools and completing a real safe `tools/call`; the
+gate that must exit 0 is `python .agents/skills/code-factory/scripts/farukon_mcp.py verify-sessions
+--repo <resolved platform root> --evidence <the same directory>`, and `python
+.agents/skills/code-factory/scripts/farukon_mcp.py verify-reproduction --repo <resolved platform
+root> --evidence .code-factory/logs/farukon/<run_id>/reproduction` is the gate that proves the
+diagnosed root cause. A task that mandates live proof is never accepted by marking the criterion
+unverified: acceptance stays BLOCKED until those gates verify, and there is no unverified acceptance
+escape.
 
 **Adversarial business testing (node S, IN PARALLEL with the tester — node BTR0 before a review's
 merge and verdict; implement/refactor/review only, never security_audit)**: launch
@@ -697,7 +808,10 @@ are labeled `derived` (inferred from other artifacts) or `unverified` and never 
 degraded baseline that the task type requires (a missing fresh regression entry on
 implement/refactor), the absence of any verified criterion, or STALE ledger evidence downgrades the
 verdict to DEGRADED — the exit code is 0 only for SUCCESS, so a
-degraded or unproven run can never be accepted silently. The scripts that write run artifacts all
+degraded or unproven run can never be accepted silently. A criterion whose proof the task MANDATES —
+the Farukon reproduction and the five fresh sessions of a live-proof task — is never discharged by
+the `derived`/`unverified` label: acceptance stays BLOCKED until it verifies, because there is no
+unverified acceptance escape. The scripts that write run artifacts all
 accept `--run-id <run_id>` (`verify_acceptance.py`, `evidence_ledger.py`,
 `gen_code_changes_report.py`) — pass it so acceptance, the signed evidence and the report code
 changes are stamped with the same id as the checkpoint, the logs and the memory entry.
@@ -710,11 +824,13 @@ changes are stamped with the same id as the checkpoint, the logs and the memory 
 (`.code-factory/manifest.json`). It updates ONLY doc-comments and `.md` files and validates with
 `scripts/validate_documentation.py` (retry budget 1); BEFORE DOC2 the orchestrator captures the
 manifest's `changed_files` + `created_files` as `path=sha256hex` entries (plus `path=-` for a file
-absent then) with `validate_documentation.py baseline --repo <repo> --files <those paths>` and passes
-them as `--baseline-files`, so `--derive` excludes the run's own pre-DOC2 scope from the
-undeclared-file comparison while a file whose content changed after the capture — an undeclared
-documenter edit there, protected files included — still fails, as do undeclared and untracked
-documenter edits elsewhere. If validation is exhausted, record the documentation debt in `report.md`
+absent then) with `validate_documentation.py baseline --repo <repo> --files <those paths>
+--include-changed` — the flag UNIONs every path `git -C <repo> status --porcelain` reports (the run's
+tracked edits plus the owner's pre-existing untracked files) into that set, never in place of
+`--files` — and passes them as `--baseline-files`, so `--derive` excludes the run's own pre-DOC2
+scope from the undeclared-file comparison while a file whose content changed after the capture — an
+undeclared documenter edit there, protected files included, or a post-capture edit to an owner file —
+still fails, as do files created after the capture. If validation is exhausted, record the documentation debt in `report.md`
 and continue — the factory never fails because of docs. For `review`/`security_audit` this step is
 skipped. Log `models_used.documenter`.
 <!-- factory-rule: documentation begin -->
@@ -747,7 +863,10 @@ exists for it; this step only APPLIES the validated type:
 **Long-term memory write (single writer = the main agent)**: this memory belongs to the target
 project from `repo_path`, so check ownership BEFORE writing with
 `python .agents/skills/code-factory/scripts/memory_project.py check --repo <deployment root>`
-(a journal mixing entries of different projects is an error, fix that memory first). Append ONE
+(a journal mixing entries of different projects is an error, fix that memory first) and record the
+observation FIRST — `supervisor_watchdog.py observe --launch-dir <launch directory> --event
+memory-write --seq <the next free Phase 0 position>` — because the memory write is the last Phase 0
+operation the supervisor watches. Append ONE
 entry to `memory/change-log.md` — `run_id: <YYYYMMDD-8hex>` (the id of this run, computed in
 Phase 0/4), timestamp, title, branch/commit, task_type, goal,
 `project: <project name>` (MANDATORY for new entries; the name pinned in `memory/summary.md`'s
@@ -787,7 +906,7 @@ in this order:
    the 50-records / keep-20 rule in code; a shorter journal is left untouched.
 A `review`/`security_audit` run additionally writes its follow-up/fix-task file
 (`scripts/review_followup_task.py` for a review). Finally confirm the models with an ARTIFACT, never
-with the claim: `python .agents/skills/code-factory/scripts/model_attribution.py --session auto
+with the claim: `python .agents/skills/code-factory/scripts/model_attribution.py --session <session_dir>
 --repo <resolved repo_path> --pipeline .code-factory/state/pipeline.yaml --out
 .code-factory/state/model-attribution.json` (exit 0 = match, 1 = a mismatch or a `models_used` role the factory does not have — a run error,
 never a degradation, 3 = degraded; a degraded result is recorded as `models_warning` in
@@ -1003,12 +1122,29 @@ BEFORE phase Y. Only then do the two blocking finish checkpoints run:
 `python .agents/skills/code-factory/scripts/manifest.py audit --repo <resolved repo_path>` (every
 registered hash still matches the working tree, every changed file still has its backup, nothing
 disappeared) and `python .agents/skills/code-factory/scripts/gate_all.py --repo <resolved repo_path>
---phase Y` (the input-validation diff gate, the English-only scan, the run-id check, the rulebook
+--phase Y --session <session_dir>` (the input-validation diff gate, the English-only scan, the run-id check, the rulebook
 reconciler, the action-gate audit, the manifest audit — skipped as not applicable for the
 report-only `review`/`security_audit` task types, which never initialize a manifest — the
 permit/delegation audits and the watchdog-deny row).
 Re-registering BEFORE the last write, or after phase Y, is the same defect twice: the first makes
 the audit hash bytes that no longer exist, the second leaves the final bytes unaudited.
+
+**Complete the supervision bootstrap (Finish, after phase Y and before any next run).** Once the
+final supervised observation (the finish memory write), the successful phase-Y checkpoint and the
+finish memory gate are in place and the run's `pipeline.yaml` records `status: ok`, close the
+launch-scoped bootstrap:
+`python .agents/skills/code-factory/scripts/supervisor_watchdog.py complete --launch-dir <launch
+directory>`. It records the completion bound to the run `activate` bound and is ONE completion per
+binding. While the bound run's checkpoint is still `status: in_progress` the completion REFUSES
+(fail closed): the flow has not reached its Finish, and freeing the launch directory mid-run would
+let a second supervisor interleave with the first. The completed bootstrap frees the launch
+directory for the next independent run and is carried into that run's `history`; a flow that only
+begins and activates would block every second run from the same directory. A bootstrap that never
+bound a run — Phase 0 failed before `activate` — is ended explicitly with
+`python .agents/skills/code-factory/scripts/supervisor_watchdog.py abandon --launch-dir <launch
+directory> --reason <why it failed>`: the reason is mandatory and stays on the record (the next
+bootstrap carries it in `history`), while an ACTIVATED bootstrap is a run IN PROGRESS and is never
+abandoned — it is completed.
 
 Remove backups. Produce the final business-language report: what changed, test results, business
 results, acceptance evidence.

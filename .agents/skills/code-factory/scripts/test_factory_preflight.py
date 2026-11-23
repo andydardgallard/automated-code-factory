@@ -33,6 +33,12 @@ Verifies that the probe:
   - anchors a RELATIVE `--out` at the OPTIONAL `--repo`/`--root` anchor (the run's resolved
     repo_path) instead of the launch directory, while an absolute `--out` stays as it is and the
     flag-less invocation keeps resolving against the cwd,
+  - reports REGISTRATION DRIFT as its own fact: a repository whose `.kimi-code/mcp.json` carries a
+    `farukon` entry that is NOT the managed definition (the platform really registers
+    `node .kimi-code/farukon-mcp-launcher.js`, the factory manages `cargo run --quiet -p farukon_mcp
+    --`) is degraded with `config_entry_present` true and `config_drift` true, the differing KEY
+    names (never their values — an entry may carry a credential) and a summary line saying so,
+    instead of a bare "config missing",
   - degrades explicitly: with a PATH that contains no tools it exits 1 and records nulls instead
     of inventing a command.
 
@@ -676,6 +682,71 @@ def main() -> int:
             expect(res.returncode == 2,
                    f"{args} must be a usage error, got {res.returncode}: {res.stderr!r}")
 
+        # 18. REGISTRATION DRIFT: a `farukon` entry EXISTS but is not the managed definition. The
+        #     platform's real registration is `node .kimi-code/farukon-mcp-launcher.js`; the managed
+        #     entry is `cargo run --quiet -p farukon_mcp --`. Today such a repository reads as "no
+        #     config" (present=false, the reason is the first validate_config problem), which hides
+        #     the actual finding: the client launches something the factory never reviewed, so a
+        #     run cannot tell a missing deployment from a DRIFTED one. The block must say which it
+        #     is, name the differing KEYS only (a value may carry a credential) and stay degraded.
+        drift_root = platform_repo(tmp / "platform-drift", helper_far, with_config=False)
+        drift_cfg = drift_root.joinpath(*MCP_RELPARTS)
+        drift_cfg.parent.mkdir(parents=True)
+        drift_cfg.write_text(json.dumps({"mcpServers": {helper_far.SERVER_NAME: {
+            "command": "node",
+            "args": [str(drift_root / ".kimi-code" / "farukon-mcp-launcher.js")],
+            "cwd": str(drift_root)}}}, indent=2) + "\n", encoding="utf-8")
+        drift_out = tmp / "farukon-drift.json"
+        res = run("--farukon", "--repo", str(drift_root), "--out", str(drift_out), env=rust_env)
+        expect(res.returncode == 0,
+               f"a drifted registration is DATA, never a failed pre-flight: {res.stderr!r}")
+        block = json.loads(drift_out.read_text(encoding="utf-8"))["farukon"]
+        expect(block["verdict"] == "degraded" and block["farukon_usable"] is False,
+               f"a drifted registration must degrade the platform path: {block!r}")
+        expect(block.get("config_entry_present") is True,
+               f"the entry EXISTS and that must be reported: {block!r}")
+        expect(block.get("config_drift") is True,
+               f"an entry that is not the managed definition is DRIFT, not absence: {block!r}")
+        expect(block["capabilities"]["mcp_config"]["present"] is False,
+               f"a drifted entry is not a usable managed config: {block['capabilities']!r}")
+        reason = block["capabilities"]["mcp_config"]["reason"]
+        expect("drift" in reason.lower(),
+               f"the reason must CAUSE the finding as drift: {reason!r}")
+        expect("command" in reason and "cargo" in reason,
+               f"the reason must name the differing key and the managed command: {reason!r}")
+        expect("farukon-mcp-launcher" not in reason and str(drift_root) not in reason,
+               f"no stored value may be echoed (an entry may carry a credential): {reason!r}")
+        expect("drift" in res.stdout,
+               f"the human summary must report the drift too: {res.stdout!r}")
+
+        #    …and the same entry carrying a CREDENTIAL must never leak it, in either stream.
+        secret_cfg = platform_repo(tmp / "platform-drift-secret", helper_far,
+                                   with_config=False)
+        secret = "s3cr3t-registration-token"
+        secret_path = secret_cfg.joinpath(*MCP_RELPARTS)
+        secret_path.parent.mkdir(parents=True)
+        secret_path.write_text(json.dumps({"mcpServers": {helper_far.SERVER_NAME: {
+            "command": f"node {secret}", "args": [secret], "cwd": str(secret_cfg)}}},
+            indent=2) + "\n", encoding="utf-8")
+        secret_out = tmp / "farukon-drift-secret.json"
+        res = run("--farukon", "--repo", str(secret_cfg), "--out", str(secret_out), env=rust_env)
+        expect(res.returncode == 0, f"a credential-carrying drift is still DATA: {res.stderr!r}")
+        secret_block = json.loads(secret_out.read_text(encoding="utf-8"))["farukon"]
+        expect(secret_block.get("config_drift") is True,
+               f"the credential-carrying entry is drift too: {secret_block!r}")
+        expect(secret not in res.stdout and secret not in res.stderr
+               and secret not in json.dumps(secret_block),
+               f"no diagnostic may echo a value the entry supplies: {res.stdout!r} "
+               f"{secret_block!r}")
+
+        #    Positive control: the CLEAN managed fixture (case 14) reports a present entry and NO
+        #    drift, so `config_drift` cannot be a constant.
+        block = farukon(tmp, "--repo", str(farukon_root), name="farukon-no-drift.json",
+                        env=rust_env)
+        expect(block.get("config_entry_present") is True and block.get("config_drift") is False,
+               f"the managed definition must report no drift: {block!r}")
+        expect(block["verdict"] == "usable", f"…and stay usable: {block!r}")
+
     print("PASS - factory_preflight.py reports the real python/git/shell/os capabilities "
           "(file + summary), follows the secondary-model flag, anchors a relative --out at --repo, "
           "degrades to nulls with exit 1, and appends the OPT-IN `web_gui` browser block "
@@ -683,8 +754,9 @@ def main() -> int:
           "as they were; `mcp_usable` follows the resolved repository's own managed config and its "
           "pinned vendored entry (clean / entry-missing / drifted repos report the exact miss). The "
           "OPT-IN `farukon` block reports cargo / the platform signature / the managed Farukon MCP "
-          "config, decides usable/degraded/not_applicable, and never builds the platform or starts "
-          "an MCP server (a stand-in cargo logs every invocation).")
+          "config, decides usable/degraded/not_applicable, reports a DRIFTED registration "
+          "(`config_entry_present` + `config_drift`, key names only) as degraded, and never builds "
+          "the platform or starts an MCP server (a stand-in cargo logs every invocation).")
     return 0
 
 

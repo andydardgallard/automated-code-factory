@@ -75,6 +75,13 @@ The decision is deterministic and carries a REASON (never a model call):
   differing key NAMES only.
 - MCP configuration takes effect in a NEW Kimi session; `/mcp` shows the connection status. A session
   started before the entry was merged has no `mcp__farukon__*` tools, whatever the config says.
+- The project's OWN registration is the REAL launch shape the MCP client uses:
+  `node .kimi-code/farukon-mcp-launcher.js` — a Node wrapper that starts the server on the inherited
+  stdio, not a cargo invocation. The managed `cargo` entry above stays the factory's default, but live
+  proof MUST exercise the project's registration: `farukon_mcp.py record-session --mode registration`
+  launches that entry's own argv and accepts only the reviewed `cargo` or `node` launcher (a launcher
+  script must live INSIDE the platform root); `npx`, inline code and value-carrying flags are refused.
+  A cargo-only probe is a diagnostic lead, never proof that the registered server works.
 - Workspace trust gates project MCP servers the same way it does for every stdio server: a HEADLESS
   run (`kimi -p`) cannot answer the trust prompt, so a scripted platform session sets
   `KIMI_CODE_TRUST_WORKSPACE=1` for that process only, after the reviewed config is in place.
@@ -94,6 +101,16 @@ The decision is deterministic and carries a REASON (never a model call):
   tester).
 - Only these two roles receive the `mcp__farukon__*` tools. Platform implementation failures and
   review rework use the EXISTING coder route and `retry_counters.coder` — no separate budget or key.
+- The five-session proof and the root-cause proof are ADAPTER gates, not prose:
+  `farukon_mcp.py record-session --repo <platform root> --evidence
+  .code-factory/logs/farukon/<run_id>/five-sessions --mode registration --probe-tool <one of the
+  eight safe tools>` FIVE CONSECUTIVE times in fresh CLI sessions, then `farukon_mcp.py
+  verify-sessions --repo <platform root> --evidence <that directory>` (five DISTINCT healthy live
+  sessions, each initializing, listing all eight tools and completing a real safe `tools/call`), and
+  `farukon_mcp.py verify-reproduction --repo <platform root> --evidence
+  .code-factory/logs/farukon/<run_id>/reproduction` (an OBSERVED launch failure before a single
+  protocol frame plus a healthy eight-tool control session). A failed attempt stays diagnostic and
+  RESTARTS the consecutive sequence; records are run-scoped immutable evidence, never synthesized.
 
 ## 4. Working with the platform (specialist and tester)
 
@@ -152,5 +169,9 @@ UNVERIFIED like any other degraded verdict. On a missing or incompatible capabil
   `could not compile` summary;
 - the affected platform criteria stay explicitly UNVERIFIED — never MET, and no build output,
   connector state, snapshot or acceptance artifact is fabricated;
+- a task that MANDATES live proof — a reproduced root cause and/or five fresh sessions — is never
+  finished by marking the criterion unverified: acceptance stays BLOCKED until `verify-reproduction`
+  and `verify-sessions` exit 0, because there is no unverified acceptance escape and an
+  infrastructure failure is not one;
 - a non-Farukon run never invokes the specialist, never starts the server and does not need cargo or
   a Rust toolchain to succeed.

@@ -188,6 +188,11 @@ anyway). Audited commands are DATA: nothing is executed, expanded or evaluated. 
 line — or a shell call whose command cannot be read — FAILS the audit CLOSED, because that is
 exactly the state in which "no destructive command ran unclassified" cannot be claimed. Only a
 genuinely ABSENT session/wire is `DEGRADED` (exit 3), consistent with the other fail-soft probes.
+`auto` resolution is bound to the run's OWN checkpoint (`.code-factory/state/pipeline.yaml`:
+`session_dir`, `launch_dir`, `started_at`, `run_id`), so the pipeline-bound current session is
+picked even when several sessions share the repository as their `cwd`; an explicit `--session` stays
+authoritative, and an absent or unusable binding stays fail-closed (an ambiguous set is DEGRADED,
+never a guess).
 Audit exit codes: 0 pass, 1 violation, 2 input error, 3 degraded/cannot audit.
 """
 from __future__ import annotations
@@ -1828,7 +1833,8 @@ def audit(repo: str | pathlib.Path, session: str = "auto", home: str | None = No
         raise AuditError(f"repository root does not exist: {root}")
     wire_home = pathlib.Path(home) if home else attribution.WIRE_HOME
     try:
-        info = attribution.resolve_session(str(root), session, wire_home)
+        info = attribution.resolve_session(str(root), session, wire_home,
+                                           _run_binding(attribution, root))
         session_dir = pathlib.Path(info["session_dir"])
     except attribution.Degraded as exc:
         raise AuditDegraded(str(exc)) from exc
@@ -1861,6 +1867,25 @@ def audit(repo: str | pathlib.Path, session: str = "auto", home: str | None = No
             "unjournaled": unjournaled, "denied_executed": denied_executed,
             "malformed": malformed, "journal_problems": journal_problems,
             "violations": violations}
+
+
+def _run_binding(attribution, root: pathlib.Path):
+    """The run's own session evidence (`.code-factory/state/pipeline.yaml`), or None when absent.
+
+    `auto` session resolution is only as good as the evidence it is given: `model_attribution`
+    binds the pick to the run's `session_dir`/`launch_dir`/`started_at`, so the audit hands it the
+    checkpoint instead of resolving the bare repository. Without this, a repository whose wire home
+    holds several sessions of the same `cwd` (the reported defect) is DEGRADED although the run
+    named its session. An ABSENT checkpoint keeps the historical repository-only resolution; an
+    UNREADABLE one is an input error, because a binding nobody can read must never become a guess.
+    """
+    path = root / ".code-factory" / "state" / "pipeline.yaml"
+    if not path.is_file():
+        return None
+    try:
+        return attribution.read_pipeline_contract(path)
+    except attribution.AttributionError as exc:
+        raise AuditError(f"cannot read the run's checkpoint {path}: {exc}") from exc
 
 
 def _attribution_module():

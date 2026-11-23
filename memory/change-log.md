@@ -1479,3 +1479,64 @@ unfinished:
     reason: carried — found by the dar_project run 20261105-356faef2 after this run's acceptance; needs a dedicated reproduce-and-fix task
     severity: critical
     follow_up: true
+
+## 2026-11-23T04:03:45+03:00 — Five factory upgrades implemented, transitional run rejected by finish audit
+
+title: Modern Web Guidance, reliable Farukon MCP and three factory-control defect groups
+project: repo
+timestamp: 2026-11-23T04:03:45+03:00
+run_id: 20261122-ef747283
+branch: factory/20261122-ef747283
+commit: none — the run is FAILED and no release was committed
+task_type: implement
+goal: upgrade the GUI specialist with pinned Modern Web Guidance, reproduce and fix recurring Farukon MCP -32000, start supervision before Phase 0, make permit/attribution/DOC2 records trustworthy and bind finish gates to the current CLI session
+changed_files: 37 changed + 3 created recorded in .code-factory/manifest.json; owner pre-existing edits preserved [verified: manifest audit before the final version rollback had zero content problems; git status]
+created_files: modern_web_guidance.py, test_modern_web_guidance.py, skill-base/skills/modern-web-guidance/SKILL.md [verified: manifest.json]
+results: integration=PASS (focused suites green); business=PASS (six scenarios plus adversarial coverage; adversarial defects corrected); review=APPROVE at R8 with 0 critical/0 major; code implementation=COMPLETE; final review R8=APPROVE with 0 critical/0 major and one minor stale comment subsequently fixed by DOC2 [verified: .code-factory/logs/code-review-final.md and documenter agent-43]; regression=PASS 55/55 modules and vaccination=205/205 [verified: regression-final.log and vaccination harness]; Farukon real root cause=proven launcher rebuild after stale binary failed on corrupted rustc/rust-std, stable toolchain reinstalled and registration path recovered; five consecutive strict records with valid tool_result independently accepted by actual factory-tester agent-39 [verified: five-sessions-final, test-results.md]; GUI real Chrome scenario PASS with accessibility 100 [verified: logs/browser and business-tests.md]; finish=FAILED — run-id/action/manifest/delegation/permit gates reported artifacts and the transitional run's historical generic-container/unbound-resume violations [verified: gate-Y.md and the explicit permit/delegation audit outputs]; version release=NOT SHIPPED, VERSION/CHANGELOG restored to 12.24.0 and doc version markers restored [verified: working tree and version files]
+decisions: no historical permit or attribution violation was waived and no post-hoc history was fabricated; the legacy snapshot records only the attested current registry, while the actual invalid transitions remain visible [verified: permits.ledger.jsonl and permit audit]; reviewer overrode the initial minor proposal to patch, but the failed run does not release 12.24.1 [verified: review R2-R8 and VERSION]; a fresh run on the corrected factory is required for an auditable green finish [verified: gate-Y.md]
+assumptions: none — HITL plan approved after the mandatory live-Farukon-proof revision
+models_used: main=kimi-code/k3; analyzer/planner/supervisor/reviewer=kimi-code/k3.1-pro; coder/tester/skill_manager/documenter=deepseek-flash; business_tester=kimi-code/k3.1-pro; actual factory-tester and factory-code-reviewer profiles were restored by CLI restart [verified: pipeline.yaml and session-wire evidence from agents 36/39/41/42]
+factory_version: 12.24.0
+unfinished:
+  - item: platform anomaly found by specialist+tester: replay stop reports workspace_saved:false (temp per-instance dir never created, os error 3) — cosmetic, lifecycle clean; belongs to the farukon_v3.1.0 project's own backlog
+    reason: carried — out of this repo's scope and unchanged by this run
+    severity: info
+    follow_up: true
+  - item: factory defect — verify_acceptance.py hangs on criteria whose verify command produces long output (run_verify Popen shell=True + communicate; a full pytest run hangs past 420s while the same command direct finishes in 180s; blocks the acceptance node W) — investigate and fix; description: factory-defect-acceptance-hang.ru.md
+    reason: carried — separate pre-existing critical defect, not addressed by this task
+    severity: critical
+    follow_up: true
+  - item: transitional run 20261122-ef747283 cannot pass its finish audit because early generic-container delegations and initially unbound resumed agents are permanently recorded in its wire
+    reason: code and controls were corrected, but history cannot be rewritten; run a fresh factory task on the corrected tree to produce a clean end-to-end run
+    severity: critical
+    follow_up: true
+
+## 2026-11-23T14:45:03Z — Factory 12.24.1 released through a clean current-session lifecycle
+
+title: Finish and release the preserved factory fixes as 12.24.1
+project: repo
+timestamp: 2026-11-23T14:45:03Z
+run_id: 20261123-9598a460
+branch: factory/20261122-ef747283
+commit: v12.24.1 — one release commit with code, tests, documentation, skill-base and this memory record
+task_type: implement
+goal: preserve the inherited change set and produce a fully audited green release without carrying prior-session violations into the new run
+changed_files: 42 changed + 3 created in the final manifest, including the planned Modern Web Guidance adapter, its tests and skill [verified: .code-factory/manifest.json audit exit 0]
+created_files: modern_web_guidance.py, test_modern_web_guidance.py, skill-base/skills/modern-web-guidance/SKILL.md [verified: .code-factory/manifest.json and controlled git add dry-run]
+results: integration=PASS (focused suites and archived Farukon validators green) [verified: .code-factory/logs/test-results.md and farukon-current.md]; business=MATCH (preserved diff, role/permit lifecycle and release controls held after retest) [verified: .code-factory/logs/business-adversarial/20261123-9598a460.json]; regression=PASS 55/55 and vaccination=PASS 205/205 after the final product change [verified: RUN 7 in .code-factory/logs/factory-suite.log and test-results.md]; Farukon strict reproduction and five consecutive sessions PASS [verified: .code-factory/logs/farukon-current.md and acceptance criterion 4]; review=APPROVE with no open critical/major findings, including supplemental reviews of session-binding and action-audit fixes [verified: .code-factory/logs/code-review.md]; documentation=PASS derive-mode with content-bound baseline [verified: documenter handoff and validate_documentation.py exit 0]; acceptance=SUCCESS, 4/4 executable criteria MET and 4 derived, six mixed-scope ledger entries FRESH [verified: .code-factory/state/acceptance.md]; phase K/Y, action/manifest/permit/delegation audits and strict model attribution PASS on current session session_e37710e8-408d-4f72-b5ac-38309da09f9b [verified: gate-K.md, gate-Y.md, model-attribution.json]
+decisions: preserve rather than reimplement the inherited diff [verified: manifest and git diff]; correct session identity from wire evidence instead of timestamps alone [verified: test_permit_gate.py overlapping-session regression]; forward explicit sessions to every wire audit and let auto honor the run-bound pipeline session [verified: test_gate_all.py and test_action_gate.py]; release patch 12.24.1 as proposed by the matrix and validated by the reviewer [verified: code-review.md and version_manager.py validate]
+assumptions: owner task file and unrelated owner notes remain uncommitted; no commit_exclude patterns were declared
+models_used: main=kimi-code/k3.1-pro; analyzer/planner/supervisor/reviewer/business_tester=kimi-code/k3.1-pro; coder/tester/documenter=deepseek-flash [verified: strict model_attribution.py exit 0]
+factory_version: 12.24.1
+closed:
+  - item: transitional run 20261122-ef747283 cannot pass its finish audit because early generic-container delegations and initially unbound resumed agents are permanently recorded in its wire
+    evidence: new run 20261123-9598a460 used genuine factory profiles with allowed and bound permits for every current-session spawn; strict attribution, delegation audit, permit audit and phase K/Y all exit 0, and acceptance is SUCCESS [verified: .code-factory/logs/gate-K.md, gate-Y.md, state/model-attribution.json and state/acceptance.md]
+unfinished:
+  - item: platform anomaly found by specialist+tester: replay stop reports workspace_saved:false (temp per-instance dir never created, os error 3) — cosmetic, lifecycle clean; belongs to the farukon_v3.1.0 project's own backlog
+    reason: carried — out of this repository's scope and unchanged by this release
+    severity: info
+    follow_up: true
+  - item: factory defect — verify_acceptance.py hangs on criteria whose verify command produces long output (run_verify Popen shell=True + communicate; a full pytest run hangs past 420s while the same command direct finishes in 180s; blocks the acceptance node W) — investigate and fix; description: factory-defect-acceptance-hang.ru.md
+    reason: carried — pre-existing defect not addressed by this release task; this run's acceptance completed within the configured timeout
+    severity: critical
+    follow_up: true

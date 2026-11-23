@@ -59,12 +59,22 @@ changed before the documenter touches anything — so a bare `--derive` would re
 files as undeclared and make the two modes mutually unsatisfiable. The **orchestrator** therefore
 CAPTURES the state of the manifest's files BEFORE DOC2 (the run's `changed_files` +
 `created_files`, plus anything else git already reports) and passes it. The capture is a
-deterministic one-liner — the `baseline` subcommand prints one entry per file:
+deterministic one-liner — the `baseline` subcommand prints one entry per file, and
+`--include-changed` adds every path git already reports (modified tracked files plus untracked ones,
+ignored entries excluded) to the manifest's files — a UNION, never a replacement:
 
 ```bash
 python .agents/skills/code-factory/scripts/validate_documentation.py baseline \
-  --repo <resolved repo_path> --files <pre-DOC2 rel-path> ... > .code-factory/docs_baseline_entries
+  --repo <resolved repo_path> --files <pre-DOC2 rel-path> ... --include-changed \
+  > .code-factory/docs_baseline_entries
 ```
+
+`--include-changed` exists because a repository normally carries pre-existing untracked owner files
+(a task file, an owner's notes, an uncommitted skill bundle) that the run never wrote: capturing only
+the manifest turned all of them into undeclared-file failures on every `--derive` — debt the
+documenter could never discharge. Capturing them WITH their state keeps the exemption content-bound,
+so it never becomes a blanket "ignore untracked files": a captured owner file edited after the
+capture, or a file created after it, is still an undeclared DOC2 write and still fails.
 
 Each printed entry is `<path>=<sha256hex>` (or `<path>=-` for a file that was absent at capture,
 i.e. a deletion the run had already made), and the same entries go to `check`:

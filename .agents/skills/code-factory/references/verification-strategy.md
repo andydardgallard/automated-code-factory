@@ -217,6 +217,18 @@ platform scenario runs through the `mcp__farukon__*` tools and is owned by `fact
 - **Fresh session, real MCP calls**: the acceptance run is a new session that really calls the
   Farukon MCP tools (build, replay start, connector state, bounded stop in a `try/finally`), not a
   restatement of the specialist's transcript.
+- **The proof is an adapter gate, not a claim**: the accepted launch shape is the project's OWN
+  registration — the real `node .kimi-code/farukon-mcp-launcher.js` entry, never a cargo-only
+  substitute — recorded by `python .agents/skills/code-factory/scripts/farukon_mcp.py record-session
+  --repo <resolved platform root> --evidence .code-factory/logs/farukon/<run_id>/five-sessions
+  --mode registration --probe-tool <one of the eight safe tools>` FIVE CONSECUTIVE times in fresh CLI
+  sessions, each initializing, listing all eight tools and completing a real safe `tools/call`. The
+  gates that must exit 0 are `farukon_mcp.py verify-sessions --repo <resolved platform root>
+  --evidence <the same directory>` (five DISTINCT healthy live sessions) and, when the task requires
+  a reproduced root cause, `farukon_mcp.py verify-reproduction --repo <resolved platform root>
+  --evidence .code-factory/logs/farukon/<run_id>/reproduction` (an observed launch failure before a
+  single protocol frame plus a healthy eight-tool control session). A failed attempt stays diagnostic
+  and RESTARTS the consecutive sequence after remediation; records are never synthesized.
 - **Evidence location**: the artifacts live under the resolved repository's
   `.code-factory/logs/farukon/<run_id>/` and carry the run_id — the scenario and its mode, the
   actions, the expected/actual results, the tool answers (connector state, portfolio snapshot,
@@ -231,6 +243,10 @@ platform scenario runs through the `mcp__farukon__*` tools and is owned by `fact
 - **Degradation**: when cargo, the `farukon_mcp` build or the MCP server is missing, the platform
   criterion is reported UNVERIFIED (never MET) with an infrastructure diagnosis
   (`references/error-routing.md` §1 rows F1–F2); no artifact is fabricated to fill the gap.
+- **No unverified acceptance escape**: when the task MANDATES live proof — a reproduced root cause
+  and/or five fresh sessions — an unverified criterion BLOCKS acceptance instead of being accepted
+  as an unverified label: the run stays blocked until `verify-reproduction` and `verify-sessions`
+  exit 0, and a missing capability or infrastructure failure is not an acceptance path.
 
 
 ### 3.3 Adversarial business testing (node S) — diagnostic, never acceptance

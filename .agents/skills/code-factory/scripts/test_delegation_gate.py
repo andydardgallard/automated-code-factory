@@ -35,6 +35,11 @@ COVERED, all through the shipped CLI (a subprocess, like the flow calls it):
     numeric string / junk) are exit-2 errors with an actionable message and never a traceback;
   - the write is surgical (unrelated keys and comments survive, CRLF is kept) and atomic (no
     `*.tmp` file is left behind);
+  - the CURRENT-SESSION propagation (failing-first, factory-defect-session-resolution.md): with the
+    factory launched from its own directory for another project, the explicit current session is
+    audited while the stale target-cwd wire reproduces the false `uncounted delegation`;
+    `auto`/omitted never audit that stale session, a blank `--session` is an exit-2 input error and
+    a missing current wire is DEGRADED (exit 3);
   - the argparse contract: `--help` exit 0 for every command, a usage error exit 2, no traceback,
     and the help survives a legacy console code page.
 
@@ -48,6 +53,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 
 TOOL = pathlib.Path(__file__).with_name("delegation_gate.py")
 PIPELINE_REL = pathlib.Path(".code-factory") / "state" / "pipeline.yaml"
@@ -925,6 +931,91 @@ def test_audit(tmp: pathlib.Path) -> None:
     expect_clean_cli(run("audit"), 2, "audit without --repo")
 
 
+# --------------------------------------------------------------------------------------------
+# The finish audit must read the CURRENT run's wire when launch and repository differ
+# --------------------------------------------------------------------------------------------
+
+def layout_session(home: pathlib.Path, cwd: pathlib.Path, session_id: str, lines: list[str], *,
+                   age_s: float = 0.0) -> pathlib.Path:
+    """One fixture session whose `state.json` cwd is `cwd` and whose wire holds `lines`."""
+    directory = home / "sessions" / f"wd_{cwd.name}" / session_id
+    (directory / "agents" / "main").mkdir(parents=True, exist_ok=True)
+    (directory / "state.json").write_text(json.dumps({
+        "id": session_id, "cwd": str(cwd).replace("\\", "/"), "archived": False,
+        "agents": {"main": {"type": "main"}}}), encoding="utf-8")
+    (directory / "agents" / "main" / "wire.jsonl").write_text(
+        "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    if age_s:
+        stamp = time.time() - age_s
+        for path in [*directory.rglob("*"), directory]:
+            os.utime(path, (stamp, stamp))
+    return directory
+
+
+def test_current_session_resolution(tmp: pathlib.Path) -> None:
+    """(failing-first, factory-defect-session-resolution.md) The audit must not read the old wire.
+
+    The run was launched from the factory directory for another project, so its own session has
+    `cwd` = the launch directory while an older session has `cwd` = the target repository. The
+    stale wire holds a budgeted reviewer spawn the current run never made: `auto` must resolve the
+    one run-bound candidate or DEGRADE, never report `uncounted delegation` from that old run; a
+    blank `--session` is an input error and a missing current wire is DEGRADED, not an accusation.
+    """
+    home = tmp / "home-deleg"
+    launch = tmp / "launch-deleg"
+    root = tmp / "repo-deleg"
+    launch.mkdir(parents=True, exist_ok=True)
+    (root / PIPELINE_REL).parent.mkdir(parents=True, exist_ok=True)
+    started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+    stale = layout_session(home, root, "session_38000000-0000-4000-8000-000000000038", [
+        json.dumps(spawn("agent-r1", "factory-code-reviewer"))], age_s=86400)
+    current = layout_session(home, launch, "session_38111111-1111-4111-8111-111111111111", [
+        json.dumps(spawn("agent-a1", "factory-analyzer"))])
+    (root / PIPELINE_REL).write_text(
+        "run_id: 20261103-8e939171\nphase: w3\nstatus: in_progress\n"
+        f'updated_at: "{started}"\nstarted_at: "{started}"\n'
+        f'launch_dir: "{launch.as_posix()}"\n'
+        f'session_dir: "{current.as_posix()}"\n'
+        "retry_counters:\n  coder: 0\n  ba: 0\n  planner: 0\n  diagnostician: 0\n"
+        "  advisor: 0\n  infrastructure: 0\n  reviewer: 0\n", encoding="utf-8")
+    stale_dir, current_dir = str(stale.resolve()), str(current.resolve())
+
+    # The run's own wire: an unbudgeted role is out of scope, so it passes.
+    res = run("audit", "--repo", str(root), "--session", str(current), "--home", str(home))
+    expect_clean_cli(res, 0, "the explicit current session")
+    check(current_dir in res.stdout and "PASS" in res.stdout,
+          f"the audit must name and pass the run's own wire: {res.stdout!r}")
+
+    # The stale wire accuses the current run of an uncounted reviewer delegation.
+    res = run("audit", "--repo", str(root), "--session", str(stale), "--home", str(home))
+    expect_clean_cli(res, 1, "the stale target-cwd session")
+    check(stale_dir in res.stdout and "uncounted delegation" in res.stdout,
+          f"the false accusation the report describes must be reproducible: {res.stdout!r}")
+
+    # `auto` must never be that accusation: the old target-cwd session is not this run.
+    for label, extra in (("auto", ("--session", "auto")), ("omitted", ())):
+        res = run("audit", "--repo", str(root), *extra, "--home", str(home))
+        check(res.returncode in (0, 3),
+              f"{label}: a confident audit of the stale wire is the defect: exit "
+              f"{res.returncode} {res.stdout!r} {res.stderr!r}")
+        check(f"session: {stale_dir}" not in res.stdout,
+              f"{label}: the stale target-cwd session must not be audited: {res.stdout!r}")
+        if res.returncode == 0:
+            check(f"session: {current_dir}" in res.stdout,
+                  f"{label}: a resolved audit must read the run's own wire: {res.stdout!r}")
+
+    # A blank --session is an input error: blank never means `auto`.
+    res = run("audit", "--repo", str(root), "--session", "", "--home", str(home))
+    expect_clean_cli(res, 2, "a blank --session")
+
+    # The run's session is gone: a wire older than `started_at` DEGRADES instead of accusing.
+    current.rename(tmp / "deleg-session-moved-away")
+    res = run("audit", "--repo", str(root), "--session", "auto", "--home", str(home))
+    expect_clean_cli(res, 3, "a run whose own session is missing")
+    check("DEGRADED" in res.stdout,
+          f"the degradation must be loud, never a confident stale audit: {res.stdout!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as raw:
         tmp = pathlib.Path(raw)
@@ -942,6 +1033,7 @@ def main() -> int:
         test_settle_round_trip(tmp)
         test_atomic_write_failure(tmp)
         test_audit(tmp)
+        test_current_session_resolution(tmp)
         test_cli_contract()
 
     print("PASS - delegation_gate.py counts every delegation itself: the counter is incremented "

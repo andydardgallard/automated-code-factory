@@ -216,6 +216,12 @@ carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; 
 **Destructive-action gate (canonical wording):** before the main agent runs a destructive shell action — `git push`, `git reset --hard`, `git clean`, a `git checkout`/`git restore` of paths, `rm -rf`, or a branch deletion — it classifies the command FIRST with `python .agents/skills/code-factory/scripts/action_gate.py check --action "<command>" --scope <resolved repo_path> --mode <hitl|auto>`: `ALLOW` proceeds, `CONFIRM` proceeds only on an explicit user decision (in `auto` mode the factory proceeds and records the assumption), and `HARD_DENY` is never executed. The classification is the MAIN agent's step because only the main agent mutates the shared working tree; a subagent never runs these commands at all (rule `no-shared-tree-git-mutations`). The rollback procedure classifies its own `git checkout`/`git reset`/`rm` the same way before restoring the tree, and a CONFIRM or HARD_DENY answer is not a reason to skip the classification of the next command.
 <!-- factory-rule: destructive-action-gate end -->
 
+## supervisor-first
+carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; .agents/agents/sub-agents/supervisor.md
+<!-- factory-rule: supervisor-first begin -->
+**Supervision first (canonical wording):** the supervisor exists BEFORE Phase 0 and watches every Phase 0 operation — `supervisor_watchdog.py begin --launch-dir <launch directory>` is issued after the pre-delegation gate and BEFORE the task is parsed, `supervisor_watchdog.py observe` records each operation of the closed vocabulary in the mandated order (parse → resolve → memory-read → run-id, with memory-write at the Finish) under a strictly increasing sequence, and `supervisor_watchdog.py activate --launch-dir <launch directory> --repo <resolved repo_path>` binds the launch-scoped bootstrap to the run's `run_id` only once that run_id exists; `activate` refuses a journal in which any of those operations went unobserved or out of order, so a run that parses, resolves its repository, reads the memory or mints its run id before the supervisor began can never activate. The supervisor's own launch is never run-id dependent, and a resume continues with the recorded supervisor instead of beginning a second one.
+<!-- factory-rule: supervisor-first end -->
+
 ## input-validation
 carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; .agents/skills/code-factory/references/code-review.md
 <!-- factory-rule: input-validation begin -->

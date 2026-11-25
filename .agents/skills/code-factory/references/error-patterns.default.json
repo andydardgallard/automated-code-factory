@@ -103,6 +103,12 @@
       "route": "infrastructure"
     },
     {
+      "id": "A1",
+      "category": "AGENT_CATALOG",
+      "patterns": ["Unknown agent type"],
+      "route": "infrastructure"
+    },
+    {
       "id": "5",
       "category": "MISSING_FILE",
       "patterns": ["No such file or directory", "cannot open file", "file not found", "does not exist"],

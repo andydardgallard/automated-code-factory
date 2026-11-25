@@ -66,7 +66,10 @@ Verified here:
      ONLY in the shipped asset and the entry path only in the merge helper — both deployers must
      reference those instead of repeating the version or the path layout. The fixtures run the step
      through the documented offline seam (`CHROME_DEVTOOLS_MCP_VENDOR_OFFLINE=1`), so no test ever
-     reaches npm or the network,
+     reaches npm or the network — and every fixture deployment runs with `HOME`/`USERPROFILE`
+     pointing into a private directory of this run and `KIMI_CODE_HOME` removed, because the
+     deployers also install the factory's role profiles into the CLI's USER-scope agent catalog and
+     a test must never write into the machine's own `~/.kimi-code/agents`,
   14. the managed configuration of a deployment: a merge of the COMMITTED asset produces the managed
      shape (node + the project's absolute vendored entry + the required safety flags and
      environment switches, no permission/attach key). The expected flags, switches and forbidden
@@ -1740,16 +1743,62 @@ def shadowed_env(shadow: pathlib.Path) -> dict:
     return env
 
 
+# The CLI data root the deployers install the factory's role profiles into (`<root>/agents`). The
+# variable relocates it; HOME drives the bash side, USERPROFILE the Windows one. A fixture
+# deployment points all three at this run's private directory so the machine's own catalog (the
+# developer's `~/.kimi-code/agents`) is never written by a test.
+CLI_HOME_ENV = ("HOME", "USERPROFILE")
+CLI_ROOT_ENV = "KIMI_CODE_HOME"
+CLI_HOME_ROOT: pathlib.Path | None = None
+
+
+def cli_home() -> pathlib.Path:
+    """The private CLI data root of this run: nothing here may touch the machine's own catalog."""
+    global CLI_HOME_ROOT
+    if CLI_HOME_ROOT is None:
+        CLI_HOME_ROOT = pathlib.Path(tempfile.mkdtemp(prefix="cf cli home "))
+    return CLI_HOME_ROOT
+
+
 def deploy_env(shadow: pathlib.Path | None = None) -> dict:
     """The environment of a fixture deployment: offline vendor install, optional python stubs.
 
     `CHROME_DEVTOOLS_MCP_VENDOR_OFFLINE=1` is the documented seam of `vendor-install`: it writes a
     placeholder entry instead of calling npm, so a fixture run never reaches the network or a real
     package registry (and never takes a minute doing it).
+
+    The deployers ALSO install the factory's role profiles into the CLI's USER-scope agent catalog
+    (`<data root>/agents`), so a real deployment writes outside the fixture project. A test must
+    never touch the machine's own catalog: `HOME`/`USERPROFILE` point into a private directory of
+    this run and `KIMI_CODE_HOME` is dropped (that variable relocates the data root both sides
+    follow, so a value inherited from the developer's shell would redirect the writes anyway).
     """
     env = shadowed_env(shadow) if shadow is not None else dict(os.environ)
     env[MCP_VENDOR_OFFLINE_ENV] = "1"
+    private = str(cli_home())
+    for name in CLI_HOME_ENV:
+        env[name] = private
+    env.pop(CLI_ROOT_ENV, None)
     return env
+
+
+def cli_home_is_private() -> None:
+    """A fixture deployment must never write into the machine's own user-scope agent catalog.
+
+    The deployers install the factory roles into `<data root>/agents`; with the inherited
+    environment that directory is the developer's real `~/.kimi-code/agents`, so the isolation is a
+    contract, not a convenience.
+    """
+    env = deploy_env()
+    private = str(cli_home())
+    wrong = [f"{name}={env.get(name)!r}" for name in CLI_HOME_ENV if env.get(name) != private]
+    expect(not wrong,
+           f"a fixture deployment must run with {CLI_HOME_ENV} pointing into this test's private "
+           f"directory {private!r} - the deployers write the user-scope agent catalog there; got "
+           f"{wrong}")
+    expect(CLI_ROOT_ENV not in env,
+           f"a fixture deployment must not inherit {CLI_ROOT_ENV} ({env.get(CLI_ROOT_ENV)!r}): it "
+           "relocates the CLI data root the deployers write the role profiles into")
 
 
 # --- what each MCP case must prove -------------------------------------------------------------
@@ -2591,7 +2640,15 @@ def main() -> int:
 
     # 11. Real deployment (Windows only): fresh, pre-existing MCP settings, conflicting entry and
     # the two no-python degradations.
-    end_to_end(checker)
+    checker.check("fixture deployments: the user-scope agent catalog they install lives in this "
+                  "test's private data root, never in the machine's own ~/.kimi-code",
+                  cli_home_is_private)
+    try:
+        end_to_end(checker)
+    finally:
+        # The private CLI data root of the fixture deployments never outlives this test.
+        if CLI_HOME_ROOT is not None:
+            remove_tree(CLI_HOME_ROOT)
 
     return checker.finish()
 

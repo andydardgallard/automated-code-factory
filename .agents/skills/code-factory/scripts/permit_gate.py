@@ -38,11 +38,14 @@ malformed file is a PermitError (exit 2), never a crash inside the audit.
 THE LEDGER: `permits.yaml` alone cannot prove it is THE run's registry — a flow can delete it,
 re-initialise it and re-register the same permits as if a deny had never happened. So every
 transition ALSO appends one line to the append-only `permits.ledger.jsonl`
-(`.code-factory/state/permits.ledger.jsonl`), a hash chain over the resulting state:
+(`.code-factory/state/permits.ledger.jsonl`), a hash chain over the resulting state. A LAUNCH-SCOPED
+registry is the same pair under the launch's own key:
+`.code-factory/state/permits.launch-<launch id>.yaml` and
+`.code-factory/state/permits.ledger.launch-<launch id>.jsonl` — one launch, one chain.
 
   {"seq": <1-based int>, "run_id": "<run the state belonged to>",
    "prev": "<hash of the previous line, 64 zeros for the first>",
-   "action": "init" | "add" | "verdict" | "bind" | "close" | "reinit",
+   "action": "init" | "add" | "verdict" | "bind" | "close" | "reinit" | "repair",
    "permit_id": "<permit id or null>", "at": "<ISO>", "state": "<sha256 of the state>",
    "hash": "<sha256 of the line's seq/prev/run_id/action/permit_id/at/state>"}
 
@@ -70,6 +73,18 @@ first post-upgrade write) or when the file belongs to another run. The audit sti
 check to the attested permits: a snapshot attests WHICH records exist, never that they were
 permitted.
 
+THE TRANSACTION AND THE REPAIR: a state write and its journal append are ONE transaction — a failed
+append rolls the file back to the byte image it had before (the FIRST write, which has no previous
+file, is rolled back by deleting it), a PARTIAL journal line is restored to the journal's previous
+byte image (or the newly created journal is removed), and a failed rollback is a loud critical error
+rather than a silently advanced registry. The "already done" shortcuts (`init`, `bind`, `close`,
+`bind-run`) verify the history before they answer `unchanged`, so a retry on a DIVERGED registry
+fails (exit 2) instead of re-blessing the divergence. Recovery is the owner's explicit `repair`: no
+`--mode` only reports the divergence; `--mode restore` re-derives `permits.yaml` from the ledger
+head's recorded projection (the unjournaled transition is lost, deliberately); `--mode attest
+--note <why>` keeps the file on disk and appends ONE marked `repair` event that re-anchors the
+chain, recording no transition that did not happen.
+
 BOOTSTRAP PERMITS (`add --kind bootstrap`): before the plan is APPROVED no delegation can name a
 plan task, so the run's first delegations answer the TASK itself. A bootstrap permit is limited to
 the pre-plan read-only roles (`analyzer`, `planner` — the initial planning — and `supervisor`,
@@ -82,8 +97,16 @@ the supervisor's verdict). On a FRESH run there is not even a `run_id` yet (`beg
 run-id-independent): `init --launch-dir` / `add --launch-dir` anchor that permit to the launch
 bootstrap's `begun_at` and leave the registry UNBOUND, and `bind-run` binds it once, atomically,
 when `activate` writes the checkpoint — the pre-run transitions keep the timestamps they were
-recorded with. The approved-plan task checks apply to `plan` permits only (implementation and later
-delegations).
+recorded with. A LAUNCH-SCOPED registry is KEYED by the launch id `begin` minted: several factories
+may be launched from one folder (each into its own `repo_path`), so a launch's permits and journal
+are `permits.launch-<launch id>.yaml` / `permits.ledger.launch-<launch id>.jsonl` and never one
+shared file. `--launch-id` says WHICH launch a command addresses; without it the folder resolves
+only while exactly ONE bootstrap is uncompleted, and several open launches are a loud refusal that
+lists them. The unkeyed launch-only files a pre-key run left behind stay resolvable where they are
+(never migrated) until `bind-run` retires them; a launch folder that IS the resolved repository
+still transfers its KEYED registry to the run's own (unkeyed) name, so the launch copy is retired
+instead of being left as a second live registry beside the run's. The approved-plan task checks
+apply to `plan` permits only (implementation and later delegations).
 
 THE SUPERVISOR'S OWN SPAWNS: the supervisor is a run-long WATCHDOG launched at run start under the
 run's own authority — it cannot judge its own permit before it exists (bootstrap circularity). The
@@ -92,15 +115,22 @@ IS bound to a permit is audited like any other (role, verdict order, plan scope)
 
 SUBCOMMANDS
 
-  init    --repo <root> [--launch-dir <dir>]  create the skeleton {run_id, permits: []} (refuses to
+  init    --repo <root> [--launch-dir <dir>] [--launch-id <id>]
+                                              create the skeleton {run_id, permits: []} (refuses to
                                               overwrite a file that already lists permits). With
                                               `--launch-dir` the registry is created UNBOUND
                                               (`run_id: ""`) against the launch bootstrap `begin`
-                                              wrote — the only authority that exists before Phase 0
-  bind-run --repo <root> [--run-id <id>]      bind a launch-scoped registry to the run its
-                                              activation recorded (once, atomic, journaled)
+                                              wrote — the only authority that exists before Phase 0 —
+                                              and it is KEYED by that launch (`permits.launch-<id>
+                                              .yaml` + `permits.ledger.launch-<id>.jsonl`), so
+                                              concurrent factories in one folder never share a file
+  bind-run --repo <root> [--run-id <id>] [--launch-dir <dir>] [--launch-id <id>]
+                                              bind a launch-scoped registry to the run its
+                                              activation recorded (once, atomic, journaled); with
+                                              `--launch-dir` that launch's registry is TRANSFERRED
   add     --repo <root> --permit-id <id> --task-id <plan task id> --role <role> --phase <phase>
-          [--kind plan|bootstrap] [--launch-dir <dir>] [--scope <repo-relative path> ...]
+          [--kind plan|bootstrap] [--launch-dir <dir>] [--launch-id <id>]
+          [--scope <repo-relative path> ...]
           [--constraint <text> ...]
                                               register ONE permit; the task id must exist in the
                                               approved plan (a `--kind bootstrap` permit answers the
@@ -110,9 +140,10 @@ SUBCOMMANDS
                                               confined repo-relative path, and an EMPTY scope is only
                                               allowed for a read-only / business-test role
   verdict --repo <root> --permit-id <id> --verdict allow|deny --evidence <text>
+          [--launch-dir <dir>] [--launch-id <id>]
                                               record the supervisor's verdict (evidence is
                                               mandatory; a second verdict on the same permit fails)
-  bind    --repo <root> --permit-id <id> --agent-id <id>
+  bind    --repo <root> --permit-id <id> --agent-id <id> [--launch-dir <dir>] [--launch-id <id>]
                                               record the agent id a permitted delegation spawned
                                               (only on an ALLOWED, judged permit; an agent id is
                                               unique within the run's CLI session — ids restart in
@@ -129,6 +160,9 @@ SUBCOMMANDS
                                               attest a PRE-JOURNAL registry as it stands: ONE marked
                                               `snapshot` event, `permits.yaml` untouched, no
                                               transition invented (see THE LEGACY SNAPSHOT)
+  repair  --repo <root> [--mode restore|attest] [--note <text>]
+                                              the owner's EXPLICIT recovery from a divergence (see
+                                              THE REPAIR): no `--mode` only reports it
   audit   --repo <root> [--session <dir|auto>] [--home <path>]
                                               the FINISH gate (see below)
 
@@ -192,9 +226,13 @@ from model_matrix import ROLES  # noqa: E402
 
 PERMITS_REL = pathlib.Path(".code-factory") / "state" / "permits.yaml"
 LEDGER_REL = pathlib.Path(".code-factory") / "state" / "permits.ledger.jsonl"
-# The launch-scoped authority `supervisor_watchdog.py begin --launch-dir` writes: it exists BEFORE
-# any parsed task and BEFORE any `run_id`, and it is what a pre-run supervisor permit answers.
-LAUNCH_BOOTSTRAP_REL = pathlib.Path(".code-factory") / "state" / "watchdog-bootstrap.json"
+# A LAUNCH-SCOPED registry is KEYED by the launch nonce `supervisor_watchdog.py begin --launch-dir`
+# mints: one launch folder may carry several in-flight factories (each with its own `repo_path`), so
+# a launch's permits and its journal are named after THAT launch — never one shared mutable file.
+# The unkeyed names above stay the RUN's registry, and the launch-only legacy files a pre-key run
+# left behind (they are resolved as they stand, never migrated).
+LAUNCH_PERMITS_FMT = "permits.launch-{launch_id}.yaml"
+LAUNCH_LEDGER_FMT = "permits.ledger.launch-{launch_id}.jsonl"
 PLAN_REL = pathlib.Path(".code-factory") / "state" / "plan.md"
 PIPELINE_REL = pathlib.Path(".code-factory") / "state" / "pipeline.yaml"
 TASK_REL = pathlib.Path(".code-factory") / "state" / "task.yaml"
@@ -221,6 +259,9 @@ PERMIT_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 RUN_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{8}$")
 RUN_ID_LINE = re.compile(r"^run_id:\s*(.*)$")
+# The launch nonce `supervisor_watchdog.py begin` mints, validated HERE too: it becomes the filename
+# component of a launch-scoped registry, so separators, `..` and an empty value have no legitimacy.
+LAUNCH_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
 # The checkpoint's `owner_authorizations:` list (written by `delegation_gate.py`): one plain YAML
 # list item per owner decision, e.g.
 #   - 2026-11-05T16:59:25Z permit=PB role=supervisor mode=hitl
@@ -234,9 +275,16 @@ FILES_FIELD = re.compile(r"\bfiles\s*:\s*(?P<files>.*?)(?:;\s*(?:deps|verify)\b|
 # what was actually recorded; `note` carries the transition's marking (the legacy snapshot's own
 # marker) inside the hash, so the marker cannot be removed without breaking the chain.
 LEDGER_FIELDS = ("seq", "prev", "run_id", "action", "permit_id", "at", "note", "state", "doc")
-LEDGER_ACTIONS = ("init", "add", "verdict", "bind", "close", "reinit", "snapshot", "bind-run")
+LEDGER_ACTIONS = ("init", "add", "verdict", "bind", "close", "reinit", "snapshot", "bind-run",
+                  "repair")
 # The one transition a PRE-JOURNAL registry may take: attest the current state, invent nothing.
 SNAPSHOT_ACTION = "snapshot"
+# The owner's explicit recovery from a divergence (`repair`): the ONLY way a registry whose history
+# no longer matches its file may move again. Its modes are the owner's choice, never a default.
+REPAIR_ACTION = "repair"
+REPAIR_MODES = ("restore", "attest")
+REPAIR_MARKER = ("owner repair: the registry's file no longer continued the recorded permit "
+                 "history and the owner chose this recovery explicitly")
 LEGACY_SNAPSHOT_MARKER = ("legacy snapshot: the current registry state only — the transitions "
                           "before this point were never journaled and are UNPROVEN, never invented")
 GENESIS_HASH = "0" * 64
@@ -489,16 +537,32 @@ def _validate_permit_id(value: str, label: str = "permit id") -> str:
 
 # ------------------------------------------------------------------------------------------ storage
 
+def _registry_paths(root: pathlib.Path,
+                    launch_id: str | None = None) -> tuple[pathlib.Path, pathlib.Path]:
+    """`(permits, journal)` of the registry `root` addresses: keyed for a LAUNCH-scoped one.
+
+    `launch_id=None` is the run's registry (and the launch-only legacy one a pre-key run left): the
+    documented unkeyed names. A launch id names THAT launch's own pair, so two factories in one
+    launch folder never read or rewrite each other's permits and permit history.
+    """
+    if launch_id is None:
+        return root / PERMITS_REL, root / LEDGER_REL
+    state = root / PERMITS_REL.parent
+    return (state / LAUNCH_PERMITS_FMT.format(launch_id=launch_id),
+            state / LAUNCH_LEDGER_FMT.format(launch_id=launch_id))
+
+
 def _empty(run_id: str) -> dict:
     return {"run_id": run_id, "permits": []}
 
 
-def read_permits(root: pathlib.Path) -> dict:
+def read_permits(root: pathlib.Path, launch_id: str | None = None) -> dict:
     """The parsed permits file; an absent/malformed/ill-shaped one is an input error (exit 2)."""
-    path = root / PERMITS_REL
+    path, _ledger = _registry_paths(root, launch_id)
     if not path.is_file():
-        raise PermitError(f"no permits file at {path}: run `permit_gate.py init --repo {root}` "
-                          f"first")
+        where = (f"init --launch-dir {root} --launch-id {launch_id}" if launch_id is not None
+                 else f"init --repo {root}")
+        raise PermitError(f"no permits file at {path}: run `permit_gate.py {where}` first")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -589,9 +653,9 @@ def state_hash(data: dict) -> str:
     return hashlib.sha256(_canonical(state_projection(data)).encode("utf-8")).hexdigest()
 
 
-def read_ledger(root: pathlib.Path) -> list[dict]:
+def read_ledger(root: pathlib.Path, launch_id: str | None = None) -> list[dict]:
     """The parsed ledger lines; an absent journal is an EMPTY chain, an unreadable one is exit 2."""
-    path = root / LEDGER_REL
+    path = _registry_paths(root, launch_id)[1]
     if not path.is_file():
         return []
     try:
@@ -618,12 +682,13 @@ def _entry_hash(entry: dict) -> str:
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
-def _chain_problems(entries: list[dict]) -> list[str]:
+def _chain_problems(entries: list[dict], label: str | None = None) -> list[str]:
     """Why the chain itself is broken: an altered line, a broken link, a gap, a bad field shape."""
     problems: list[str] = []
     expected_prev = GENESIS_HASH
+    name = label or LEDGER_REL.as_posix()
     for position, entry in enumerate(entries, 1):
-        label = f"{LEDGER_REL.as_posix()} line {position}"
+        label = f"{name} line {position}"
         seq = entry.get("seq")
         if isinstance(seq, bool) or not isinstance(seq, int):
             problems.append(f"permit ledger integrity: {label} carries no readable sequence number "
@@ -673,23 +738,24 @@ def _empty_run_rebind(head: dict, data: dict) -> bool:
     return state_hash({"run_id": head.get("run_id"), "permits": []}) == head.get("state")
 
 
-def ledger_problems(root: pathlib.Path, *, allow_empty_rebind: bool = False) -> list[str]:
+def ledger_problems(root: pathlib.Path, *, launch_id: str | None = None,
+                    allow_empty_rebind: bool = False) -> list[str]:
     """Every way this registry's history is not the append-only one the run recorded.
 
     An absent journal with an EMPTY registry is the pre-first-write state (nothing to lose yet); an
     absent journal with permits in it is UNPROVEN history, which the factory reports rather than
     adopts. A journal whose head does not equal the file on disk is a rewritten ledger.
     """
-    path = root / PERMITS_REL
-    entries = read_ledger(root)
-    problems = _chain_problems(entries)
+    path, ledger = _registry_paths(root, launch_id)
+    entries = read_ledger(root, launch_id)
+    problems = _chain_problems(entries, ledger.as_posix())
     if not entries:
         if path.is_file():
-            recorded = read_permits(root)
+            recorded = read_permits(root, launch_id)
             if recorded["permits"]:
                 problems.append(
                     f"permit ledger integrity: {path} lists {len(recorded['permits'])} permit(s) "
-                    f"but {LEDGER_REL.as_posix()} records no history — this registry predates the "
+                    f"but {ledger.as_posix()} records no history — this registry predates the "
                     f"append-only chain, so its transitions cannot be proven. A run must attest it "
                     f"as it stands with `permit_gate.py snapshot-legacy --repo <root>` (ONE marked "
                     f"snapshot of the CURRENT state; it records no earlier transition and claims "
@@ -698,11 +764,11 @@ def ledger_problems(root: pathlib.Path, *, allow_empty_rebind: bool = False) -> 
     head = entries[-1]
     if not path.is_file():
         problems.append(
-            f"permit ledger integrity: {path} is missing while {LEDGER_REL.as_posix()} records "
+            f"permit ledger integrity: {path} is missing while {ledger.as_posix()} records "
             f"{len(entries)} transition(s) — deleting the registry does not delete the run's "
             f"permit history, and a re-created file is not that history")
         return problems
-    current = read_permits(root)
+    current = read_permits(root, launch_id)
     strict = state_hash(current)
     if head.get("state") != strict and not _annotation_amendment(root, head, current) \
             and not (allow_empty_rebind and _empty_run_rebind(head, current)):
@@ -759,18 +825,56 @@ def _annotation_amendment(root: pathlib.Path, head: dict, current: dict) -> bool
     return amended
 
 
-def _require_ledger(root: pathlib.Path, *, allow_empty_rebind: bool = False) -> None:
+def _require_ledger(root: pathlib.Path, *, launch_id: str | None = None,
+                    allow_empty_rebind: bool = False) -> None:
     """Refuse a write on a registry whose history does not continue the recorded chain."""
-    problems = ledger_problems(root, allow_empty_rebind=allow_empty_rebind)
+    problems = ledger_problems(root, launch_id=launch_id, allow_empty_rebind=allow_empty_rebind)
     if problems:
         raise PermitError("; ".join(problems))
 
 
+def _append_line(path: pathlib.Path, line: str) -> None:
+    """Append ONE line to the journal — the write half of the journal transaction (see below)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8", newline="\n") as stream:
+        stream.write(line)
+
+
+def _rollback_ledger(path: pathlib.Path, previous: bytes | None,
+                     failure: BaseException) -> None:
+    """Undo a PARTIAL journal append; a failed undo is a LOUD critical error, never swallowed.
+
+    A short write leaves a truncated line at the tail, and the chain check would then report the
+    run's own half-written history as corruption — the run would be locked out of its registry by
+    its own failed command. So the journal is restored to the byte image read BEFORE the append, and
+    a journal that did not exist yet is removed: the retried command must find exactly the history
+    it had. A path that is not a regular file carried no bytes to undo (the append never wrote one).
+    """
+    try:
+        if previous is None:
+            if path.is_file():
+                path.unlink()
+        elif not path.is_file() or path.read_bytes() != previous:
+            _replace_atomic(path, previous, "the permit ledger")
+    except (OSError, PermitError) as exc:
+        raise PermitError(
+            f"CRITICAL: a partial transition was left in the permit ledger {path} ({failure}) and "
+            f"the journal ROLLBACK failed too ({exc}): the recorded history no longer ends on a "
+            f"chained entry. Restore it explicitly with `permit_gate.py repair --repo <root> "
+            f"--mode restore` and do NOT continue the run on the current state") from failure
+
+
 def _append_ledger(root: pathlib.Path, action: str, permit_id: str | None, data: dict,
-                   note: str | None = None) -> None:
-    """Append the transition for the state just written; a filesystem failure is exit 2."""
-    path = root / LEDGER_REL
-    entries = read_ledger(root)
+                   note: str | None = None, launch_id: str | None = None) -> None:
+    """Append the transition for the state just written; a filesystem failure is exit 2.
+
+    The append itself is the second half of ONE transaction: a fault in the middle of the write
+    leaves a partial line behind, so the journal's byte image is taken first and restored on
+    failure (see `_rollback_ledger`) — a failed transition must be absolutely invisible to the
+    chain, never a corrupt tail the run then has to work around.
+    """
+    path = _registry_paths(root, launch_id)[1]
+    entries = read_ledger(root, launch_id)
     previous = entries[-1] if entries else {}
     stamp, _ms = _now()
     seq = int(previous.get("seq") or 0) + 1
@@ -779,45 +883,96 @@ def _append_ledger(root: pathlib.Path, action: str, permit_id: str | None, data:
              "at": stamp, "note": note, "state": state_hash(data), "doc": state_projection(data)}
     entry["hash"] = _entry_hash(entry)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8", newline="\n") as stream:
-            stream.write(_canonical(entry) + "\n")
+        before = path.read_bytes() if path.is_file() else None
     except OSError as exc:
+        raise PermitError(f"cannot read the permit ledger {path} before appending to it: "
+                          f"{exc}") from exc
+    try:
+        _append_line(path, _canonical(entry) + "\n")
+    except BaseException as exc:
+        _rollback_ledger(path, before, exc)
+        if isinstance(exc, PermitError):
+            raise
         raise PermitError(f"cannot append to the permit ledger {path}: {exc}") from exc
+
+
+def _replace_atomic(path: pathlib.Path, payload: bytes, label: str) -> None:
+    """Replace `path` with `payload` atomically: same-directory temp file plus `os.replace`."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle, temp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    except OSError as exc:
+        raise PermitError(f"cannot write {label} {path}: {exc}") from exc
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(payload)
+        os.replace(temp, path)
+    except OSError as exc:
+        pathlib.Path(temp).unlink(missing_ok=True)
+        raise PermitError(f"cannot write {label} {path} (the previous one is untouched): "
+                          f"{exc}") from exc
+    except BaseException:
+        pathlib.Path(temp).unlink(missing_ok=True)
+        raise
+
+
+def _rollback_state(path: pathlib.Path, previous: bytes | None, failure: BaseException,
+                    ledger: pathlib.Path | None = None) -> None:
+    """Undo a state write whose journal append failed; a failed undo is a LOUD critical error.
+
+    The state file and the journal are ONE transaction, so a registry must never advance past the
+    history the run recorded. `previous` is the byte image read BEFORE the replace: `None` means the
+    run had no permits file yet (the first write), which is undone by DELETING the new file — a
+    registry without its history is the divergence itself, and the retried command must find a clean
+    slate instead of an unproven file to work around.
+    """
+    label = (ledger or (path.parent / LEDGER_REL.name)).as_posix()
+    try:
+        if previous is None:
+            path.unlink(missing_ok=True)
+        else:
+            _replace_atomic(path, previous, "the permits file")
+    except (OSError, PermitError) as exc:
+        raise PermitError(
+            f"CRITICAL: {path} was written but the matching transition could not be appended to "
+            f"{label} ({failure}), and the ROLLBACK failed too ({exc}): the "
+            f"registry now holds a transition its own history never recorded. Restore it "
+            f"explicitly with `permit_gate.py repair --repo <root> --mode restore` and do NOT "
+            f"continue the run on the current state") from failure
 
 
 def _write_permits(root: pathlib.Path, data: dict, action: str = "init",
                    permit_id: str | None = None,
                    allow_empty_rebind: bool = False,
-                   note: str | None = None) -> pathlib.Path:
+                   note: str | None = None,
+                   require_chain: bool = True,
+                   launch_id: str | None = None) -> pathlib.Path:
     """Write the permits file deterministically and ATOMICALLY, then journal the transition.
 
     The ledger is verified FIRST (see THE LEDGER): a registry whose recorded history does not reach
     the file on disk is refused, so a reset or an edit can never be papered over by the next append.
     A filesystem failure is DATA: it names the path and the OS reason and exits 2, and the permits
     file the run already had stays byte-identical (an audit must never read a half-written permit).
+
+    The write and its journal append are ONE transaction: the byte image from before the replace is
+    kept, and a failed append rolls the file back (see `_rollback_state`), so the state on disk
+    always continues the history the run recorded.
     """
-    _require_ledger(root, allow_empty_rebind=allow_empty_rebind)
+    if require_chain:
+        _require_ledger(root, launch_id=launch_id, allow_empty_rebind=allow_empty_rebind)
     payload = {"run_id": data.get("run_id", ""), "permits": data.get("permits", [])}
-    path = root / PERMITS_REL
+    path, ledger = _registry_paths(root, launch_id)
     text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        handle, temp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+        previous = path.read_bytes() if path.is_file() else None
     except OSError as exc:
-        raise PermitError(f"cannot write the permits file {path}: {exc}") from exc
+        raise PermitError(f"cannot read the permits file {path} before writing it: {exc}") from exc
+    _replace_atomic(path, text.encode("utf-8"), "the permits file")
     try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(text)
-        os.replace(temp, path)
-    except OSError as exc:
-        pathlib.Path(temp).unlink(missing_ok=True)
-        raise PermitError(f"cannot write the permits file {path} (the previous one is untouched): "
-                          f"{exc}") from exc
-    except BaseException:
-        pathlib.Path(temp).unlink(missing_ok=True)
+        _append_ledger(root, action, permit_id, payload, note=note, launch_id=launch_id)
+    except BaseException as exc:
+        _rollback_state(path, previous, exc, ledger)
         raise
-    _append_ledger(root, action, permit_id, payload, note=note)
     return path
 
 
@@ -830,51 +985,6 @@ def _permit(data: dict, permit_id: str) -> dict:
 
 
 # -------------------------------------------------------------------------------------- subcommands
-
-def init(root: str | pathlib.Path | None = None,
-         launch_dir: str | pathlib.Path | None = None) -> dict:
-    """Create the skeleton `{run_id, permits: []}`; a file that already lists permits is kept.
-
-    Before Phase 0 there is no parsed task, no computed `run_id` AND no resolved `repo_path`, so the
-    mandated order (`supervisor_watchdog.py begin` -> the supervisor permit -> `activate`) would
-    otherwise be impossible. That registry is LAUNCH-ONLY: `--launch-dir` alone puts it in the launch
-    directory (`<launch>/.code-factory/state/permits.yaml`, unbound) against the launch bootstrap
-    `begin` wrote, and `bind-run` transfers it to the resolved repository at activation. `--repo`
-    (alone, or with `--launch-dir`) keeps the run-anchored behaviour: the checkpoint decides the id.
-    """
-    launch_only = root is None
-    if launch_only:
-        if launch_dir is None:
-            raise PermitError("init needs --repo <root> (the run's repository) or --launch-dir <dir> "
-                              "(the LAUNCH-ONLY pre-run registry: no target exists yet)")
-        root = launch_dir
-    root = _checked_repo(root)
-    anchor = launch_anchor(launch_dir) if launch_dir is not None else None
-    pipeline = root / PIPELINE_REL
-    if launch_only:
-        run_id = ""                             # the launch is not the run: unbound until bind-run
-    elif pipeline.is_file():
-        run_id = pipeline_run_id(root)          # the run already exists: the checkpoint decides
-    elif anchor is not None:
-        run_id = ""                             # launch-scoped; `bind-run` binds it at activation
-    else:
-        run_id = pipeline_run_id(root)          # raises the documented "no WIP checkpoint" error
-    path = root / PERMITS_REL
-    note = None if anchor is None else (
-        f"launch-scoped registry: anchored to the launch bootstrap at {anchor['launch_dir']} "
-        f"(begun_at {anchor['begun_at']}); unbound until `bind-run`")
-    if path.is_file():
-        existing = read_permits(root)
-        if existing["permits"]:
-            raise PermitError(f"{path} already lists {len(existing['permits'])} permit(s): it is "
-                              f"created ONCE per run — a second init would forget them")
-        if existing.get("run_id", "") == run_id:
-            return {"status": "unchanged", "run_id": run_id, "permits": str(path)}
-        _write_permits(root, _empty(run_id), action="reinit", allow_empty_rebind=True, note=note)
-        return {"status": "reinitialized", "run_id": run_id, "permits": str(path)}
-    _write_permits(root, _empty(run_id), action="init", note=note)
-    return {"status": "created", "run_id": run_id, "permits": str(path)}
-
 
 def _parsed_task(root: pathlib.Path) -> None:
     """Require the run's task to exist and to PARSE — the anchor of the TASK-answering permits.
@@ -913,43 +1023,151 @@ def _run_authority(root: pathlib.Path) -> str:
     return pipeline_run_id(root)
 
 
-def launch_anchor(launch_dir: str | pathlib.Path) -> dict:
-    """`{launch_dir, begun_at, activated}` of the launch bootstrap the pre-run permit answers.
+def _validate_launch_id(launch_id: str) -> str:
+    """`--launch-id` becomes a filename component: only the documented nonce shape is legitimate."""
+    if not LAUNCH_ID_RE.fullmatch(launch_id or ""):
+        raise PermitError(f"--launch-id must be the launch nonce `supervisor_watchdog.py begin "
+                          f"--launch-dir <dir>` minted (^\\d{{8}}-\\d{{6}}-[0-9a-f]{{6}}$), got "
+                          f"{launch_id!r}: it names this launch's OWN registry file, so separators, "
+                          f"`..` and an empty value have no legitimacy")
+    return launch_id
+
+
+def _launch_watchdog():
+    """The sibling `supervisor_watchdog` module (the ONE launch-bootstrap resolver)."""
+    scripts = pathlib.Path(__file__).resolve().parent
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    try:
+        import supervisor_watchdog  # noqa: PLC0415  (deliberately lazy: only launches need it)
+    except ImportError as exc:
+        raise PermitError(f"the launch-scoped registry reuses supervisor_watchdog.py's bootstrap "
+                          f"resolver, which cannot be imported: {exc}") from exc
+    return supervisor_watchdog
+
+
+def launch_anchor(launch_dir: str | pathlib.Path,
+                  launch_id: str | None = None) -> dict:
+    """`{launch_dir, launch_id, begun_at, activated}` of the launch bootstrap a permit answers.
 
     `supervisor_watchdog.py begin --launch-dir <launch>` writes this record BEFORE any task or
-    `run_id` exists, so it is the only authority available at that moment. A missing or malformed
-    bootstrap is an actionable error: the launch-scoped registry may not be created out of nothing.
+    `run_id` exists, so it is the only authority available at that moment. The lookup goes through
+    `supervisor_watchdog.resolve_bootstrap` (ONE resolver, ONE contract): an explicit `launch_id`
+    names exactly that launch, and without it the folder resolves only while exactly ONE bootstrap
+    is uncompleted — several open launches are a loud refusal, never a guess, because which run a
+    permit belongs to must not be inferred. A missing/malformed bootstrap, an unknown launch id or
+    an ambiguity is an actionable error: a launch-scoped registry is never created out of nothing.
     """
     root = pathlib.Path(os.path.abspath(str(launch_dir)))
     if not root.is_dir():
         raise PermitError(f"the launch directory does not exist: {root}")
-    path = root / LAUNCH_BOOTSTRAP_REL
-    if not path.is_file():
-        raise PermitError(f"no supervisor launch bootstrap at {path}: run `supervisor_watchdog.py "
-                          f"begin --launch-dir {root}` first — a launch-scoped registry is anchored "
-                          f"to that bootstrap's `begun_at`, never invented")
+    if launch_id is not None:
+        _validate_launch_id(launch_id)
+    watchdog = _launch_watchdog()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PermitError(f"{path} is not readable JSON: {exc}") from exc
-    if not isinstance(data, dict) or not isinstance(data.get("begun_at"), str) \
-            or not data["begun_at"].strip():
-        raise PermitError(f"{path} carries no usable `begun_at`: a launch bootstrap without the "
-                          f"moment it began cannot anchor a permit")
-    return {"launch_dir": str(root), "begun_at": data["begun_at"].strip(),
-            "activated": data.get("activated")}
+        resolved = watchdog.resolve_bootstrap(root, launch_id)
+    except watchdog.WatchdogError as exc:
+        raise PermitError(str(exc)) from exc
+    data = resolved["bootstrap"]
+    begun_at = data.get("begun_at")
+    if not isinstance(begun_at, str) or not begun_at.strip():
+        raise PermitError(f"{resolved['path']} carries no usable `begun_at`: a launch bootstrap "
+                          f"without the moment it began cannot anchor a permit")
+    return {"launch_dir": str(root), "launch_id": resolved["launch_id"],
+            "begun_at": begun_at.strip(), "activated": data.get("activated")}
+
+
+def _launch_key(root: pathlib.Path, anchor: dict, explicit: bool = False) -> str | None:
+    """The launch id a launch-only registry is addressed by; `None` for a legacy unkeyed launch.
+
+    A pre-key run left ONE unkeyed launch registry behind. It stays resumable exactly where it is —
+    with no keyed registry of that launch beside it — because migrating live history would be the
+    silent rewrite this gate exists to prevent. The legacy file is retired by the transfer. An
+    EXPLICIT `--launch-id` is never softened that way: it names one launch's keyed records and
+    nothing else, so a missing one is an error instead of a silent fallback.
+    """
+    key = anchor.get("launch_id")
+    if key is None or explicit:
+        return key
+    keyed_permits = _registry_paths(root, key)[0]
+    legacy_permits = root / PERMITS_REL
+    if not keyed_permits.is_file() and legacy_permits.is_file():
+        return None
+    return key
+
+
+def init(root: str | pathlib.Path | None = None,
+         launch_dir: str | pathlib.Path | None = None,
+         launch_id: str | None = None) -> dict:
+    """Create the skeleton `{run_id, permits: []}`; a file that already lists permits is kept.
+
+    Before Phase 0 there is no parsed task, no computed `run_id` AND no resolved `repo_path`, so the
+    mandated order (`supervisor_watchdog.py begin` -> the supervisor permit -> `activate`) would
+    otherwise be impossible. That registry is LAUNCH-ONLY: `--launch-dir` alone puts it in the launch
+    directory, KEYED by the launch id its bootstrap carries (`permits.launch-<id>.yaml`, unbound)
+    against that bootstrap's `begun_at`, and `bind-run` transfers it to the resolved repository at
+    activation. `--repo` (alone, or with `--launch-dir`) keeps the run-anchored behaviour: the
+    checkpoint decides the id.
+    """
+    if launch_id is not None and launch_dir is None:
+        raise PermitError("init: --launch-id names a LAUNCH registry, so it needs --launch-dir "
+                          "<dir> (the folder `supervisor_watchdog.py begin` recorded)")
+    launch_only = root is None
+    if launch_only:
+        if launch_dir is None:
+            raise PermitError("init needs --repo <root> (the run's repository) or --launch-dir <dir> "
+                              "(the LAUNCH-ONLY pre-run registry: no target exists yet)")
+        root = launch_dir
+    root = _checked_repo(root)
+    anchor = launch_anchor(launch_dir, launch_id) if launch_dir is not None else None
+    key = (_launch_key(root, anchor, launch_id is not None)
+           if launch_only and anchor is not None else None)
+    pipeline = root / PIPELINE_REL
+    if launch_only:
+        run_id = ""                             # the launch is not the run: unbound until bind-run
+    elif pipeline.is_file():
+        run_id = pipeline_run_id(root)          # the run already exists: the checkpoint decides
+    elif anchor is not None:
+        run_id = ""                             # launch-scoped; `bind-run` binds it at activation
+    else:
+        run_id = pipeline_run_id(root)          # raises the documented "no WIP checkpoint" error
+    path = _registry_paths(root, key)[0]
+    note = None if anchor is None else (
+        f"launch-scoped registry: anchored to the launch bootstrap at {anchor['launch_dir']} "
+        f"(launch id {anchor['launch_id'] or 'legacy, unkeyed'}, begun_at {anchor['begun_at']}); "
+        f"unbound until `bind-run`")
+    if path.is_file():
+        existing = read_permits(root, key)
+        if existing["permits"]:
+            raise PermitError(f"{path} already lists {len(existing['permits'])} permit(s): it is "
+                              f"created ONCE per run — a second init would forget them")
+        if existing.get("run_id", "") == run_id:
+            # "Already done" is NOT a licence to bless a registry whose file no longer continues the
+            # run's recorded history: the shortcut must look at the journal before it answers.
+            _require_ledger(root, launch_id=key)
+            return {"status": "unchanged", "run_id": run_id, "permits": str(path)}
+        _write_permits(root, _empty(run_id), action="reinit", allow_empty_rebind=True, note=note,
+                       launch_id=key)
+        return {"status": "reinitialized", "run_id": run_id, "permits": str(path)}
+    _write_permits(root, _empty(run_id), action="init", note=note, launch_id=key)
+    return {"status": "created", "run_id": run_id, "permits": str(path)}
 
 
 def add(root: str | pathlib.Path | None = None, permit_id: str = "", task_id: str = "",
         role: str = "", phase: str = "", scopes: list[str] | None = None,
         constraints: list[str] | None = None, kind: str = "plan",
-        launch_dir: str | pathlib.Path | None = None) -> dict:
+        launch_dir: str | pathlib.Path | None = None,
+        launch_id: str | None = None) -> dict:
     """Register ONE permit (validated against the plan — or, bootstrap, the task or the launch).
 
     With `--launch-dir` alone the permit belongs to the LAUNCH-ONLY pre-run registry (no resolved
-    `repo_path` exists yet); `--repo` (alone or with `--launch-dir`) names the run's repository.
+    `repo_path` exists yet), and it is written into THAT launch's own keyed registry; `--repo`
+    (alone or with `--launch-dir`) names the run's repository.
     """
-    if root is None:
+    if launch_id is not None and launch_dir is None:
+        raise PermitError("add: --launch-id names a LAUNCH registry, so it needs --launch-dir <dir>")
+    launch_only = root is None
+    if launch_only:
         if launch_dir is None:
             raise PermitError("add needs --repo <root> or the LAUNCH-ONLY --launch-dir <dir>")
         root = launch_dir
@@ -963,6 +1181,7 @@ def add(root: str | pathlib.Path | None = None, permit_id: str = "", task_id: st
                           f"{', '.join(PERMIT_PHASES)}")
     tasks: dict[str, list[str]] = {}
     anchor: dict | None = None
+    key: str | None = None
     if kind == "bootstrap":
         if role not in BOOTSTRAP_ROLES:
             raise PermitError(f"a bootstrap permit is limited to the pre-plan read-only roles "
@@ -979,11 +1198,17 @@ def add(root: str | pathlib.Path | None = None, permit_id: str = "", task_id: st
             # the launch bootstrap `begin` wrote. `analyzer`/`planner` keep the parsed-task anchor.
             constraints = list(constraints or [])
             if launch_dir is not None:
-                anchor = launch_anchor(launch_dir)
+                anchor = launch_anchor(launch_dir, launch_id)
+                if launch_only:
+                    key = _launch_key(root, anchor, launch_id is not None)
                 constraints.append(
-                    f"launch-authority anchor: launch {anchor['launch_dir']} (begun_at "
-                    f"{anchor['begun_at']}); the registry is unbound until `bind-run`")
+                    f"launch-authority anchor: launch {anchor['launch_dir']} (launch id "
+                    f"{anchor['launch_id'] or 'legacy, unkeyed'}, begun_at {anchor['begun_at']}); "
+                    f"the registry is unbound until `bind-run`")
             else:
+                if launch_id is not None:
+                    raise PermitError("add: --launch-id names a LAUNCH registry, so it needs "
+                                      "--launch-dir <dir>")
                 run_authority = _run_authority(root)
                 constraints.append(
                     f"run-authority anchor: run {run_authority} (the supervisor is launched "
@@ -1024,12 +1249,12 @@ def add(root: str | pathlib.Path | None = None, permit_id: str = "", task_id: st
             raise PermitError(f"scope {', '.join(outside)} is not declared by plan task {task_id!r}"
                               f" ({', '.join(declared)}): a permit may narrow the plan task's "
                               f"scope, never widen it")
-    data = read_permits(root)
+    data = read_permits(root, key)
     if anchor is not None and data.get("run_id"):
         raise PermitError(
-            f"{root / PERMITS_REL} is already bound to run {data['run_id']!r}: a launch-scoped "
-            f"permit belongs to the PRE-RUN registry, and a bound registry gets its permits through "
-            f"the run (drop --launch-dir)")
+            f"{_registry_paths(root, key)[0]} is already bound to run {data['run_id']!r}: a "
+            f"launch-scoped permit belongs to the PRE-RUN registry, and a bound registry gets its "
+            f"permits through the run (drop --launch-dir)")
     if any(permit.get("permit_id") == permit_id for permit in data["permits"]):
         raise PermitError(f"permit id {permit_id!r} is already used: a permit id is unique")
     created, _ms = _now()
@@ -1040,40 +1265,48 @@ def add(root: str | pathlib.Path | None = None, permit_id: str = "", task_id: st
               "created_at": created, "verdict": None, "evidence": "", "verdict_at": None,
               "verdict_at_ms": None, "agent_id": None, "bound_at": None, "closed": None}
     data["permits"].append(permit)
-    path = _write_permits(root, data, action="add", permit_id=permit_id)
+    path = _write_permits(root, data, action="add", permit_id=permit_id, launch_id=key)
     return {"status": "added", "permit": permit, "permits": str(path)}
 
 
-def _registry_root(root: str | pathlib.Path | None,
-                   launch_dir: str | pathlib.Path | None, command: str) -> pathlib.Path:
-    """The ONE registry a lifecycle command acts on: the run's repository, or the LAUNCH-only one.
+def _registry_target(root: str | pathlib.Path | None,
+                     launch_dir: str | pathlib.Path | None, command: str,
+                     launch_id: str | None = None) -> tuple[pathlib.Path, str | None]:
+    """The ONE registry a lifecycle command acts on, plus the launch key it addresses.
 
     Before the transfer the run's registry lives in the launch directory, so `verdict`/`bind` must
     act THERE (`--launch-dir`) — otherwise the supervisor's verdict and its spawn binding could not
-    precede the delegation they permit. Naming both roots is refused: a lifecycle command records
-    one transition, in one registry.
+    precede the delegation they permit. A launch-only registry is the one THAT launch owns (its
+    keyed file), resolved through the shared bootstrap resolver; the run's registry is unkeyed.
+    Naming both roots is refused: a lifecycle command records one transition, in one registry.
     """
+    if launch_id is not None and launch_dir is None:
+        raise PermitError(f"{command}: --launch-id names a LAUNCH registry, so it needs "
+                          f"--launch-dir <dir>")
     if root is None:
         if launch_dir is None:
             raise PermitError(f"{command} needs --repo <root> or --launch-dir <dir>")
-        return _checked_repo(launch_dir)
+        anchor = launch_anchor(launch_dir, launch_id)
+        directory = pathlib.Path(anchor["launch_dir"])
+        return directory, _launch_key(directory, anchor, launch_id is not None)
     if launch_dir is not None:
         raise PermitError(f"{command} names ONE registry: pass --repo (the run's repository) or "
                           f"--launch-dir (the launch-only registry), never both")
-    return _checked_repo(root)
+    return _checked_repo(root), None
 
 
 def verdict(root: str | pathlib.Path | None = None, permit_id: str = "", decision: str = "",
-            evidence: str = "", launch_dir: str | pathlib.Path | None = None) -> dict:
+            evidence: str = "", launch_dir: str | pathlib.Path | None = None,
+            launch_id: str | None = None) -> dict:
     """Record the supervisor's verdict (evidence mandatory; one verdict per permit)."""
-    root = _registry_root(root, launch_dir, "verdict")
+    root, key = _registry_target(root, launch_dir, "verdict", launch_id)
     if decision not in VERDICTS:
         raise PermitError(f"verdict must be one of {list(VERDICTS)}, got {decision!r}")
     text = (evidence or "").strip()
     if not text:
         raise PermitError("--evidence is required: a verdict without the artifact or rule it rests "
                           "on cannot be audited (an allow especially: it authorises a delegation)")
-    data = read_permits(root)
+    data = read_permits(root, key)
     permit = _permit(data, permit_id)
     if permit.get("verdict") is not None:
         raise PermitError(f"permit {permit_id!r} already carries the verdict "
@@ -1084,19 +1317,20 @@ def verdict(root: str | pathlib.Path | None = None, permit_id: str = "", decisio
                           f"{permit['agent_id']!r}: a verdict cannot follow the spawn")
     stamp, stamp_ms = _now()
     permit.update(verdict=decision, evidence=text, verdict_at=stamp, verdict_at_ms=stamp_ms)
-    path = _write_permits(root, data, action="verdict", permit_id=permit_id)
+    path = _write_permits(root, data, action="verdict", permit_id=permit_id, launch_id=key)
     return {"status": "recorded", "permit_id": permit_id, "verdict": decision, "evidence": text,
             "verdict_at": stamp, "permits": str(path)}
 
 
 def bind(root: str | pathlib.Path | None = None, permit_id: str = "", agent_id: str = "",
-         launch_dir: str | pathlib.Path | None = None) -> dict:
+         launch_dir: str | pathlib.Path | None = None,
+         launch_id: str | None = None) -> dict:
     """Bind the spawned agent id to an ALLOWED permit (unique within the run's CLI session)."""
-    root = _registry_root(root, launch_dir, "bind")
+    root, key = _registry_target(root, launch_dir, "bind", launch_id)
     if not AGENT_ID_RE.match(agent_id or ""):
         raise PermitError(f"--agent-id must be a non-empty identifier ([A-Za-z0-9._-]+), got "
                           f"{agent_id!r}")
-    data = read_permits(root)
+    data = read_permits(root, key)
     permit = _permit(data, permit_id)
     if permit.get("closed"):
         raise PermitError(f"permit {permit_id!r} is closed as NOT executed: a closed permit cannot "
@@ -1117,14 +1351,15 @@ def bind(root: str | pathlib.Path | None = None, permit_id: str = "", agent_id: 
             raise PermitError(f"agent id {agent_id!r} is already bound to permit "
                               f"{other.get('permit_id')!r}: one agent, one permit per session")
     if permit.get("agent_id") == agent_id:
+        _require_ledger(root, launch_id=key)    # an idempotent retry still verifies the history
         return {"status": "unchanged", "permit_id": permit_id, "agent_id": agent_id,
-                "permits": str(root / PERMITS_REL)}
+                "permits": str(_registry_paths(root, key)[0])}
     if permit.get("agent_id"):
         raise PermitError(f"permit {permit_id!r} is already bound to agent "
                           f"{permit['agent_id']!r}: a permit records the ONE agent it spawned")
     stamp, _ms = _now()
     permit.update(agent_id=agent_id, bound_at=stamp, session_id=run_session or None)
-    path = _write_permits(root, data, action="bind", permit_id=permit_id)
+    path = _write_permits(root, data, action="bind", permit_id=permit_id, launch_id=key)
     return {"status": "bound", "permit_id": permit_id, "agent_id": agent_id,
             "session_id": permit["session_id"], "permits": str(path)}
 
@@ -1145,6 +1380,7 @@ def close(root: str | pathlib.Path, permit_id: str, reason: str) -> dict:
         raise PermitError(f"permit {permit_id!r} already ran under agent {permit['agent_id']!r}: a "
                           f"permit that spawned is not 'not executed'")
     if permit.get("closed"):
+        _require_ledger(root)               # an idempotent retry still verifies the history
         return {"status": "unchanged", "permit_id": permit_id,
                 "permits": str(root / PERMITS_REL)}
     stamp, _ms = _now()
@@ -1192,6 +1428,85 @@ def snapshot_legacy(root: str | pathlib.Path, note: str = "") -> dict:
             "permits": str(path), "ledger": str(ledger), "note": text}
 
 
+def repair(root: str | pathlib.Path, mode: str = "", note: str = "") -> dict:
+    """The owner's EXPLICIT recovery from a divergence — never a default, never a no-op.
+
+    A registry whose file no longer continues the journal is refused by every write and by the
+    finish audit, so it needs a deliberate way out. Without `--mode` this only REPORTS the
+    divergence (exit 2, nothing written, the owner has not chosen yet). Two modes exist:
+
+      restore  re-derive `permits.yaml` from the ledger head's recorded projection. The unjournaled
+               transition — the one that never reached the journal — is LOST, deliberately: the
+               journal is the history, and this is the state it recorded.
+      attest   KEEP the file on disk and append ONE marked event re-anchoring the chain to it. The
+               gap has to be explained, so `--note` is mandatory; the attestation records no
+               transition that did not happen (`repair`, not an `init`/`add`/`verdict`/`bind`).
+
+    Neither mode is reachable by omitting an argument, and neither invents an earlier transition.
+    """
+    root = _checked_repo(root)
+    path = root / PERMITS_REL
+    entries = read_ledger(root)
+    chain = _chain_problems(entries)
+    if chain:
+        raise PermitError(
+            f"the permit ledger {root / LEDGER_REL} does not verify, so no repair can be anchored "
+            f"on it ({'; '.join(chain)}) — an edited chain is restored from the run's own "
+            f"evidence, never re-anchored from a broken head")
+    problems = ledger_problems(root)
+    if not mode:
+        if not problems:
+            return {"status": "consistent", "permits": str(path), "ledger": str(root / LEDGER_REL),
+                    "problems": []}
+        raise PermitError(
+            f"the registry {path} does not continue its permit history and the recovery is the "
+            f"owner's explicit choice ({'; '.join(problems)}): pass `--mode restore` (re-derive "
+            f"the file from the ledger head, LOSING the unjournaled transition) or `--mode attest "
+            f"--note <why>` (keep the file and append ONE marked re-anchoring event)")
+    if mode not in REPAIR_MODES:
+        raise PermitError(f"repair --mode must be one of {list(REPAIR_MODES)}, got {mode!r}: a "
+                          f"recovery is named, never inferred")
+    if not problems:
+        raise PermitError(f"{path} already continues its permit history: there is nothing to "
+                          f"repair (a repair would only rewrite history that is intact)")
+    if mode == "restore":
+        return _repair_restore(root, entries, problems)
+    text = (note or "").strip()
+    if not text:
+        raise PermitError("repair --mode attest needs --note <why>: the attested gap has to be "
+                          "explained by the owner — an unexplained re-anchoring is exactly the "
+                          "silent rewriting the ledger exists to prevent")
+    data = read_permits(root)
+    attestation = f"{REPAIR_MARKER} — attested as it stands; owner note: {text}"
+    _append_ledger(root, REPAIR_ACTION, None, data, note=attestation)
+    return {"status": "attested", "run_id": data.get("run_id") or None, "permits": str(path),
+            "ledger": str(root / LEDGER_REL), "note": attestation, "problems": problems}
+
+
+def _repair_restore(root: pathlib.Path, entries: list[dict],
+                    problems: list[str]) -> dict:
+    """Re-derive `permits.yaml` from the ledger head's recorded projection (one atomic write)."""
+    if not entries:
+        raise PermitError(f"the permit ledger {root / LEDGER_REL} records no transition, so there "
+                          f"is no recorded state to restore: an unproven registry is attested with "
+                          f"`snapshot-legacy`, never re-derived")
+    head = entries[-1]
+    recorded = head.get("doc") or {}
+    restored = {"run_id": recorded.get("run_id", ""), "permits": recorded.get("permits", [])}
+    if state_hash(restored) != head.get("state"):
+        raise PermitError(
+            f"the ledger head of {root / LEDGER_REL} does not carry a re-derivable state (it "
+            f"hashes to {state_hash(restored)[:12]}…, the line records "
+            f"{str(head.get('state'))[:12]}…): nothing is written — restore the run's registry by "
+            f"hand and attest where the history actually ends")
+    note = (f"{REPAIR_MARKER} — restore: re-derived from the ledger head; the unjournaled "
+            f"transition is dropped")
+    _write_permits(root, restored, action=REPAIR_ACTION, note=note, require_chain=False)
+    return {"status": "restored", "run_id": restored["run_id"],
+            "permits_count": len(restored["permits"]), "permits": str(root / PERMITS_REL),
+            "ledger": str(root / LEDGER_REL), "note": note, "problems": problems}
+
+
 def _copy_atomic(source: pathlib.Path, target: pathlib.Path) -> None:
     """Copy one file to `target` atomically (same-directory temp + `os.replace`)."""
     try:
@@ -1213,77 +1528,104 @@ def _copy_atomic(source: pathlib.Path, target: pathlib.Path) -> None:
         raise
 
 
-def _transferred_paths(root: pathlib.Path, run_id: str) -> tuple[pathlib.Path, pathlib.Path]:
-    """Where a transferred launch registry is RETIRED to (an archive, never a live fork)."""
+def _transferred_paths(root: pathlib.Path, run_id: str,
+                       launch_id: str | None = None) -> tuple[pathlib.Path, pathlib.Path]:
+    """Where a transferred launch registry is RETIRED to (an archive, never a live fork).
+
+    The archive keeps the launch's own name when the registry was keyed, so a folder that carried
+    several launches still shows WHICH launch's history was retired under which run.
+    """
     state = root / PERMITS_REL.parent
-    return (state / f"permits.transferred-{run_id}.yaml",
-            state / f"permits.ledger.transferred-{run_id}.jsonl")
+    if launch_id is None:
+        return (state / f"permits.transferred-{run_id}.yaml",
+                state / f"permits.ledger.transferred-{run_id}.jsonl")
+    return (state / f"permits.launch-{launch_id}.transferred-{run_id}.yaml",
+            state / f"permits.ledger.launch-{launch_id}.transferred-{run_id}.jsonl")
 
 
-def _bind_in_place(root: pathlib.Path, run_id: str | None) -> dict:
+def _bind_in_place(root: pathlib.Path, run_id: str | None,
+                   launch_id: str | None = None) -> dict:
     """Bind ONE registry to THIS run's checkpoint, once, atomically and journaled."""
-    data = read_permits(root)
+    data = read_permits(root, launch_id)
     current = pipeline_run_id(root)                     # the checkpoint activation wrote
     wanted = (run_id or "").strip() or current
     if wanted != current:
         raise PermitError(f"the registry may only be bound to THIS run: --run-id {wanted!r} is not "
                           f"the current pipeline run {current!r} ({PIPELINE_REL.as_posix()})")
-    path = root / PERMITS_REL
+    path = _registry_paths(root, launch_id)[0]
     if data.get("run_id"):
         if data["run_id"] == current:
+            _require_ledger(root, launch_id=launch_id)    # a retry still verifies the history
             return {"status": "unchanged", "run_id": current, "permits": str(path)}
         raise PermitError(f"{path} is already bound to run {data['run_id']!r}: ONE binding per "
                           f"registry — a later run must not inherit another run's permit history")
     data["run_id"] = current
-    _write_permits(root, data, action="bind-run",
+    _write_permits(root, data, action="bind-run", launch_id=launch_id,
                    note=f"launch-scoped registry bound to run {current} at activation")
     return {"status": "bound", "run_id": current, "permits": str(path)}
 
 
 def bind_run(root: str | pathlib.Path | None = None, run_id: str | None = None,
-             launch_dir: str | pathlib.Path | None = None) -> dict:
+             launch_dir: str | pathlib.Path | None = None,
+             launch_id: str | None = None) -> dict:
     """Bind a LAUNCH-SCOPED registry to the run its activation recorded — once, explicitly.
 
     The pre-run registry is created before any resolved `repo_path` exists, so it lives in the
-    LAUNCH directory and carries `run_id: ""`. `--launch-dir` with `--repo` TRANSFERS that same
-    registry — the identical permits and the identical journal — to the resolved repository and then
-    binds it (`bind-run --repo` alone just binds in place, as before): the destination must not
-    already hold a registry (a transfer never merges or overwrites one), the source must be unbound
-    and its chain intact, the binding must MATCH the destination's checkpoint, and the launch copy is
-    retired to an archive name so it cannot become a second, competing registry. Every step is a
-    file-atomic write plus its own journaled `bind-run` event (`at` = now): nothing is back-dated and
-    no earlier transition is re-stated — the permits keep the timestamps they were recorded with.
+    LAUNCH directory, KEYED by the launch id `begin` minted, and carries `run_id: ""`.
+    `--launch-dir` with `--repo` TRANSFERS that same registry — the identical permits and the
+    identical journal — to the resolved repository and then binds it (`bind-run --repo` alone just
+    binds in place, as before). The launch folder MAY BE the resolved repository itself (a factory
+    launched from its own directory): a KEYED launch registry is still not the run's registry, so it
+    travels to the run's unkeyed name in the same folder and its launch copy is retired, while a
+    LEGACY unkeyed launch registry — which already IS that name — is bound where it lies. `--launch-id`
+    says WHICH launch of a shared folder travels; without
+    it the folder must hold exactly ONE open launch, because a transfer never guesses (two open
+    launches with no id are a loud refusal). The destination must not already hold a registry (a
+    transfer never merges or overwrites one), the source must be unbound and its chain intact, the
+    binding must MATCH the destination's checkpoint, and the launch copy is retired to an archive
+    name so it cannot become a second, competing registry. Every step is a file-atomic write plus
+    its own journaled `bind-run` event (`at` = now): nothing is back-dated and no earlier
+    transition is re-stated — the permits keep the timestamps they were recorded with.
     """
     if root is None:
         raise PermitError("bind-run needs --repo <root>: the run's checkpoint lives in the resolved "
                           "repository, so --launch-dir alone names the registry to transfer but not "
                           "where the run is")
     target = _checked_repo(root)
+    if launch_id is not None and launch_dir is None:
+        raise PermitError("bind-run: --launch-id names a LAUNCH registry, so it needs --launch-dir "
+                          "<dir>")
     if launch_dir is None:
         return _bind_in_place(target, run_id)
     source = pathlib.Path(os.path.abspath(str(launch_dir)))
     if not source.is_dir():
         raise PermitError(f"the launch directory does not exist: {source}")
-    if source == target:
+    anchor = launch_anchor(source, launch_id)
+    key = _launch_key(source, anchor, launch_id is not None)
+    if source == target and key is None:
+        # A LEGACY unkeyed launch registry IS the run's own registry here, so there is nothing to
+        # move: it is bound where it already lies. A KEYED launch registry is not the run's
+        # registry even in the same folder — it travels and is retired like any other transfer.
         return _bind_in_place(target, run_id)
-    data = read_permits(source)
+    source_permits, source_ledger = _registry_paths(source, key)
+    data = read_permits(source, key)
     current = pipeline_run_id(target)                   # the checkpoint activation wrote
     wanted = (run_id or "").strip() or current
     if wanted != current:
         raise PermitError(f"the registry may only be bound to THIS run: --run-id {wanted!r} is not "
                           f"the current pipeline run {current!r} ({PIPELINE_REL.as_posix()})")
     if data.get("run_id"):
-        raise PermitError(f"{source / PERMITS_REL} is already bound to run {data['run_id']!r}: a "
+        raise PermitError(f"{source_permits} is already bound to run {data['run_id']!r}: a "
                           f"launch registry is transferred ONCE, before any run binding")
     for path in (target / PERMITS_REL, target / LEDGER_REL):
         if path.exists():
             raise PermitError(f"{path} already exists: a transfer must never merge into, or "
                               f"overwrite, another registry — resolve the target and bind ITS "
                               f"registry instead")
-    problems = ledger_problems(source)
+    problems = ledger_problems(source, launch_id=key)
     if problems:
         raise PermitError("; ".join(problems))
-    archive_permits, archive_ledger = _transferred_paths(source, current)
+    archive_permits, archive_ledger = _transferred_paths(source, current, key)
     for path in (archive_permits, archive_ledger):
         if path.exists():
             raise PermitError(f"{path} already exists: this launch registry was already "
@@ -1296,15 +1638,15 @@ def bind_run(root: str | pathlib.Path | None = None, run_id: str | None = None,
     # reported as such (see `_untransfer`) and the state must be reconciled before anything else.
     retired: list[tuple[pathlib.Path, pathlib.Path]] = []       # (archive, live path)
     try:
-        _copy_atomic(source / PERMITS_REL, target / PERMITS_REL)
-        if (source / LEDGER_REL).is_file():
-            _copy_atomic(source / LEDGER_REL, target / LEDGER_REL)
+        _copy_atomic(source_permits, target / PERMITS_REL)
+        if source_ledger.is_file():
+            _copy_atomic(source_ledger, target / LEDGER_REL)
         binding = _bind_in_place(target, current)
-        os.replace(source / PERMITS_REL, archive_permits)
-        retired.append((archive_permits, source / PERMITS_REL))
-        if (source / LEDGER_REL).is_file():
-            os.replace(source / LEDGER_REL, archive_ledger)
-            retired.append((archive_ledger, source / LEDGER_REL))
+        os.replace(source_permits, archive_permits)
+        retired.append((archive_permits, source_permits))
+        if source_ledger.is_file():
+            os.replace(source_ledger, archive_ledger)
+            retired.append((archive_ledger, source_ledger))
     except BaseException as exc:
         problems = _untransfer(target, retired)
         if problems:
@@ -1849,6 +2191,13 @@ def _emit(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False, sort_keys=False))
 
 
+# The shared `--launch-id` help: the flag names WHICH launch of a shared folder a command addresses.
+LAUNCH_ID_HELP = ("the launch nonce `supervisor_watchdog.py begin` returned "
+                  "(YYYYMMDD-HHMMSS-<6 hex>): it names THIS launch's own registry, so several "
+                  "factories in one launch folder never share one. Omit it when the folder holds "
+                  "exactly ONE uncompleted launch")
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="permit_gate.py", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1862,6 +2211,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="the launch directory whose supervisor bootstrap (`begin`) anchors a "
                         "PRE-RUN registry: the skeleton is created unbound (run_id \"\") and "
                         "`bind-run` binds it at activation")
+    p.add_argument("--launch-id", default=None, dest="launch_id",
+                   help=LAUNCH_ID_HELP)
     p.set_defaults(func=_cmd_init)
 
     p = sub.add_parser("add", help="register one permit")
@@ -1871,6 +2222,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--launch-dir", default=None, dest="launch_dir",
                    help="the launch bootstrap a PRE-RUN supervisor permit answers "
                         "(bootstrap + supervisor only)")
+    p.add_argument("--launch-id", default=None, dest="launch_id",
+                   help=LAUNCH_ID_HELP)
     p.add_argument("--permit-id", required=True, dest="permit_id")
     p.add_argument("--task-id", required=True, dest="task_id",
                    help="a task id of the approved plan (.code-factory/state/plan.md); with "
@@ -1893,6 +2246,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "lives in the launch directory)")
     p.add_argument("--launch-dir", default=None, dest="launch_dir",
                    help="the launch directory holding the launch-only registry")
+    p.add_argument("--launch-id", default=None, dest="launch_id",
+                   help=LAUNCH_ID_HELP)
     p.add_argument("--permit-id", required=True, dest="permit_id")
     p.add_argument("--verdict", required=True, choices=VERDICTS)
     p.add_argument("--evidence", required=True,
@@ -1904,6 +2259,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="the run's repository (omit it with --launch-dir)")
     p.add_argument("--launch-dir", default=None, dest="launch_dir",
                    help="the launch directory holding the launch-only registry")
+    p.add_argument("--launch-id", default=None, dest="launch_id",
+                   help=LAUNCH_ID_HELP)
     p.add_argument("--permit-id", required=True, dest="permit_id")
     p.add_argument("--agent-id", required=True, dest="agent_id")
     p.set_defaults(func=_cmd_bind)
@@ -1919,6 +2276,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="the resolved repository whose checkpoint names the run")
     p.add_argument("--launch-dir", default=None, dest="launch_dir",
                    help="the launch directory holding the PRE-RUN registry: it is TRANSFERRED here")
+    p.add_argument("--launch-id", default=None, dest="launch_id",
+                   help=LAUNCH_ID_HELP)
     p.add_argument("--run-id", default=None, dest="run_id",
                    help="the run to bind (default: the WIP checkpoint's; must match it)")
     p.set_defaults(func=_cmd_bind_run)
@@ -1931,6 +2290,16 @@ def build_parser() -> argparse.ArgumentParser:
                         "unproven history, never as a transition that happened)")
     p.set_defaults(func=_cmd_snapshot_legacy)
 
+    p = sub.add_parser("repair", help="the owner's explicit recovery from a diverged registry")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--mode", default="", metavar="restore|attest",
+                   help="restore: re-derive permits.yaml from the ledger head (loses the "
+                        "unjournaled transition); attest: keep the file and append ONE marked "
+                        "re-anchoring event (needs --note). Omit it to only REPORT the divergence")
+    p.add_argument("--note", default="",
+                   help="why the attested gap exists (mandatory for --mode attest)")
+    p.set_defaults(func=_cmd_repair)
+
     p = sub.add_parser("audit", help="finish gate: permits vs the session wire vs the plan")
     p.add_argument("--repo", required=True)
     p.add_argument("--session", default="auto",
@@ -1941,28 +2310,29 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
-    _emit(init(args.repo, args.launch_dir))
+    _emit(init(args.repo, args.launch_dir, args.launch_id))
     return 0
 
 
 def _cmd_add(args: argparse.Namespace) -> int:
     _emit(add(args.repo, args.permit_id, args.task_id, args.role, args.phase, args.scope,
-              args.constraint, args.kind, args.launch_dir))
+              args.constraint, args.kind, args.launch_dir, args.launch_id))
     return 0
 
 
 def _cmd_bind_run(args: argparse.Namespace) -> int:
-    _emit(bind_run(args.repo, args.run_id, args.launch_dir))
+    _emit(bind_run(args.repo, args.run_id, args.launch_dir, args.launch_id))
     return 0
 
 
 def _cmd_verdict(args: argparse.Namespace) -> int:
-    _emit(verdict(args.repo, args.permit_id, args.verdict, args.evidence, args.launch_dir))
+    _emit(verdict(args.repo, args.permit_id, args.verdict, args.evidence, args.launch_dir,
+                  args.launch_id))
     return 0
 
 
 def _cmd_bind(args: argparse.Namespace) -> int:
-    _emit(bind(args.repo, args.permit_id, args.agent_id, args.launch_dir))
+    _emit(bind(args.repo, args.permit_id, args.agent_id, args.launch_dir, args.launch_id))
     return 0
 
 
@@ -1973,6 +2343,11 @@ def _cmd_close(args: argparse.Namespace) -> int:
 
 def _cmd_snapshot_legacy(args: argparse.Namespace) -> int:
     _emit(snapshot_legacy(args.repo, args.note))
+    return 0
+
+
+def _cmd_repair(args: argparse.Namespace) -> int:
+    _emit(repair(args.repo, args.mode, args.note))
     return 0
 
 

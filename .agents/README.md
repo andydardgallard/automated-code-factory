@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.24.1 -->
+<!-- code-factory-version: 12.25.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -50,6 +50,8 @@ projects or creates projects from scratch.
 │       │   ├── test_check_translation_structure.py # translation skeleton self-test
 │       │   ├── run_id.py                   # run run_id: gen from task.yaml / check — artifacts without run_id
 │       │   ├── test_run_id.py              # run_id self-test
+│       │   ├── run_guard.py                # single-active-run guard: claim --repo <root> --run-id <id> runs after run_id.py gen and BEFORE the first checkpoint write (no checkpoint/TERMINAL/this-run resume = CLAIMED, another active run = REFUSED loudly naming it, its phase and updated_at; one active run per TARGET repo, so two launches from one folder into different repositories both run; writes nothing — a check, not a lock) + status read-only probe
+│       │   ├── test_run_guard.py           # run_guard self-test (claim semantics + two interleaved runs from one launch directory)
 │       │   ├── error_router.py             # JSON-first error classification: classify/merge/export-defaults; the project's project-learned patterns ON TOP of defaults (a broken auto-discovered file — warning + defaults)
 │       │   ├── test_error_router.py        # error router self-test
 │       │   ├── calibrate_reviewer.py       # reviewer golden-set calibration (score: precision/recall/accuracy, --log appends a record) + the periodic `status` gate: exit 0 = current, 1 = calibration DUE, 2 = it cannot judge
@@ -60,6 +62,8 @@ projects or creates projects from scratch.
 │       │   ├── test_model_precedence.py    # model precedence self-test
 │       │   ├── model_attribution.py        # artifact-backed model attribution from the CLI session wire (cross-checks models_used; STRICT by default for implement/refactor — a role named in pipeline.yaml required_roles that claims a model but leaves no wire trace FAILS; the run's OWN session is resolved from the pipeline binding, an explicit --session <dir> is used verbatim and a blank one is an input error, and a wire that cannot be attributed to this run is DEGRADED with the reason, never a confident verdict about another run)
 │       │   ├── test_model_attribution.py   # model attribution self-test
+│       │   ├── agent_catalog_check.py      # on-disk sub-agent catalog probe (zero tokens): check [--root <dir>] [--role <role>] — FAIL-CLOSED on catalog COMPLETENESS: every role of model_matrix.ROLES/ROLE_FILES must have a profile whose frontmatter parses inside the strict YAML subset the profiles use (a quoted scalar, an inline `#` comment AFTER the value and a balanced flow list parse; a malformed quote or an unterminated collection is reported INVALID with its line number instead of being guessed at), a name: resolving back to that role, a name no stray profile re-declares and a primary|secondary model_preference; exit 0 = the catalog is valid (Unknown agent type = CLI-side loss: retry the SAME role with the SAME model), exit 1 = a profile MISSING/INVALID and exit 2 = a bad root or role, both a FACTORY DEFECT that stops the run
+│       │   ├── test_agent_catalog_stability.py # catalog probe self-test (real 15-profile tree, repeated-refresh stability, hermetic remove/re-add, invalid frontmatter variants, malformed-YAML-vs-valid-inline-comment pairs, input boundaries, one shared roster) + the AGENT_CATALOG degradation route
 │       │   ├── review_followup_task.py     # deterministic review follow-up task generator (.code-factory/review/fix-tasks.yaml; a refuted finding is omitted with its evidence stated, never silently)
 │       │   ├── test_review_followup_task.py # review follow-up task generator self-test
 │       │   ├── test_review_report_only.py  # report-only review guard (the review verdict reaches no write node)
@@ -88,11 +92,11 @@ projects or creates projects from scratch.
 │       │   ├── test_rollback.py            # rollback helper self-test
 │       │   ├── delegation_gate.py          # per-role retry budgets counted at EXECUTION: check (increment or refuse; a registered UNBUDGETED role passes through allow:true, budgeted:false, and --round <id> counts one reviewer iteration per LOGICAL round so a shard fan-out spends none more), init, settle (refund a wholly refuted reviewer round), audit (counters vs session wire); --owner-authorized grants one extra delegation per owner decision
 │       │   ├── test_delegation_gate.py     # delegation gate self-test
-│       │   ├── permit_gate.py              # supervisor permits: add/verdict/bind/close + finish audit (every spawn = a unique allowed permit judged before it, scope ⊆ the plan task's files; every transition also appends to the append-only hash-chained permits.ledger.jsonl, whose head must equal the state on disk before every write, so a reset, a truncated tail or a post-deny repair is refused; a `--kind bootstrap` permit answers the pre-plan task for analyzer/planner/supervisor, the supervisor's own permit is written before Phase 0 via --launch-dir and bound to the run by `bind-run` when activate writes the checkpoint, and a supervisor spawn carries the run's own authority)
+│       │   ├── permit_gate.py              # supervisor permits: add/verdict/bind/close + finish audit (every spawn = a unique allowed permit judged before it, scope ⊆ the plan task's files; every transition also appends to the append-only hash-chained permits.ledger.jsonl, whose head must equal the state on disk before every write, so a reset, a truncated tail or a post-deny repair is refused; each state write and its journal append are ONE transaction — a failed append rolls the file back, the FIRST write by deleting it, and a PARTIAL journal line is restored to the journal's previous byte image (or the new journal removed), so the same command can be retried — the idempotent answers verify the history before claiming `unchanged`, and the owner's explicit `repair` is the only recovery from a divergence: no --mode only reports it, --mode restore re-derives the file from the ledger head's projection, --mode attest --note <why> keeps the file and appends ONE marked repair event; a `--kind bootstrap` permit answers the pre-plan task for analyzer/planner/supervisor, the supervisor's own permit is written before Phase 0 via --launch-dir (run-keyed by --launch-id) and bound to the run by `bind-run` when activate writes the checkpoint — which TRANSFERS a keyed launch registry to the run's own name and RETIRES the launch copy to an archive even when the launch folder IS the resolved repository, while an unkeyed legacy launch registry is bound where it lies — and a supervisor spawn carries the run's own authority)
 │       │   ├── test_permit_gate.py         # permit gate self-test
 │       │   ├── gate_all.py                 # phase K|Y aggregator of the deterministic gates: a gate that ran leaves a record, a missing record is a failure (the watchdog-deny row fails the phase while a supervisor deny is unresolved; the manifest audit is skipped as not applicable for a report-only run; the ONE explicit --session of this run is forwarded to the wire-auditing gates, and a phase launched from another directory FAILS CLOSED instead of auditing another session)
 │       │   ├── test_gate_all.py            # gate aggregator self-test
-│       │   ├── supervisor_watchdog.py      # run-long supervisor watchdog: begin/observe/activate/scan/status/deny/resolve — the bootstrap starts BEFORE Phase 0 (launch-scoped, run-id independent) and records the parse/resolve/memory-read/memory-write/run-id order, a deterministic anomaly scan runs at every phase transition, and an unresolved deny blocks the gate_all watchdog-deny row
+│       │   ├── supervisor_watchdog.py      # run-long supervisor watchdog: begin/observe/activate/scan/status/deny/resolve — the bootstrap starts BEFORE Phase 0 (launch-scoped, run-id independent) and records the parse/resolve/memory-read/memory-write/run-id order, a deterministic anomaly scan runs at every phase transition, and an unresolved deny blocks the gate_all watchdog-deny row; `begin` returns the launch nonce naming watchdog-bootstrap-<launch_id>.json, every later operation names it with --launch-id (an ambiguous launch directory fails closed: exit 2 listing the ids), and a completed/abandoned keyed bootstrap is an immutable record
 │       │   ├── test_supervisor_watchdog.py # supervisor watchdog self-test
 │       │   ├── test_business_tester_flow.py # business-tester role wiring self-test
 │       │   ├── version_manager.py          # single version source: get/bump/sync/validate/set/suggest
@@ -244,6 +248,58 @@ cd /path/to/your-project
 ```
 
 No additional `export` commands need to be memorized.
+
+### The user-scope agent catalog (durable fallback)
+
+The Kimi Code CLI keeps its agent profiles in two places: the PROJECT-scoped catalog
+(`.agents/agents/sub-agents/` of the launched project) and the USER-scoped one — `agents/` inside
+the CLI's data root, that is `$KIMI_CODE_HOME/agents` when `KIMI_CODE_HOME` is set (the variable
+relocates the whole data root, so the CLI then looks nowhere else) and `~/.kimi-code/agents`
+otherwise (`$HOME` on Linux/Git Bash, `%USERPROFILE%` on Windows). The project catalog has
+repeatedly reloaded and dropped a factory role, and the CLI then answers `Unknown agent type` for a
+profile that is on disk.
+
+Both deployers (`prepare_factory.sh` and `prepare_factory.ps1`, the latter also via
+`prepare_factory.cmd`) therefore install ALL 15 factory role profiles into the user-scope catalog at
+preparation time, and both generated launchers (`start.sh`, `start.cmd`) REFRESH those copies
+BEFORE the CLI starts. Each copy is byte-for-byte the profile of the project's own
+`.agents/agents/sub-agents/`, so a stale copy left by an older release is replaced and a project
+catalog lost between runs cannot leave the session without the roles. The refresh uses native shell
+/ cmd commands only (no interpreter is involved, and a machine where `python` does not work still
+launches). Only the factory's own profiles are written: a profile the factory does not manage — your
+own agents live in the same directory — is never modified or deleted.
+
+The refresh is FAIL-CLOSED and PROVEN, not assumed. Every copy is compared with its source
+byte-for-byte (`cmp` in `start.sh` and `prepare_factory.sh`, `Get-FileHash` in
+`prepare_factory.ps1`, `fc /b` in `start.cmd`) rather than trusted through the copy command's exit
+code, because a copy that silently kept the old file is exactly the stale-role failure this fallback
+exists to prevent. For the same reason an INCOMPLETE project
+catalog refuses the launch: with one profile missing there, that role would run from whatever an
+older release wrote into the user-scope catalog, so a project catalog is only as good as its worst
+role. A refresh that cannot complete ABORTS the launch with a `Code Factory:` message naming the
+catalog and the failure, and a nonzero exit; no CLI is started. A project catalog directory that is
+ABSENT is legal only over a COMPLETE user-scope fallback — the launchers report it and continue when
+the user-scope catalog already carries every role, and refuse the launch when even one is missing, so
+a half-filled catalog never starts a session. The contract is pinned by
+`python .agents/skills/code-factory/scripts/test_stable_agent_catalog.py`.
+
+**Diagnosing `Unknown agent type`.** If the CLI still answers `Unknown agent type` for a role, do not
+guess and never substitute a role or a model: probe the catalog on disk with
+
+```bash
+python .agents/skills/code-factory/scripts/agent_catalog_check.py check --role <the role that failed>
+```
+
+Exit 0 means every profile is present and valid, so the profile the CLI lost is a CLI-side catalog
+loss — retry the SAME role with the SAME model inside the infrastructure budget (rule
+`model-unavailable-stop`). Exit 1 (a profile MISSING or INVALID) or exit 2 (the probe cannot judge: a
+root that is not a directory, an unknown role, an unreadable catalog) is a FACTORY DEFECT: the run
+stops and reports the probe's actionable line instead of retrying. The probe reuses the factory's ONE
+role roster
+(`model_matrix.ROLES`/`ROLE_FILES` and `model_attribution.role_from_profile`), so it can never
+disagree with the roles the flow spawns, and its contract is pinned by
+`python .agents/skills/code-factory/scripts/test_agent_catalog_stability.py`. The routing table entry
+is row A1/`AGENT_CATALOG` of `references/error-routing.md` §1.3.
 
 ### Windows (without Git Bash)
 
@@ -528,8 +584,10 @@ On the failure of any test, the factory does NOT roll back blindly:
    (see `references/error-routing.md` §1.2).
 2. **Rollback**: restores files from `.code-factory/backups/`, deletes the created files
    (per `manifest.json`), and returns the project to its pre-change state.
-3. **Retry budgets**: coder=1, BA=2, Planner=2, Diagnostician=1, advisor=1, infrastructure=3,
-   reviewer=2. On exhaustion — escalation to the Diagnostician (LLM analysis, writes
+3. **Retry budgets**: BA=2, Planner=2, Diagnostician=1, advisor=1, infrastructure=3, reviewer=2, and
+   the coder's CEILING follows the approved plan — one delegation per DISTINCT plan task whose entry
+   assigns `role: coder`, plus one retry reserve (the base is 1 when the plan is missing, unreadable
+   or names no coder task). On exhaustion — escalation to the Diagnostician (LLM analysis, writes
    `.code-factory/logs/diagnostic.md`), then to the Advisor (`factory-advisor`, a judge-side model
    from a family contrasting with the Diagnostician's, read-only, budget 1; the route is decided by the machine-readable `agreement` field
    of the report — see `references/error-routing.md` §4.1).
@@ -553,6 +611,15 @@ rework is handed to `factory-farukon-expert`/`factory-coder` under the SAME code
 a `FAILED farukon_mcp::tests::…` line, a panic) deliberately keeps its COMPILE_ERROR / ASSERTION /
 RUNTIME_CRASH route to the coder. There is no Farukon-specific `recommended_role` and no separate
 Farukon retry budget.
+
+Agent-catalog routing adds no role and no budget either: an `Unknown agent type` answer at the spawn of
+ANY role is matched by row A1/`AGENT_CATALOG` of `references/error-routing.md` §1.3 and takes the
+infrastructure route (budget 3), but only AFTER
+`python .agents/skills/code-factory/scripts/agent_catalog_check.py check --role <role>` decides what
+that answer MEANS: exit 0 = the on-disk catalog is valid, so the loss is CLI-side and the SAME role is
+retried with the SAME model; exit 1 (a profile MISSING or INVALID) or exit 2 (the probe cannot judge)
+= a FACTORY DEFECT, so the run stops and reports the probe's actionable line. Neither outcome
+substitutes a role or a model, and the main agent never performs the role's work itself.
 <!-- factory-rule: rollback-on-retry begin -->
 **Rollback before retry (canonical wording):** every test or build failure is first routed deterministically (`references/error-routing.md`), then the state is rolled back: files are restored from `.code-factory/backups/`, factory-created files are deleted, the git state is brought back to the recorded one. Only after the rollback is the error handed to the executing role — otherwise the retry runs on an already corrupted state. Infrastructure auto-fixes (environment, dependencies) do not roll back code.
 <!-- factory-rule: rollback-on-retry end -->

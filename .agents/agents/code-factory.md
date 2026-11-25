@@ -133,7 +133,12 @@ launched after the parse watches nothing of the parse, the `repo_path` resolutio
 or the `run_id` — and a launch that itself requires the `run_id` can never be first at all. Begin it
 BEFORE the parse, run-id independently:
 `python .agents/skills/code-factory/scripts/supervisor_watchdog.py begin --launch-dir <launch directory>`
-records the launch-scoped bootstrap (the LAUNCH directory is known before anything is parsed; the
+records the launch-scoped bootstrap and RETURNS its `launch_id` — the nonce naming
+`watchdog-bootstrap-<launch_id>.json` — which is CAPTURED and passed to every later watchdog and
+permit command of this run as `--launch-id <launch_id>`: that key is what stops two runs begun from
+the SAME launch directory from addressing each other's bootstrap or registry (a LEGACY unkeyed
+bootstrap has no nonce; the single-uncompleted resolver finds it and the commands omit the flag).
+The bootstrap is launch-scoped (the LAUNCH directory is known before anything is parsed; the
 resolved `repo_path` and the `run_id` are not, so neither may be an input). The supervisor's own
 delegation still passes the pre-delegation gate first — `delegation_gate.py check --role supervisor`
 passes through (`allow:true`, `budgeted:false`), and the LAUNCH-SCOPED permit registry covers the
@@ -233,15 +238,23 @@ it is stamped into `.code-factory/state/pipeline.yaml`, `state/acceptance.md`, `
 one id (`python .agents/skills/code-factory/scripts/run_id.py check --dir .code-factory` lists the
 artifacts that carry none) — and the run id is the last thing Phase 0 owes the supervisor: record it
 (`supervisor_watchdog.py observe --launch-dir <launch directory> --event run-id --seq 3 --detail
-"<the computed run_id>"`) and then BIND the supervision to the run,
+"<the computed run_id>"`). Then CLAIM the target repository for this run, BEFORE the first
+checkpoint write and before any phase of it begins:
+`python .agents/skills/code-factory/scripts/run_guard.py claim --repo <resolved repo_path>
+--run-id <run_id>` — exit 0 is CLAIMED (no checkpoint, a terminal one, or this run's own resume),
+exit 1 is REFUSED with a message naming the blocking run, its phase and `updated_at`, and the run
+does NOT start: ONE active run per TARGET repo is the rule, so that run is finished or rolled back
+first, while two runs into DIFFERENT repositories may share one launch directory. Record the
+captured `launch_id` in the checkpoint's first write (the optional key next to `launch_dir`). Then
+BIND the supervision to the run,
 `python .agents/skills/code-factory/scripts/supervisor_watchdog.py activate --launch-dir <launch
-directory> --repo <resolved repo_path>`, which ties the launch-scoped bootstrap to this run's
-`run_id` and exits 1 when the parse, the `repo_path` resolution, the memory read or the run id went
-unobserved or out of order — an old-order run (parse first, supervise later) can therefore never
-activate. A resumed run that is already activated continues with the recorded supervisor. The SAME
+directory> --launch-id <launch_id> --repo <resolved repo_path>`, which ties the launch-scoped
+bootstrap to this run's `run_id` and exits 1 when the parse, the `repo_path` resolution, the memory
+read or the run id went unobserved or out of order, so an old-order run can never activate. A
+resumed activated run continues with the recorded supervisor. The SAME
 activation binds the launch-scoped permit registry to the run it just named:
 `python .agents/skills/code-factory/scripts/permit_gate.py bind-run --launch-dir <launch directory>
---repo <resolved repo_path>` — once, atomically and journaled, TRANSFERRING the launch-anchored
+--launch-id <launch_id> --repo <resolved repo_path>` — once, atomically and journaled, TRANSFERRING the launch-anchored
 registry into the resolved repository and matching the checkpoint activation wrote, so the pre-run
 supervisor permit enters the run's history with the timestamp it was recorded at. The checkpoint `.code-factory/state/pipeline.yaml` carries the
 REQUIRED keys `run_id`, `phase`, `status` (`ok|failed|in_progress`) and `updated_at`, plus the
@@ -950,12 +963,14 @@ On ANY failure, do NOT roll back immediately. Follow `references/error-routing.m
    Record the error in `.code-factory/logs/errors.md` and update retry
    counters in `.code-factory/state/pipeline.yaml`. Feed the Diagnostician an error EXCERPT, never
    a whole log: read long logs with `scripts/log_tail.py` (counters + tail only).
-2. **Retry budget check**: coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3,
-   reviewer=2. If the routed role has budget, roll back and retry it with the error context. If it
-   is exhausted, escalate to the Diagnostician, then to the Advisor (budget 1), and finally to the
-   human; for the reviewer the canonical review-gate policy of Phase 8b applies.
+2. **Retry budget check**: ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3,
+   reviewer=2, and the coder's plan-derived ceiling (one delegation per distinct plan task with
+   `role: coder`, plus one retry reserve). If the routed role has budget, roll back and retry it
+   with the error context. If it is exhausted, escalate to the Diagnostician, then to the Advisor
+   (budget 1), and finally to the human; for the reviewer the canonical review-gate policy of
+   Phase 8b applies.
 <!-- factory-rule: retry-budgets begin -->
-**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently The budget is counted by whoever EXECUTES the delegation, not by whoever reports it: `scripts/delegation_gate.py check` increments `retry_counters.<role>` itself BEFORE every delegation and REFUSES it once the budget is exhausted — in hitl the refusal forces the `AskUserQuestion` owner stop, in auto the run ends FAILED, and only an explicit `--owner-authorized` (hitl, every decision recorded in the checkpoint) grants ONE extra delegation PER OWNER DECISION — N recorded authorizations allow up to budget+N delegations; `delegation_gate.py audit` fails the finish when a budgeted-role spawn left no counted delegation. A registered role WITHOUT a budget entry is passed through instead of counted (`allow: true`, `budgeted: false`) and stays audited by its permit, and the reviewer is counted per LOGICAL REVIEW ROUND (`check --role reviewer --round <id>`): the first check of a round consumes one iteration and every shard delegation of the SAME round is allowed without moving the counter, because one whole-repo review is one iteration. A review round whose findings were ALL refuted with evidence refunds the one iteration it consumed (`delegation_gate.py settle`, evidence mandatory, never below 0, idempotent per round); a mixed round is never refunded.
+**Retry budgets (canonical wording):** every role has its own FIXED retry budget — ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2 — while the coder's CEILING follows the APPROVED PLAN: `scripts/delegation_gate.py` allows ONE delegation per DISTINCT plan task whose entry assigns `role: coder` PLUS one retry reserve, so a plan with N coder tasks allows N+1 coder delegations (a repeated task id is ONE task; the base budget is 1 when the plan is missing, unreadable or names no coder task, because a plan nobody can read never widens a budget; owner authorizations stay ADDITIVE to that ceiling and every other role keeps its fixed budget whatever the plan says); the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently The budget is counted by whoever EXECUTES the delegation, not by whoever reports it: `scripts/delegation_gate.py check` increments `retry_counters.<role>` itself BEFORE every delegation and REFUSES it once the budget is exhausted — in hitl the refusal forces the `AskUserQuestion` owner stop, in auto the run ends FAILED, and only an explicit `--owner-authorized` (hitl, every decision recorded in the checkpoint) grants ONE extra delegation PER OWNER DECISION — N recorded authorizations allow up to budget+N delegations; `delegation_gate.py audit` fails the finish when a budgeted-role spawn left no counted delegation. A registered role WITHOUT a budget entry is passed through instead of counted (`allow: true`, `budgeted: false`) and stays audited by its permit, and the reviewer is counted per LOGICAL REVIEW ROUND (`check --role reviewer --round <id>`): the first check of a round consumes one iteration and every shard delegation of the SAME round is allowed without moving the counter, because one whole-repo review is one iteration. A review round whose findings were ALL refuted with evidence refunds the one iteration it consumed (`delegation_gate.py settle`, evidence mandatory, never below 0, idempotent per round); a mixed round is never refunded.
 <!-- factory-rule: retry-budgets end -->
 
 3. **Diagnostician** (LLM): launch `factory-diagnostician` with the error output + attempt
@@ -1134,7 +1149,7 @@ final supervised observation (the finish memory write), the successful phase-Y c
 finish memory gate are in place and the run's `pipeline.yaml` records `status: ok`, close the
 launch-scoped bootstrap:
 `python .agents/skills/code-factory/scripts/supervisor_watchdog.py complete --launch-dir <launch
-directory>`. It records the completion bound to the run `activate` bound and is ONE completion per
+directory> --launch-id <launch_id>`. It records the completion bound to the run `activate` bound and is ONE completion per
 binding. While the bound run's checkpoint is still `status: in_progress` the completion REFUSES
 (fail closed): the flow has not reached its Finish, and freeing the launch directory mid-run would
 let a second supervisor interleave with the first. The completed bootstrap frees the launch

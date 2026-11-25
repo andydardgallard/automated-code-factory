@@ -159,6 +159,15 @@ uncommitted there, so that tree is the real pre-fix state. Its claim lives in `W
 the vaccines, as `CLEAN_CODE_FINDINGS`/`FARUKON_FINDINGS`/`FB_FINDINGS` do, because the run keeps no
 disposition artifact a clone could read.
 
+The `CL` group is THIS run's own change set (run 20261125-5beb8e51): the one defect class the run was
+launched for, in its four independent fixes — the sub-agent catalog stays detectable and stable (the
+deterministic probe plus the `AGENT_CATALOG` route), the permit registry's state write and ledger
+append are one transaction, launch-scoped supervisor/permit state is keyed per run so two factories
+in one folder never share a mutable file (the keyed bootstrap and the repo-side `run_guard.py`
+claim), and the coder delegation ceiling follows the approved plan's coder tasks plus the one-retry
+reserve. Each is a FOCUSED probe replayed against `CL_BASE_SHA`, the HEAD this run started from
+(the change set was still uncommitted there), and its claim lives in `CL_FINDINGS`.
+
 Cross-checks run before anything slow, and `--registry-only` stops after them:
   - every `vaccine: <ID>` of the disposition file is registered, and every registered vaccine is
     claimed by name (the disposition, a release claim list or a reconstructed claim) — reported both
@@ -282,6 +291,11 @@ FB_BASE_SHA = "4ad54efe8e5aa638cf2d78cddf38f7ca35b425f0"
 # vaccine is replayed against that commit, so each workstream's fix is proven against the tree the
 # run really started from — the change set was still uncommitted when it was written.
 WS_BASE_SHA = "2b36c3589d4e40181db15046719e516deb031bae"
+# The pre-fix HEAD of THIS run's four defect fixes (run 20261125-5beb8e51 started from it): every
+# `CL` vaccine is replayed against that commit, so the catalog probe, the permit transaction, the
+# run-keyed launch state and the plan-derived coder ceiling are proven against the tree that
+# predates them.
+CL_BASE_SHA = "b2ca3af643787f3e9932d4cf250cfb48f08118be"
 
 # The four kinds of focused check a vaccine can name (see the module docstring).
 MODULE = "module"
@@ -308,6 +322,7 @@ PROBE_FIXTURES = ("test_action_gate.py", "test_calibrate_reviewer.py", "test_che
                   "test_precedent_index.py", "test_review_followup_task.py",
                   "test_review_report_only.py", "test_rollback.py",
                   "test_security_audit_guarantee.py", "test_supervisor_watchdog.py",
+                  "test_agent_catalog_stability.py", "test_run_guard.py",
                   "test_validate_documentation.py", "test_version_manager.py",
                   "test_verify_acceptance.py", "test_windows_scripts.py")
 
@@ -322,7 +337,7 @@ EXPECTED_GROUPS = (("RV", 20), ("BL", 8), ("PR", 18), ("RF", 15), ("NM", 2), ("C
 # The id prefix that tags a registered vaccine with its group. The five historical groups below
 # carry no tag (their vaccines are the release-wide `V-memory-*`, `V-model-*`, ... entries).
 GROUP_TAGS = {"RF": "V-rf-", "NM": "V-nm-", "CC": "V-cc-", "FX": "V-fx-", "DP": "V-dp-",
-              "FK": "V-fk-", "FB": "V-fb-", "WS": "V-ws-"}
+              "FK": "V-fk-", "FB": "V-fb-", "WS": "V-ws-", "CL": "V-cl-"}
 # Groups whose per-run disposition artifact is NOT kept anywhere a clone can read: `.code-factory/`
 # is gitignored, so their item texts are gone. Their vaccines are still attributable by tag (RF/NM)
 # or by the shared historical release base (RV/BL/PR), and that attribution is what keeps the
@@ -4125,6 +4140,63 @@ with tempfile.TemporaryDirectory() as td:
     t.test_target_cleanup_failure_is_reported(pathlib.Path(td))
 '''
 
+PROBE_CL_A_CATALOG = '''\
+import sys
+sys.path.insert(0, ".")
+import test_agent_catalog_stability as t
+sys.exit(t.main())
+'''
+
+PROBE_CL_B_JOURNAL_ATOMIC = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_permit_gate as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_defect_b_journal_append_is_atomic(pathlib.Path(td))
+'''
+
+PROBE_CL_C_KEYED_LAUNCH = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_supervisor_watchdog as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_concurrent_keyed_launches(pathlib.Path(td))
+'''
+
+PROBE_CL_C_RUN_GUARD = '''\
+import sys
+sys.path.insert(0, ".")
+import test_run_guard as t
+sys.exit(t.main())
+'''
+
+PROBE_CL_D_CODER_CEILING = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+import test_delegation_gate as t
+with tempfile.TemporaryDirectory() as td:
+    t.test_coder_ceiling_from_plan(pathlib.Path(td))
+'''
+
+# THIS run's (CL) four defect fixes (run 20261125-5beb8e51), claimed next to the vaccines exactly as
+# the WS/CC/FK/FB groups are: the run keeps no disposition artifact a clone could read, so this list
+# IS the durable claim — one item per testable fix, each naming the focused probe.
+CL_FINDINGS: tuple[tuple[str, str, str], ...] = (
+    ("CL-1", "the sub-agent catalog is DETECTABLE, so an `Unknown agent type` from a CLI-side reload "
+             "is told apart from a really missing/invalid profile before anyone retries or "
+             "substitutes a role", "V-cl-a-catalog"),
+    ("CL-2", "a permit state write and its ledger append are ONE transaction: a failed append rolls "
+             "the registry back instead of leaving a registry without its history", "V-cl-b-journal"),
+    ("CL-3", "launch-scoped supervisor state is keyed per run (a launch nonce, `--launch-id`), so two "
+             "factories in one folder into different repositories never share a mutable file",
+     "V-cl-c-keyed-launch"),
+    ("CL-4", "the repo-side single-active-run guard refuses a second run in a target repository "
+             "LOUDLY and read-only, while a finished, resumed or free repository is claimable",
+     "V-cl-c-run-guard"),
+    ("CL-5", "the coder delegation ceiling follows the approved plan's coder tasks plus the one-retry "
+             "reserve, so an owner-added coder task is not refused mid-run", "V-cl-d-coder-ceiling"),
+)
+
 REVIEW_20261105_FINDINGS: tuple[tuple[str, str, str], ...] = (
     ("C1", "the supervisor is a run-long background WATCHDOG (launched once, scanned "
            "deterministically, blocking denies) instead of a synchronous per-delegation clerk",
@@ -4387,6 +4459,7 @@ RELEASE_CLAIMS: tuple[tuple[str, str, tuple[tuple[str, str, str], ...]], ...] = 
     ("FB_FINDINGS", "V-fb-", FB_FINDINGS),
     ("REVIEW_20261105_FINDINGS", "V-rg-", REVIEW_20261105_FINDINGS),
     ("WS_FINDINGS", "V-ws-", WS_FINDINGS),
+    ("CL_FINDINGS", "V-cl-", CL_FINDINGS),
 )
 
 
@@ -5098,6 +5171,19 @@ REGISTRY: tuple[Vaccine, ...] = (
     # ---- WS (review R7): a failed rollback is reported truthfully.
     Vaccine("V-ws-r7-rollback-reporting", PROBE, PROBE_WS_R7_ROLLBACK_REPORTING,
             r"a FAILED rollback must be reported truthfully, never as a clean restore", WS_BASE_SHA),
+    # ---- CL: THIS run's four defect fixes (run 20261125-5beb8e51), replayed against CL_BASE_SHA --
+    # The change set was still uncommitted at the recorded HEAD, so that tree is the real pre-fix
+    # state; the catalog probe and the run guard are new files, whose absence is their reachability.
+    Vaccine("V-cl-a-catalog", PROBE, PROBE_CL_A_CATALOG,
+            r"agent_catalog_check\.py does not exist", CL_BASE_SHA),
+    Vaccine("V-cl-b-journal", PROBE, PROBE_CL_B_JOURNAL_ATOMIC,
+            r"a state write whose journal append failed must leave NOTHING behind", CL_BASE_SHA),
+    Vaccine("V-cl-c-keyed-launch", PROBE, PROBE_CL_C_KEYED_LAUNCH,
+            r"`begin` must mint a launch nonce", CL_BASE_SHA),
+    Vaccine("V-cl-c-run-guard", PROBE, PROBE_CL_C_RUN_GUARD,
+            r"run_guard\.py does not exist", CL_BASE_SHA),
+    Vaccine("V-cl-d-coder-ceiling", PROBE, PROBE_CL_D_CODER_CEILING,
+            r"the coder budget is the plan's 3 coder tasks \+ 1 retry reserve", CL_BASE_SHA),
 )
 
 # `- RV-12: fixed: ... | vaccine: V-memory-identity` — one item per finding, never wrapped. The id

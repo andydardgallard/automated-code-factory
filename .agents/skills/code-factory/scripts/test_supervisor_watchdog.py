@@ -27,8 +27,18 @@ it):
     first, supervise later) can never become a green run; a bound bootstrap is COMPLETED once with
     `complete`, and that terminal, run-bound record frees the launch directory for the next
     independent run instead of blocking it forever; a bootstrap that never bound a run (a failed
-    Phase 0) is ended with `abandon --reason` — the reason stays on the record and in the next
-    bootstrap's history — while an ACTIVATED bootstrap is a run in progress and is never abandoned;
+    Phase 0) is ended with `abandon --reason` — the reason stays on the record — while an
+    ACTIVATED bootstrap is a run in progress and is never abandoned;
+  - the KEYED bootstrap (defect C): `begin` mints a launch nonce (`\\d{8}-\\d{6}-[0-9a-f]{6}`) and
+    writes `watchdog-bootstrap-<launch_id>.json`, so several factories launched from ONE directory
+    into DIFFERENT repositories never share a mutable bootstrap file — a second `begin` is a NEW
+    keyed bootstrap (the old single-occupancy refusal is inverted on purpose, owner-approved);
+    `observe`/`activate`/`complete`/`abandon` take `--launch-id`, and without it the ONE
+    uncompleted bootstrap (an unkeyed legacy file included) is resolved, while MULTIPLE uncompleted
+    bootstraps are an exit-2 ambiguity that names every id and demands `--launch-id`, never a
+    guess; a completed keyed record is an IMMUTABLE history entry (no cross-run `history`
+    carry-over) and an unkeyed legacy bootstrap stays resumable, never silently migrated; a
+    malformed or unknown `--launch-id` is an exit-2 input error;
   - an observation note (`observe --detail`) is OPTIONAL and bounded: empty is legitimate, 4000
     characters is the documented bound and 4001 is an exit-2 input error that records nothing;
   - `retry_counters.plan_rejections` — the counter the flow MANDATES — is a non-role counter, never
@@ -47,6 +57,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -59,6 +70,8 @@ RUN_ID = "20261103-8e939171"
 OTHER_RUN = "20261104-b5b601f6"
 # The documented bound of a routing note (`deny --detail`, `observe --detail`).
 DETAIL_MAX = 4000
+# The launch nonce `begin` mints: UTC timestamp + random suffix, and a FILENAME component.
+LAUNCH_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
 LEGACY_ENV = {**os.environ, "PYTHONIOENCODING": "cp1251"}
 
 CHECKPOINT = """\
@@ -433,8 +446,10 @@ def test_cli_contract(tmp: pathlib.Path) -> None:
 # --------------------------------------------------------------------------------------------
 # The BOOTSTRAP: the supervisor begins BEFORE Phase 0 and observes every Phase 0 operation
 # --------------------------------------------------------------------------------------------
-# The launch-scoped bootstrap the flow writes BEFORE the repository is resolved or a run_id exists.
-BOOT_REL = pathlib.Path(".code-factory") / "state" / "watchdog-bootstrap.json"
+# The launch-scoped bootstrap directory; a KEYED bootstrap is `watchdog-bootstrap-<launch_id>.json`
+# and the unkeyed `watchdog-bootstrap.json` is the LEGACY (pre-defect-C) shape, still resumable.
+BOOT_DIR_REL = pathlib.Path(".code-factory") / "state"
+BOOT_REL = BOOT_DIR_REL / "watchdog-bootstrap.json"
 # The CLOSED Phase 0 vocabulary: an event outside it is not an observation of a Phase 0 operation.
 PHASE0_VOCABULARY = ("parse", "resolve", "memory-read", "memory-write", "run-id")
 # The operations that must be observed BEFORE the bootstrap can bind to a run, IN THIS ORDER:
@@ -449,14 +464,52 @@ def phase0_dir(tmp: pathlib.Path, name: str) -> pathlib.Path:
     return root
 
 
-def observe(launch: pathlib.Path, seq: int, event: str,
-            detail: str = "phase 0") -> subprocess.CompletedProcess[str]:
-    return run("observe", "--launch-dir", str(launch), "--event", event, "--seq", str(seq),
-               "--detail", detail)
+def boot_path(launch: pathlib.Path, launch_id: str) -> pathlib.Path:
+    return launch / BOOT_DIR_REL / f"watchdog-bootstrap-{launch_id}.json"
 
 
-def bootstrap_of(launch: pathlib.Path) -> dict:
-    return json.loads((launch / BOOT_REL).read_text(encoding="utf-8"))
+def bootstraps_of(launch: pathlib.Path) -> list[pathlib.Path]:
+    """Every bootstrap file of the launch directory, keyed ones and the legacy unkeyed one."""
+    return sorted((launch / BOOT_DIR_REL).glob("watchdog-bootstrap*.json"))
+
+
+def begin(launch: pathlib.Path) -> str:
+    """`begin` and the launch nonce it mints — the key every later operation is addressed by."""
+    res = run("begin", "--launch-dir", str(launch))
+    expect_clean_cli(res, 0, "begin")
+    launch_id = payload(res).get("launch_id")
+    check(isinstance(launch_id, str) and LAUNCH_ID_RE.fullmatch(launch_id),
+          f"`begin` must mint a launch nonce (^\\d{{8}}-\\d{{6}}-[0-9a-f]{{6}}$), got "
+          f"{launch_id!r}")
+    check(boot_path(launch, launch_id).is_file(),
+          f"the bootstrap is written under the launch id it reported: {bootstraps_of(launch)!r}")
+    return launch_id
+
+
+def observe(launch: pathlib.Path, seq: int, event: str, detail: str = "phase 0",
+            launch_id: str | None = None) -> subprocess.CompletedProcess[str]:
+    args = ["observe", "--launch-dir", str(launch), "--event", event, "--seq", str(seq),
+            "--detail", detail]
+    if launch_id is not None:
+        args += ["--launch-id", launch_id]
+    return run(*args)
+
+
+def bootstrap_of(launch: pathlib.Path, launch_id: str | None = None) -> dict:
+    """A bootstrap record: the keyed one asked for, else the launch's ONE uncompleted bootstrap."""
+    if launch_id is not None:
+        path = boot_path(launch, launch_id)
+        check(path.is_file(),
+              f"the bootstrap keyed {launch_id} must exist: {bootstraps_of(launch)!r}")
+        return json.loads(path.read_text(encoding="utf-8"))
+    records = [json.loads(path.read_text(encoding="utf-8")) for path in bootstraps_of(launch)]
+    uncompleted = [record for record in records if record.get("completed") is None]
+    if len(uncompleted) == 1:
+        return uncompleted[0]
+    check(len(records) == 1,
+          f"expected ONE uncompleted bootstrap in the launch directory, got "
+          f"{[path.name for path in bootstraps_of(launch)]!r}")
+    return records[0]
 
 
 def test_bootstrap_precedes_phase0(tmp: pathlib.Path) -> None:
@@ -481,40 +534,51 @@ def test_bootstrap_precedes_phase0(tmp: pathlib.Path) -> None:
     check("begin" in res.stderr and "Phase 0" in res.stderr,
           f"the refusal must name the begin the flow skipped: {res.stderr!r}")
 
-    # `begin` is run-id INDEPENDENT (launch-scoped) and single-owner per launch.
-    res = run("begin", "--launch-dir", str(launch))
-    expect_clean_cli(res, 0, "begin")
-    report = payload(res)
-    check(report["status"] == "begun" and report["run_id"] is None,
-          f"the bootstrap is recorded before any run_id exists: {report!r}")
-    data = bootstrap_of(launch)
+    # `begin` is run-id INDEPENDENT (launch-scoped) and mints the KEY of this supervision.
+    launch_id = begin(launch)
+    data = bootstrap_of(launch, launch_id)
     check(data["run_id"] is None and data["events"] == [] and data["activated"] is None
           and isinstance(data["begun_at"], str) and data["begun_at"],
           f"the launch-scoped bootstrap state is run_id-free: {data!r}")
+    # (defect C, owner-approved inversion) A second `begin` from the SAME directory is not refused:
+    # it starts a NEW keyed bootstrap, so two factories launched from one folder into DIFFERENT
+    # repositories never share a mutable file. The old single-occupancy pin is deliberately gone.
     res = run("begin", "--launch-dir", str(launch))
-    expect_clean_cli(res, 2, "a second begin")
-    check("already begun" in res.stderr or "ONE" in res.stderr,
-          f"the single-owner rule must be stated: {res.stderr!r}")
+    expect_clean_cli(res, 0, "a second begin in the same launch directory")
+    other_id = payload(res).get("launch_id")
+    check(isinstance(other_id, str) and LAUNCH_ID_RE.fullmatch(other_id) and other_id != launch_id,
+          f"a second begin mints its OWN launch id: {payload(res)!r}")
+    check(boot_path(launch, other_id).is_file(),
+          f"each bootstrap has its own keyed file: {[p.name for p in bootstraps_of(launch)]!r}")
 
     # The vocabulary is CLOSED: only the Phase 0 operations are observable events.
-    res = observe(launch, 0, "extract")
+    res = observe(launch, 0, "extract", launch_id=launch_id)
     expect_clean_cli(res, 2, "an event outside the Phase 0 vocabulary")
     for event in PHASE0_VOCABULARY:
         check(event in res.stderr, f"the refusal must list the closed vocabulary, missing "
                                    f"{event!r}: {res.stderr!r}")
     # The sequence is a non-negative integer, strictly increasing: zero is legitimate, a duplicate
     # and a regression are not (two events may not share a place in the order).
-    expect_clean_cli(observe(launch, -1, "parse"), 2, "a negative sequence")
-    expect_clean_cli(observe(launch, 0, "parse"), 0, "the first observation of Phase 0")
-    check(payload(observe(launch, 1, "resolve"))["status"] == "observed",
+    expect_clean_cli(observe(launch, -1, "parse", launch_id=launch_id), 2, "a negative sequence")
+    expect_clean_cli(observe(launch, 0, "parse", launch_id=launch_id), 0,
+                     "the first observation of Phase 0")
+    check(payload(observe(launch, 1, "resolve", launch_id=launch_id))["status"] == "observed",
           "the second observation is recorded")
-    expect_clean_cli(observe(launch, 1, "memory-read"), 2, "a duplicate sequence")
-    expect_clean_cli(observe(launch, 0, "memory-read"), 2, "a regressing sequence")
-    check([entry["event"] for entry in bootstrap_of(launch)["events"]] == ["parse", "resolve"],
-          f"the accepted observations keep their order: {bootstrap_of(launch)!r}")
+    expect_clean_cli(observe(launch, 1, "memory-read", launch_id=launch_id), 2,
+                     "a duplicate sequence")
+    expect_clean_cli(observe(launch, 0, "memory-read", launch_id=launch_id), 2,
+                     "a regressing sequence")
+    journal = [entry["event"] for entry in bootstrap_of(launch, launch_id)["events"]]
+    check(journal == ["parse", "resolve"],
+          f"the accepted observations keep their order: {journal!r}")
+    # Only the addressed bootstrap is written: the sibling run's journal stays empty.
+    check(bootstrap_of(launch, other_id)["events"] == [],
+          f"an observation lands in the bootstrap it was addressed to: "
+          f"{bootstrap_of(launch, other_id)!r}")
 
     # Activation FAILS CLOSED while a mandated operation went unobserved (the old order).
-    res = run("activate", "--launch-dir", str(launch), "--repo", str(target))
+    res = run("activate", "--launch-dir", str(launch), "--repo", str(target),
+              "--launch-id", launch_id)
     expect_clean_cli(res, 1, "activating with Phase 0 operations unobserved")
     for missing in ("memory-read", "run-id"):
         check(missing in res.stderr, f"the refusal must name the unobserved {missing}: "
@@ -523,9 +587,12 @@ def test_bootstrap_precedes_phase0(tmp: pathlib.Path) -> None:
           "a refused activation must not write the run-bound state")
 
     # Observing the rest, in order, then activating: the state BINDS to the run atomically.
-    expect_clean_cli(observe(launch, 2, "memory-read"), 0, "observing the memory read")
-    expect_clean_cli(observe(launch, 3, "run-id"), 0, "observing the run id")
-    res = run("activate", "--launch-dir", str(launch), "--repo", str(target))
+    expect_clean_cli(observe(launch, 2, "memory-read", launch_id=launch_id), 0,
+                     "observing the memory read")
+    expect_clean_cli(observe(launch, 3, "run-id", launch_id=launch_id), 0,
+                     "observing the run id")
+    res = run("activate", "--launch-dir", str(launch), "--repo", str(target),
+              "--launch-id", launch_id)
     expect_clean_cli(res, 0, "activate")
     report = payload(res)
     check(report["status"] == "activated" and report["run_id"] == RUN_ID
@@ -536,12 +603,12 @@ def test_bootstrap_precedes_phase0(tmp: pathlib.Path) -> None:
           and bound["denies"] == [],
           f"the run-bound state starts clean and run-bound: {bound!r}")
     check(bound["launch"] is not None and bound["launch"]["authority"] == "run"
-          and bound["launch"]["at"] == bootstrap_of(launch)["begun_at"],
+          and bound["launch"]["at"] == bootstrap_of(launch, launch_id)["begun_at"],
           f"the bound launch keeps the bootstrap's OWN launch time (never a later stand-in): "
           f"{bound!r}")
     check([entry["event"] for entry in bound["events"]] == list(PHASE0_REQUIRED),
           f"the run-bound state carries the ordered Phase 0 observations: {bound!r}")
-    activated = bootstrap_of(launch)
+    activated = bootstrap_of(launch, launch_id)
     check(activated["run_id"] == RUN_ID and activated["activated"] is not None,
           f"the launch-scoped bootstrap records the binding it performed: {activated!r}")
     check(sorted(p.name for p in (target / STATE_REL).parent.glob("*.tmp")) == [],
@@ -552,11 +619,12 @@ def test_bootstrap_precedes_phase0(tmp: pathlib.Path) -> None:
     check(payload(res)["launched"] is True and payload(res)["status"] == "ok",
           f"status reports the launched, clean run: {payload(res)!r}")
     # Activation happens ONCE: a second one would re-bind and could rewrite history.
-    res = run("activate", "--launch-dir", str(launch), "--repo", str(target))
+    res = run("activate", "--launch-dir", str(launch), "--repo", str(target),
+              "--launch-id", launch_id)
     expect_clean_cli(res, 2, "a second activation")
 
     # The memory WRITE is observed by the same supervisor, now against the run's own state.
-    res = observe(launch, 4, "memory-write", "the run's finish record")
+    res = observe(launch, 4, "memory-write", "the run's finish record", launch_id=launch_id)
     expect_clean_cli(res, 0, "observing the memory write after activation")
     check(state_of(target)["events"][-1]["event"] == "memory-write",
           f"the post-activation observation lands in the run-bound state: {state_of(target)!r}")
@@ -649,150 +717,241 @@ def test_plan_rejections_is_a_counter_not_a_role(tmp: pathlib.Path) -> None:
           f"the unknown role is still named: {payload(res)!r}")
 
 
+# --------------------------------------------------------------------------------------------
+# The coder counter is validated against the SAME plan-derived ceiling as the gate
+# --------------------------------------------------------------------------------------------
+
+PLAN = """\
+# Plan
+
+**Tasks (DAG)**
+
+- T1: build the parser; role: coder; files: src/a.py; deps: []; verification: pytest
+- T2: wire the parser; role: coder; files: src/b.py; deps: [T1]; verification: pytest
+- T3: cover the parser; role: coder; files: tests/test_a.py; deps: [T1]; verification: pytest
+- T4: review the wiring; role: reviewer; files: ; deps: [T2]; verification: pytest
+"""
+
+
+def test_plan_derived_coder_ceiling(tmp: pathlib.Path) -> None:
+    """The coder's ceiling is ONE delegation per distinct coder plan task plus one retry reserve.
+
+    The scan used to compare the raw base table (`coder: 1`) against the counter, so a legitimate
+    approved multi-task plan — T16 lets the gate count one coder delegation per plan task — was
+    false-flagged from the second coder task on. The scan now uses `delegation_gate.budget_for`,
+    i.e. the SAME ceiling the gate enforces, so the watchdog and the gate can never disagree.
+    """
+    for counted in (1, 2, 3, 4):
+        root = repo(tmp, f"plan-coder-{counted}",
+                    CHECKPOINT.format(run_id=RUN_ID).replace(
+                        "  coder: 0", f"  coder: {counted}"))
+        (root / ".code-factory" / "state" / "plan.md").write_text(PLAN, encoding="utf-8")
+        res = run("scan", "--repo", str(root))
+        expect_clean_cli(res, 0, f"a coder counter of {counted} within a 3-task plan's 4")
+        check(payload(res)["new_anomalies"] == [],
+              f"3 coder plan tasks + 1 retry reserve allows 4 coder delegations, so a counter of "
+              f"{counted} is legitimate: {payload(res)!r}")
+    # One above the derived ceiling is STILL an anomaly, and the message names the real budget.
+    over = repo(tmp, "plan-coder-over",
+                CHECKPOINT.format(run_id=RUN_ID).replace("  coder: 0", "  coder: 5"))
+    (over / ".code-factory" / "state" / "plan.md").write_text(PLAN, encoding="utf-8")
+    res = run("scan", "--repo", str(over))
+    expect_clean_cli(res, 1, "a coder counter above the plan-derived ceiling")
+    detail = payload(res)["new_anomalies"][0]["detail"]
+    check("coder" in detail and "4" in detail,
+          f"the anomaly names the derived budget, not the raw table: {payload(res)!r}")
+    # The ceiling belongs to the coder ONLY: the same plan never widens the reviewer's budget.
+    reviewer = repo(tmp, "plan-reviewer-over",
+                    CHECKPOINT.format(run_id=RUN_ID).replace("  reviewer: 0", "  reviewer: 3"))
+    (reviewer / ".code-factory" / "state" / "plan.md").write_text(PLAN, encoding="utf-8")
+    res = run("scan", "--repo", str(reviewer))
+    expect_clean_cli(res, 1, "a reviewer counter above its fixed budget")
+    check(payload(res)["new_anomalies"][0]["detail"].count("2"),
+          f"the reviewer keeps its fixed budget of 2: {payload(res)!r}")
+    # No approved plan, an unreadable one and a prose-only coder mention leave the base budget 1.
+    prose = """\
+# Plan
+
+The coder will implement everything; a coder task is expected.
+
+- T1: plan only; role: planner; files: ; deps: []; verification: none
+"""
+    for label, plan in (("no-plan", None), ("prose-plan", prose)):
+        root = repo(tmp, f"plan-base-{label}",
+                    CHECKPOINT.format(run_id=RUN_ID).replace("  coder: 0", "  coder: 2"))
+        if plan is not None:
+            (root / ".code-factory" / "state" / "plan.md").write_text(plan, encoding="utf-8")
+        res = run("scan", "--repo", str(root))
+        expect_clean_cli(res, 1, f"a coder counter of 2 with {label}")
+        check("coder" in payload(res)["new_anomalies"][0]["detail"],
+              f"{label}: the coder counter is still judged against the base budget: "
+              f"{payload(res)!r}")
+
+
 def test_sequential_runs(tmp: pathlib.Path) -> None:
-    """(review R1/R2) A COMPLETED bootstrap never blocks the next independent run.
+    """(review R1/R2, defect C) A COMPLETED keyed bootstrap never blocks the next independent run.
 
     `begin` refused whenever a bootstrap file existed, so the second run launched from the same
     directory could never start its own supervisor: the first run's completed record looked like an
-    unfinished one. The lifecycle is explicit and INTEGRATED with the Finish: the supervisor
-    observes the finish memory write, the run's checkpoint reaches `status: ok`, and only then
-    `complete` closes the binding — a completion while the run is still `in_progress` is refused,
-    so the launch directory cannot be freed for a second supervisor mid-run. The completed record
-    keeps its run binding in the next bootstrap's history, and `begin` records a FRESH
-    launch-scoped bootstrap for the next independent run.
+    unfinished one. Under the keyed lifecycle (owner-approved inversion) each run OWNS its bootstrap
+    file, so a completed record is an IMMUTABLE history entry of the launch directory — it is never
+    rewritten and no longer carried into the next bootstrap's `history` (that carry-over is obsolete
+    for keyed files; the field stays for legacy validation). The lifecycle stays INTEGRATED with the
+    Finish: the supervisor observes the finish memory write, the run's checkpoint reaches
+    `status: ok`, and only then `complete --launch-id` closes that binding — a completion while the
+    run is still `in_progress` is refused.
     """
     first = repo(tmp, "sequential-first")
     second = repo(tmp, "sequential-second", CHECKPOINT.format(run_id=OTHER_RUN))
     launch = phase0_dir(tmp, "sequential-launch")
 
-    expect_clean_cli(run("begin", "--launch-dir", str(launch)), 0, "begin run 1")
+    first_id = begin(launch)
     for seq, event in enumerate(PHASE0_REQUIRED):
-        expect_clean_cli(observe(launch, seq, event), 0, f"observe {event} of run 1")
-    expect_clean_cli(run("activate", "--launch-dir", str(launch), "--repo", str(first)), 0,
-                     "activate run 1")
+        expect_clean_cli(observe(launch, seq, event, launch_id=first_id), 0,
+                         f"observe {event} of run 1")
+    expect_clean_cli(run("activate", "--launch-dir", str(launch), "--repo", str(first),
+                         "--launch-id", first_id), 0, "activate run 1")
     # The run's finish memory write is still observed by the SAME supervisor, against the run.
-    expect_clean_cli(observe(launch, len(PHASE0_REQUIRED), "memory-write", "the run's finish record"),
+    expect_clean_cli(observe(launch, len(PHASE0_REQUIRED), "memory-write",
+                             "the run's finish record", launch_id=first_id),
                      0, "observe the finish memory write of run 1")
     first_state = (first / STATE_REL).read_text(encoding="utf-8")
-    first_begun = bootstrap_of(launch)["begun_at"]
+    first_begun = bootstrap_of(launch, first_id)["begun_at"]
 
     # A bootstrap that was never activated has no completed run to record.
     unbound = phase0_dir(tmp, "sequential-unbound")
-    expect_clean_cli(run("begin", "--launch-dir", str(unbound)), 0, "begin an unbound bootstrap")
-    expect_clean_cli(run("complete", "--launch-dir", str(unbound)), 2,
+    unbound_id = begin(unbound)
+    expect_clean_cli(run("complete", "--launch-dir", str(unbound), "--launch-id", unbound_id), 2,
                      "completing an unactivated bootstrap")
 
     # The completion belongs to the FINISH (review R2): while the run's own checkpoint is still in
     # progress the flow has not reached the Finish, so completing would free the launch directory
     # mid-run and let a second supervisor interleave with the first. Fail closed.
-    res = run("complete", "--launch-dir", str(launch))
+    res = run("complete", "--launch-dir", str(launch), "--launch-id", first_id)
     expect_clean_cli(res, 2, "completing a run whose checkpoint is still in progress")
     lowered = res.stderr.lower()
     check(any(word in lowered for word in ("finish", "in_progress", "in progress", "status")),
           f"the refusal must name the unfinished checkpoint: {res.stderr!r}")
-    check(bootstrap_of(launch).get("completed") is None,
+    check(bootstrap_of(launch, first_id).get("completed") is None,
           "a refused completion must not record one")
 
     # The Finish checkpoint lands, then ONE explicit completion, bound to the run it supervised.
     finish_checkpoint(first)
-    res = run("complete", "--launch-dir", str(launch))
+    res = run("complete", "--launch-dir", str(launch), "--launch-id", first_id)
     expect_clean_cli(res, 0, "complete run 1 at its Finish")
-    completed = bootstrap_of(launch).get("completed")
+    completed = bootstrap_of(launch, first_id).get("completed")
     check(isinstance(completed, dict) and completed.get("run_id") == RUN_ID
           and isinstance(completed.get("at"), str) and completed["at"],
-          f"the completion is bound to the run it supervised: {bootstrap_of(launch)!r}")
-    expect_clean_cli(run("complete", "--launch-dir", str(launch)), 2, "a second completion")
+          f"the completion is bound to the run it supervised: {bootstrap_of(launch, first_id)!r}")
+    expect_clean_cli(run("complete", "--launch-dir", str(launch), "--launch-id", first_id), 2,
+                     "a second completion")
     check((first / STATE_REL).read_text(encoding="utf-8") == first_state,
           "completing the bootstrap must not rewrite the finished run's watchdog state")
+    first_record = boot_path(launch, first_id).read_text(encoding="utf-8")
 
-    # Run 2 starts in the SAME launch directory: a fresh, independent bootstrap.
-    expect_clean_cli(run("begin", "--launch-dir", str(launch)), 0,
-                     "begin the next independent run")
-    fresh = bootstrap_of(launch)
+    # Run 2 starts in the SAME launch directory: a fresh, independent, KEYED bootstrap.
+    second_id = begin(launch)
+    check(second_id != first_id and boot_path(launch, second_id).is_file(),
+          f"the next run gets its own bootstrap file: {[p.name for p in bootstraps_of(launch)]!r}")
+    fresh = bootstrap_of(launch, second_id)
     check(fresh.get("run_id") is None and fresh.get("activated") is None
           and fresh.get("events") == [] and fresh.get("completed") is None
           and fresh.get("begun_at") != first_begun,
           f"the next run starts from an empty bootstrap: {fresh!r}")
+    check(not (fresh.get("history") or []),
+          f"a keyed bootstrap carries no cross-run history (the completed record IS the history): "
+          f"{fresh!r}")
     for seq, event in enumerate(PHASE0_REQUIRED):
-        expect_clean_cli(observe(launch, seq, event), 0, f"observe {event} of run 2")
-    expect_clean_cli(run("activate", "--launch-dir", str(launch), "--repo", str(second)), 0,
-                     "activate run 2")
+        expect_clean_cli(observe(launch, seq, event, launch_id=second_id), 0,
+                         f"observe {event} of run 2")
+    expect_clean_cli(run("activate", "--launch-dir", str(launch), "--repo", str(second),
+                         "--launch-id", second_id), 0, "activate run 2")
     check(state_of(second)["run_id"] == OTHER_RUN and state_of(second)["launch"] is not None,
           f"run 2 binds its own watchdog state: {state_of(second)!r}")
     check((first / STATE_REL).read_text(encoding="utf-8") == first_state,
           "run 1's watchdog history survives run 2 untouched")
-    expect_clean_cli(run("complete", "--launch-dir", str(launch)), 2,
+    expect_clean_cli(run("complete", "--launch-dir", str(launch), "--launch-id", second_id), 2,
                      "completing run 2 before its Finish")
     finish_checkpoint(second)
-    expect_clean_cli(run("complete", "--launch-dir", str(launch)), 0, "complete run 2 at its Finish")
-    check(bootstrap_of(launch)["completed"]["run_id"] == OTHER_RUN,
-          f"the second completion names the second run: {bootstrap_of(launch)!r}")
-    history = bootstrap_of(launch).get("history") or []
-    check(any(entry.get("run_id") == RUN_ID for entry in history),
-          f"the completed run survives in the next bootstrap's history: {history!r}")
+    expect_clean_cli(run("complete", "--launch-dir", str(launch), "--launch-id", second_id), 0,
+                     "complete run 2 at its Finish")
+    check(bootstrap_of(launch, second_id)["completed"]["run_id"] == OTHER_RUN,
+          f"the second completion names the second run: {bootstrap_of(launch, second_id)!r}")
+    # Run 1's completed record is history: untouched by every later operation.
+    check(boot_path(launch, first_id).read_text(encoding="utf-8") == first_record,
+          "the completed record of run 1 is immutable")
+    check(bootstrap_of(launch, first_id)["completed"]["run_id"] == RUN_ID,
+          f"run 1's completion still names run 1: {bootstrap_of(launch, first_id)!r}")
 
 
 def test_unactivated_bootstrap_abandonment(tmp: pathlib.Path) -> None:
     """(R1, major) A bootstrap that FAILED before it bound a run is abandoned EXPLICITLY.
 
     A run whose Phase 0 failed (an unparsable task, a refused activation) leaves a begun bootstrap
-    behind. `begin` refuses to start the next independent run over it and `complete` has no bound
-    run to close, so the launch directory was blocked forever: the honest transition was missing.
-    `abandon --reason` supplies it for an UNACTIVATED bootstrap only — the reason lands on the
-    record and in the next bootstrap's history — while an ACTIVATED bootstrap is the run in
-    progress and stays protected by `complete`.
+    behind: `complete` has no bound run to close, so the launch directory would keep an uncompleted
+    bootstrap forever. `abandon --reason` supplies the honest transition for an UNACTIVATED
+    bootstrap only — the reason lands on the record, which under the keyed lifecycle is IMMUTABLE
+    history (the reason is read from that very file, not from a carried-over `history` list) —
+    while an ACTIVATED bootstrap is the run in progress and stays protected by `complete`.
     """
     launch = phase0_dir(tmp, "abandon-failed")
     expect_clean_cli(run("abandon", "--launch-dir", str(launch), "--reason", "x"), 2,
                      "abandoning a bootstrap nobody began")
-    expect_clean_cli(run("begin", "--launch-dir", str(launch)), 0, "begin the failed run")
-    expect_clean_cli(observe(launch, 0, "parse", "the parse failed"), 0,
+    failed_id = begin(launch)
+    expect_clean_cli(observe(launch, 0, "parse", "the parse failed", launch_id=failed_id), 0,
                      "observe the failed parse")
-    expect_clean_cli(run("abandon", "--launch-dir", str(launch)), 2, "abandon without a reason")
-    res = run("abandon", "--launch-dir", str(launch), "--reason", "   ")
+    expect_clean_cli(run("abandon", "--launch-dir", str(launch), "--launch-id", failed_id), 2,
+                     "abandon without a reason")
+    res = run("abandon", "--launch-dir", str(launch), "--launch-id", failed_id, "--reason", "   ")
     expect_clean_cli(res, 2, "abandon with an empty reason")
-    res = run("abandon", "--launch-dir", str(launch),
+    res = run("abandon", "--launch-dir", str(launch), "--launch-id", failed_id,
               "--reason", "the task could not be parsed, so Phase 0 never bound a run")
     expect_clean_cli(res, 0, "abandoning an unactivated failed bootstrap")
     report = payload(res)
     check(report.get("status") == "abandoned" and report.get("run_id") is None,
           f"the abandonment records that no run was bound: {report!r}")
-    record = bootstrap_of(launch).get("completed") or {}
+    record = bootstrap_of(launch, failed_id).get("completed") or {}
     check(record.get("abandoned") is True and record.get("run_id") is None
           and "could not be parsed" in str(record.get("reason")),
           f"the abandonment keeps its own reason on the record: {record!r}")
-    expect_clean_cli(run("abandon", "--launch-dir", str(launch), "--reason", "again"), 2,
-                     "a second abandonment")
-    # The failed bootstrap is history now: the next independent run may begin, and the reason it
-    # was abandoned survives in that bootstrap's history.
-    expect_clean_cli(run("begin", "--launch-dir", str(launch)), 0,
-                     "begin after the abandonment")
-    fresh = bootstrap_of(launch)
+    expect_clean_cli(run("abandon", "--launch-dir", str(launch), "--launch-id", failed_id,
+                         "--reason", "again"), 2, "a second abandonment")
+    failed_record = boot_path(launch, failed_id).read_text(encoding="utf-8")
+    # The failed bootstrap is closed history now: the next independent run may begin, and the
+    # reason it was abandoned stays auditable in that immutable keyed record.
+    fresh_id = begin(launch)
+    check(fresh_id != failed_id, "the next run gets its own launch id")
+    fresh = bootstrap_of(launch, fresh_id)
     check(fresh.get("completed") is None and fresh.get("events") == [],
           f"the next run starts fresh: {fresh!r}")
-    history = fresh.get("history") or []
-    check(any(entry.get("abandoned") is True and "could not be parsed" in str(entry.get("reason"))
-              for entry in history),
-          f"the abandonment stays auditable in the next bootstrap's history: {history!r}")
+    check(not (fresh.get("history") or []),
+          f"a keyed bootstrap carries no cross-run history: {fresh!r}")
+    check(boot_path(launch, failed_id).read_text(encoding="utf-8") == failed_record,
+          "the abandoned record is immutable")
+    abandoned = bootstrap_of(launch, failed_id)["completed"]
+    check(abandoned.get("abandoned") is True and "could not be parsed" in str(abandoned["reason"]),
+          f"the abandonment stays auditable in its own keyed record: {abandoned!r}")
 
     # An ACTIVATED bootstrap is the run in progress: it is NEVER abandoned, and `complete` — the
     # end of a bound run — still refuses before its Finish.
     target = repo(tmp, "abandon-active")
     active = phase0_dir(tmp, "abandon-active-launch")
-    expect_clean_cli(run("begin", "--launch-dir", str(active)), 0, "begin the active run")
+    active_id = begin(active)
     for seq, event in enumerate(PHASE0_REQUIRED):
-        expect_clean_cli(observe(active, seq, event), 0, f"observe {event} of the active run")
-    expect_clean_cli(run("activate", "--launch-dir", str(active), "--repo", str(target)), 0,
-                     "activate the active run")
-    before = bootstrap_of(active)
-    res = run("abandon", "--launch-dir", str(active), "--reason", "the run looks stuck")
+        expect_clean_cli(observe(active, seq, event, launch_id=active_id), 0,
+                         f"observe {event} of the active run")
+    expect_clean_cli(run("activate", "--launch-dir", str(active), "--repo", str(target),
+                         "--launch-id", active_id), 0, "activate the active run")
+    before = bootstrap_of(active, active_id)
+    res = run("abandon", "--launch-dir", str(active), "--launch-id", active_id,
+              "--reason", "the run looks stuck")
     expect_clean_cli(res, 2, "abandoning an ACTIVATED bootstrap")
     lowered = res.stderr.lower()
     check("complete" in lowered and "in progress" in lowered,
           f"the refusal must route the bound run to `complete`: {res.stderr!r}")
-    check(bootstrap_of(active) == before,
+    check(bootstrap_of(active, active_id) == before,
           "a refused abandonment must not touch the activated bootstrap")
-    expect_clean_cli(run("complete", "--launch-dir", str(active)), 2,
+    expect_clean_cli(run("complete", "--launch-dir", str(active), "--launch-id", active_id), 2,
                      "completing the active run before its Finish")
 
 
@@ -823,22 +982,228 @@ def test_observe_detail_bound(tmp: pathlib.Path) -> None:
           f"the bounded note is stored as given: {events[-1]!r}")
 
 
+def test_ambiguity_refuses(tmp: pathlib.Path) -> None:
+    """(defect C) TWO uncompleted bootstraps in one directory are never a guess.
+
+    Two factories launched from the SAME directory into DIFFERENT repositories each own a keyed
+    bootstrap, so "the bootstrap of this run" is only knowable from the key. Without `--launch-id`
+    every bootstrap operation is refused at once (exit 2, no traceback) naming every candidate id
+    and the flag that disambiguates them; with the key the operation resolves to exactly that
+    bootstrap. Once only ONE uncompleted bootstrap is left, the unkeyed call resolves to it again —
+    ambiguity is the ONLY case where the launch directory refuses to resolve.
+    """
+    launch = phase0_dir(tmp, "ambiguous")
+    target = repo(tmp, "ambiguous-repo")
+    first_id = begin(launch)
+    second_id = begin(launch)
+    check(first_id != second_id, "two begins mint two different launch ids")
+
+    for command in (("observe", "--launch-dir", str(launch), "--event", "parse", "--seq", "0"),
+                    ("activate", "--launch-dir", str(launch), "--repo", str(target)),
+                    ("complete", "--launch-dir", str(launch)),
+                    ("abandon", "--launch-dir", str(launch), "--reason", "x")):
+        res = run(*command)
+        expect_clean_cli(res, 2, f"{command[0]} with two uncompleted bootstraps")
+        check(first_id in res.stderr and second_id in res.stderr,
+              f"{command[0]} must list EVERY candidate launch id: {res.stderr!r}")
+        check("--launch-id" in res.stderr,
+              f"{command[0]} must demand the flag that disambiguates the launch: {res.stderr!r}")
+    check(bootstrap_of(launch, first_id)["events"] == []
+          and bootstrap_of(launch, second_id)["events"] == [],
+          "a refused ambiguous operation writes nothing")
+    check(bootstraps_of(launch) and len(bootstraps_of(launch)) == 2,
+          f"the refused operations created no third bootstrap: {bootstraps_of(launch)!r}")
+
+    # The key resolves it, and only the addressed bootstrap records the observation.
+    expect_clean_cli(observe(launch, 0, "parse", launch_id=second_id), 0,
+                     "an observation keyed by --launch-id")
+    check(bootstrap_of(launch, second_id)["events"][0]["event"] == "parse"
+          and bootstrap_of(launch, first_id)["events"] == [],
+          "the observation lands in the addressed bootstrap only")
+
+    # Close the FIRST run completely; the second stays uncompleted, so an unkeyed call resolves to
+    # it again (the ONE-uncompleted rule) and can be abandoned without a key.
+    for seq, event in enumerate(PHASE0_REQUIRED):
+        expect_clean_cli(observe(launch, seq, event, launch_id=first_id), 0,
+                         f"observe {event} of the first run")
+    expect_clean_cli(run("activate", "--launch-dir", str(launch), "--repo", str(target),
+                         "--launch-id", first_id), 0, "activate the first run")
+    finish_checkpoint(target)
+    expect_clean_cli(run("complete", "--launch-dir", str(launch), "--launch-id", first_id), 0,
+                     "complete the first run")
+    expect_clean_cli(observe(launch, 1, "resolve"), 0,
+                     "an unkeyed observation again resolves to the ONE uncompleted bootstrap")
+    check(bootstrap_of(launch, second_id)["events"][-1]["event"] == "resolve",
+          f"the unkeyed observation landed in the remaining bootstrap: "
+          f"{bootstrap_of(launch, second_id)!r}")
+    expect_clean_cli(run("abandon", "--launch-dir", str(launch),
+                         "--reason", "the second run never bound a repository"), 0,
+                     "abandon the remaining uncompleted bootstrap without a key")
+
+    # Nothing is uncompleted now: an unkeyed call is the ORIGINAL "did not begin" error.
+    res = observe(launch, 0, "parse")
+    expect_clean_cli(res, 2, "observing with no uncompleted bootstrap left")
+    check("begin" in res.stderr and "Phase 0" in res.stderr,
+          f"the refusal must name the begin the flow skipped: {res.stderr!r}")
+
+
+def test_legacy_bootstrap_resumes(tmp: pathlib.Path) -> None:
+    """(defect C) An UNKEYED legacy bootstrap stays resumable and is never silently migrated.
+
+    A run that was already in flight when the keyed lifecycle landed has no launch id: its
+    `watchdog-bootstrap.json` is the legacy shape. It stays resolvable through the ONE-uncompleted
+    rule — observed, activated and completed exactly as before — and the script neither renames it
+    nor writes a keyed sibling, so a paused run resumes on the file it already has.
+    """
+    target = repo(tmp, "legacy")
+    launch = phase0_dir(tmp, "legacy-launch")
+    (launch / BOOT_DIR_REL).mkdir(parents=True)
+    legacy = {"begun_at": "2026-11-03T20:00:00+00:00", "run_id": None, "events": [],
+              "activated": None, "completed": None, "history": []}
+    (launch / BOOT_REL).write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+
+    # No key exists for it, so the unkeyed call must resolve it: one uncompleted bootstrap.
+    for seq, event in enumerate(PHASE0_REQUIRED):
+        expect_clean_cli(observe(launch, seq, event), 0, f"observe {event} of the legacy run")
+    check([entry["event"] for entry in bootstrap_of(launch)["events"]] == list(PHASE0_REQUIRED),
+          f"the legacy journal records the ordered observations: {bootstrap_of(launch)!r}")
+    expect_clean_cli(run("activate", "--launch-dir", str(launch), "--repo", str(target)), 0,
+                     "activate the legacy bootstrap")
+    bound = state_of(target)
+    check(bound["run_id"] == RUN_ID and bound["launch"]["at"] == legacy["begun_at"],
+          f"the legacy binding keeps its own launch time: {bound!r}")
+
+    finish_checkpoint(target)
+    expect_clean_cli(run("complete", "--launch-dir", str(launch)), 0,
+                     "complete the legacy bootstrap at its Finish")
+    check(bootstrap_of(launch)["completed"]["run_id"] == RUN_ID,
+          f"the legacy completion names its run: {bootstrap_of(launch)!r}")
+    check([path.name for path in bootstraps_of(launch)] == [BOOT_REL.name],
+          f"a legacy bootstrap is resolved, never silently migrated: {bootstraps_of(launch)!r}")
+
+
+def test_launch_id_validation(tmp: pathlib.Path) -> None:
+    """(defect C, input boundary) `--launch-id` is a FILENAME COMPONENT, so it is validated.
+
+    A key of the documented shape (`^\\d{8}-\\d{6}-[0-9a-f]{6}$`) resolves its bootstrap; anything
+    else — empty, separators, traversal, the run_id shape, uppercase hex — has zero legitimacy as a
+    filename component and is an exit-2 input error that writes nothing. A well-formed key that
+    names no bootstrap is likewise an actionable error, never a silent fallback to "some" file.
+    """
+    target = repo(tmp, "launch-id")
+    launch = phase0_dir(tmp, "launch-id-launch")
+    known = begin(launch)
+    # The positive control: the key of a real bootstrap resolves it.
+    expect_clean_cli(observe(launch, 0, "parse", launch_id=known), 0,
+                     "an observation keyed by its own launch id")
+    for bad in ("", "x", "../escape", "20261103-8e939171", "20261103-123456-ABCDEF",
+                "20261103-123456-abcdef/x", "20261103-123456-abcdef\\.."):
+        for command in (("observe", "--launch-dir", str(launch), "--event", "resolve",
+                         "--seq", "1"),
+                        ("activate", "--launch-dir", str(launch), "--repo", str(target)),
+                        ("complete", "--launch-dir", str(launch)),
+                        ("abandon", "--launch-dir", str(launch), "--reason", "x")):
+            res = run(*command, "--launch-id", bad)
+            expect_clean_cli(res, 2, f"{command[0]} with --launch-id {bad!r}")
+
+    # A well-formed key that names no bootstrap: named, exit 2, no fallback to the real one.
+    missing = "20260101-000000-abcdef"
+    for command in (("observe", "--launch-dir", str(launch), "--event", "resolve", "--seq", "1"),
+                    ("complete", "--launch-dir", str(launch))):
+        res = run(*command, "--launch-id", missing)
+        expect_clean_cli(res, 2, f"{command[0]} with an unknown --launch-id")
+        check(missing in res.stderr, f"the unknown key must be named: {res.stderr!r}")
+
+    check([path.name for path in bootstraps_of(launch)] == [boot_path(launch, known).name],
+          f"a rejected --launch-id creates no bootstrap file: {bootstraps_of(launch)!r}")
+    journal = [entry["event"] for entry in bootstrap_of(launch, known)["events"]]
+    check(journal == ["parse"], f"the accepted key keeps its one observation: {journal!r}")
+    check(not (target / STATE_REL).exists(),
+          "no rejected --launch-id wrote the run-bound state")
+
+
+def test_concurrent_keyed_launches(tmp: pathlib.Path) -> None:
+    """(defect C, business scenario) Two factories, ONE launch directory, two repositories.
+
+    The point of the keyed lifecycle: interleaved lifecycles of two runs sharing a launch directory
+    never touch a shared mutable file. Each `begin` mints its own key and file, each observation,
+    activation and completion is addressed by that key, and each run binds and finishes its OWN
+    repository. The old single-occupancy refusal made this scenario impossible from one folder.
+    """
+    first = repo(tmp, "concurrent-first")
+    second = repo(tmp, "concurrent-second", CHECKPOINT.format(run_id=OTHER_RUN))
+    launch = phase0_dir(tmp, "concurrent-launch")
+
+    first_id = begin(launch)
+    second_id = begin(launch)
+    check(first_id != second_id, "the two runs have their own launch ids")
+    # INTERLEAVED Phase 0: each observation is addressed by the key of the run it belongs to.
+    for seq, event in enumerate(PHASE0_REQUIRED):
+        expect_clean_cli(observe(launch, seq, event, launch_id=first_id), 0,
+                         f"observe {event} of run 1")
+        expect_clean_cli(observe(launch, seq, event, launch_id=second_id), 0,
+                         f"observe {event} of run 2")
+    expect_clean_cli(run("activate", "--launch-dir", str(launch), "--repo", str(first),
+                         "--launch-id", first_id), 0, "activate run 1")
+    expect_clean_cli(run("activate", "--launch-dir", str(launch), "--repo", str(second),
+                         "--launch-id", second_id), 0, "activate run 2")
+
+    first_boot = bootstrap_of(launch, first_id)
+    second_boot = bootstrap_of(launch, second_id)
+    check(first_boot["activated"]["repo"] == str(first)
+          and second_boot["activated"]["repo"] == str(second),
+          f"each bootstrap bound its OWN repository: {first_boot!r} / {second_boot!r}")
+    for root, boot, run_id in ((first, first_boot, RUN_ID), (second, second_boot, OTHER_RUN)):
+        data = state_of(root)
+        check(data["run_id"] == run_id and data["launch"]["at"] == boot["begun_at"]
+              and [entry["event"] for entry in data["events"]] == list(PHASE0_REQUIRED),
+              f"run {run_id} has its own complete run-bound state: {data!r}")
+    check(state_of(first)["run_id"] != state_of(second)["run_id"],
+          "the two runs never share a run-bound state")
+
+    # Both reach their Finish and are completed under their own key, without disturbing the other.
+    finish_checkpoint(first)
+    finish_checkpoint(second)
+    second_record = boot_path(launch, second_id).read_text(encoding="utf-8")
+    expect_clean_cli(run("complete", "--launch-dir", str(launch), "--launch-id", first_id), 0,
+                     "complete run 1")
+    check(boot_path(launch, second_id).read_text(encoding="utf-8") == second_record,
+          "completing run 1 leaves run 2's bootstrap byte-identical")
+    first_record = boot_path(launch, first_id).read_text(encoding="utf-8")
+    expect_clean_cli(run("complete", "--launch-dir", str(launch), "--launch-id", second_id), 0,
+                     "complete run 2")
+    check(boot_path(launch, first_id).read_text(encoding="utf-8") == first_record,
+          "completing run 2 leaves run 1's completed record byte-identical")
+    check(bootstrap_of(launch, first_id)["completed"]["run_id"] == RUN_ID
+          and bootstrap_of(launch, second_id)["completed"]["run_id"] == OTHER_RUN,
+          f"each completion names its own run: {bootstrap_of(launch, first_id)!r} / "
+          f"{bootstrap_of(launch, second_id)!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as raw:
         tmp = pathlib.Path(raw)
+        # The UNAFFECTED sections first: they must stay green while the keyed-bootstrap sections
+        # below are still pinned to the pre-fix behaviour (this is the vaccination evidence).
         test_clean_scan(tmp)
         test_anomaly_detection(tmp)
         test_stale_and_malformed_state(tmp)
         test_status_fails_closed_without_a_launch(tmp)
         test_single_launch(tmp)
         test_deny_blocks_and_routes(tmp)
-        test_bootstrap_precedes_phase0(tmp)
         test_old_order_cannot_activate(tmp)
-        test_unactivated_bootstrap_abandonment(tmp)
         test_observe_detail_bound(tmp)
-        test_sequential_runs(tmp)
         test_plan_rejections_is_a_counter_not_a_role(tmp)
+        test_plan_derived_coder_ceiling(tmp)
         test_cli_contract(tmp)
+        # The CHANGED and NEW sections (defect C, keyed bootstraps): expected to FAIL before T11.
+        test_bootstrap_precedes_phase0(tmp)
+        test_sequential_runs(tmp)
+        test_unactivated_bootstrap_abandonment(tmp)
+        test_ambiguity_refuses(tmp)
+        test_legacy_bootstrap_resumes(tmp)
+        test_launch_id_validation(tmp)
+        test_concurrent_keyed_launches(tmp)
 
     print("PASS - supervisor_watchdog.py is the supervisor watchdog's deterministic layer: a clean "
           "scan costs nothing and records nothing, a budget/permits/gate-record/journal violation "
@@ -852,9 +1217,20 @@ def main() -> int:
           "UNACTIVATED failed bootstrap is ended with an audited `abandon --reason` that an "
           "activated run in progress is protected from) and the "
           "OLD order — an unobserved operation, an out-of-order journal, a stale run binding — can "
-          "never activate, the observation note is optional and bounded to 4000 characters, "
+          "never activate, the bootstrap is KEYED (begin mints a launch nonce and its own file, so "
+          "several factories launched from ONE directory into DIFFERENT repositories share no "
+          "mutable file — a second begin is a new keyed bootstrap, observe/activate/complete/"
+          "abandon take --launch-id, MULTIPLE uncompleted bootstraps are a loud exit-2 ambiguity "
+          "naming every id instead of a guess, a completed keyed record is immutable history, an "
+          "unkeyed legacy bootstrap stays resumable and is never silently migrated, a malformed or "
+          "unknown --launch-id is an exit-2 input error), the observation note is optional and "
+          "bounded to 4000 characters, "
           "retry_counters.plan_rejections is the mandated non-role counter rather "
-          "than an unknown role, and the argparse contract holds (--help exit 0, usage errors "
+          "than an unknown role, the coder counter is judged against the SAME plan-derived ceiling "
+          "the pre-delegation gate enforces (one delegation per distinct coder plan task plus one "
+          "retry reserve — 3 plan tasks allow 4, never the raw base table of 1) while every other "
+          "role keeps its fixed budget and a plan naming no coder task keeps the base budget, "
+          "and the argparse contract holds (--help exit 0, usage errors "
           "exit 2, no traceback).")
     return 0
 

@@ -70,16 +70,41 @@ COVERED, through the shipped CLI (a subprocess, like the flow calls it):
     event that leaves `permits.yaml` byte-identical, is stamped NOW, records no `init`/`add`/
     `verdict`/`bind` time it did not observe, refuses a second snapshot and still exposes every
     violation the attested permits carry;
+  - DEFECT B, the journal/state divergence (failing-first, run 20261125-5beb8e51): the state write
+    and its journal append are ONE transaction — a first write whose append fails leaves NO registry
+    and a later one comes back byte-identical — the idempotent "already done" shortcuts (`bind`,
+    `close`, `bind-run`, `init`) refuse a DIVERGED registry loudly instead of answering `unchanged`,
+    and the owner's recovery is `repair`: no `--mode` reports only (exit 2, nothing written),
+    `--mode restore` re-derives the file from the ledger head's recorded projection, `--mode attest`
+    keeps the state and appends ONE marked, note-mandatory re-anchoring entry — plus the paused-run
+    resume fixture (business test 2): the old run, its counters, its closed permit and its ONE
+    activated bootstrap are FOUND, and task_09 is delegatable again under a fresh permit;
+  - DEFECT C, the shared launch folder (failing-first, run 20261125-5beb8e51): the launch-scoped
+    registry is KEYED per launch (`permits.launch-<launch_id>.yaml` +
+    `permits.ledger.launch-<launch_id>.jsonl`), so two factories launched from the SAME folder never
+    share a mutable file — each launch's permits, journal and binding are its own, the keyed
+    `bind-run` transfers ONE of them and leaves its sibling untouched, the id is resolved from the
+    ONE uncompleted launch when it is not passed and REFUSED loudly (naming the ids) when several
+    are open, a malformed or unknown id is an exit-2 input error (it is a filename component), and
+    an in-flight LEGACY unkeyed registry is resolved and transferred as it stands, never migrated;
   - the CLI contract: `--help` exit 0 for every subcommand, usage errors exit 2, no traceback, and
-    the help survives a legacy console code page.
+    the help survives a legacy console code page;
+  - the ROUND-1 REWORK (T24): a launch folder that IS the resolved repository still TRANSFERS its
+    keyed launch registry (the retired copy is archived, the run's own file carries the judged
+    permit, and a LEGACY unkeyed registry — which already is that file — is bound in place), a
+    journal append that writes half a line and then fails is restored to its previous byte image
+    (or removed when the append was creating it) so the retry succeeds on an intact chain, and
+    `init` has exactly ONE definition — the keyed one.
 
 Exit code 0 = every assertion passes, 1 = the gate did not behave as the contract says.
 """
 from __future__ import annotations
 
 import json
+import inspect
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -89,6 +114,7 @@ TOOL = pathlib.Path(__file__).with_name("permit_gate.py")
 WATCHDOG_TOOL = pathlib.Path(__file__).with_name("supervisor_watchdog.py")
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import permit_gate as pg  # noqa: E402  (the importable API whose transaction is fault-injected)
+import delegation_gate as dg  # noqa: E402  (the shared checkpoint reader the resume fixture uses)
 BOOT_REL = pathlib.Path(".code-factory") / "state" / "watchdog-bootstrap.json"
 PERMITS_REL = pathlib.Path(".code-factory") / "state" / "permits.yaml"
 LEDGER_REL = pathlib.Path(".code-factory") / "state" / "permits.ledger.jsonl"
@@ -148,6 +174,29 @@ def permits(root: pathlib.Path) -> dict:
 
 def write_permits(root: pathlib.Path, data: dict) -> None:
     (root / PERMITS_REL).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def launch_bootstrap(launch: pathlib.Path) -> dict:
+    """The ONE supervisor bootstrap of a launch directory (`begin` keys it by the launch id)."""
+    records = sorted((launch / BOOT_REL.parent).glob("watchdog-bootstrap*.json"))
+    check(len(records) == 1, f"one launch must hold ONE bootstrap record, got {records!r}")
+    return json.loads(records[0].read_text(encoding="utf-8"))
+
+
+def keyed_registry(launch: pathlib.Path, launch_id: str) -> tuple[pathlib.Path, pathlib.Path]:
+    """The registry ONE launch id owns: its permits file and its journal, both keyed by that id."""
+    state = launch / PERMITS_REL.parent
+    return (state / f"permits.launch-{launch_id}.yaml",
+            state / f"permits.ledger.launch-{launch_id}.jsonl")
+
+
+def launch_registry(launch: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    """The keyed registry the launch's ONE open bootstrap owns (`begin` keys it by that id)."""
+    return keyed_registry(launch, launch_bootstrap(launch)["launch_id"])
+
+
+def keyed_permits(launch: pathlib.Path) -> dict:
+    return json.loads(launch_registry(launch)[0].read_text(encoding="utf-8"))
 
 
 def mutate(root: pathlib.Path, permit_id: str, **fields) -> None:
@@ -1383,7 +1432,7 @@ def test_supervisor_permit_without_run_id(tmp: pathlib.Path) -> None:
     began = subprocess.run([sys.executable, str(WATCHDOG_TOOL), "begin", "--launch-dir", str(launch)],
                            capture_output=True, text=True, errors="replace")
     expect_clean_cli(began, 0, "the supervisor begins on a clean launch directory")
-    bootstrap = json.loads((launch / BOOT_REL).read_text(encoding="utf-8"))
+    bootstrap = launch_bootstrap(launch)
     check(bootstrap["run_id"] is None and bootstrap["activated"] is None,
           f"the launch bootstrap exists BEFORE any run binding: {bootstrap!r}")
     check(not (clean / PIPELINE_REL).exists() and not (clean / TASK_REL).exists(),
@@ -1432,9 +1481,10 @@ def test_launch_only_registry_transfer(tmp: pathlib.Path) -> None:
     Phase 0a has no resolved `repo_path`, so passing the unresolved target as `--repo` to
     `init`/`add` was wrong twice over: it required a repository that does not exist yet, and it put
     the permit history somewhere else than the launch. The registry must be created and populated
-    against the LAUNCH directory alone (no `--repo`), and the activation's `bind-run` must transfer
-    that SAME registry — permits and their journal — to the resolved repository once its checkpoint
-    names the run.
+    against the LAUNCH directory alone (no `--repo`), KEYED by the launch id its bootstrap carries
+    (`permits.launch-<id>.yaml` + its journal, so concurrent launches never share one file), and the
+    activation's `bind-run` must transfer that SAME registry — permits and their journal — to the
+    resolved repository once its checkpoint names the run.
     """
     launch = tmp / "split-launch"
     launch.mkdir()
@@ -1444,13 +1494,13 @@ def test_launch_only_registry_transfer(tmp: pathlib.Path) -> None:
                             "--launch-dir", str(launch)],
                            capture_output=True, text=True, errors="replace")
     expect_clean_cli(began, 0, "the supervisor begins on the launch directory")
-    bootstrap = json.loads((launch / BOOT_REL).read_text(encoding="utf-8"))
+    bootstrap = launch_bootstrap(launch)
 
     # 1. Launch-only registry: NO --repo at all, because no target exists yet.
     expect_clean_cli(run("init", "--launch-dir", str(launch)), 0,
                      "init against the launch directory only")
     check(not target.exists(), "the launch-only init must not need (or create) the target repository")
-    launch_permits = launch / PERMITS_REL
+    launch_permits, _launch_ledger = launch_registry(launch)
     check(launch_permits.is_file(), f"the launch registry must live in the launch directory: "
                                     f"{launch_permits}")
     data = json.loads(launch_permits.read_text(encoding="utf-8"))
@@ -1511,9 +1561,12 @@ def test_launch_only_registry_transfer(tmp: pathlib.Path) -> None:
                ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
     check("bind-run" in actions, f"the transfer is a journaled bind-run transition: {actions!r}")
     # The launch registry keeps no permit the target did not receive (one registry, not a fork).
-    moved = json.loads(launch_permits.read_text(encoding="utf-8")) if launch_permits.is_file() else {}
-    check(not moved.get("permits") or moved.get("run_id") == RUN_ID,
-          f"the launch registry is not left as a competing unbound fork: {moved!r}")
+    check(not launch_permits.is_file() and not (launch / PERMITS_REL).exists(),
+          f"the launch registry is retired, never left as a competing unbound fork: {launch_permits}")
+    archived = sorted(path.name for path in
+                      (launch / PERMITS_REL.parent).glob("permits*transferred-*"))
+    check(len(archived) == 2 and all(RUN_ID in name for name in archived),
+          f"the launch history is archived under its run: {archived!r}")
 
     # (review R5) The transferred verdict/binding satisfy the order audit: the verdict precedes the
     # spawn and the binding names it, judged from the wire that really ran.
@@ -1552,22 +1605,24 @@ def test_transfer_failure_is_atomic(tmp: pathlib.Path) -> None:
                              "--kind", "bootstrap", "--task-id", "bootstrap",
                              "--role", "supervisor", "--phase", "analysis"), 0,
                          "the launch-only supervisor permit")
-        permits_before = (launch / PERMITS_REL).read_bytes()
-        ledger = launch / LEDGER_REL
-        return launch, target, permits_before, ledger.read_bytes() if ledger.is_file() else None
+        launch_permits, launch_ledger = launch_registry(launch)
+        permits_before = launch_permits.read_bytes()
+        return (launch, target, permits_before,
+                launch_ledger.read_bytes() if launch_ledger.is_file() else None)
 
     def assert_failure_atomic(label: str, launch: pathlib.Path, target: pathlib.Path,
                               permits_before: bytes, ledger_before: bytes | None) -> None:
+        launch_permits, launch_ledger = launch_registry(launch)
         check(not (target / PERMITS_REL).exists(),
               f"{label}: a failed transfer must not leave a half-written target registry")
         check(not (target / LEDGER_REL).exists(),
               f"{label}: a failed transfer must not leave a half-written target journal")
-        check((launch / PERMITS_REL).read_bytes() == permits_before,
+        check(launch_permits.read_bytes() == permits_before,
               f"{label}: the launch registry must stay byte-identical")
         if ledger_before is not None:
-            check((launch / LEDGER_REL).read_bytes() == ledger_before,
+            check(launch_ledger.read_bytes() == ledger_before,
                   f"{label}: the launch journal must stay byte-identical")
-        source = json.loads((launch / PERMITS_REL).read_text(encoding="utf-8"))
+        source = json.loads(launch_permits.read_text(encoding="utf-8"))
         check(source.get("run_id") in (None, ""),
               f"{label}: the source registry is still unbound after the failed attempt: {source!r}")
         check(not list((target / ".code-factory" / "state").glob("permits.transferred-*")),
@@ -1580,7 +1635,7 @@ def test_transfer_failure_is_atomic(tmp: pathlib.Path) -> None:
         check(retried.get("run_id") == RUN_ID
               and [item["permit_id"] for item in retried["permits"]] == ["PB-supervisor"],
               f"{label}: the retried transfer delivers the same registry: {retried!r}")
-        check(not (launch / PERMITS_REL).is_file(),
+        check(not launch_registry(launch)[0].is_file(),
               f"{label}: the successful transfer retires the launch copy")
 
     # 1. The JOURNAL copy fails after the permits copy: the target must be rolled back.
@@ -1653,11 +1708,12 @@ def test_retirement_failure_is_atomic(tmp: pathlib.Path) -> None:
                              "--kind", "bootstrap", "--task-id", "bootstrap",
                              "--role", "supervisor", "--phase", "analysis"), 0,
                          "the launch-only supervisor permit")
-        return (launch, target, (launch / PERMITS_REL).read_bytes(),
-                (launch / LEDGER_REL).read_bytes())
+        launch_permits, launch_ledger = launch_registry(launch)
+        return (launch, target, launch_permits.read_bytes(), launch_ledger.read_bytes())
 
     def inject(path: pathlib.Path, label: str, launch: pathlib.Path, target: pathlib.Path,
                permits_before: bytes, ledger_before: bytes) -> None:
+        launch_permits, launch_ledger = launch_registry(launch)
         original = pg.os.replace
 
         def flaky_replace(source, destination):
@@ -1680,17 +1736,17 @@ def test_retirement_failure_is_atomic(tmp: pathlib.Path) -> None:
         check(not (target / PERMITS_REL).exists() and not (target / LEDGER_REL).exists(),
               f"{label} retirement: a failed transfer must leave NO target registry — a bound "
               f"target beside a live launch registry is a competing registry")
-        check((launch / PERMITS_REL).is_file() and (launch / LEDGER_REL).is_file(),
+        check(launch_permits.is_file() and launch_ledger.is_file(),
               f"{label} retirement: the launch registry and journal must both still exist")
-        check((launch / PERMITS_REL).read_bytes() == permits_before,
+        check(launch_permits.read_bytes() == permits_before,
               f"{label} retirement: the launch registry must stay byte-identical")
-        check((launch / LEDGER_REL).read_bytes() == ledger_before,
+        check(launch_ledger.read_bytes() == ledger_before,
               f"{label} retirement: the launch journal must stay byte-identical")
-        source = json.loads((launch / PERMITS_REL).read_text(encoding="utf-8"))
+        source = json.loads(launch_permits.read_text(encoding="utf-8"))
         check(source.get("run_id") in (None, ""),
               f"{label} retirement: the source registry must stay unbound: {source!r}")
         state = launch / ".code-factory" / "state"
-        check(not list(state.glob("permits.transferred-*")),
+        check(not list(state.glob("permits*transferred-*")),
               f"{label} retirement: a failed transfer must not leave a half-retired archive")
 
         # Retryable: the SAME command completes the transfer.
@@ -1700,15 +1756,15 @@ def test_retirement_failure_is_atomic(tmp: pathlib.Path) -> None:
         check(retried.get("run_id") == RUN_ID
               and [item["permit_id"] for item in retried["permits"]] == ["PB-supervisor"],
               f"{label} retirement: the retried transfer delivers the same registry: {retried!r}")
-        check(not (launch / PERMITS_REL).is_file(),
+        check(not launch_permits.is_file(),
               f"{label} retirement: the successful retry retires the launch copy")
 
     # 1. The first retirement rename — the permits file — fails.
     launch, target, permits_before, ledger_before = fixture("retire-permits")
-    inject(launch / PERMITS_REL, "permits", launch, target, permits_before, ledger_before)
+    inject(launch_registry(launch)[0], "permits", launch, target, permits_before, ledger_before)
     # 2. The second retirement rename — the journal — fails after the permits rename succeeded.
     launch, target, permits_before, ledger_before = fixture("retire-ledger")
-    inject(launch / LEDGER_REL, "journal", launch, target, permits_before, ledger_before)
+    inject(launch_registry(launch)[1], "journal", launch, target, permits_before, ledger_before)
 
 
 def test_rollback_restoration_failure_is_reported(tmp: pathlib.Path) -> None:
@@ -1735,13 +1791,15 @@ def test_rollback_restoration_failure_is_reported(tmp: pathlib.Path) -> None:
     expect_clean_cli(run("add", "--launch-dir", str(launch), "--permit-id", "PB-supervisor",
                          "--kind", "bootstrap", "--task-id", "bootstrap", "--role", "supervisor",
                          "--phase", "analysis"), 0, "the launch-only supervisor permit")
-    archive_permits, _archive_ledger = pg._transferred_paths(launch, RUN_ID)
+    launch_ledger = launch_registry(launch)[1]
+    archive_permits, _archive_ledger = pg._transferred_paths(
+        launch, RUN_ID, launch_bootstrap(launch)["launch_id"])
 
     original = pg.os.replace
 
     def flaky_replace(source, destination):
         path = pathlib.Path(source)
-        if path == launch / LEDGER_REL:
+        if path == launch_ledger:
             raise OSError("injected failure: the journal retirement")
         if path == archive_permits:
             raise OSError("injected failure: the launch-copy restoration")
@@ -1797,7 +1855,9 @@ def test_target_cleanup_failure_is_reported(tmp: pathlib.Path) -> None:
     expect_clean_cli(run("add", "--launch-dir", str(launch), "--permit-id", "PB-supervisor",
                          "--kind", "bootstrap", "--task-id", "bootstrap", "--role", "supervisor",
                          "--phase", "analysis"), 0, "the launch-only supervisor permit")
-    permits_before = (launch / PERMITS_REL).read_bytes()
+    launch_permits, _launch_ledger = launch_registry(launch)
+    permits_before = launch_permits.read_bytes()
+
 
     original_copy = pg._copy_atomic
     original_unlink = pg.pathlib.Path.unlink
@@ -1836,7 +1896,7 @@ def test_target_cleanup_failure_is_reported(tmp: pathlib.Path) -> None:
           f"the failure must name the target artifact that remains: {message!r}")
     check(leftover.exists(),
           "the leftover target registry must really still exist — the report must match the state")
-    check((launch / PERMITS_REL).read_bytes() == permits_before,
+    check(launch_permits.read_bytes() == permits_before,
           "the launch registry must stay byte-identical after the cleanup failure")
 
 
@@ -2059,8 +2119,9 @@ def test_launch_transfer_guards(tmp: pathlib.Path) -> None:
     expect_clean_cli(run("add", "--launch-dir", str(launch), "--permit-id", "PB-supervisor",
                          "--kind", "bootstrap", "--task-id", "bootstrap", "--role", "supervisor",
                          "--phase", "analysis"), 0, "launch-only add")
-    source_permits = (launch / PERMITS_REL).read_bytes()
-    source_ledger = (launch / LEDGER_REL).read_bytes()
+    launch_permits, launch_ledger = launch_registry(launch)
+    source_permits = launch_permits.read_bytes()
+    source_ledger = launch_ledger.read_bytes()
 
     # A target that ALREADY has a registry is never overwritten or merged into.
     occupied = tmp / "guard-occupied"
@@ -2074,7 +2135,7 @@ def test_launch_transfer_guards(tmp: pathlib.Path) -> None:
     check("already exists" in res.stderr, f"the refusal must name the conflict: {res.stderr!r}")
     check((occupied / PERMITS_REL).read_bytes() == own,
           "a refused transfer must not touch the target's registry")
-    check((launch / PERMITS_REL).read_bytes() == source_permits,
+    check(launch_permits.read_bytes() == source_permits,
           "a refused transfer must leave the launch registry in place")
 
     # The real transfer: the SAME records and journal arrive, the launch copy is retired.
@@ -2096,7 +2157,7 @@ def test_launch_transfer_guards(tmp: pathlib.Path) -> None:
           "the journal must travel verbatim, with the binding appended to it")
     check(len(copied.splitlines()) == len(source_ledger.splitlines()) + 1,
           "the transfer adds exactly the ONE bind-run transition")
-    check(not (launch / PERMITS_REL).exists() and not (launch / LEDGER_REL).exists(),
+    check(not launch_permits.exists() and not launch_ledger.exists(),
           "the launch copy must be retired, never left as a second registry")
     archived = sorted(path.name for path in
                       (launch / PERMITS_REL.parent).glob("permits*transferred-*"))
@@ -2154,7 +2215,7 @@ def test_launch_lifecycle_arguments(tmp: pathlib.Path) -> None:
     expect_clean_cli(run("verdict", "--launch-dir", str(launch), "--permit-id", "PB-supervisor",
                          "--verdict", "allow", "--evidence", "the launch bootstrap it answers"), 0,
                      "the launch verdict")
-    check(permits(launch)["permits"][0]["verdict"] == "allow"
+    check(keyed_permits(launch)["permits"][0]["verdict"] == "allow"
           and permits(other)["permits"] == [],
           "the verdict must land in the registry it names, never in another one")
 
@@ -2550,6 +2611,852 @@ def test_ledger_mixed_authorization(tmp: pathlib.Path) -> None:
     ledger_violation(res, "an edited ordinary permit")
 
 
+# --------------------------------------------------------------------------------------------
+# Defect B (run 20261125-5beb8e51): the journal append belongs to the SAME transaction as the write
+# --------------------------------------------------------------------------------------------
+
+def ledger_entries(root: pathlib.Path) -> list[dict]:
+    """The parsed journal of one fixture repository (one JSON object per line)."""
+    text = (root / LEDGER_REL).read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def test_defect_b_journal_append_is_atomic(tmp: pathlib.Path) -> None:
+    """(failing-first, Defect B) A state write whose journal append fails must not survive.
+
+    The reported defect: `bind` for `agent-2` updated `permits.yaml` while the matching `bind` line
+    never reached `permits.ledger.jsonl`. The write is two steps — replace the state file, then
+    append the transition — and a failure in the second left the FIRST in place, so the run's
+    registry held a transition its own history never recorded: exactly the divergence the append-only
+    chain exists to make impossible. The two steps must be ONE transaction, in both directions: on
+    the FIRST write (no previous file exists, so a failed `init` must leave NO registry behind) and
+    on a later write (the file the run already had comes back byte-identical).
+    """
+    # (a) The FIRST write: the journal path cannot be appended to at all — it is a directory, so the
+    #     state file is written and the append cannot follow it.
+    fresh = tmp / "defect-b-first-write"
+    state = fresh / ".code-factory" / "state"
+    state.mkdir(parents=True)
+    (fresh / PIPELINE_REL).write_text(f"run_id: {RUN_ID}\nphase: analysis\n", encoding="utf-8")
+    (fresh / PLAN_REL).write_text(PLAN, encoding="utf-8")
+    (state / LEDGER_REL.name).mkdir()
+    res = run("init", "--repo", str(fresh))
+    expect_clean_cli(res, 2, "an init whose journal cannot be appended")
+    check("ledger" in res.stderr.lower(),
+          f"the failed append must name the journal: {res.stderr!r}")
+    check(not (fresh / PERMITS_REL).exists(),
+          "a state write whose journal append failed must leave NOTHING behind: a registry without "
+          "its history is the divergence itself, and the next open would report it as an unproven "
+          "registry instead of a write that never happened")
+    check(not list(state.glob("permits.yaml.*.tmp")), "a failed write must leave no temp file")
+
+    # …and the same command succeeds once the journal path is usable again: the rollback left a
+    # clean slate, never a half-registry the retry has to work around.
+    (state / LEDGER_REL.name).rmdir()
+    expect_clean_cli(run("init", "--repo", str(fresh)), 0, "the retried init")
+    check(pg.ledger_problems(fresh) == [],
+          f"the retry must leave a consistent registry: {pg.ledger_problems(fresh)!r}")
+
+    # (b) A LATER write: the append faults after the state file is already replaced. The transition
+    #     is one transaction, so the permits file must come back byte-identical (a subprocess cannot
+    #     fail between the two writes, so the fault is injected through the module API).
+    later = repo(tmp, "defect-b-later-write")
+    allow(later, "P1")
+    permits_file = later / PERMITS_REL
+    before = permits_file.read_bytes()
+    original_append = pg._append_ledger
+
+    def failing_append(*args, **kwargs) -> None:
+        raise pg.PermitError("injected failure: the journal append")
+
+    pg._append_ledger = failing_append
+    try:
+        try:
+            pg.bind(str(later), "P1", "agent-3")
+        except pg.PermitError as exc:
+            check("injected" in str(exc), f"the injected fault must be the failure: {exc}")
+        else:
+            raise AssertionError("a bind whose journal append fails must fail")
+    finally:
+        pg._append_ledger = original_append
+    check(permits_file.read_bytes() == before,
+          "the state write and the journal append are ONE transaction: a failed append must leave "
+          "the permits file byte-identical, never advanced past the history the run recorded")
+    check(pg.ledger_problems(later) == [],
+          f"the rollback must restore a consistent registry: {pg.ledger_problems(later)!r}")
+    check(not list(permits_file.parent.glob("permits.yaml.*.tmp")),
+          "a failed write must leave no temp file behind")
+
+    # The rollback is a real restore, not a lock-out: the same transition succeeds on retry.
+    expect_clean_cli(run("bind", "--repo", str(later), "--permit-id", "P1", "--agent-id",
+                         "agent-3"), 0, "the retried bind")
+    check(ledger_entries(later)[-1]["action"] == "bind",
+          f"the retried bind is journaled: {ledger_entries(later)[-1]!r}")
+
+
+def test_defect_b_idempotent_retry_fails_loudly(tmp: pathlib.Path) -> None:
+    """(failing-first, Defect B) An idempotent retry on a DIVERGED registry must not say `unchanged`.
+
+    Every command has an "already done" shortcut: `bind` with the agent id the permit already
+    carries, `close` of an already closed permit, `bind-run` of an already bound registry, `init` of
+    an already initialised one. Those shortcuts answer `{"status": "unchanged"}` and exit 0 WITHOUT
+    looking at the journal — so on a registry whose file no longer continues the recorded history
+    they report success over a rewritten history, and the divergence is silently re-blessed by the
+    next retry. Recovery is the owner's explicit choice (`repair`), never an idempotent no-op.
+    """
+    # (a) `bind` with the SAME agent id, on a registry whose persisted evidence was hand-edited.
+    root = repo(tmp, "defect-b-idempotent-bind")
+    allow(root, "P1")
+    expect_clean_cli(run("bind", "--repo", str(root), "--permit-id", "P1", "--agent-id",
+                         "agent-3"), 0, "bind P1")
+    mutate(root, "P1", evidence="reworded after the delegation ran")
+    before = (root / PERMITS_REL).read_bytes()
+    res = run("bind", "--repo", str(root), "--permit-id", "P1", "--agent-id", "agent-3")
+    expect_clean_cli(res, 2, "a repeated bind on a diverged registry")
+    ledger_violation(res, "a repeated bind on a diverged registry")
+    check((root / PERMITS_REL).read_bytes() == before,
+          "a refused idempotent retry must leave the registry byte-identical")
+
+    # (c) `bind-run` of the registry that is already bound to THIS run: same shortcut, same answer.
+    res = run("bind-run", "--repo", str(root))
+    expect_clean_cli(res, 2, "a repeated bind-run on a diverged registry")
+    ledger_violation(res, "a repeated bind-run on a diverged registry")
+    check((root / PERMITS_REL).read_bytes() == before,
+          "a refused repeated bind-run must leave the registry byte-identical")
+
+    # (b) `close` of an already closed permit.
+    closed_root = repo(tmp, "defect-b-idempotent-close")
+    allow(closed_root, "P1")
+    expect_clean_cli(run("close", "--repo", str(closed_root), "--permit-id", "P1", "--reason",
+                         "not executed: the plan needed no separate planning round"), 0,
+                     "close P1")
+    mutate(closed_root, "P1", evidence="reworded after the closure was recorded")
+    closed_before = (closed_root / PERMITS_REL).read_bytes()
+    res = run("close", "--repo", str(closed_root), "--permit-id", "P1", "--reason",
+              "not executed: the plan needed no separate planning round")
+    expect_clean_cli(res, 2, "a repeated close on a diverged registry")
+    ledger_violation(res, "a repeated close on a diverged registry")
+    check((closed_root / PERMITS_REL).read_bytes() == closed_before,
+          "a refused repeated close must leave the registry byte-identical")
+
+    # (d) `init` of an already initialised (empty) registry whose journal says otherwise.
+    reset = repo(tmp, "defect-b-idempotent-init")
+    allow(reset, "P1", scope=("manifest.py",))
+    write_permits(reset, {"run_id": RUN_ID, "permits": []})
+    reset_before = (reset / PERMITS_REL).read_bytes()
+    res = run("init", "--repo", str(reset))
+    expect_clean_cli(res, 2, "a repeated init on a diverged registry")
+    ledger_violation(res, "a repeated init on a diverged registry")
+    check((reset / PERMITS_REL).read_bytes() == reset_before,
+          "a refused repeated init must leave the registry byte-identical")
+
+
+def test_defect_b_repair(tmp: pathlib.Path) -> None:
+    """(failing-first, Defect B) The owner's recovery is EXPLICIT, never a default.
+
+    A run whose registry no longer continues its journal (the pre-fix residue of the divergence
+    above) has exactly two honest ways out, and the owner must choose one deliberately:
+    `repair` WITHOUT `--mode` only reports the divergence (exit 2, nothing written); `--mode
+    restore` re-derives `permits.yaml` from the ledger head's recorded projection, losing the
+    unjournaled transition; `--mode attest` keeps the state on disk and appends ONE marked
+    attestation that re-anchors the chain, which is why `--note` is mandatory — the gap has to be
+    explained. Neither mode may be reached by omitting an argument, and neither is invented here:
+    the fix must implement both, so these pins fail until it does.
+    """
+    # --- the report mode: no --mode at all -------------------------------------------------------
+    restore_root = repo(tmp, "defect-b-repair-restore")
+    allow(restore_root, "P1")
+    expect_clean_cli(run("bind", "--repo", str(restore_root), "--permit-id", "P1", "--agent-id",
+                         "agent-3"), 0, "bind P1")
+    head = ledger_entries(restore_root)[-1]
+    recorded = permits(restore_root)
+    # The unjournaled transition: one persisted field rewritten AND one permit added by hand — the
+    # state the run must be able to name and then discard.
+    ghost = json.loads(json.dumps(recorded["permits"][0]))
+    ghost.update(permit_id="P-unjournaled", verdict=None, evidence="", agent_id=None,
+                 bound_at=None, session_id=None, closed=None)
+    diverged = json.loads(json.dumps(recorded))
+    diverged["permits"][0]["evidence"] = "reworded by hand after the delegation ran"
+    diverged["permits"].append(ghost)
+    write_permits(restore_root, diverged)
+    before = (restore_root / PERMITS_REL).read_bytes()
+
+    res = run("repair", "--repo", str(restore_root))
+    expect_clean_cli(res, 2, "repair without --mode")
+    ledger_violation(res, "repair without --mode")
+    check((restore_root / PERMITS_REL).read_bytes() == before,
+          "the report mode must not write: the owner has not chosen a recovery yet")
+
+    res = run("repair", "--repo", str(restore_root), "--mode", "rewrite")
+    expect_clean_cli(res, 2, "repair with an unknown mode")
+    check((restore_root / PERMITS_REL).read_bytes() == before,
+          "an unknown mode must not write either")
+
+    # --- restore: the file is re-derived from the recorded projection ---------------------------
+    res = run("repair", "--repo", str(restore_root), "--mode", "restore")
+    expect_clean_cli(res, 0, "repair --mode restore")
+    restored = permits(restore_root)
+    check(pg.state_hash(restored) == head["state"],
+          f"restore must re-derive the file the journal recorded (head {str(head['state'])[:12]}…, "
+          f"restored {pg.state_hash(restored)[:12]}…)")
+    check([permit["permit_id"] for permit in restored["permits"]]
+          == [permit["permit_id"] for permit in head["doc"]["permits"]],
+          f"the unjournaled permit is lost by restore, deliberately: {restored['permits']!r}")
+    check("reworded by hand" not in json.dumps(restored),
+          f"the unjournaled edit is gone: {restored!r}")
+    check(pg.ledger_problems(restore_root) == [],
+          f"restore must leave a consistent registry: {pg.ledger_problems(restore_root)!r}")
+    expect_clean_cli(run("add", "--repo", str(restore_root), "--permit-id", "P2", "--task-id",
+                         "task_09", "--role", "coder", "--phase", "implement", "--scope",
+                         "test_manifest.py"), 0, "a transition after the restore")
+    check(ledger_entries(restore_root)[-1]["action"] == "add",
+          f"the chain continues after a restore: {ledger_entries(restore_root)[-1]!r}")
+
+    # --- attest: the state is KEPT and the chain is re-anchored, once, with a note -------------
+    attest_root = repo(tmp, "defect-b-repair-attest")
+    allow(attest_root, "P1")
+    expect_clean_cli(run("bind", "--repo", str(attest_root), "--permit-id", "P1", "--agent-id",
+                         "agent-3"), 0, "bind P1")
+    attest_head = ledger_entries(attest_root)[-1]
+    mutate(attest_root, "P1", evidence="reworded by hand after the delegation ran")
+    kept = (attest_root / PERMITS_REL).read_bytes()
+    entries_before = len(ledger_entries(attest_root))
+
+    res = run("repair", "--repo", str(attest_root), "--mode", "attest")
+    expect_clean_cli(res, 2, "attest without a note")
+    check("note" in res.stderr.lower(), f"the missing note must be named: {res.stderr!r}")
+    res = run("repair", "--repo", str(attest_root), "--mode", "attest", "--note", "   ")
+    expect_clean_cli(res, 2, "attest with a blank note")
+    check((attest_root / PERMITS_REL).read_bytes() == kept,
+          "a refused attest must leave the registry byte-identical")
+    check(len(ledger_entries(attest_root)) == entries_before,
+          "a refused attest must not append anything")
+
+    note = "the owner attests the registry as it stands after the pre-fix divergence"
+    res = run("repair", "--repo", str(attest_root), "--mode", "attest", "--note", note)
+    expect_clean_cli(res, 0, "repair --mode attest")
+    check((attest_root / PERMITS_REL).read_bytes() == kept,
+          "attest keeps the state on disk: it re-anchors the chain, it does not rewrite the file")
+    entries = ledger_entries(attest_root)
+    check(len(entries) == entries_before + 1,
+          f"attest appends exactly ONE entry: {len(entries) - entries_before} appended")
+    check(entries[-1]["prev"] == attest_head["hash"],
+          f"the attestation continues the chain: {entries[-1]!r}")
+    check(note in json.dumps(entries[-1]) or note in str(entries[-1].get("note")),
+          f"the attestation carries the owner's note: {entries[-1]!r}")
+    check(entries[-1]["action"] not in ("init", "add", "verdict", "bind", "close", "bind-run"),
+          f"an attestation is never recorded as a transition that did not happen: "
+          f"{entries[-1]['action']!r}")
+    check(pg.ledger_problems(attest_root) == [],
+          f"attest must leave a consistent registry: {pg.ledger_problems(attest_root)!r}")
+    expect_clean_cli(run("add", "--repo", str(attest_root), "--permit-id", "P2", "--task-id",
+                         "task_09", "--role", "coder", "--phase", "implement", "--scope",
+                         "test_manifest.py"), 0, "a transition after the attestation")
+    directory = session(attest_root, [("agent-3", "factory-coder",
+                                       int(time.time() * 1000) + 60000)])
+    expect_clean_cli(audit(attest_root, directory), 0, "the attested registry")
+
+
+RESUMED_RUN_ID = "20261123-8ab3e96d"
+
+
+def paused_run_fixture(tmp: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    """A synthetic PAUSED run: begun+activated supervisor, checkpoint, closed coder-task09 permit.
+
+    Business test 2 resumes a run that was interrupted mid-implementation, so the fixture is built
+    the way the flow builds one: the supervisor begins first, observes Phase 0 in the mandated
+    order, activates against the checkpoint, and the run then registers, allows and CLOSES the
+    coder permit for task_09 because the run paused before it could be delegated. The launch
+    directory keeps ONE legacy (unkeyed) bootstrap — the record the resume must FIND, not re-begin.
+    """
+    launch = tmp / "resume-launch"
+    launch.mkdir()
+    began = subprocess.run([sys.executable, str(WATCHDOG_TOOL), "begin",
+                            "--launch-dir", str(launch)],
+                           capture_output=True, text=True, errors="replace")
+    expect_clean_cli(began, 0, "the paused run's supervisor begins")
+
+    root = tmp / "resume-repo"
+    state = root / ".code-factory" / "state"
+    state.mkdir(parents=True)
+    (root / PIPELINE_REL).write_text(
+        f"run_id: {RESUMED_RUN_ID}\nphase: implement\nstatus: in_progress\n"
+        f"updated_at: 2026-11-23T07:10:42+00:00\nlaunch_dir: {launch}\n"
+        "retry_counters:\n  coder: 1\n  tester: 2\n"
+        "owner_authorizations:\n"
+        "  - 2026-11-23T07:00:00Z permit=P-coder-task09 role=coder mode=hitl\n",
+        encoding="utf-8")
+    (root / PLAN_REL).write_text(PLAN, encoding="utf-8")
+    for position, event in enumerate(("parse", "resolve", "memory-read", "run-id")):
+        observed = subprocess.run([sys.executable, str(WATCHDOG_TOOL), "observe",
+                                   "--launch-dir", str(launch), "--event", event,
+                                   "--seq", str(position)],
+                                  capture_output=True, text=True, errors="replace")
+        expect_clean_cli(observed, 0, f"the paused run's Phase 0 observation {event}")
+    activated = subprocess.run([sys.executable, str(WATCHDOG_TOOL), "activate",
+                                "--launch-dir", str(launch), "--repo", str(root)],
+                               capture_output=True, text=True, errors="replace")
+    expect_clean_cli(activated, 0, "the paused run's activation")
+
+    expect_clean_cli(run("init", "--repo", str(root)), 0, "the paused run's permits")
+    expect_clean_cli(run("add", "--repo", str(root), "--permit-id", "P-coder-task09",
+                         "--task-id", "task_09", "--role", "coder", "--phase", "implement",
+                         "--scope", "manifest.py"), 0, "the paused run's coder permit")
+    expect_clean_cli(run("verdict", "--repo", str(root), "--permit-id", "P-coder-task09",
+                         "--verdict", "allow", "--evidence", "task_09 is in the approved plan"), 0,
+                     "the paused run's verdict")
+    expect_clean_cli(run("close", "--repo", str(root), "--permit-id", "P-coder-task09", "--reason",
+                         "never delegated: the run paused before task_09"), 0,
+                     "the paused run's unused permit is closed")
+    return launch, root
+
+
+def test_defect_b_resume_fixture(tmp: pathlib.Path) -> None:
+    """(business test 2) A paused run RESUMES on its own records — nothing is re-initialised.
+
+    The run was interrupted mid-implementation with its supervisor bootstrap already activated, its
+    counters and owner-authorization journal in the checkpoint, and the coder permit for task_09
+    allowed-but-never-delegated and closed. Resuming must FIND that: the registry keeps its run
+    binding and a chain that verifies, the launch bootstrap is the ONE the run began (no second
+    bootstrap), the checkpoint is untouched by the permit trail, and task_09 is delegatable again
+    under a FRESH owner authorization without reopening the closed permit.
+    """
+    launch, root = paused_run_fixture(tmp)
+    checkpoint_before = (root / PIPELINE_REL).read_bytes()
+
+    # The run is found as it was: same run id, intact chain, closed permit and all.
+    check(pg.pipeline_run_id(root) == RESUMED_RUN_ID,
+          f"the paused run's checkpoint must be found: {pg.pipeline_run_id(root)!r}")
+    check(pg.ledger_problems(root) == [],
+          f"the paused run's permit history must verify: {pg.ledger_problems(root)!r}")
+    recorded = permits(root)
+    check(recorded["run_id"] == RESUMED_RUN_ID,
+          f"the registry stays bound to the paused run: {recorded!r}")
+    check([permit["permit_id"] for permit in recorded["permits"]] == ["P-coder-task09"]
+          and recorded["permits"][0]["closed"] is not None,
+          f"the closed task_09 permit is intact: {recorded['permits']!r}")
+
+    # Nothing re-initialises the run's permit trail.
+    res = run("init", "--repo", str(root))
+    expect_clean_cli(res, 2, "a second init while resuming")
+    check("already lists" in res.stderr,
+          f"the resume must not re-create the registry: {res.stderr!r}")
+
+    # The supervisor bootstrap is the ONE the paused run began and activated — the resume finds it
+    # rather than beginning a second one (a completed/abandoned one would be history, not this run).
+    bootstraps = sorted(path.name
+                        for path in (launch / BOOT_REL.parent).glob("watchdog-bootstrap*.json"))
+    check(len(bootstraps) == 1,
+          f"the resume must find the run's ONE bootstrap, never begin a second: {bootstraps!r}")
+    anchor = pg.launch_anchor(launch)
+    check(anchor["activated"] and anchor["activated"].get("run_id") == RESUMED_RUN_ID,
+          f"the launch bootstrap is bound to the paused run: {anchor!r}")
+
+    # The checkpoint the resume depends on — counters and the owner's own decision — is readable
+    # through the shared checkpoint contract and untouched by everything above.
+    text = (root / PIPELINE_REL).read_text(encoding="utf-8")
+    check(dg.read_counters(text) == {"coder": 1, "tester": 2},
+          f"the retry counters must survive the resume: {dg.read_counters(text)!r}")
+    check(any("permit=P-coder-task09" in note for note in dg.authorization_notes(text)),
+          f"the owner's decision must survive the resume: {dg.authorization_notes(text)!r}")
+
+    # task_09 is delegatable again under a FRESH permit — the closed one stays closed.
+    directory = session(root, [("agent-sup", "factory-supervisor",
+                                int(time.time() * 1000) - 5000),
+                               ("agent-9", "factory-coder", int(time.time() * 1000) + 60000)])
+    expect_clean_cli(run("add", "--repo", str(root), "--permit-id", "P-coder-task09-resume",
+                         "--task-id", "task_09", "--role", "coder", "--phase", "implement",
+                         "--scope", "manifest.py"), 0, "a fresh task_09 permit after the resume")
+    expect_clean_cli(run("verdict", "--repo", str(root), "--permit-id", "P-coder-task09-resume",
+                         "--verdict", "allow",
+                         "--evidence", "the owner re-authorized task_09 after the resume"), 0,
+                     "a fresh verdict precedes the resumed delegation")
+    expect_clean_cli(run("bind", "--repo", str(root), "--permit-id", "P-coder-task09-resume",
+                         "--agent-id", "agent-9"), 0, "the resumed delegation is bound")
+    expect_clean_cli(audit(root, directory), 0,
+                     "the resumed run's audit passes with its closed permit and the fresh one")
+    resumed = permits(root)
+    check([permit["closed"] is None for permit in resumed["permits"]] == [False, True],
+          f"the closed permit stays closed and the fresh one stays open: {resumed['permits']!r}")
+
+    check((root / PIPELINE_REL).read_bytes() == checkpoint_before,
+          "the permit trail never rewrites the run's checkpoint: counters, phase, run_id and the "
+          "owner's decision are the resume's evidence, not its workspace")
+
+
+# --------------------------------------------------------------------------------------------
+# Defect C (run 20261125-5beb8e51): the launch-scoped registry is KEYED per launch, never shared
+# --------------------------------------------------------------------------------------------
+
+LAUNCH_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
+LAUNCH_STATE_REL = pathlib.Path(".code-factory") / "state"
+TRANSFER_RUN_ID = "20261126-4d5e6f70"
+
+
+def bootstrap_file(launch: pathlib.Path, launch_id: str) -> pathlib.Path:
+    """The bootstrap `begin` wrote for ONE launch id (a run-keyed record, never a shared file)."""
+    return launch / LAUNCH_STATE_REL / f"watchdog-bootstrap-{launch_id}.json"
+
+
+def begin_launch(launch: pathlib.Path, label: str) -> str:
+    """Begin one supervisor run on `launch` and return the run-keyed launch id it recorded."""
+    began = subprocess.run([sys.executable, str(WATCHDOG_TOOL), "begin",
+                            "--launch-dir", str(launch)],
+                           capture_output=True, text=True, errors="replace")
+    expect_clean_cli(began, 0, label)
+    launch_id = payload(began).get("launch_id")
+    check(isinstance(launch_id, str) and bool(LAUNCH_ID_RE.match(launch_id)),
+          f"{label}: `begin` must return the run-keyed launch id ({LAUNCH_ID_RE.pattern}): "
+          f"{began.stdout!r}")
+    check(bootstrap_file(launch, launch_id).is_file(),
+          f"{label}: the launch bootstrap must be keyed per launch, never one shared file")
+    return launch_id
+
+
+def begun_at(launch: pathlib.Path, launch_id: str) -> str:
+    """The moment the launch id's OWN bootstrap began — the anchor its permits answer."""
+    return json.loads(bootstrap_file(launch, launch_id).read_text(encoding="utf-8"))["begun_at"]
+
+
+def supervisor_permit(launch: pathlib.Path, launch_id: str, permit_id: str, label: str) -> None:
+    """Register + allow + bind the pre-run supervisor permit in the launch id's OWN registry."""
+    key = ["--launch-dir", str(launch), "--launch-id", launch_id]
+    expect_clean_cli(run("add", *key, "--permit-id", permit_id, "--kind", "bootstrap",
+                         "--task-id", "bootstrap", "--role", "supervisor", "--phase", "analysis"),
+                     0, f"{label}: add")
+    expect_clean_cli(run("verdict", *key, "--permit-id", permit_id, "--verdict", "allow",
+                         "--evidence", "the launch bootstrap this permit answers"), 0,
+                     f"{label}: verdict")
+    expect_clean_cli(run("bind", *key, "--permit-id", permit_id,
+                         "--agent-id", f"agent-{permit_id}"), 0, f"{label}: bind")
+
+
+def journal_actions(path: pathlib.Path) -> list[str]:
+    """The transition names of one journal, in the order they were appended."""
+    return [json.loads(line)["action"] for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+
+
+def test_defect_c_keyed_launch_registry(tmp: pathlib.Path) -> None:
+    """(failing-first, Defect C) Two runs in ONE launch folder never share a mutable file.
+
+    The reported defect: the launch-scoped registry had ONE fixed path
+    (`<launch>/.code-factory/state/permits.yaml`), so a factory launched from a folder that another
+    factory already uses read and rewrote ITS permits and ITS journal: two runs, one history, and
+    each saw the other's permits as its own. The launch folder is owner input shared by concurrent
+    runs, so every launch-scoped record must be keyed by the launch id `begin` recorded, and each
+    run's permits, journal and binding must stay its own — never a shared file, never a merge.
+    """
+    launch = tmp / "keyed-launch"
+    launch.mkdir()
+    first = begin_launch(launch, "the first run begins")
+    second = begin_launch(launch, "the second run begins in the SAME launch folder")
+    check(first != second, "a second run from one launch folder needs its OWN launch id")
+
+    permits_a, ledger_a = keyed_registry(launch, first)
+    permits_b, ledger_b = keyed_registry(launch, second)
+    for launch_id in (first, second):
+        expect_clean_cli(run("init", "--launch-dir", str(launch), "--launch-id", launch_id), 0,
+                         f"the init of launch {launch_id}")
+    for path in (permits_a, ledger_a, permits_b, ledger_b):
+        check(path.is_file(), f"a keyed launch registry must own its own file: {path}")
+    check(not (launch / PERMITS_REL).exists() and not (launch / LEDGER_REL).exists(),
+          "a keyed launch registry must never fall back to the ONE shared unkeyed file")
+    check(not (launch / BOOT_REL).exists(),
+          "the bootstrap is keyed too: one shared bootstrap record is the same defect")
+
+    supervisor_permit(launch, first, "PB-supervisor", "the first run's supervisor")
+    kept_a = permits_a.read_text(encoding="utf-8")
+    check(begun_at(launch, first) in kept_a and begun_at(launch, second) not in kept_a,
+          "a keyed permit is anchored to ITS OWN launch bootstrap, never to a sibling launch's")
+    check(json.loads(permits_b.read_text(encoding="utf-8"))["permits"] == [],
+          "run A's permit must not appear in run B's registry")
+
+    supervisor_permit(launch, second, "PB-supervisor-b", "the second run's supervisor")
+    check(permits_a.read_text(encoding="utf-8") == kept_a,
+          "run B's lifecycle must leave run A's registry byte-identical")
+    for path, label in ((ledger_a, "first"), (ledger_b, "second")):
+        check(journal_actions(path) == ["init", "add", "verdict", "bind"],
+              f"the {label} launch keeps its OWN chain: {journal_actions(path)!r}")
+    for path, permit_id, agent_id in ((permits_a, "PB-supervisor", "agent-PB-supervisor"),
+                                      (permits_b, "PB-supervisor-b", "agent-PB-supervisor-b")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        check([permit["permit_id"] for permit in data["permits"]] == [permit_id]
+              and data["permits"][0]["verdict"] == "allow"
+              and data["permits"][0]["agent_id"] == agent_id,
+              f"the judged, bound permit of one launch is its own record: {data!r}")
+
+
+def test_defect_c_keyed_transfer(tmp: pathlib.Path) -> None:
+    """(failing-first, Defect C) `bind-run` transfers the ONE keyed registry it names.
+
+    The transfer is the activation's move of a pre-run registry into the resolved repository. With
+    one registry per launch id, `--launch-id` names WHICH launch's registry travels: its permits and
+    its journal arrive bound to that run, the transferred launch copy is retired, and the records of
+    the sibling launch — still in flight — are not even read. A transfer that cannot say which
+    launch it means is refused, never guessed.
+    """
+    launch = tmp / "keyed-transfer"
+    launch.mkdir()
+    first = begin_launch(launch, "transfer: the first run begins")
+    second = begin_launch(launch, "transfer: the second run begins")
+    for launch_id in (first, second):
+        expect_clean_cli(run("init", "--launch-dir", str(launch), "--launch-id", launch_id), 0,
+                         f"transfer: the init of launch {launch_id}")
+    supervisor_permit(launch, first, "PB-supervisor", "transfer: the first run's supervisor")
+    supervisor_permit(launch, second, "PB-supervisor-b", "transfer: the second run's supervisor")
+    permits_a, ledger_a = keyed_registry(launch, first)
+    permits_b, ledger_b = keyed_registry(launch, second)
+    kept_b = (permits_b.read_bytes(), ledger_b.read_bytes())
+
+    # A transfer that does not say WHICH launch is refused, and nothing moves.
+    target = tmp / "keyed-transfer-target"
+    (target / ".code-factory" / "state").mkdir(parents=True)
+    (target / PIPELINE_REL).write_text(f"run_id: {RUN_ID}\nphase: w2\n", encoding="utf-8")
+    (target / PLAN_REL).write_text(PLAN, encoding="utf-8")
+    res = run("bind-run", "--launch-dir", str(launch), "--repo", str(target))
+    expect_clean_cli(res, 2, "a transfer over two open launches without --launch-id")
+    check(first in res.stderr and second in res.stderr,
+          f"the refusal must name both launch ids: {res.stderr!r}")
+    check(not (target / PERMITS_REL).exists(), "a refused ambiguous transfer must write nothing")
+
+    expect_clean_cli(run("bind-run", "--launch-dir", str(launch), "--repo", str(target),
+                         "--launch-id", first), 0, "the keyed transfer of run A's registry")
+    bound = permits(target)
+    check(bound["run_id"] == RUN_ID
+          and [permit["permit_id"] for permit in bound["permits"]] == ["PB-supervisor"]
+          and bound["permits"][0]["verdict"] == "allow"
+          and bound["permits"][0]["agent_id"] == "agent-PB-supervisor",
+          f"the keyed registry must arrive as its own judged record: {bound!r}")
+    check(journal_actions(target / LEDGER_REL)
+          == ["init", "add", "verdict", "bind", "bind-run"],
+          f"the transfer adds exactly the ONE bind-run transition: "
+          f"{journal_actions(target / LEDGER_REL)!r}")
+    check(not permits_a.exists() and not ledger_a.exists(),
+          "the transferred launch copy is retired, never left as a live fork")
+    check((permits_b.read_bytes(), ledger_b.read_bytes()) == kept_b,
+          "the sibling launch still in flight is not touched by the transfer")
+
+    # The sibling transfers to ITS run, and the two targets keep their OWN launch's registry.
+    other = tmp / "keyed-transfer-other"
+    (other / ".code-factory" / "state").mkdir(parents=True)
+    (other / PIPELINE_REL).write_text(f"run_id: {TRANSFER_RUN_ID}\nphase: w2\n", encoding="utf-8")
+    (other / PLAN_REL).write_text(PLAN, encoding="utf-8")
+    expect_clean_cli(run("bind-run", "--launch-dir", str(launch), "--repo", str(other),
+                         "--launch-id", second), 0, "the keyed transfer of run B's registry")
+    check(permits(other)["run_id"] == TRANSFER_RUN_ID
+          and [permit["permit_id"] for permit in permits(other)["permits"]] == ["PB-supervisor-b"],
+          f"the second run's registry is bound to ITS own run: {permits(other)!r}")
+    check(permits(target)["permits"][0]["permit_id"] == "PB-supervisor",
+          "the first target must never inherit the second launch's registry")
+    res = run("bind-run", "--launch-dir", str(launch), "--repo", str(target), "--launch-id", first)
+    expect_clean_cli(res, 2, "a repeated keyed transfer")
+    check(permits(target)["permits"][0]["permit_id"] == "PB-supervisor",
+          "a refused repeated transfer must leave the target's registry untouched")
+
+
+def test_defect_c_launch_id_validation(tmp: pathlib.Path) -> None:
+    """(failing-first, Defect C) The launch id is a FILENAME component, so it is validated.
+
+    A launch id becomes `permits.launch-<id>.yaml`: a separator, a `..`, an empty value or a
+    plausible-looking typo would either escape the state directory or silently name a registry that
+    is not the launch's. Every command that takes `--launch-id` refuses a value outside the nonce
+    shape `YYYYMMDD-HHMMSS-<6 hex>` and writes nothing.
+    """
+    launch = tmp / "invalid-launch"
+    launch.mkdir()
+    only = begin_launch(launch, "the guarded launch begins")
+    expect_clean_cli(run("init", "--launch-dir", str(launch), "--launch-id", only), 0,
+                     "the well-formed launch id of this launch is accepted")
+    state = launch / LAUNCH_STATE_REL
+    before = sorted(path.name for path in state.iterdir())
+    for bad in ("", "../escape", "20261125-101500-XYZXYZ", "20261125-1015-0a1b2c", "permits"):
+        res = run("init", "--launch-dir", str(launch), "--launch-id", bad)
+        expect_clean_cli(res, 2, f"init with the launch id {bad!r}")
+        check("launch-id" in res.stderr.lower(),
+              f"the refusal of {bad!r} must name --launch-id: {res.stderr!r}")
+    check(sorted(path.name for path in state.iterdir()) == before,
+          f"an invalid launch id must write nothing: {sorted(p.name for p in state.iterdir())!r}")
+    # …and a well-formed id that never began is an actionable refusal, not an invented anchor.
+    res = run("init", "--launch-dir", str(launch), "--launch-id", "20260101-000000-abcdef")
+    expect_clean_cli(res, 2, "init naming a launch id that never began")
+    check("20260101-000000-abcdef" in res.stderr,
+          f"the unknown launch id must be named: {res.stderr!r}")
+
+
+def test_defect_c_launch_id_resolution(tmp: pathlib.Path) -> None:
+    """(failing-first, Defect C) ONE open launch resolves by itself; SEVERAL are refused loudly.
+
+    Phase 0 does not know the launch id it is about to use, and the owner must not have to pass it
+    for the common single-run case: the resolver takes the ONE uncompleted launch of the folder.
+    Concurrency is exactly where that guess would be wrong, so two open launches without an
+    explicit `--launch-id` are an exit-2 refusal that LISTS the ids — a run must never write its
+    supervisor's permits into the other run's registry.
+    """
+    launch = tmp / "resolve-launch"
+    launch.mkdir()
+    only = begin_launch(launch, "the only run begins")
+    expect_clean_cli(run("init", "--launch-dir", str(launch)), 0, "an id-less init of ONE launch")
+    permits_only, ledger_only = keyed_registry(launch, only)
+    check(permits_only.is_file() and ledger_only.is_file(),
+          "the resolver must key the registry by the ONE uncompleted launch id")
+    check(not (launch / PERMITS_REL).exists(),
+          "no unkeyed registry may be created beside a keyed one")
+
+    second = begin_launch(launch, "a second run begins in the same folder")
+    expect_clean_cli(run("init", "--launch-dir", str(launch), "--launch-id", second), 0,
+                     "the second launch's own init")
+    res = run("init", "--launch-dir", str(launch))
+    expect_clean_cli(res, 2, "an id-less init over TWO open launches")
+    check(only in res.stderr and second in res.stderr and "--launch-id" in res.stderr,
+          f"the ambiguity must list both launch ids and demand --launch-id: {res.stderr!r}")
+
+    # The same refusal guards every command that names a launch registry.
+    expect_clean_cli(run("add", "--launch-dir", str(launch), "--launch-id", second,
+                         "--permit-id", "PB-supervisor-b", "--kind", "bootstrap",
+                         "--task-id", "bootstrap", "--role", "supervisor", "--phase", "analysis"),
+                     0, "a permit in the second launch's registry")
+    res = run("verdict", "--launch-dir", str(launch), "--permit-id", "PB-supervisor-b",
+              "--verdict", "allow", "--evidence", "x")
+    expect_clean_cli(res, 2, "an id-less verdict over TWO open registries")
+    check(only in res.stderr and second in res.stderr,
+          f"the verdict refusal must name both launch ids: {res.stderr!r}")
+
+
+def legacy_launch_registry(launch: pathlib.Path) -> None:
+    """A launch-scoped registry EXACTLY as the PRE-fix tree left it: unkeyed names, one chain."""
+    (launch / LAUNCH_STATE_REL).mkdir(parents=True, exist_ok=True)
+    (launch / BOOT_REL).write_text(json.dumps(
+        {"begun_at": "2026-11-23T07:00:00+00:00", "run_id": None, "events": [], "activated": None,
+         "completed": None, "history": []}, indent=2) + "\n", encoding="utf-8")
+    doc = {"run_id": "", "permits": [{
+        "permit_id": "PB-supervisor", "kind": "bootstrap", "task_id": "bootstrap",
+        "role": "supervisor", "phase": "analysis", "scope": [], "constraints": [],
+        "created_at": "2026-11-23T07:00:01+00:00", "verdict": None, "evidence": "",
+        "verdict_at": None, "verdict_at_ms": None, "agent_id": None, "bound_at": None,
+        "closed": None}]}
+    (launch / PERMITS_REL).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    entry = {"seq": 1, "prev": pg.GENESIS_HASH, "run_id": "", "action": "add",
+             "permit_id": "PB-supervisor", "at": "2026-11-23T07:00:01+00:00", "note": None,
+             "state": pg.state_hash(doc), "doc": pg.state_projection(doc)}
+    entry["hash"] = pg._entry_hash(entry)
+    (launch / LEDGER_REL).write_text(pg._canonical(entry) + "\n", encoding="utf-8")
+
+
+def test_defect_c_legacy_launch_resume(tmp: pathlib.Path) -> None:
+    """(failing-first, Defect C) An in-flight LEGACY launch registry stays resumable, unmigrated.
+
+    A run interrupted before the fix left ONE unkeyed launch registry. The keyed naming must not
+    orphan it: with no keyed registry beside it, `--launch-dir` (no `--launch-id`) resolves the
+    legacy file, its lifecycle transitions land THERE, and `bind-run` transfers it as it stands.
+    Migration would be a silent rewrite of a run's live history, so the legacy names stay until the
+    transfer retires them.
+    """
+    launch = tmp / "legacy-launch"
+    launch.mkdir()
+    legacy_launch_registry(launch)
+    check(pg.ledger_problems(launch) == [],
+          f"the legacy fixture must verify as a registry: {pg.ledger_problems(launch)!r}")
+
+    expect_clean_cli(run("verdict", "--launch-dir", str(launch), "--permit-id", "PB-supervisor",
+                         "--verdict", "allow", "--evidence", "the legacy launch bootstrap"), 0,
+                     "a verdict in the legacy launch registry")
+    check(not list((launch / LAUNCH_STATE_REL).glob("permits.launch-*")),
+          "an in-flight legacy registry is resolved, never silently migrated to a keyed name")
+    expect_clean_cli(run("bind", "--launch-dir", str(launch), "--permit-id", "PB-supervisor",
+                         "--agent-id", "agent-sup"), 0, "a binding in the legacy launch registry")
+    check(permits(launch)["permits"][0]["agent_id"] == "agent-sup",
+          "the lifecycle must write into the legacy file the launch already had")
+
+    root = tmp / "legacy-target"
+    (root / ".code-factory" / "state").mkdir(parents=True)
+    (root / PIPELINE_REL).write_text(f"run_id: {RUN_ID}\nphase: w2\n", encoding="utf-8")
+    (root / PLAN_REL).write_text(PLAN, encoding="utf-8")
+    expect_clean_cli(run("bind-run", "--launch-dir", str(launch), "--repo", str(root)), 0,
+                     "the legacy registry is transferred at activation")
+    bound = permits(root)
+    check(bound["run_id"] == RUN_ID
+          and [permit["permit_id"] for permit in bound["permits"]] == ["PB-supervisor"]
+          and bound["permits"][0]["agent_id"] == "agent-sup",
+          f"the legacy records must arrive intact and bound to the run: {bound!r}")
+    check(journal_actions(root / LEDGER_REL)
+          == ["add", "verdict", "bind", "bind-run"],
+          f"the legacy chain must travel verbatim: {journal_actions(root / LEDGER_REL)!r}")
+
+
+def test_same_folder_keyed_transfer(tmp: pathlib.Path) -> None:
+    """(round-1 rework, CRITICAL) A launch folder that IS the repository still transfers its key.
+
+    The factory is routinely launched from the directory it works in, so `--launch-dir` and `--repo`
+    are the SAME path. The transfer used to shortcut that equality into a legacy in-place binding:
+    it ignored the keyed launch registry the run had just created, found no unkeyed `permits.yaml`,
+    and refused activation with "no permits file … run init --repo" — the run's own supervisor
+    permit was unreachable, and had a stale unkeyed file happened to exist it would have been bound
+    instead while the keyed one stayed a second live registry. A KEYED launch registry must travel
+    and be retired exactly as from any other folder; only a LEGACY unkeyed registry — which already
+    IS the run's own name — stays where it lies.
+    """
+    root = tmp / "same-folder"
+    root.mkdir()
+    launch_id = begin_launch(root, "a factory launched from its own directory begins")
+    expect_clean_cli(run("init", "--launch-dir", str(root), "--launch-id", launch_id), 0,
+                     "the launch-only init of the same folder")
+    supervisor_permit(root, launch_id, "PB-supervisor", "the same-folder supervisor")
+    keyed_permits, keyed_ledger = keyed_registry(root, launch_id)
+    kept = (keyed_permits.read_bytes(), keyed_ledger.read_bytes())
+    check(not (root / PERMITS_REL).exists(),
+          "the launch registry is keyed: the run's own file must not exist before activation")
+
+    (root / PIPELINE_REL).write_text(f"run_id: {RUN_ID}\nphase: w2\n", encoding="utf-8")
+    (root / PLAN_REL).write_text(PLAN, encoding="utf-8")
+    expect_clean_cli(run("bind-run", "--launch-dir", str(root), "--repo", str(root)), 0,
+                     "the same-folder transfer at activation")
+    bound = permits(root)
+    check(bound["run_id"] == RUN_ID
+          and [permit["permit_id"] for permit in bound["permits"]] == ["PB-supervisor"]
+          and bound["permits"][0]["verdict"] == "allow"
+          and bound["permits"][0]["agent_id"] == "agent-PB-supervisor",
+          f"the keyed launch registry must arrive as the run's judged record: {bound!r}")
+    check(journal_actions(root / LEDGER_REL)
+          == ["init", "add", "verdict", "bind", "bind-run"],
+          f"the transfer adds exactly the ONE bind-run transition: "
+          f"{journal_actions(root / LEDGER_REL)!r}")
+    check(not keyed_permits.exists() and not keyed_ledger.exists(),
+          "the transferred launch copy is retired in the same folder, never left beside the run's "
+          "registry as a second live history")
+    state = root / LAUNCH_STATE_REL
+    archived_permits = list(state.glob(f"permits.launch-{launch_id}.transferred-*.yaml"))
+    archived_ledger = list(state.glob(f"permits.ledger.launch-{launch_id}.transferred-*.jsonl"))
+    check(len(archived_permits) == 1 and len(archived_ledger) == 1
+          and RUN_ID in archived_permits[0].name and RUN_ID in archived_ledger[0].name,
+          f"the launch copy is archived under its run: {sorted(p.name for p in state.iterdir())!r}")
+    check((archived_permits[0].read_bytes(), archived_ledger[0].read_bytes()) == kept,
+          "the archive keeps the launch's OWN bytes: the same registry travelled, never a rewrite")
+    check(pg.ledger_problems(root) == [],
+          f"the transferred registry must verify: {pg.ledger_problems(root)!r}")
+
+    # Once transferred, the keyed file is retired, so a repeated command resolves the run's OWN
+    # registry: it is the idempotent "already bound to THIS run" answer, and it still verifies the
+    # chain — never a second transfer, never a merge.
+    before = (root / PERMITS_REL).read_bytes()
+    res = run("bind-run", "--launch-dir", str(root), "--repo", str(root))
+    expect_clean_cli(res, 0, "a repeated same-folder transfer")
+    check(payload(res).get("status") == "unchanged"
+          and (root / PERMITS_REL).read_bytes() == before and pg.ledger_problems(root) == [],
+          f"a repeated command must answer `unchanged` over the run's own verified registry: "
+          f"{res.stdout!r}")
+
+    # A LEGACY unkeyed launch registry in the same folder is already the run's own file: it is
+    # bound where it lies, never "transferred" onto itself.
+    legacy = tmp / "same-folder-legacy"
+    legacy.mkdir()
+    legacy_launch_registry(legacy)
+    (legacy / PIPELINE_REL).write_text(f"run_id: {RUN_ID}\nphase: w2\n", encoding="utf-8")
+    (legacy / PLAN_REL).write_text(PLAN, encoding="utf-8")
+    expect_clean_cli(run("bind-run", "--launch-dir", str(legacy), "--repo", str(legacy)), 0,
+                     "the in-place binding of a legacy same-folder registry")
+    check(permits(legacy)["run_id"] == RUN_ID
+          and journal_actions(legacy / LEDGER_REL) == ["add", "bind-run"],
+          f"the legacy registry is bound in place: {journal_actions(legacy / LEDGER_REL)!r}")
+    check(not list((legacy / LAUNCH_STATE_REL).glob("permits*transferred-*")),
+          "an in-place binding archives nothing: there is no launch copy to retire")
+
+
+def test_partial_journal_append_is_rolled_back(tmp: pathlib.Path) -> None:
+    """(round-1 rework, major) A SHORT journal write must not leave a truncated tail behind.
+
+    The state/append transaction restored `permits.yaml` but never the journal itself, so an append
+    that wrote half a line and then failed left a truncated entry at the tail. That residue is
+    reported by the chain check as corruption — the run would be locked out of its own registry by
+    its own failed command. The journal's byte image is taken BEFORE the write, a partial entry is
+    restored to it (a journal the append was creating is removed), and the retry then succeeds.
+    """
+    root = repo(tmp, "partial-append")
+    allow(root, "P1")
+    check(callable(getattr(pg, "_append_line", None)),
+          "the journal append must be ONE named write step, so a partial write can be restored "
+          "instead of being left as a truncated tail")
+    permits_file = root / PERMITS_REL
+    ledger_file = root / LEDGER_REL
+    permits_before = permits_file.read_bytes()
+    ledger_before = ledger_file.read_bytes()
+    entries_before = len(ledger_entries(root))
+    original = pg._append_line
+
+    def short_write(path: pathlib.Path, line: str) -> None:
+        with open(path, "a", encoding="utf-8", newline="\n") as stream:
+            stream.write(line[: len(line) // 2])       # exactly the residue a cut write leaves
+        raise OSError("injected failure: the journal write was cut short")
+
+    pg._append_line = short_write
+    try:
+        try:
+            pg.bind(str(root), "P1", "agent-3")
+        except pg.PermitError as exc:
+            check("injected" in str(exc), f"the injected fault must be the failure: {exc}")
+        else:
+            raise AssertionError("a bind whose journal append is cut short must fail")
+    finally:
+        pg._append_line = original
+    check(permits_file.read_bytes() == permits_before,
+          "the state write and the journal append are ONE transaction: the permits file must come "
+          "back byte-identical")
+    check(ledger_file.read_bytes() == ledger_before,
+          "a partial journal line must be restored to the previous byte image: a truncated tail "
+          "is not the run's history, and the chain check would call it corruption")
+    check(pg.ledger_problems(root) == [],
+          f"the rollback must leave a chained journal: {pg.ledger_problems(root)!r}")
+    check(not list(ledger_file.parent.glob("permits.ledger.jsonl.*.tmp")),
+          "a failed append must leave no temp file behind")
+    expect_clean_cli(run("bind", "--repo", str(root), "--permit-id", "P1", "--agent-id",
+                         "agent-3"), 0, "the retried bind")
+    check(len(ledger_entries(root)) == entries_before + 1
+          and journal_actions(ledger_file)[-1] == "bind",
+          f"the retry appends exactly the ONE transition it lost: "
+          f"{journal_actions(ledger_file)!r}")
+
+    # The FIRST append of a run: a cut write must leave NO journal at all (not a lone half-line).
+    fresh = tmp / "partial-append-first"
+    (fresh / PIPELINE_REL).parent.mkdir(parents=True)
+    (fresh / PIPELINE_REL).write_text(f"run_id: {RUN_ID}\nphase: analysis\n", encoding="utf-8")
+    pg._append_line = short_write
+    try:
+        try:
+            pg.init(str(fresh))
+        except pg.PermitError as exc:
+            check("injected" in str(exc), f"the injected fault must be the failure: {exc}")
+        else:
+            raise AssertionError("an init whose journal append is cut short must fail")
+    finally:
+        pg._append_line = original
+    check(not (fresh / LEDGER_REL).exists(),
+          "a journal the failed append was CREATING must be removed, never left as a half-line")
+    check(not (fresh / PERMITS_REL).exists(),
+          "a first write whose journal append failed must leave NO registry behind")
+    expect_clean_cli(run("init", "--repo", str(fresh)), 0, "the retried init")
+    check(pg.ledger_problems(fresh) == [] and journal_actions(fresh / LEDGER_REL) == ["init"],
+          f"the retry leaves a clean, chained history: {pg.ledger_problems(fresh)!r}")
+
+
+def test_init_is_defined_once() -> None:
+    """(round-1 rework, minor) ONE `init` implementation — the dead duplicate must not come back.
+
+    `init` grew a `--launch-id` (the keyed launch registry), which was added as a SECOND definition
+    below the old unkeyed one, so the module carried an obsolete copy that no call could reach: the
+    later definition shadows the earlier one silently, and the dead body would only ever be noticed
+    by a reader who thought it was live. The gate keeps exactly one definition, and it is the keyed
+    one.
+    """
+    text = TOOL.read_text(encoding="utf-8")
+    definitions = re.findall(r"(?m)^def init\(", text)
+    check(len(definitions) == 1,
+          f"permit_gate.py must define `init` ONCE (a second, shadowed definition is dead code "
+          f"nobody can call), found {len(definitions)}")
+    params = list(inspect.signature(pg.init).parameters)
+    check(params == ["root", "launch_dir", "launch_id"],
+          f"the surviving init is the KEYED one (--launch-id included): {params!r}")
+
+
 def test_audit_helpers() -> None:
     """(R1-17) The audit is composed of focused helpers, each owning ONE failure class."""
     scripts = str(TOOL.parent)
@@ -2674,9 +3581,24 @@ def main() -> int:
         test_ledger_mixed_authorization(tmp)
         test_ledger_chain(tmp)
         test_ledger_legacy_snapshot(tmp)
+        test_defect_b_journal_append_is_atomic(tmp)
+        test_defect_b_idempotent_retry_fails_loudly(tmp)
+        test_defect_b_repair(tmp)
+        test_defect_b_resume_fixture(tmp)
         test_launch_scoped_binding(tmp)
         test_audit_helpers()
         test_cli_contract()
+        # Defect C (launch-folder keying) and the round-1 rework (T24) last: on the pre-fix tree
+        # these are the sections that fail, so a run of this script shows every earlier contract
+        # still holds.
+        test_defect_c_keyed_launch_registry(tmp)
+        test_defect_c_keyed_transfer(tmp)
+        test_defect_c_launch_id_validation(tmp)
+        test_defect_c_launch_id_resolution(tmp)
+        test_defect_c_legacy_launch_resume(tmp)
+        test_same_folder_keyed_transfer(tmp)
+        test_partial_journal_append_is_rolled_back(tmp)
+        test_init_is_defined_once()
     with tempfile.TemporaryDirectory() as raw:
         test_resumed_agent_role_correlation(pathlib.Path(raw))
 

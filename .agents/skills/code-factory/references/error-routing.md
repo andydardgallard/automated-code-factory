@@ -39,6 +39,7 @@ specific first. First match wins.
 | I2 | BROWSER_MISSING | `(chrome|chromium|google[- ]chrome|chrome[- ]for[- ]testing)\b[^\n]{0,60}(not found|not installed|is missing|could not be found|fails? to launch|failed to launch|does not exist|doesn't exist|no such file)\|(could not find|unable to find|cannot launch|failed to launch)\s+(the\s+)?(google\s+)?(chrome|chromium|chrome[- ]for[- ]testing)\|no\s+(google\s+)?chrome\s+(binary|executable|installation)` | INFRASTRUCTURE (auto-fix) |
 | I3 | MCP_STARTUP | `mcp\b[^\n]{0,60}(failed to start|failed to connect|could not start|cannot start|not initialized|startup (failed|error)|connection (refused|reset|failed)|disconnected|timed? out|no such server|unknown server)\|(failed to connect|could not connect|unable to connect|failed to start)[^\n]{0,40}\bmcp\b\|\bmcp\b[^\n]{0,40}server[^\n]{0,20}(crashed|exited unexpectedly)` | INFRASTRUCTURE (auto-fix) |
 | I4 | CHROME_DEVTOOLS_MCP | `chrome[- ]devtools[- ]mcp[^\n]{0,80}(error|failed|exited|not found|EPERM|ENOENT|cannot find|timed? out)\|(error|failed|exited|EPERM|ENOENT|cannot find|ENOTFOUND)[^\n]{0,60}chrome[- ]devtools[- ]mcp` | INFRASTRUCTURE (auto-fix) |
+| A1 | AGENT_CATALOG | `Unknown agent type` | INFRASTRUCTURE (probe first, no substitution — §1.3) |
 | 5 | MISSING_FILE | `No such file or directory\|cannot open file\|file not found\|does not exist` | BA |
 | 6 | MISSING_FILE | `ModuleNotFoundError\|ImportError.*No module named` | BA |
 | 7 | BAD_COMMAND | `command not found\|: not found\|No such command\|unknown option\|syntax error near unexpected token` | PLANNER |
@@ -103,6 +104,12 @@ Notes:
   an npm call — and pins both classifications together with the JSON↔table agreement of this row,
   so a wording change on either side fails the suite instead of silently re-routing a real
   missing-Node run.
+- Row A1 (AGENT_CATALOG) sits between the browser rows I1–I4 and the generic rows 5/7 ON PURPOSE: an
+  `Unknown agent type` line is an infrastructure/catalog failure, and without that position a
+  neighbouring word would let it fall through to UNKNOWN/DIAGNOSTICIAN — the fallback that used to
+  make every catalog loss guesswork and a role/model substitution the tempting answer. The row is a
+  single invariant phrase because the CLI's wording is stable; §1.3 is the degradation route it
+  triggers, and it is decided by the deterministic catalog probe, never by the error text alone.
 - GUI implementation and browser-test FAILURES (a broken UI, a failing scenario) are NOT
   infrastructure: they use the existing CODER route and `retry_counters.coder` — there is no separate
   GUI role key and no separate GUI retry budget. Rows I1–I4 route environment/startup problems only,
@@ -212,6 +219,38 @@ The `--log` path is relative to the resolved repo root (the artifact tree lives 
 carrying `FeedError` routes to INFRASTRUCTURE (learned `P1` is tried before every default row), and
 a log matching none of the learned rows still reaches the shipped ones.
 
+## 1.3 Agent-catalog loss (`Unknown agent type`) — degradation without substitution
+
+The CLI has intermittently answered `Unknown agent type` for a factory role whose profile file is on
+disk: its profile registry reloaded and lost the entry (Defect A of run 20261125-5beb8e51). From the
+caller's side that loss is indistinguishable from a profile that is really MISSING or INVALID, and
+the two need opposite reactions — a retry of the SAME role and model versus a factory defect that
+stops the run. Row A1/AGENT_CATALOG routes the failure to INFRASTRUCTURE (budget 3) and the
+degradation route is decided by ONE deterministic probe, never by a guess:
+
+1. Classify first: `python .agents/skills/code-factory/scripts/error_router.py classify --log <log>
+   --repo <resolved repo_path>` → category `AGENT_CATALOG`, route `infrastructure`.
+2. Probe the catalog on disk BEFORE any retry — it is the FIRST act of this route:
+   `python .agents/skills/code-factory/scripts/agent_catalog_check.py check --role <the role that
+   failed>` (exit 0 = every profile present and valid, 1 = a profile MISSING or INVALID, 2 = the
+   probe itself cannot judge).
+3. Exit 0 — the catalog on disk is FINE, so the loss is CLI-side: record the classification in
+   `.code-factory/logs/errors.md`, count it in `retry_counters.infrastructure` of
+   `.code-factory/state/pipeline.yaml` and retry the SAME role with the SAME model within the
+   infrastructure budget 3 (rule `model-unavailable-stop`).
+4. Exit 1 or 2 — a profile is MISSING or INVALID, or the probe cannot judge: that is a FACTORY
+   DEFECT, not an infrastructure glitch. Do NOT retry and do not repair it silently mid-run: stop
+   and report the probe's actionable line — in hitl the owner decides, in auto the run ends FAILED
+   with that line.
+5. An exhausted budget (3) is a STOP, never a fallback: the escalation ladder of §5 continues
+   (Diagnostician → Advisor → Human → FAILED with the full log).
+
+**No substitution, ever — neither role nor model.** Neither outcome swaps in another role, another
+model, nor the main agent doing the role's work itself: a generic vehicle carrying the same
+instructions is a DIFFERENT role identity, and its output is never presented as that role's result.
+The named-model rule of §1.1 holds unchanged — an `AGENT_CATALOG` retry keeps the model the task's
+`models:` matrix names.
+
 ## 2. Routing decision
 
 After classification, decide who retries:
@@ -220,6 +259,7 @@ After classification, decide who retries:
 |----------|----------|--------------|
 | WRONG_RESULTS | DIAGNOSTICIAN | deep analysis needed |
 | INFRASTRUCTURE | auto-fix | run the auto-fix command, then re-run verification |
+| AGENT_CATALOG | INFRASTRUCTURE | probe the on-disk catalog first (§1.3): profile present ⇒ retry the SAME role/model within budget 3; profile MISSING/INVALID ⇒ factory-defect stop |
 | COMPILE_ERROR / LINK_ERROR | CODER | coder fixes code with the error output |
 | MISSING_FILE | BA | BA re-studied configs incorrectly |
 | BAD_COMMAND | PLANNER | planner rewrites the verification command |
@@ -234,7 +274,8 @@ After classification, decide who retries:
 (node S, `references/verification-strategy.md` §3.3) reports a scenario that broke the product, its
 `classification` decides the route and the existing tables do it: `code_defect` feeds the observed
 output to `scripts/error_router.py classify` and takes the route that comes back (usually CODER —
-RUNTIME_CRASH/ASSERTION — with the coder's budget 1, exactly as for any other failure; there is no
+RUNTIME_CRASH/ASSERTION — with the coder's plan-derived ceiling (one delegation per distinct coder
+plan task plus the one-retry reserve), exactly as for any other failure; there is no
 business-tester budget in `scripts/delegation_gate.py`), `contract_gap` is a scope question for the
 main agent instead of a retry, `environment` goes through the infrastructure path (budget 3), and
 `no_defect` records a proven pass. A scenario the tester could not run is UNVERIFIED: it routes
@@ -244,7 +285,7 @@ nowhere and is never counted as a pass.
 
 | Role | Max retries before escalation |
 |------|-------------------------------|
-| CODER | 1 |
+| CODER | plan-derived: one per DISTINCT plan task with `role: coder`, + 1 retry reserve (base 1) |
 | BA | 2 |
 | PLANNER | 2 |
 | DIAGNOSTICIAN | 1 |
@@ -252,7 +293,7 @@ nowhere and is never counted as a pass.
 | INFRASTRUCTURE | 3 |
 | HUMAN | 0 (cannot auto-retry) |
 <!-- factory-rule: retry-budgets begin -->
-**Retry budgets (canonical wording):** every role has its own retry budget — coder=1, ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2; the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently The budget is counted by whoever EXECUTES the delegation, not by whoever reports it: `scripts/delegation_gate.py check` increments `retry_counters.<role>` itself BEFORE every delegation and REFUSES it once the budget is exhausted — in hitl the refusal forces the `AskUserQuestion` owner stop, in auto the run ends FAILED, and only an explicit `--owner-authorized` (hitl, every decision recorded in the checkpoint) grants ONE extra delegation PER OWNER DECISION — N recorded authorizations allow up to budget+N delegations; `delegation_gate.py audit` fails the finish when a budgeted-role spawn left no counted delegation. A registered role WITHOUT a budget entry is passed through instead of counted (`allow: true`, `budgeted: false`) and stays audited by its permit, and the reviewer is counted per LOGICAL REVIEW ROUND (`check --role reviewer --round <id>`): the first check of a round consumes one iteration and every shard delegation of the SAME round is allowed without moving the counter, because one whole-repo review is one iteration. A review round whose findings were ALL refuted with evidence refunds the one iteration it consumed (`delegation_gate.py settle`, evidence mandatory, never below 0, idempotent per round); a mixed round is never refunded.
+**Retry budgets (canonical wording):** every role has its own FIXED retry budget — ba=2, planner=2, diagnostician=1, advisor=1, infrastructure=3, reviewer=2 — while the coder's CEILING follows the APPROVED PLAN: `scripts/delegation_gate.py` allows ONE delegation per DISTINCT plan task whose entry assigns `role: coder` PLUS one retry reserve, so a plan with N coder tasks allows N+1 coder delegations (a repeated task id is ONE task; the base budget is 1 when the plan is missing, unreadable or names no coder task, because a plan nobody can read never widens a budget; owner authorizations stay ADDITIVE to that ceiling and every other role keeps its fixed budget whatever the plan says); the counters are kept in `.code-factory/state/pipeline.yaml` (`retry_counters`). An exhausted budget is not extended: the run escalates along the ladder deterministic regex → Diagnostician (LLM) → Advisor (LLM, a judge-side model contrasting with the Diagnostician's family, budget 1) → Human (hitl) → FAILED with the full log. The factory does not loop, does not soften tests for a green run and does not fail silently The budget is counted by whoever EXECUTES the delegation, not by whoever reports it: `scripts/delegation_gate.py check` increments `retry_counters.<role>` itself BEFORE every delegation and REFUSES it once the budget is exhausted — in hitl the refusal forces the `AskUserQuestion` owner stop, in auto the run ends FAILED, and only an explicit `--owner-authorized` (hitl, every decision recorded in the checkpoint) grants ONE extra delegation PER OWNER DECISION — N recorded authorizations allow up to budget+N delegations; `delegation_gate.py audit` fails the finish when a budgeted-role spawn left no counted delegation. A registered role WITHOUT a budget entry is passed through instead of counted (`allow: true`, `budgeted: false`) and stays audited by its permit, and the reviewer is counted per LOGICAL REVIEW ROUND (`check --role reviewer --round <id>`): the first check of a round consumes one iteration and every shard delegation of the SAME round is allowed without moving the counter, because one whole-repo review is one iteration. A review round whose findings were ALL refuted with evidence refunds the one iteration it consumed (`delegation_gate.py settle`, evidence mandatory, never below 0, idempotent per round); a mixed round is never refunded.
 <!-- factory-rule: retry-budgets end -->
 
 - Each retry increments the per-role counter in `.code-factory/state/pipeline.yaml`

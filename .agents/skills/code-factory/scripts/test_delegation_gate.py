@@ -43,6 +43,21 @@ COVERED, all through the shipped CLI (a subprocess, like the flow calls it):
   - the argparse contract: `--help` exit 0 for every command, a usage error exit 2, no traceback,
     and the help survives a legacy console code page.
 
+DEFECT D — the coder ceiling follows the APPROVED PLAN (vaccination sections, one per contract):
+
+  - `test_coder_ceiling_from_plan`: with N distinct coder tasks in the approved plan
+    (`.code-factory/state/plan.md`, the shipped DAG syntax) the coder budget is N + the existing
+    one-retry reserve — four delegations for three coder tasks, the fifth refused;
+  - `test_coder_ceiling_plan_edges`: only DISTINCT task entries count (a repeated id is one task),
+    a task of another role or a prose mention of the coder adds nothing, and a missing or
+    unreadable plan FAILS CLOSED to the base budget of 1;
+  - `test_coder_ceiling_survives_resume`: a resumed checkpoint keeps its consumed coder
+    delegations (a resume never resets the counter; a larger plan raises the ceiling only);
+  - `test_coder_ceiling_owner_authorization`: `--owner-authorized` stays ADDITIVE to the
+    plan-derived ceiling and stays hitl-only (the refusal at the ceiling is still the owner stop);
+  - `test_other_role_budgets_ignore_the_plan`: every other role keeps its own budget in a
+    checkpoint that carries a multi-task plan.
+
 Exit code 0 = every assertion passes, 1 = the gate did not behave as the contract says.
 """
 from __future__ import annotations
@@ -1016,6 +1031,233 @@ def test_current_session_resolution(tmp: pathlib.Path) -> None:
           f"the degradation must be loud, never a confident stale audit: {res.stdout!r}")
 
 
+# --------------------------------------------------------------------------------------------
+# Defect D: the coder ceiling follows the APPROVED PLAN (one delegation per coder task + a retry)
+# --------------------------------------------------------------------------------------------
+PLAN_REL = pathlib.Path(".code-factory") / "state" / "plan.md"
+# The plan-derived ceiling: every distinct coder task of the approved plan plus the existing
+# one-retry reserve. These sections are the vaccination evidence — they FAIL on the fixed budget.
+CODER_RETRY_RESERVE = 1
+
+
+def plan(root: pathlib.Path, *entries: str, prose: str = "") -> pathlib.Path:
+    """Write the approved plan of `root` with the given DAG entries (the shipped plan syntax)."""
+    path = root / PLAN_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"# Plan\n\n{prose}\n\n## Tasks\n\n" + "".join(f"{entry}\n" for entry in entries),
+                    encoding="utf-8", newline="")
+    return root
+
+
+def task_line(task_id: str, role: str = "coder", files: str = "src/a.py") -> str:
+    """One plan DAG entry in the shipped syntax: `- T1: ...; role: coder; files: ...; deps: []`."""
+    return (f"- {task_id}: work item {task_id}; role: {role}; files: {files}; deps: []; "
+            f"verification: python -c pass")
+
+
+def test_coder_ceiling_from_plan(tmp: pathlib.Path) -> None:
+    """Three approved coder tasks plus ONE retry reserve: four delegations, the fifth is refused.
+
+    The bug this pins (found in live use): an approved multi-task plan was implemented by more
+    coder delegations than the fixed budget of 1, so every step after the first demanded a fresh
+    owner authorization. The ceiling must follow the PLAN.
+    """
+    root = repo(tmp, "ceiling-plan")
+    plan(root, task_line("T1"), task_line("T2"), task_line("T3"), task_line("T4", "planner"))
+    expected = 3 + CODER_RETRY_RESERVE
+    for index in range(expected):
+        res, verdict = gate(root, "coder")
+        expect_clean_cli(res, 0, f"coder delegation {index + 1} of the plan-derived ceiling")
+        check(verdict["allow"] is True and verdict["counter"] == index + 1
+              and verdict["budget"] == expected,
+              f"the coder budget is the plan's 3 coder tasks + 1 retry reserve ({expected}): "
+              f"{verdict}")
+
+    before = (root / PIPELINE_REL).read_text(encoding="utf-8")
+    res, verdict = gate(root, "coder")
+    expect_clean_cli(res, 1, "coder delegation beyond the plan-derived ceiling")
+    check(verdict["allow"] is False and verdict["counter"] == expected
+          and verdict["budget"] == expected,
+          f"the delegation beyond the plan-derived ceiling is REFUSED without an increment: "
+          f"{verdict}")
+    check("exhausted" in verdict["reason"] and "coder" in verdict["reason"],
+          f"the refusal must name the exhausted budget: {verdict['reason']!r}")
+    check((root / PIPELINE_REL).read_text(encoding="utf-8") == before,
+          "a refusal must write nothing")
+    check(counters(root)["coder"] == expected,
+          "the checkpoint carries every counted delegation of the plan-derived ceiling")
+
+
+def test_coder_ceiling_plan_edges(tmp: pathlib.Path) -> None:
+    """Only DISTINCT coder tasks count, and a plan that cannot be read fails CLOSED."""
+    # A repeated task id is ONE task: two distinct coder tasks + 1 retry.
+    duplicated = repo(tmp, "ceiling-duplicate")
+    plan(duplicated, task_line("T1"), task_line("T1"), task_line("T2"))
+    res, verdict = gate(duplicated, "coder")
+    expect_clean_cli(res, 0, "the first coder delegation of a plan with a repeated task id")
+    check(verdict["budget"] == 2 + CODER_RETRY_RESERVE,
+          f"a repeated plan task id counts ONCE (2 coder tasks + 1 retry): {verdict}")
+
+    # A plan whose tasks belong to other roles leaves the base budget of 1.
+    other = repo(tmp, "ceiling-no-coder")
+    plan(other, task_line("T1", "documenter"), task_line("T2", "tester"),
+         task_line("T3", "planner"))
+    res, verdict = gate(other, "coder")
+    expect_clean_cli(res, 0, "the first coder delegation of a plan with no coder task")
+    check(verdict["budget"] == CODER_RETRY_RESERVE,
+          f"a plan with no coder task leaves the base budget of 1: {verdict}")
+    res, verdict = gate(other, "coder")
+    expect_clean_cli(res, 1, "the second coder delegation of a plan with no coder task")
+    check(verdict["allow"] is False and verdict["counter"] == CODER_RETRY_RESERVE,
+          f"the base budget of 1 still refuses the second delegation: {verdict}")
+
+    # PROSE that mentions the coder is not a task: only the DAG entry counts.
+    prose = repo(tmp, "ceiling-prose")
+    plan(prose, task_line("T1"),
+         prose="The coder implements every task; role: coder; files: src/b.py; deps: []")
+    res, verdict = gate(prose, "coder")
+    expect_clean_cli(res, 0, "the first coder delegation of a plan whose prose names the coder")
+    check(verdict["budget"] == 1 + CODER_RETRY_RESERVE,
+          f"a prose mention is not a plan task (1 coder task + 1 retry): {verdict}")
+
+    # NO plan at all: the base budget of 1, exactly the behavior before the plan existed.
+    missing = repo(tmp, "ceiling-no-plan")
+    res, verdict = gate(missing, "coder")
+    expect_clean_cli(res, 0, "the first coder delegation without a plan")
+    check(verdict["budget"] == CODER_RETRY_RESERVE,
+          f"a repository without an approved plan keeps the base budget of 1: {verdict}")
+    res, verdict = gate(missing, "coder")
+    expect_clean_cli(res, 1, "the second coder delegation without a plan")
+    check(verdict["allow"] is False and verdict["counter"] == CODER_RETRY_RESERVE,
+          f"without a plan the coder budget stays 1: {verdict}")
+
+    # An UNREADABLE plan (a directory where the file belongs) fails closed, never open.
+    unreadable = repo(tmp, "ceiling-unreadable-plan")
+    (unreadable / PLAN_REL).mkdir(parents=True, exist_ok=True)
+    res, verdict = gate(unreadable, "coder")
+    expect_clean_cli(res, 0, "the first coder delegation with an unreadable plan")
+    check(verdict["budget"] == CODER_RETRY_RESERVE,
+          f"an unreadable plan fails CLOSED to the base budget of 1: {verdict}")
+    res, verdict = gate(unreadable, "coder")
+    expect_clean_cli(res, 1, "the second coder delegation with an unreadable plan")
+
+
+def test_coder_ceiling_survives_resume(tmp: pathlib.Path) -> None:
+    """A resumed checkpoint keeps its consumed coder delegations; a larger plan only raises the cap."""
+    root = repo(tmp, "ceiling-resume")
+    plan(root, task_line("T1"), task_line("T2"), task_line("T3"))
+    for index in (1, 2):
+        res, verdict = gate(root, "coder")
+        expect_clean_cli(res, 0, f"coder delegation {index} before the resume")
+        check(verdict["counter"] == index and verdict["budget"] == 3 + CODER_RETRY_RESERVE,
+              f"the delegation is counted against the plan-derived ceiling: {verdict}")
+
+    # RESUME: the flow finds the checkpoint of the paused run and rewrites its timestamp.
+    text = (root / PIPELINE_REL).read_text(encoding="utf-8")
+    (root / PIPELINE_REL).write_text(
+        text.replace('updated_at: "2026-11-03T20:00:00+03:00"',
+                     'updated_at: "2026-11-04T09:00:00+03:00"'),
+        encoding="utf-8", newline="")
+    res = run("init", "--repo", str(root))
+    expect_clean_cli(res, 0, "init after the resume")
+    check(json.loads(res.stdout)["counters"]["coder"] == 2,
+          f"a resume must never reset a consumed coder delegation: {res.stdout!r}")
+
+    res, verdict = gate(root, "coder")
+    expect_clean_cli(res, 0, "coder delegation 3 after the resume")
+    check(verdict["counter"] == 3 and verdict["budget"] == 3 + CODER_RETRY_RESERVE,
+          f"the counter continues where the resume found it: {verdict}")
+
+    # The plan GROWS mid-run: the ceiling rises, the counter keeps its value.
+    plan(root, task_line("T1"), task_line("T2"), task_line("T3"), task_line("T4"))
+    res, verdict = gate(root, "coder")
+    expect_clean_cli(res, 0, "coder delegation 4 after the plan grew a task")
+    check(verdict["counter"] == 4 and verdict["budget"] == 4 + CODER_RETRY_RESERVE,
+          f"a larger plan raises the ceiling and never resets the counter: {verdict}")
+
+
+def test_coder_ceiling_owner_authorization(tmp: pathlib.Path) -> None:
+    """`--owner-authorized` stays ADDITIVE to the plan-derived ceiling, and stays hitl-only."""
+    root = repo(tmp, "ceiling-authorized")
+    plan(root, task_line("T1"), task_line("T2"))
+    expected = 2 + CODER_RETRY_RESERVE
+    for index in range(expected):
+        res, verdict = gate(root, "coder")
+        expect_clean_cli(res, 0, f"coder delegation {index + 1} of the plan-derived ceiling")
+        check(verdict["budget"] == expected and verdict["counter"] == index + 1,
+              f"the delegation is counted against {expected}: {verdict}")
+
+    res, verdict = gate(root, "coder")
+    expect_clean_cli(res, 1, "coder delegation beyond the ceiling without an owner decision")
+    check(verdict["allow"] is False and "AskUserQuestion" in verdict["reason"],
+          f"the refusal at the ceiling is still the owner stop: {verdict['reason']!r}")
+
+    res, verdict = gate(root, "coder", "hitl", "--owner-authorized")
+    expect_clean_cli(res, 0, "the owner authorizes ONE extra coder delegation")
+    check(verdict["allow"] is True and verdict["counter"] == expected + 1
+          and verdict.get("authorizations") == 1 and verdict["budget"] == expected,
+          f"an owner decision is ADDITIVE to the plan-derived ceiling: {verdict}")
+    check("role=coder" in (root / PIPELINE_REL).read_text(encoding="utf-8"),
+          "the authorization must be recorded in the checkpoint")
+
+    res, verdict = gate(root, "coder")
+    expect_clean_cli(res, 1, "coder delegation after the authorized extra was spent")
+    check(verdict["counter"] == expected + 1,
+          f"one owner decision grants exactly ONE extra delegation: {verdict}")
+
+    res, verdict = gate(root, "coder", "hitl", "--owner-authorized")
+    expect_clean_cli(res, 0, "the owner authorizes a SECOND extra coder delegation")
+    check(verdict["counter"] == expected + 2 and verdict.get("authorizations") == 2,
+          f"a second decision grants a second single extra delegation: {verdict}")
+
+    res = run("check", "--repo", str(root), "--role", "coder", "--mode", "auto",
+              "--owner-authorized")
+    expect_clean_cli(res, 2, "--owner-authorized in auto, with a plan-derived ceiling")
+    check("hitl" in res.stderr, f"the error must say where the flag belongs: {res.stderr!r}")
+
+
+def test_other_role_budgets_ignore_the_plan(tmp: pathlib.Path) -> None:
+    """Every other role keeps its own budget in a checkpoint that carries a multi-task plan."""
+    root = repo(tmp, "ceiling-other-roles")
+    plan(root, task_line("T1"), task_line("T2"), task_line("T3"), task_line("T4", "tester"))
+    for role in sorted(role for role in BUDGETS if role != "coder"):
+        budget = BUDGETS[role]
+        for index in range(budget):
+            res, verdict = gate(root, role)
+            expect_clean_cli(res, 0, f"{role} delegation {index + 1} of {budget}")
+            check(verdict["budget"] == budget and verdict["counter"] == index + 1,
+                  f"{role} keeps its own budget of {budget} whatever the plan says: {verdict}")
+        res, verdict = gate(root, role)
+        expect_clean_cli(res, 1, f"{role} delegation {budget + 1}")
+        check(verdict["allow"] is False and verdict["budget"] == budget,
+              f"{role} is still refused beyond its budget of {budget}: {verdict}")
+
+    res, verdict = gate(root, "coder")
+    expect_clean_cli(res, 0, "the first coder delegation in the same checkpoint")
+    check(verdict["budget"] == 3 + CODER_RETRY_RESERVE,
+          f"the coder ceiling is plan-derived in the SAME checkpoint: {verdict}")
+
+
+NEW_SECTIONS = (test_coder_ceiling_from_plan, test_coder_ceiling_plan_edges,
+                test_coder_ceiling_survives_resume, test_coder_ceiling_owner_authorization,
+                test_other_role_budgets_ignore_the_plan)
+
+
+def run_new_sections(tmp: pathlib.Path) -> list[str]:
+    """Run the plan-derived coder-ceiling sections and collect EVERY failing assertion.
+
+    The vaccination evidence needs each section's own verdict: a suite that stopped at the first
+    failure would hide the other sections and their controls behind it.
+    """
+    failures: list[str] = []
+    for section in NEW_SECTIONS:
+        try:
+            section(tmp)
+        except AssertionError as exc:
+            failures.append(f"{section.__name__}: {exc}")
+    return failures
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as raw:
         tmp = pathlib.Path(raw)
@@ -1035,7 +1277,14 @@ def main() -> int:
         test_audit(tmp)
         test_current_session_resolution(tmp)
         test_cli_contract()
+        failures = run_new_sections(tmp)
 
+    for failure in failures:
+        print(f"FAIL - {failure}")
+    if failures:
+        print(f"FAIL - {len(failures)} of {len(NEW_SECTIONS)} plan-derived coder-ceiling section(s) "
+              f"failed: the coder budget does not follow the approved plan")
+        return 1
     print("PASS - delegation_gate.py counts every delegation itself: the counter is incremented "
           "and persisted atomically (one counter, every other byte preserved, CRLF kept), the "
           "delegation that would exceed the role's budget is REFUSED without an increment (hitl "
@@ -1053,7 +1302,10 @@ def main() -> int:
           "ONE consumed reviewer iteration for a WHOLLY REFUTED round (never below 0, idempotent per "
           "round through the settled_rounds record, evidence mandatory, a mixed round and another "
           "role refused); and `audit` fails a budgeted-role spawn the session wire shows with no "
-          "counted delegation, fail-closed on malformed wire evidence and DEGRADED without one.")
+          "counted delegation, fail-closed on malformed wire evidence and DEGRADED without one; "
+          "and the CODER ceiling follows the approved plan (one delegation per distinct coder task "
+          "plus the existing one-retry reserve, additive owner authorizations, counters preserved "
+          "across a resume, and the base budget of 1 when the plan is missing or unreadable).")
     return 0
 
 

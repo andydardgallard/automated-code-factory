@@ -3,14 +3,15 @@
 Deterministic self-test for `error_router.py` (zero LLM tokens, stdlib only).
 
 `references/error-patterns.default.json` is the snapshot of the routing tables of
-`references/error-routing.md` (§1 rows 1-20 — including the Farukon infrastructure rows F1-F2 and
-the browser/MCP rows I1-I4 — + §1.1 provider rows A-F); the router classifies a log
+`references/error-routing.md` (§1 rows 1-20 — including the Farukon infrastructure rows F1-F2,
+the browser/MCP rows I1-I4 and the agent-catalog row A1 — + §1.1 provider rows A-F); the router
+classifies a log
 against them in array order ("first match wins") and lets a project override patterns through
 `.code-factory/state/error-patterns.json` (project-first merge, deduplicated by id).
 
 Covered here: the snapshot's shape and order (ids 1-20 + the Farukon infrastructure rows F1-F2 + the
-browser/MCP infrastructure rows
-I1-I4 + A-F, categories, routes, retry budgets),
+browser/MCP infrastructure rows I1-I4 + the agent-catalog row A1 + A-F, categories, routes, retry
+budgets),
 sample logs from the tables (WRONG_RESULTS must win over the generic assertion/compile rows, a
 provider `401` line is PROVIDER_AUTH), the unmatched fallback (diagnostician), the default+project
 merge (a learned pattern is tried first, the built-in rows it never touches stay live, the override
@@ -192,11 +193,11 @@ def installer_missing_node_message(absent: tuple[str, ...] = ("node",)) -> str:
     return lines[-1]
 
 
-# §1 rows 1-20 plus the Farukon infrastructure rows F1-F2 and the browser/MCP infrastructure rows
-# I1-I4, in table (match) order: id, category, route to. F1-F2 sit between rows 4 and I1, and I1-I4
-# between rows 4 and 5 ON PURPOSE — that position is what keeps a toolchain/browser capability line
-# from being stolen by the generic `command not found` / `file not found` rows (see the Notes of §1
-# in references/error-routing.md).
+# §1 rows 1-20 plus the Farukon infrastructure rows F1-F2, the browser/MCP infrastructure rows
+# I1-I4 and the agent-catalog row A1, in table (match) order: id, category, route to. F1-F2 sit
+# between rows 4 and I1, and I1-I4 plus A1 between rows 4 and 5 ON PURPOSE — that position is what
+# keeps a toolchain/browser capability or catalog line from being stolen by the generic `command not
+# found` / `file not found` rows (see the Notes of §1 in references/error-routing.md).
 EXPECTED = [
     ("1", "MISSING_INPUT", "human"),
     ("2", "WRONG_RESULTS", "diagnostician"),
@@ -212,6 +213,9 @@ EXPECTED = [
     ("I2", "BROWSER_MISSING", "infrastructure"),
     ("I3", "MCP_STARTUP", "infrastructure"),
     ("I4", "CHROME_DEVTOOLS_MCP", "infrastructure"),
+    # Row A1: the CLI's `Unknown agent type` catalog loss, an infrastructure failure that must be
+    # probed on disk before any retry and never fall through to UNKNOWN/DIAGNOSTICIAN.
+    ("A1", "AGENT_CATALOG", "infrastructure"),
     ("5", "MISSING_FILE", "ba"),
     ("6", "MISSING_FILE", "ba"),
     ("7", "BAD_COMMAND", "planner"),
@@ -444,9 +448,10 @@ def main() -> int:
     got_providers = [(e["id"], e["category"], e["route"]) for e in doc["provider_patterns"]]
     expect(got_providers == EXPECTED_PROVIDERS, f"§1.1 provider rows A-F changed: {got_providers}")
     expect(doc["retry_budgets"] == BUDGETS, f"retry budgets: {doc['retry_budgets']}")
-    expect(len(er.match_order(doc)) == 32,
-           "26 §1 rows (1-20 plus the Farukon infrastructure rows F1-F2 and the browser/MCP "
-           "infrastructure rows I1-I4) + 6 provider rows must be classified")
+    expect(len(er.match_order(doc)) == 33,
+           "27 §1 rows (1-20 plus the Farukon infrastructure rows F1-F2, the browser/MCP "
+           "infrastructure rows I1-I4 and the agent-catalog row A1) + 6 provider rows must be "
+           "classified")
     by_id = {entry["id"]: entry for entry in doc["patterns"]}
     expect(doc["patterns"][-1]["patterns"] == [], "the terminal UNKNOWN row carries no regex")
     expect(all(e["patterns"] for e in doc["patterns"][:-1]),
@@ -678,8 +683,8 @@ def main() -> int:
         expect(merged_ids[:2] == ["6", "L1"],
                f"project patterns must come first: {merged_ids}")
         expect(merged_ids.count("6") == 1, f"id 6 must be deduplicated: {merged_ids}")
-        expect(len(merged_ids) == 27,
-               f"2 learned + the 25 untouched defaults were expected: {merged_ids}")
+        expect(len(merged_ids) == 28,
+               f"2 learned + the 26 untouched defaults were expected: {merged_ids}")
         expect([e["id"] for e in merged["provider_patterns"]] == ["A", "B", "C", "D", "E", "F"],
                "the provider rows must all survive the merge")
         expect(merged["retry_budgets"] == {**BUDGETS, "coder": 5},
@@ -812,7 +817,7 @@ def main() -> int:
         merged = er.combine(er.load_document(learned, require_full=False), doc)
         merged_ids = [e["id"] for e in merged["patterns"]]
         expect(merged_ids[:2] == ["6", "P1"], f"learned entries must come first: {merged_ids}")
-        expect(len(merged_ids) == 27 and merged_ids.count("6") == 1,
+        expect(len(merged_ids) == 28 and merged_ids.count("6") == 1,
                f"a learned id must replace, not duplicate, its built-in row: {merged_ids}")
         expect([e["id"] for e in merged["provider_patterns"]]
                == [e["id"] for e in doc["provider_patterns"]],
@@ -937,8 +942,8 @@ def main() -> int:
     allowed = {"__future__", "argparse", "json", "pathlib", "re", "sys"}
     expect(imported <= allowed, f"error_router must be stdlib-only, imports={imported}")
 
-    print("PASS - error_router.py mirrors the error-routing tables (26 section-1 rows, the Farukon "
-          "infrastructure rows F1-F2 included, + 6 provider "
+    print("PASS - error_router.py mirrors the error-routing tables (27 section-1 rows, the Farukon "
+          "infrastructure rows F1-F2 and the agent-catalog row A1 included, + 6 provider "
           "rows, rows I1/F1/F2 agreeing with the documented cells), classifies samples "
           "deterministically "
           "(including the missing-Node wordings the Web GUI probe and the installer themselves emit, "

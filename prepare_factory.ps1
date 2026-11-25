@@ -352,6 +352,62 @@ $shLines = @(
     'export KIMI_FACTORY_LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
     '# Subagent model split (primary/secondary) is enabled here automatically.',
     'export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1',
+    '# Portable user-scope agent catalog: the CLI''s PROJECT-scoped profile registry can lose a factory',
+    '# role ("Unknown agent type"), while its USER-scope catalog — $KIMI_CODE_HOME/agents, else',
+    '# ~/.kimi-code/agents — survives that loss. Every factory role is copied there BEFORE the CLI',
+    '# starts, with native commands only (a machine without an interpreter still launches), and only',
+    '# this factory''s own role profiles are written: the user''s agents in that directory are untouched.',
+    '# A refresh that cannot complete ABORTS the launch — a session with missing or stale roles is',
+    '# exactly the failure this fallback exists to prevent.',
+    'CF_AGENT_ROLES="advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester"',
+    'CF_AGENT_SRC="$KIMI_FACTORY_LAUNCH_DIR/.agents/agents/sub-agents"',
+    'if [ -n "${KIMI_CODE_HOME:-}" ]; then',
+    '    CF_AGENT_DST="$KIMI_CODE_HOME/agents"',
+    'elif [ -n "${HOME:-}" ]; then',
+    '    CF_AGENT_DST="$HOME/.kimi-code/agents"',
+    'else',
+    '    CF_AGENT_DST=""',
+    'fi',
+    'CF_AGENT_ERROR=""',
+    'if [ -z "$CF_AGENT_DST" ]; then',
+    '    CF_AGENT_ERROR="neither KIMI_CODE_HOME nor HOME is set, so the user-scope agent catalog cannot be located"',
+    'elif ! mkdir -p "$CF_AGENT_DST"; then',
+    '    CF_AGENT_ERROR="the directory cannot be created: $CF_AGENT_DST"',
+    'elif [ -d "$CF_AGENT_SRC" ]; then',
+    '    # A project catalog is only as good as its WORST role: a profile missing here would leave',
+    '    # whatever an older release wrote in the user catalog, and that role would launch stale.',
+    '    for CF_AGENT_ROLE in $CF_AGENT_ROLES; do',
+    '        if [ ! -f "$CF_AGENT_SRC/$CF_AGENT_ROLE.md" ]; then',
+    '            CF_AGENT_ERROR="the project agent catalog $CF_AGENT_SRC is incomplete: $CF_AGENT_ROLE.md is missing, so that role would launch from a stale copy — the launch is refused"',
+    '            break',
+    '        fi',
+    '        if ! cp -f "$CF_AGENT_SRC/$CF_AGENT_ROLE.md" "$CF_AGENT_DST/$CF_AGENT_ROLE.md"; then',
+    '            CF_AGENT_ERROR="the profile $CF_AGENT_ROLE.md could not be copied to $CF_AGENT_DST — the launch is refused"',
+    '            break',
+    '        fi',
+    '        # Byte-for-byte proof, not the exit code of the copy: a copy that silently kept the old',
+    '        # file is exactly the stale-role failure this refresh exists to prevent.',
+    '        if ! cmp -s "$CF_AGENT_SRC/$CF_AGENT_ROLE.md" "$CF_AGENT_DST/$CF_AGENT_ROLE.md"; then',
+    '            CF_AGENT_ERROR="the profile $CF_AGENT_ROLE.md could not be refreshed in $CF_AGENT_DST: the copy there differs from $CF_AGENT_SRC/$CF_AGENT_ROLE.md — the launch is refused"',
+    '            break',
+    '        fi',
+    '    done',
+    'else',
+    '    # The project catalog is ABSENT. That is legal ONLY over a COMPLETE user-scope fallback:',
+    '    # starting a session with a half-filled catalog is the missing-role failure this forbids.',
+    '    printf ''Code Factory: the project agent catalog is absent (%s) — verifying the user-scope agent catalog instead.\n'' "$CF_AGENT_SRC"',
+    '    for CF_AGENT_ROLE in $CF_AGENT_ROLES; do',
+    '        if [ ! -f "$CF_AGENT_DST/$CF_AGENT_ROLE.md" ]; then',
+    '            CF_AGENT_ERROR="the project agent catalog is absent and the user-scope catalog $CF_AGENT_DST does not carry $CF_AGENT_ROLE.md, so that role would be missing — the launch is refused"',
+    '            break',
+    '        fi',
+    '    done',
+    'fi',
+    'if [ -n "$CF_AGENT_ERROR" ]; then',
+    '    printf ''Code Factory: the launch was refused — the user-scope agent catalog could not be refreshed or verified: %s\n'' "$CF_AGENT_ERROR" >&2',
+    '    printf ''Code Factory: no Kimi session was started — the factory roles would be missing or stale.\n'' >&2',
+    '    exit 1',
+    'fi',
     'exec kimi "$@"'
 )
 $shText = ($shLines -join "`n") + "`n"
@@ -397,6 +453,40 @@ $cmdLines = @(
     'set "KIMI_FACTORY_LAUNCH_DIR=%CD%"',
     'rem Subagent model split (primary/secondary) is enabled here automatically.',
     'set KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1',
+    'rem Portable user-scope agent catalog: the CLI''s PROJECT-scoped profile registry can lose a',
+    'rem factory role ("Unknown agent type"), while its USER-scope catalog — %KIMI_CODE_HOME%\agents,',
+    'rem else %USERPROFILE%\.kimi-code\agents — survives that loss. Every factory role is copied',
+    'rem there BEFORE the CLI starts, with native commands only (a machine without an interpreter still',
+    'rem launches), and only this factory''s own role profiles are written: the user''s agents in that',
+    'rem directory are untouched. A refresh that cannot complete ABORTS the launch — a session with',
+    'rem missing or stale roles is exactly the failure this fallback exists to prevent.',
+    'set "CF_AGENT_ROLES=advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester"',
+    'set "CF_AGENT_SRC=%KIMI_FACTORY_LAUNCH_DIR%\.agents\agents\sub-agents"',
+    'set "CF_AGENT_DST="',
+    'if not defined KIMI_CODE_HOME goto :cf_agent_user_home',
+    'set "CF_AGENT_DST=%KIMI_CODE_HOME%\agents"',
+    'goto :cf_agent_destination',
+    ':cf_agent_user_home',
+    'if defined USERPROFILE set "CF_AGENT_DST=%USERPROFILE%\.kimi-code\agents"',
+    ':cf_agent_destination',
+    'set "CF_AGENT_ERROR="',
+    'if not defined CF_AGENT_DST set "CF_AGENT_ERROR=neither KIMI_CODE_HOME nor USERPROFILE is set, so the user-scope agent catalog cannot be located"',
+    'if defined CF_AGENT_ERROR goto :cf_agent_result',
+    'if not exist "%CF_AGENT_DST%\" mkdir "%CF_AGENT_DST%" 2>nul',
+    'if not exist "%CF_AGENT_DST%\" set "CF_AGENT_ERROR=the directory cannot be created: %CF_AGENT_DST%"',
+    'if defined CF_AGENT_ERROR goto :cf_agent_result',
+    'if not exist "%CF_AGENT_SRC%\" goto :cf_agent_absent',
+    'for %%R in (%CF_AGENT_ROLES%) do call :cf_agent_sync_one "%%R"',
+    'goto :cf_agent_result',
+    ':cf_agent_absent',
+    'echo Code Factory: the project agent catalog is absent - %CF_AGENT_SRC% - verifying the user-scope agent catalog instead.',
+    'for %%R in (%CF_AGENT_ROLES%) do call :cf_agent_require_one "%%R"',
+    ':cf_agent_result',
+    'if not defined CF_AGENT_ERROR goto :cf_agent_launch',
+    'echo Code Factory: the launch was refused — the user-scope agent catalog could not be refreshed or verified: %CF_AGENT_ERROR%',
+    'echo Code Factory: no Kimi session was started — the factory roles would be missing or stale.',
+    'exit /b 1',
+    ':cf_agent_launch',
     'where kimi >nul 2>&1',
     'if errorlevel 1 (',
     '    echo The kimi command was not found. Install Kimi Code CLI and run again.',
@@ -409,7 +499,23 @@ $cmdLines = @(
     '    echo The factory exited with code %EXITCODE%.',
     '    pause',
     ')',
-    'exit /b %EXITCODE%'
+    'exit /b %EXITCODE%',
+    '',
+    ':cf_agent_sync_one',
+    'if defined CF_AGENT_ERROR goto :eof',
+    'if not exist "%CF_AGENT_SRC%\%~1.md" set "CF_AGENT_ERROR=the project agent catalog %CF_AGENT_SRC% is incomplete: %~1.md is missing, so that role would launch from a stale copy - the launch is refused"',
+    'if defined CF_AGENT_ERROR goto :eof',
+    'copy /y /b "%CF_AGENT_SRC%\%~1.md" "%CF_AGENT_DST%\%~1.md" >nul 2>&1',
+    'if errorlevel 1 set "CF_AGENT_ERROR=the profile %~1.md could not be copied to %CF_AGENT_DST% - the launch is refused"',
+    'if defined CF_AGENT_ERROR goto :eof',
+    'fc /b "%CF_AGENT_SRC%\%~1.md" "%CF_AGENT_DST%\%~1.md" >nul 2>&1',
+    'if errorlevel 1 set "CF_AGENT_ERROR=the profile %~1.md could not be refreshed in %CF_AGENT_DST%: the copy there differs from %CF_AGENT_SRC%\%~1.md - the launch is refused"',
+    'goto :eof',
+    '',
+    ':cf_agent_require_one',
+    'if defined CF_AGENT_ERROR goto :eof',
+    'if not exist "%CF_AGENT_DST%\%~1.md" set "CF_AGENT_ERROR=the project agent catalog is absent and the user-scope catalog %CF_AGENT_DST% does not carry %~1.md, so that role would be missing - the launch is refused"',
+    'goto :eof'
 )
 $cmdText = ($cmdLines -join "`r`n") + "`r`n"
 # We do not silently overwrite an existing user start.cmd: if it differs from the template —
@@ -425,7 +531,72 @@ $CmdWritten = Write-FileStrict -Path $LauncherCmd -Text $cmdText -Encoding $EncN
 if ($CmdWritten) { Info "    Launcher: created $LauncherCmd" }
 if ($ShWritten)  { Info "    Launcher: created $LauncherSh" }
 
-# --- 5. Chrome DevTools MCP configuration -------------------------------------------
+# --- 5. Portable user-scope agent catalog -------------------------------------------
+# The Kimi Code CLI's PROJECT-scoped profile registry has repeatedly dropped a factory role
+# ("Unknown agent type") although the profile was on disk. The durable answer is the CLI's
+# USER-scope catalog — `<KIMI_CODE_HOME>\agents` when that variable is set (it relocates the whole
+# data root of the CLI), else `%USERPROFILE%\.kimi-code\agents` — which every session reads: each
+# factory role is copied there BYTE-FOR-BYTE here, and the generated launchers refresh the copies
+# BEFORE every start (a project catalog lost between runs then cannot leave the CLI without the
+# roles). Native commands only: deploying and launching must both work without an interpreter.
+# Only this factory's role profiles are written — a profile the factory does not manage is a copy
+# the user owns and is never modified or deleted (its own agents live in the same directory).
+# The user home is read from %USERPROFILE%, never from $HOME: PowerShell derives $HOME from the
+# profile registry, so an environment override would point the copies somewhere the CLI never looks.
+$AgentSrc     = Join-Path $ProjectAgents 'agents\sub-agents'
+# The 15 role profiles the factory ships — the same roster the generated launchers verify
+# (model_matrix.ROLES/ROLE_FILES is the one source; test_stable_agent_catalog.py pins the two).
+$AgentRoles   = 'advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester'
+$AgentCatalog = ''
+if ($env:KIMI_CODE_HOME)  { $AgentCatalog = Join-Path $env:KIMI_CODE_HOME 'agents' }
+elseif ($env:USERPROFILE) { $AgentCatalog = Join-Path $env:USERPROFILE '.kimi-code\agents' }
+$AgentCount = 0
+$AgentErr   = ''
+if (-not $AgentCatalog) {
+    $AgentErr = 'neither KIMI_CODE_HOME nor USERPROFILE is set, so the user-scope agent catalog cannot be located'
+} elseif (-not (Test-Path -LiteralPath $AgentCatalog -PathType Container)) {
+    try {
+        $null = New-Item -ItemType Directory -Force -Path $AgentCatalog -ErrorAction Stop
+    } catch {
+        $AgentErr = "the directory cannot be created: $AgentCatalog"
+    }
+}
+if (-not $AgentErr) {
+    if (-not (Test-Path -LiteralPath $AgentSrc -PathType Container)) {
+        $AgentErr = "the factory's own agent profiles are missing: $AgentSrc"
+    } else {
+        foreach ($AgentRole in ($AgentRoles -split '\s+')) {
+            $AgentSource = Join-Path $AgentSrc "$AgentRole.md"
+            $AgentTarget = Join-Path $AgentCatalog "$AgentRole.md"
+            if (-not (Test-Path -LiteralPath $AgentSource -PathType Leaf)) {
+                $AgentErr = "the factory's own agent catalog $AgentSrc is incomplete: $AgentRole.md is missing"
+                break
+            }
+            try {
+                Copy-Item -LiteralPath $AgentSource -Destination $AgentTarget -Force -ErrorAction Stop
+            } catch {
+                $AgentErr = "the profile $AgentRole.md could not be copied to $AgentCatalog"
+                break
+            }
+            # Byte-for-byte proof: a copy that silently kept an older file is the stale-role failure
+            # this fallback exists to prevent, so the deployment refuses rather than trusting it.
+            if ((Get-FileHash -LiteralPath $AgentSource).Hash -ne (Get-FileHash -LiteralPath $AgentTarget).Hash) {
+                $AgentErr = "the profile $AgentRole.md could not be refreshed in ${AgentCatalog}: the copy there differs from $AgentSource"
+                break
+            }
+            $AgentCount++
+        }
+    }
+}
+if ($AgentErr) {
+    Err "Code Factory: the user-scope agent catalog could not be refreshed — $AgentErr"
+    Err "    Without it a session that loses the project catalog has no roles left, so the deployment is aborted."
+    $HardError = $true
+} else {
+    Info "    Agent catalog: $AgentCount factory profiles installed — $AgentCatalog (refreshed by the launchers before every launch)"
+}
+
+# --- 6. Chrome DevTools MCP configuration -------------------------------------------
 # The Kimi Code CLI reads its stdio MCP servers from `.kimi-code/mcp.json` at the project
 # root. The factory manages exactly ONE entry there — the `chrome-devtools` server (the PINNED
 # chrome-devtools-mcp release, isolated temporary browser profile, usage statistics, CrUX
@@ -511,7 +682,7 @@ if ($HasPython -and (Test-Path -LiteralPath $McpMerge -PathType Leaf)) {
 }
 Info "      The MCP configuration takes effect in a NEW Kimi session — /mcp in that session shows the connection status."
 
-# --- 6. .gitignore -----------------------------------------------------------------
+# --- 7. .gitignore -----------------------------------------------------------------
 # Note: .gitignore only affects git tracking, not access to files on disk.
 # Ignoring .agents/ does not break reading/writing the factory's data (cache,
 # history, context) — the factory works with .agents/ directly through the file
@@ -547,7 +718,7 @@ if ($NeedGitignore) {
     Write-FileStrict -Path $Gitignore -Text $add -Encoding $EncNoBom -Append | Out-Null
 }
 
-# --- 7. Readiness check -------------------------------------------------------------
+# --- 8. Readiness check -------------------------------------------------------------
 # The memory line is assembled from the state of step 3 (we do not run init again).
 # Three distinguishable states: ok — the memory belongs to this project; mixed —
 # entries from different projects; other — the memory is declared for another project (we are deploying to the wrong place).
@@ -578,7 +749,7 @@ switch ($MemState) {
     default       { $MemLine = "MISSING ✗" }
 }
 
-# The MCP line is assembled from the state of step 5. A conflict, an uninstalled package or a
+# The MCP line is assembled from the state of step 6. A conflict, an uninstalled package or a
 # skipped merge is REPORTED here — a managed server that silently did not arrive costs a browser run.
 switch ($McpState) {
     'created'           { $McpLine = 'created ✓ (server chrome-devtools, node + the vendored pinned package)' }
@@ -604,6 +775,8 @@ Info "==> Readiness check:"
 Write-Host "    • .agents/:            $AgentsOk"
 Write-Host "    • start.sh:            $ShOk"
 Write-Host "    • start.cmd:           $CmdOk"
+$AgentOk = if ($AgentErr) { "MISSING ✗ ($AgentErr)" } else { "OK ✓ ($AgentCount factory profiles in $AgentCatalog — refreshed by the launchers before every launch)" }
+Write-Host "    • agent catalog:       $AgentOk"
 Write-Host "    • .git/:               $GitOk"
 Write-Host "    • .gitignore:          $GiOk"
 Write-Host "    • memory/:              $MemLine"
@@ -618,7 +791,7 @@ foreach ($line in $statusOut) { Write-Host "$line" }
 if (@($statusOut).Count -eq 0) { Write-Host "      (clean tree)" }
 Write-Host ""
 
-# --- 8. Summary ----------------------------------------------------------------------
+# --- 9. Summary ----------------------------------------------------------------------
 # A hard error (factory not copied / launcher file not written) means the deployment is
 # incomplete: an honest exit code 1 and a clear explanation instead of a cheerful "Done".
 # All other states (no python, memory not verified) are warnings, exit code 0.

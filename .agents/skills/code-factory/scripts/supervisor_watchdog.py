@@ -39,18 +39,22 @@ without it is read with an empty journal, never rejected).
 SUBCOMMANDS
 
   begin   --launch-dir <dir>
-        record the run's ONE watchdog bootstrap BEFORE Phase 0 begins. It is launch-scoped and
-        run-id INDEPENDENT (deliberately: the run_id does not exist yet at that point), and it is
-        single-owner per launch directory. Writes
-        `<launch-dir>/.code-factory/state/watchdog-bootstrap.json`:
-        {"begun_at": "<ISO>", "run_id": null, "events": [...], "activated": null,
-         "completed": null, "history": []}
-        A begun-but-not-completed bootstrap is the run IN PROGRESS (a second `begin` is refused:
-        resume it, `complete` the run it bound, or `abandon` it when it never bound a run at all —
-        a failed Phase 0 — with the reason); a COMPLETED or ABANDONED one is a finished attempt,
-        and `begin` carries it into `history` and starts fresh — the launch directory is reusable
-        for the next independent run.
-  observe --launch-dir <dir> --event <event> --seq <int> [--detail <text>]
+        record ONE watchdog bootstrap BEFORE Phase 0 begins. It is launch-scoped and run-id
+        INDEPENDENT (deliberately: the run_id does not exist yet at that point) and it is KEYED: a
+        fresh launch nonce (`<YYYYMMDD>-<HHMMSS>-<6 hex>`, UTC time + os.urandom) names the file,
+        so several factories launched from ONE directory into DIFFERENT repositories never share a
+        mutable record. Writes `<launch-dir>/.code-factory/state/watchdog-bootstrap-<launch_id>
+        .json`:
+        {"launch_id": "<nonce>", "begun_at": "<ISO>", "run_id": null, "events": [...],
+         "activated": null, "completed": null, "history": []}
+        and returns the `launch_id` every later operation is addressed by. A COMPLETED or ABANDONED
+        keyed bootstrap is an IMMUTABLE history entry of the launch directory: it is never rewritten
+        and never carried into another bootstrap (no cross-run `history`; the field stays for the
+        legacy shape). A second `begin` is therefore a NEW, independent supervision — the old
+        single-occupancy refusal is inverted on purpose (owner-approved).
+        The unkeyed `watchdog-bootstrap.json` is the LEGACY (pre-key) shape: still resolvable, never
+        silently migrated, and `history` still validates on it.
+  observe --launch-dir <dir> --event <event> --seq <int> [--detail <text>] [--launch-id <id>]
         record ONE Phase 0 observation under the bootstrap. The event vocabulary is CLOSED
         (`parse`, `resolve`, `memory-read`, `memory-write`, `run-id`) and the sequence is
         non-negative and STRICTLY increasing (two events may not share a place in the order, and
@@ -58,24 +62,28 @@ SUBCOMMANDS
         order — parse first, supervise later — never becomes a library record. `--detail` is an
         OPTIONAL routing note: empty is legitimate, `DETAIL_MAX` (4000) characters is the bound.
         After activation the same observation is also appended to the run-bound state.
-  activate --launch-dir <dir> --repo <root>
-        bind the bootstrap ATOMICALLY to the run that now exists: exit 1 (fail closed) while a
-        mandated Phase 0 operation was never observed or was observed OUT OF ORDER, exit 2 on an
-        input error (a second activation, another run's state — archive it). On success the
+  activate --launch-dir <dir> --repo <root> [--launch-id <id>]
+        bind the addressed bootstrap ATOMICALLY to the run that now exists: exit 1 (fail closed)
+        while a mandated Phase 0 operation was never observed or was observed OUT OF ORDER, exit 2
+        on an input error (a second activation, another run's state — archive it). On success the
         run-bound state is written with `launch.at` = the bootstrap's OWN `begun_at` (the moment
         supervision really started, never a later stand-in) and carries the ordered observations.
-  complete --launch-dir <dir>
+  complete --launch-dir <dir> [--launch-id <id>]
         close the bootstrap of the run `activate` bound: the record names that run, the finished
         run's own watchdog state is left untouched, and ONE completion per binding is allowed. An
         unbound bootstrap has no completed run to record (exit 2), and a second completion is
         refused (exit 2).
-  abandon --launch-dir <dir> --reason <text>
+  abandon --launch-dir <dir> --reason <text> [--launch-id <id>]
         end a bootstrap that NEVER bound a run — the honest transition after a failed Phase 0 (an
-        unparsable task, a refused activation), which otherwise blocks the launch directory twice
-        over: `begin` refuses a second bootstrap and `complete` has no bound run to close. The
-        reason is mandatory and bounded and stays on the record (the next bootstrap carries it in
-        `history`); an ACTIVATED bootstrap is a run IN PROGRESS and is refused (exit 2 — end it
-        with `complete` at its Finish), as is an already closed one.
+        unparsable task, a refused activation). The reason is mandatory and bounded and stays on the
+        record; an ACTIVATED bootstrap is a run IN PROGRESS and is refused (exit 2 — end it with
+        `complete` at its Finish), as is an already closed one.
+        RESOLUTION without `--launch-id`: `observe`/`activate`/`complete`/`abandon` address the ONE
+        UNCOMPLETED bootstrap of the launch directory (the legacy unkeyed file included). MULTIPLE
+        uncompleted bootstraps are an input error that names every candidate id and demands
+        `--launch-id` — the state of several factories in one directory is never guessed. An
+        explicit `--launch-id` is a FILENAME COMPONENT and must match `^\\d{8}-\\d{6}-[0-9a-f]{6}$`;
+        a malformed or unknown one is an input error, never a silent fallback.
   launch  --repo <root>
         record the run's ONE watchdog launch for a run that already has a run_id (the legacy path:
         a run started under `begin`/`observe`/`activate` is launched by `activate`). Single owner:
@@ -121,8 +129,14 @@ if str(_SCRIPTS_DIR) not in sys.path:
 from model_matrix import ROLES  # noqa: E402
 
 WATCHDOG_REL = pathlib.Path(".code-factory") / "state" / "watchdog.json"
+# The LEGACY unkeyed bootstrap (pre-key shape): still resolvable, never silently migrated.
 BOOTSTRAP_REL = pathlib.Path(".code-factory") / "state" / "watchdog-bootstrap.json"
+# A KEYED bootstrap is `watchdog-bootstrap-<launch_id>.json` in the same directory.
+BOOTSTRAP_PREFIX = "watchdog-bootstrap"
 RUN_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{8}$")
+# The launch nonce `begin` mints: UTC time + random suffix. It is a FILENAME COMPONENT, so it is
+# validated before it is ever used as one (separators, `..`, empty have zero legitimacy).
+LAUNCH_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
 RULE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 # A deny detail is a routing note, not a document: bounded so the state file stays a state file.
 DETAIL_MAX = 4000
@@ -167,6 +181,11 @@ def use_utf8_output() -> None:
 
 def _now() -> str:
     return datetime.datetime.now(tz=datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def _now_precise() -> str:
+    """A launch's `begun_at`: microsecond precision, so two begins never share a moment."""
+    return datetime.datetime.now(tz=datetime.timezone.utc).isoformat(timespec="microseconds")
 
 
 # -------------------------------------------------------------------------------------------- input
@@ -331,8 +350,43 @@ def _checked_launch_dir(launch_dir: str | pathlib.Path) -> pathlib.Path:
     return directory
 
 
-def _bootstrap_path(directory: pathlib.Path) -> pathlib.Path:
-    return directory / BOOTSTRAP_REL
+def _bootstrap_path(directory: pathlib.Path, launch_id: str | None = None) -> pathlib.Path:
+    """The bootstrap file of ONE launch: keyed by its nonce; unkeyed only for a legacy record."""
+    if launch_id is None:
+        return directory / BOOTSTRAP_REL
+    return directory / BOOTSTRAP_REL.parent / f"{BOOTSTRAP_PREFIX}-{launch_id}.json"
+
+
+def _bootstrap_files(directory: pathlib.Path) -> list[pathlib.Path]:
+    """Every bootstrap file of the launch directory: the keyed ones and the legacy unkeyed one."""
+    return sorted((directory / BOOTSTRAP_REL.parent).glob(f"{BOOTSTRAP_PREFIX}*.json"))
+
+
+def _launch_id_of(path: pathlib.Path) -> str | None:
+    """The launch nonce a keyed bootstrap file is named by; None for the legacy unkeyed file."""
+    if path.name == BOOTSTRAP_REL.name:
+        return None
+    return path.name[len(BOOTSTRAP_PREFIX) + 1:-len(".json")]
+
+
+def _validate_launch_id(launch_id: str) -> str:
+    """`--launch-id` becomes a filename component: only the documented nonce shape is legitimate."""
+    if not LAUNCH_ID_RE.fullmatch(launch_id or ""):
+        raise WatchdogError(f"--launch-id must be the launch nonce the factory's `begin` minted "
+                            f"(^\\d{{8}}-\\d{{6}}-[0-9a-f]{{6}}$), got {launch_id!r}: it names the "
+                            f"bootstrap file, so separators, `..` and an empty value have no "
+                            f"legitimacy")
+    return launch_id
+
+
+def _mint_launch_id() -> str:
+    """A fresh launch nonce: UTC time + `os.urandom`, validated before it names a file."""
+    nonce = (datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+             + "-" + os.urandom(3).hex())
+    if not LAUNCH_ID_RE.fullmatch(nonce):
+        raise WatchdogError(f"the minted launch id {nonce!r} is not a usable filename component: "
+                            f"one launch could not be told from another")
+    return nonce
 
 
 def _validate_bootstrap(path: pathlib.Path, data: object) -> dict:
@@ -340,6 +394,11 @@ def _validate_bootstrap(path: pathlib.Path, data: object) -> dict:
         raise WatchdogError(f"{path} must be a JSON object, got {type(data).__name__}")
     if not isinstance(data.get("begun_at"), str) or not data["begun_at"]:
         raise WatchdogError(f"{path}: begun_at must be a non-empty ISO timestamp")
+    if data.get("launch_id") is not None and (
+            not isinstance(data.get("launch_id"), str)
+            or not LAUNCH_ID_RE.fullmatch(data["launch_id"])):
+        raise WatchdogError(f"{path}: launch_id must be null or the launch nonce that names the "
+                            f"file (^\\d{{8}}-\\d{{6}}-[0-9a-f]{{6}}$), got {data['launch_id']!r}")
     if data.get("run_id") is not None and not isinstance(data.get("run_id"), str):
         raise WatchdogError(f"{path}: run_id must be null or a string")
     events = data.get("events")
@@ -381,14 +440,8 @@ def _validate_bootstrap(path: pathlib.Path, data: object) -> dict:
     return data
 
 
-def read_bootstrap(directory: pathlib.Path) -> dict | None:
-    """The launch-scoped bootstrap, or None when the supervisor never began.
-
-    A malformed bootstrap is fail-closed: an input error naming the file, never a silent skip.
-    """
-    path = _bootstrap_path(directory)
-    if not path.is_file():
-        return None
+def _read_bootstrap_file(path: pathlib.Path) -> dict:
+    """Read + validate ONE bootstrap file (fail-closed: an input error, never a silent skip)."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -397,20 +450,60 @@ def read_bootstrap(directory: pathlib.Path) -> dict | None:
     return _validate_bootstrap(path, data)
 
 
-def _require_bootstrap(directory: pathlib.Path) -> dict:
-    data = read_bootstrap(directory)
-    if data is None:
+def _no_bootstrap_error(directory: pathlib.Path) -> WatchdogError:
+    return WatchdogError(
+        f"no {BOOTSTRAP_PREFIX}*.json in {directory}: the supervisor did not BEGIN before "
+        f"Phase 0, so this operation went unwatched — the supervisor must be watching "
+        f"Phase 0 from before the parse (mistakes.txt item 1): run "
+        f"`supervisor_watchdog.py begin --launch-dir <launch dir>` FIRST, then observe every "
+        f"Phase 0 event")
+
+
+def resolve_bootstrap(directory: str | pathlib.Path,
+                      launch_id: str | None = None) -> dict:
+    """The ONE bootstrap an operation addresses: `{launch_id, path, bootstrap}` (the shared resolver).
+
+    An explicit `launch_id` names its keyed file and NOTHING else: a malformed or unknown key is an
+    input error, never a fallback to "some" bootstrap. Without it the launch directory resolves only
+    when exactly ONE bootstrap is UNCOMPLETED — the legacy unkeyed file is such a bootstrap, so a
+    paused run resumes on the file it already has and is never silently migrated. SEVERAL
+    uncompleted bootstraps are an ambiguity that names every candidate and demands `--launch-id`:
+    which run a supervision belongs to is never guessed.
+    """
+    directory = _checked_launch_dir(directory)
+    if launch_id is not None:
+        key = _validate_launch_id(launch_id)
+        path = _bootstrap_path(directory, key)
+        if not path.is_file():
+            known = ", ".join(str(_launch_id_of(file) or file.name)
+                              for file in _bootstrap_files(directory)) or "none"
+            raise WatchdogError(
+                f"no bootstrap keyed {key!r} in {directory}: `--launch-id` must be the nonce "
+                f"`begin` returned for THIS supervision (known: {known}) — a key that names no "
+                f"bootstrap is never resolved to another one")
+        return {"launch_id": key, "path": path, "bootstrap": _read_bootstrap_file(path)}
+    files = _bootstrap_files(directory)
+    if not files:
+        raise _no_bootstrap_error(directory)
+    records = [(path, _read_bootstrap_file(path)) for path in files]
+    uncompleted = [(path, record) for path, record in records
+                   if record.get("completed") is None]
+    if len(uncompleted) == 1:
+        path, record = uncompleted[0]
+        return {"launch_id": _launch_id_of(path), "path": path, "bootstrap": record}
+    if len(uncompleted) > 1:
+        candidates = ", ".join(_launch_id_of(path) or f"{path.name} (legacy, unkeyed)"
+                               for path, _record in uncompleted)
         raise WatchdogError(
-            f"no {BOOTSTRAP_REL.as_posix()} in {directory}: the supervisor did not BEGIN before "
-            f"Phase 0, so this operation went unwatched — the supervisor must be watching "
-            f"Phase 0 from before the parse (mistakes.txt item 1): run "
-            f"`supervisor_watchdog.py begin --launch-dir <launch dir>` FIRST, then observe every "
-            f"Phase 0 event")
-    return data
-
-
-def _write_bootstrap(directory: pathlib.Path, data: dict) -> pathlib.Path:
-    return _atomic_json(_bootstrap_path(directory), data)
+            f"{len(uncompleted)} UNCOMPLETED bootstraps are recorded in {directory} ({candidates}): "
+            f"which supervision this operation belongs to is not guessable — pass `--launch-id "
+            f"<id>` (the nonce its `begin` returned) to address exactly one of them")
+    closed = ", ".join(f"{_launch_id_of(path) or path.name} {_closed_phrase(record['completed'])}"
+                       for path, record in records)
+    raise WatchdogError(
+        f"every bootstrap in {directory} is already closed ({closed}): a closed record is history "
+        f"and is never rewritten — run `supervisor_watchdog.py begin --launch-dir {directory}` for "
+        f"the next run's Phase 0")
 
 
 def _atomic_json(path: pathlib.Path, data: dict) -> pathlib.Path:
@@ -438,47 +531,29 @@ def _atomic_json(path: pathlib.Path, data: dict) -> pathlib.Path:
 # -------------------------------------------------------------------------------------- subcommands
 
 def begin(launch_dir: str | pathlib.Path) -> dict:
-    """Record the run's ONE watchdog bootstrap — BEFORE Phase 0, run-id independently.
+    """Record ONE KEYED watchdog bootstrap — BEFORE Phase 0, run-id independently.
 
     The defect this closes (mistakes.txt item 1): the old flow parsed the task, resolved
     `repo_path`, read the memory and only THEN computed a run_id and launched a supervisor whose
     launch REQUIRED that run_id — so the mandated order was impossible and all of Phase 0 went
     unwatched. `begin` therefore needs nothing but the launch directory.
 
-    The LIFECYCLE is explicit (review R1, critical): a bootstrap that was begun and never completed
-    is still the run in progress, so a second `begin` is refused — resume it
-    (`observe`/`activate`), end it with `complete` when it bound a run, or end it with `abandon
-    --reason` when it never bound one (Phase 0 failed). A COMPLETED or ABANDONED bootstrap is a
-    finished attempt: it is carried into the fresh bootstrap's `history`, and the launch directory
-    is free for the next independent run.
+    The bootstrap is KEYED by a minted launch nonce (defect C, owner-approved inversion): several
+    factories launched from ONE directory into DIFFERENT repositories must never share a mutable
+    file, so a second `begin` starts an independent supervision instead of being refused. The nonce
+    is returned as `launch_id` and every later operation is addressed by it; without it the launch
+    directory resolves only while exactly ONE bootstrap is uncompleted. A completed/abandoned keyed
+    record is IMMUTABLE history — never rewritten, never carried into another bootstrap.
     """
     directory = _checked_launch_dir(launch_dir)
-    existing = read_bootstrap(directory)
-    if existing is not None and existing.get("completed") is None:
-        raise WatchdogError(f"the supervisor of this launch was already begun at "
-                            f"{existing['begun_at']}: ONE bootstrap per launch ({BOOTSTRAP_REL} in "
-                            f"{directory}) — resume the running supervisor instead of beginning "
-                            f"a second one" + (
-                                ": a run bound by `activate` ends with `complete` before the next "
-                                "independent run may begin" if existing.get("activated")
-                                else ": a bootstrap that never bound a run — Phase 0 failed — is "
-                                     "ended with `abandon --reason <why>`, so the reason stays on "
-                                     "the record"))
-    history = list(existing.get("history", [])) if existing is not None else []
-    if existing is not None:
-        finished = existing["completed"]
-        previous = {"begun_at": existing["begun_at"], "run_id": finished["run_id"],
-                    "completed_at": finished["at"]}
-        if finished.get("abandoned") is True:
-            # An abandoned attempt never bound a run: its reason is the history of that attempt.
-            previous["abandoned"] = True
-            previous["reason"] = finished["reason"]
-        history = [previous] + history
-    data = {"begun_at": _now(), "run_id": None, "events": [], "activated": None,
-            "completed": None, "history": history}
-    path = _write_bootstrap(directory, data)
-    return {"status": "begun", "run_id": None, "begun_at": data["begun_at"], "events": 0,
-            "history": len(history), "state": str(path)}
+    launch_id = _mint_launch_id()
+    while _bootstrap_path(directory, launch_id).exists():     # never overwrite a record
+        launch_id = _mint_launch_id()
+    data = {"launch_id": launch_id, "begun_at": _now_precise(), "run_id": None, "events": [],
+            "activated": None, "completed": None, "history": []}
+    path = _atomic_json(_bootstrap_path(directory, launch_id), data)
+    return {"status": "begun", "launch_id": launch_id, "run_id": None, "events": 0,
+            "begun_at": data["begun_at"], "history": 0, "state": str(path)}
 
 
 def _closed_phrase(finished: dict) -> str:
@@ -530,17 +605,19 @@ def _finish_checkpoint(activated: dict, directory: pathlib.Path) -> str:
     return status
 
 
-def complete(launch_dir: str | pathlib.Path) -> dict:
-    """Close the launch-scoped bootstrap of the run it BOUND, at the run's Finish.
+def complete(launch_dir: str | pathlib.Path, launch_id: str | None = None) -> dict:
+    """Close the bootstrap of the run it BOUND, at the run's Finish.
 
     (review R1, critical) A completed record used to be indistinguishable from an unfinished one,
-    so `begin` refused forever and the second run launched from the same directory could never
-    start its own supervisor. The completion is ONE per binding and names the run; the finished
-    run's own watchdog state is history and is never rewritten here. (review R2) The completion
-    belongs to the Finish: the bound run's checkpoint must already declare `status: ok`.
+    so the second run launched from the same directory could never start its own supervisor. The
+    completion is ONE per binding and names the run; the finished run's own watchdog state is
+    history and is never rewritten here. (review R2) The completion belongs to the Finish: the
+    bound run's checkpoint must already declare `status: ok`. Under the keyed lifecycle only the
+    ADDRESSED file is written, so a completed record stays immutable.
     """
     directory = _checked_launch_dir(launch_dir)
-    data = _require_bootstrap(directory)
+    resolved = resolve_bootstrap(directory, launch_id)
+    data = resolved["bootstrap"]
     if data.get("completed") is not None:
         raise WatchdogError(f"this bootstrap was already closed "
                             f"{_closed_phrase(data['completed'])}: ONE ending per bootstrap — the "
@@ -553,24 +630,25 @@ def complete(launch_dir: str | pathlib.Path) -> dict:
                             f"because Phase 0 failed, is ended with `abandon --reason <why>`)")
     _finish_checkpoint(activated, directory)
     data["completed"] = {"at": _now(), "run_id": activated["run_id"]}
-    path = _write_bootstrap(directory, data)
-    return {"status": "completed", "run_id": activated["run_id"],
-            "completed": data["completed"], "state": str(path)}
+    path = _atomic_json(resolved["path"], data)
+    return {"status": "completed", "launch_id": resolved["launch_id"],
+            "run_id": activated["run_id"], "completed": data["completed"], "state": str(path)}
 
 
-def abandon(launch_dir: str | pathlib.Path, reason: str) -> dict:
+def abandon(launch_dir: str | pathlib.Path, reason: str,
+            launch_id: str | None = None) -> dict:
     """End a bootstrap that never bound a run, WITH the reason it failed.
 
     (review R1) A run whose Phase 0 failed — an unparsable task, a refused activation — leaves a
-    begun bootstrap behind that bound nothing: `begin` refuses the next independent run over it and
-    `complete` has no bound run to close, so the launch directory stayed blocked forever. This is
-    the ONE honest way out, and it is deliberately narrow: the bootstrap must exist, must NOT be
-    bound by `activate` (a bound bootstrap is the run IN PROGRESS and ends with `complete` once its
+    begun bootstrap behind that bound nothing: `complete` has no bound run to close. This is the ONE
+    honest way out, and it is deliberately narrow: the bootstrap must exist, must NOT be bound by
+    `activate` (a bound bootstrap is the run IN PROGRESS and ends with `complete` once its
     checkpoint declares `status: ok`), must not already be closed, and the reason is mandatory and
-    bounded. The reason stays on the record and the next bootstrap carries it in `history`.
+    bounded. The reason stays on the addressed record, which is immutable keyed history.
     """
     directory = _checked_launch_dir(launch_dir)
-    data = _require_bootstrap(directory)
+    resolved = resolve_bootstrap(directory, launch_id)
+    data = resolved["bootstrap"]
     if data.get("completed") is not None:
         raise WatchdogError(f"this bootstrap was already closed "
                             f"{_closed_phrase(data['completed'])}: ONE ending per bootstrap — "
@@ -585,19 +663,22 @@ def abandon(launch_dir: str | pathlib.Path, reason: str) -> dict:
                             f"supervision of a run that may still be spawning")
     note = _validate_text(reason, "--reason")
     data["completed"] = {"at": _now(), "run_id": None, "abandoned": True, "reason": note}
-    path = _write_bootstrap(directory, data)
-    return {"status": "abandoned", "run_id": None, "completed": data["completed"],
-            "events": len(data["events"]), "state": str(path)}
+    path = _atomic_json(resolved["path"], data)
+    return {"status": "abandoned", "launch_id": resolved["launch_id"], "run_id": None,
+            "completed": data["completed"], "events": len(data["events"]), "state": str(path)}
 
 
-def observe(launch_dir: str | pathlib.Path, event: str, seq: int, detail: str = "") -> dict:
-    """Record ONE Phase 0 observation under the bootstrap (closed vocabulary, increasing sequence).
+def observe(launch_dir: str | pathlib.Path, event: str, seq: int, detail: str = "",
+            launch_id: str | None = None) -> dict:
+    """Record ONE Phase 0 observation under the addressed bootstrap.
 
-    After `activate` the same observation is also appended to the run-bound state, so the run's
-    own journal stays complete (the memory write happens long after Phase 0).
+    (closed vocabulary, strictly increasing sequence) After `activate` the same observation is also
+    appended to the run-bound state, so the run's own journal stays complete (the memory write
+    happens long after Phase 0).
     """
     directory = _checked_launch_dir(launch_dir)
-    data = _require_bootstrap(directory)
+    resolved = resolve_bootstrap(directory, launch_id)
+    data = resolved["bootstrap"]
     finished = data.get("completed")
     if finished is not None:
         raise WatchdogError(f"the bootstrap in {directory} was closed "
@@ -631,9 +712,10 @@ def observe(launch_dir: str | pathlib.Path, event: str, seq: int, detail: str = 
         bound["events"].append(record)
         bound["events"].sort(key=lambda entry: entry["seq"])
         _write_state(root, bound)
-    path = _write_bootstrap(directory, data)
-    return {"status": "observed", "run_id": data["run_id"], "event": event, "seq": seq,
-            "events": len(data["events"]), "activated": activated is not None, "state": str(path)}
+    path = _atomic_json(resolved["path"], data)
+    return {"status": "observed", "launch_id": resolved["launch_id"], "run_id": data["run_id"],
+            "event": event, "seq": seq, "events": len(data["events"]),
+            "activated": activated is not None, "state": str(path)}
 
 
 def _phase0_problem(observed: list[str]) -> str | None:
@@ -653,10 +735,12 @@ def _phase0_problem(observed: list[str]) -> str | None:
     return None
 
 
-def activate(launch_dir: str | pathlib.Path, repo: str | pathlib.Path) -> dict:
+def activate(launch_dir: str | pathlib.Path, repo: str | pathlib.Path,
+             launch_id: str | None = None) -> dict:
     """Bind the bootstrap ATOMICALLY to the run that now exists (exit 1 = Phase 0 was unwatched)."""
     directory = _checked_launch_dir(launch_dir)
-    data = _require_bootstrap(directory)
+    resolved = resolve_bootstrap(directory, launch_id)
+    data = resolved["bootstrap"]
     if data.get("completed") is not None:
         raise WatchdogError(f"the bootstrap in {directory} was closed "
                             f"{_closed_phrase(data['completed'])}: a closed bootstrap cannot be "
@@ -688,9 +772,9 @@ def activate(launch_dir: str | pathlib.Path, repo: str | pathlib.Path) -> dict:
     path = _write_state(root, state)
     data["run_id"] = run_id
     data["activated"] = {"at": _now(), "run_id": run_id, "repo": str(root)}
-    _write_bootstrap(directory, data)
-    return {"status": "activated", "run_id": run_id, "events": len(state["events"]),
-            "launch": state["launch"], "state": str(path)}
+    _atomic_json(resolved["path"], data)
+    return {"status": "activated", "launch_id": resolved["launch_id"], "run_id": run_id,
+            "events": len(state["events"]), "launch": state["launch"], "state": str(path)}
 
 
 def launch(root: str | pathlib.Path) -> dict:
@@ -805,12 +889,16 @@ def _counter_anomalies(root: pathlib.Path, emit) -> None:
                  f"retry_counters.{role} exists, but role {role!r} has no retry budget: the "
                  f"checkpoint was hand-written (budgeted roles: {', '.join(sorted(dg.BUDGETS))})")
             continue
-        ceiling = dg.BUDGETS[role] + dg._authorizations_for(text, role)
+        # The SAME ceiling the pre-delegation gate enforces: only the coder's follows the approved
+        # plan (one per distinct coder task + one retry reserve), so a legitimate multi-task run is
+        # never false-flagged, and the raw base table is never compared against on its own.
+        budget = dg.budget_for(role, root)
+        ceiling = budget + dg._authorizations_for(text, role)
         if value > ceiling:
             emit(RULE_BUDGETS, "main",
-                 f"retry_counters.{role} is {value}, above its budget {dg.BUDGETS[role]}"
-                 + (f" + {ceiling - dg.BUDGETS[role]} owner authorization(s)" if ceiling >
-                    dg.BUDGETS[role] else "")
+                 f"retry_counters.{role} is {value}, above its budget {budget}"
+                 + (f" + {ceiling - budget} owner authorization(s)" if ceiling >
+                    budget else "")
                  + ": the counter was moved without the gate (rule `retry-budgets`)")
 
 
@@ -930,11 +1018,11 @@ def build_parser() -> argparse.ArgumentParser:
                                  formatter_class=_WideHelp)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = add(sub, "begin", help="record the run's ONE watchdog bootstrap BEFORE Phase 0 "
-                               "(launch-scoped, run-id independent)")
+    p = add(sub, "begin", help="record ONE keyed watchdog bootstrap BEFORE Phase 0 (launch-scoped, "
+                               "run-id independent; returns the launch id)")
     p.add_argument("--launch-dir", required=True,
                    help="the directory the factory was launched from (holds "
-                        ".code-factory/state/watchdog-bootstrap.json)")
+                        ".code-factory/state/watchdog-bootstrap-<launch id>.json)")
     p.set_defaults(func=_cmd_begin)
 
     p = add(sub, "observe", help="record ONE Phase 0 observation (closed vocabulary, "
@@ -946,6 +1034,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="the Phase 0 position of the event (a non-negative integer, strictly "
                         "increasing across the journal)")
     p.add_argument("--detail", default="", help="an optional routing note (bounded)")
+    p.add_argument("--launch-id", default=None,
+                   help="the launch nonce `begin` returned (omit it while the launch directory "
+                        "holds exactly ONE uncompleted bootstrap)")
     p.set_defaults(func=_cmd_observe)
 
     p = add(sub, "activate", help="bind the bootstrap to the run once its run_id exists "
@@ -953,11 +1044,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--launch-dir", required=True)
     p.add_argument("--repo", required=True,
                    help="the RESOLVED repository root holding .code-factory/")
+    p.add_argument("--launch-id", default=None,
+                   help="the launch nonce `begin` returned (omit it while the launch directory "
+                        "holds exactly ONE uncompleted bootstrap)")
     p.set_defaults(func=_cmd_activate)
 
     p = add(sub, "complete", help="close the bootstrap of the run it bound (ONE completion per "
-                                  "binding; frees the launch directory for the next run)")
+                                  "binding; the record is then immutable history)")
     p.add_argument("--launch-dir", required=True)
+    p.add_argument("--launch-id", default=None,
+                   help="the launch nonce `begin` returned (omit it while the launch directory "
+                        "holds exactly ONE uncompleted bootstrap)")
     p.set_defaults(func=_cmd_complete)
 
     p = add(sub, "abandon", help="end a bootstrap that NEVER bound a run (a failed Phase 0), with "
@@ -965,6 +1062,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--launch-dir", required=True)
     p.add_argument("--reason", required=True,
                    help=f"why this bootstrap never bound a run (at most {DETAIL_MAX} characters)")
+    p.add_argument("--launch-id", default=None,
+                   help="the launch nonce `begin` returned (omit it while the launch directory "
+                        "holds exactly ONE uncompleted bootstrap)")
     p.set_defaults(func=_cmd_abandon)
 
     p = add(sub, "launch", help="record the run's ONE watchdog launch (single owner)")
@@ -1007,22 +1107,22 @@ def _cmd_begin(args: argparse.Namespace) -> int:
 
 
 def _cmd_observe(args: argparse.Namespace) -> int:
-    _emit(observe(args.launch_dir, args.event, args.seq, args.detail))
+    _emit(observe(args.launch_dir, args.event, args.seq, args.detail, args.launch_id))
     return 0
 
 
 def _cmd_activate(args: argparse.Namespace) -> int:
-    _emit(activate(args.launch_dir, args.repo))
+    _emit(activate(args.launch_dir, args.repo, args.launch_id))
     return 0
 
 
 def _cmd_complete(args: argparse.Namespace) -> int:
-    _emit(complete(args.launch_dir))
+    _emit(complete(args.launch_dir, args.launch_id))
     return 0
 
 
 def _cmd_abandon(args: argparse.Namespace) -> int:
-    _emit(abandon(args.launch_dir, args.reason))
+    _emit(abandon(args.launch_dir, args.reason, args.launch_id))
     return 0
 
 

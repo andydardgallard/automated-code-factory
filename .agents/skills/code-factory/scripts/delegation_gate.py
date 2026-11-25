@@ -4,9 +4,10 @@ Pre-delegation retry budgets for the factory (zero LLM tokens, stdlib only).
 
 WHY THIS EXISTS
 
-The rulebook gives every role its own retry budget (rule `retry-budgets`: coder=1, ba=2, planner=2,
-diagnostician=1, advisor=1, infrastructure=3, reviewer=2) and keeps the counters in
-`.code-factory/state/pipeline.yaml` (`retry_counters`). Until this script the counter was
+The rulebook gives every role its own retry budget (rule `retry-budgets`: ba=2, planner=2,
+diagnostician=1, advisor=1, infrastructure=3, reviewer=2 — plus the coder ceiling below) and keeps
+the counters in `.code-factory/state/pipeline.yaml` (`retry_counters`). Until this script the
+counter was
 SELF-REPORTED: whoever delegated a role also wrote the number, so a run could re-delegate a third
 reviewer pass while the checkpoint still said `reviewer: 2` (or never wrote the increment at all) and
 nothing refused it. The budget was counted by whoever reported, not by whoever executed.
@@ -16,6 +17,19 @@ The main agent MUST run `check` before EVERY delegation of a budgeted role; `che
 that increments the counter, and it REFUSES the delegation once the budget is exhausted. A run that
 skips the call is unauditable, and a later gate (`gate_all.py`, task_11) audits the counters against
 the session wire.
+
+THE CODER CEILING IS PLAN-DERIVED (defect D). A fixed coder budget of 1 counted an approved
+multi-task plan as a single delegation, so every plan task after the first demanded a fresh owner
+authorization — a stop per task, which is what the owner rejected. The coder's budget is therefore
+`coder_budget`: ONE delegation per DISTINCT coder task of the approved plan plus the existing
+one-retry reserve. The plan is read by the shipped `permit_gate.py` parser (its `plan_text` and its
+`- <task id>:` DAG grammar), never by a third parser, and only an ENTRY that assigns `role: coder`
+counts — prose that mentions the coder does not. A repeated task id is ONE task. A plan that is
+missing, unreadable or names no coder task leaves the base budget of 1 (plus the reserve), i.e. it
+FAILS CLOSED: a plan nobody can read never widens a budget. Every other role keeps its own fixed
+budget whatever the plan says, an owner authorization stays ADDITIVE to the derived ceiling, and a
+resume never resets a consumed delegation (the counter only ever moves; a larger plan merely raises
+the ceiling).
 
 WHAT `check` DOES (one atomic read-modify-write of ONE counter)
 
@@ -113,9 +127,13 @@ PIPELINE_REL = pathlib.Path(".code-factory") / "state" / "pipeline.yaml"
 
 # The ONE budget table — the same numbers the canonical rule `retry-budgets` states. A role without
 # an entry here has no budget, and the gate refuses to count for it (a made-up budget is worse than
-# no gate: it would look enforced while nothing defines the limit).
+# no gate: it would look enforced while nothing defines the limit). The coder's entry is the BASE
+# budget only: `coder_budget` derives the real ceiling from the approved plan (see above).
 BUDGETS: dict[str, int] = {"coder": 1, "ba": 2, "planner": 2, "diagnostician": 1, "advisor": 1,
                            "infrastructure": 3, "reviewer": 2}
+# The one-retry reserve on top of the plan's coder tasks, and the role whose ceiling follows the plan.
+PLAN_DERIVED_ROLE = "coder"
+RETRY_RESERVE = 1
 MODES = ("hitl", "auto")
 
 COUNTERS_HEADER = re.compile(r"^retry_counters:\s*(\{\s*\}|\[\s*\])?\s*(#.*)?$")
@@ -132,6 +150,8 @@ SETTLE_ROLE = "reviewer"
 ROUND_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 ENTRY = re.compile(r"^(\s+)([A-Za-z0-9_]+)\s*:\s*(.*?)\s*$")
 LIST_ITEM = re.compile(r"^\s+-\s+(.*\S)\s*$")
+# The `role:` field of one plan entry: which factory role a DAG task assigns its work to.
+ROLE_FIELD = re.compile(r"\brole\s*:\s*(?P<role>[A-Za-z][A-Za-z0-9_]*)")
 UNSIGNED_INT = re.compile(r"^[0-9]+$")
 
 
@@ -188,6 +208,65 @@ def validate_mode(mode: str) -> str:
     if mode not in MODES:
         raise GateError(f"unknown mode {mode!r}: expected one of {', '.join(MODES)}")
     return mode
+
+
+def _plan_parser():
+    """The sibling `permit_gate` module — the ONE approved-plan parser — imported on demand.
+
+    `check` must not depend on the permit machinery for its other roles (that module pulls in the
+    ledger and the manifest), so the plan grammar is reached lazily, exactly like `_attribution`.
+    """
+    scripts = pathlib.Path(__file__).resolve().parent
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    try:
+        import permit_gate  # noqa: PLC0415  (deliberately lazy)
+    except ImportError as exc:
+        raise GateError(f"the plan-derived coder ceiling reuses permit_gate.py's approved-plan "
+                        f"parser, which cannot be imported: {exc}") from exc
+    return permit_gate
+
+
+def plan_coder_tasks(root: pathlib.Path) -> set[str]:
+    """The DISTINCT plan task ids whose entry assigns `role: coder` (empty when there is no plan).
+
+    The shipped `permit_gate` grammar decides what an ENTRY is (`- <task id>: ...`, with wrapped
+    continuation lines), so prose that merely mentions the coder is not a task. A task id is
+    recorded once however often the plan repeats it — the DAG is a set. A plan that is missing or
+    unreadable yields NO tasks: the caller then keeps the base budget, i.e. it fails CLOSED, because
+    a plan nobody can read must never widen a budget.
+    """
+    parser = _plan_parser()
+    try:
+        text = parser.plan_text(root)
+    except parser.PermitError:
+        return set()
+    tasks: set[str] = set()
+    current: str | None = None
+    for line in text.splitlines():
+        entry = parser.TASK_LINE.match(line)
+        if entry:
+            current = entry.group("id")
+            body = entry.group("rest")
+        elif current is not None and line.startswith((" ", "\t")) and line.strip():
+            body = line.strip()                     # a wrapped continuation of the same entry
+        else:
+            current = None
+            continue
+        role = ROLE_FIELD.search(body)
+        if current is not None and role and role.group("role") == PLAN_DERIVED_ROLE:
+            tasks.add(current)
+    return tasks
+
+
+def coder_budget(root: pathlib.Path) -> int:
+    """The coder ceiling: one delegation per distinct approved-plan coder task + one retry reserve."""
+    return len(plan_coder_tasks(root)) + RETRY_RESERVE
+
+
+def budget_for(role: str, root: pathlib.Path) -> int:
+    """The budget `role` is counted against at `root` (only the coder's follows the plan)."""
+    return coder_budget(root) if role == PLAN_DERIVED_ROLE else BUDGETS[role]
 
 
 def _counter_value(role: str, raw: str, where: str) -> int:
@@ -590,7 +669,7 @@ def check(repo: str | pathlib.Path, role: str, mode: str,
     path = root / PIPELINE_REL
     text = _read_pipeline(path)
     counters = read_counters(text)
-    budget = BUDGETS[role]
+    budget = budget_for(role, root)
     current = counters.get(role, 0)
     verdict = {"role": role, "mode": mode, "allow": False, "counter": current, "budget": budget,
                "owner_authorized": bool(owner_authorized), "reason": "", "pipeline": str(path)}

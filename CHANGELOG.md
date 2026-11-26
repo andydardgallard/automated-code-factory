@@ -5,6 +5,54 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.26.0] — 2026-11-26
+
+### Added
+
+- **The 16th role: `factory-roblox-expert` and a conditional Roblox game path.** A new specialist
+  (`sub-agents/roblox-expert.md`, coder-class, generator-side, `models.roblox_expert`) builds, runs,
+  play-tests and debugs Roblox places through the BUILT-IN Roblox Studio MCP server
+  (`mcp__Roblox_Studio__*`). Activation is deterministic and carries reasons, never a model call:
+  `roblox_mcp.py decide` requires TWO independent conditions — the repository really IS a Roblox
+  project (Rojo descriptor, place file, a Luau source using the Roblox API, a managed
+  `Roblox_Studio` entry) AND the metadata-stripped task text binds a Roblox SUBJECT to an ACTION.
+  Either condition alone keeps the role off, repository identity and task text are not scope, and a
+  `models.roblox_expert` model pin never activates anything.
+- **Deterministic helper `roblox_mcp.py`** (stdlib, zero tokens): `decide`, `merge-config`,
+  `validate-config`, a fail-soft `probe` whose Studio start is strictly opt-in (`--check-mcp-start`),
+  and the scenario runner `scenario run`/`verdict`/`verify`. Registration is GLOBAL by default, into
+  the USER-SCOPE CLI config resolved and echoed by the script (`$KIMI_CODE_HOME/mcp.json`, else
+  `~/.kimi-code/mcp.json`), with `--target` as an explicit override for tests; the merge is
+  idempotent and text-preserving, and a DIFFERENT `Roblox_Studio` entry is reported as a conflict
+  (exit 3) and left untouched, never overwritten. An undeterminable data root is a usage error.
+  `test_roblox_mcp.py` pins the contract (decide matrix, the global and override targets, the
+  conflict, the scenario verdict, every CLI input boundary).
+- **A structured evidence model instead of an opinion.** `scenario run` drives one bounded MCP
+  session, captures the Studio console output into `console.log` and writes a `verdict.json`; `PASS`
+  requires the scenario to have COMPLETED with NO error log line, so an error-logged run is never a
+  PASS, and a screenshot is recorded as an artifact with `screenshot_is_verdict: false` — never the
+  verdict. `scenario verify` re-reads the artifacts (including the recorded console sha256) instead
+  of trusting the verdict field. The tester owns acceptance, the specialist only produces diagnostic
+  evidence, and `references/roblox-mcp.md` documents the whole path.
+- **Three vendored Roblox skills** — `game-development`, `roblox-studio-mcp` and `roblox-engine-api`
+  (a scoped INDEX whose single-page source limitation is documented) — pinned in
+  `skill-base/manifest.json`, read as DATA only, licence/NOTICE preserved, nothing installed or
+  executed. The role is registered across `model_matrix`, `model_attribution`, `check_factory_model`,
+  both deployers' 16-profile lists, the flow wiring (pre-flight `--roblox`, the implement and
+  acceptance nodes) and the R1/R2 Roblox infrastructure rows of the error router.
+
+### Fixed
+
+- **Critical: `verify_acceptance.py` hung on verify commands with long output.** `run_verify` waited
+  on pipes that a verify command's grandchildren (pytest workers, `cmd.exe` under `shell=True`)
+  inherit and keep open, so a run could block long past its own finish — and megabytes on both
+  streams could deadlock the pipe buffers. The runner now redirects stdout/stderr to temp files,
+  waits on the process with the existing timeout, and reads a BOUNDED tail window back into the
+  unchanged excerpt; the observable contract is untouched (same exit codes, MET/FAILED mapping,
+  timeout note, excerpt shape, `shell=True`/`cwd` semantics). New self-bounding regression cases
+  cover megabytes on both streams, a handle-inheriting grandchild and the timeout path, and the
+  vaccination group RB-0..RB-5 proves the fix (and the new role) fail on the pre-fix tree.
+
 ## [12.25.0] — 2026-11-26
 
 ## [12.24.1] — 2026-11-23

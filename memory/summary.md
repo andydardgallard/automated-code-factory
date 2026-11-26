@@ -10,15 +10,16 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.24.1 — run 20261123-9598a460 preserved and released the completed change set through
-a clean current-session lifecycle. Genuine factory roles, allowed/bound permits, strict model
-attribution, phase K/Y and action/manifest/delegation/permit audits all pass. Final regression is
-55/55 and vaccination 205/205; archived Farukon reproduction and five consecutive sessions validate.
-Review approved the patch, DOC2 passed derive-mode, and acceptance is SUCCESS with six FRESH
-mixed-scope evidence entries. Open backlog: 2 carried items (the Farukon workspace_saved anomaly and
-the pre-existing verify_acceptance long-output hang). Self-test files: 55.
-Latest run: implement 20261123-9598a460 (task_finish_factory.yaml, hitl) — SUCCESS acceptance and
-v12.24.1 release on factory/20261122-ef747283.
+Factory v12.26.0 — run 20261126-8ab3e96d added the conditional roblox_expert specialist (global
+user-scope Studio MCP registration, structured scenario verdicts) and fixed the critical
+verify_acceptance long-output hang. Regression is 59/59 modules and vaccination 216/216; live
+Roblox Studio acceptance is PASS with honest good/broken verdicts and FRESH evidence; review
+approved at r3 with 0 open findings; acceptance SUCCESS. Finish gates pass except permit-audit
+and strict attribution on the owner-accepted early-spawn debt. Open backlog: 3 carried items
+(the Farukon workspace_saved anomaly, the accepted early-spawn audit debt, the D1 heuristic
+limitation). Self-test files: 59.
+Latest run: implement 20261126-8ab3e96d (task_roblox_expert.yaml, hitl) — SUCCESS acceptance and
+v12.26.0 release on factory/20261126-8ab3e96d.
 
 ## Key decisions
 - The long-term memory `memory/` belongs to ONE target project (`repo_path`); the field

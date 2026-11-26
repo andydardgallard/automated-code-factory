@@ -73,6 +73,7 @@ ROLE RESOLUTION
 
   Per agent id: `state.json` `agents[id].labels.profileName` -> role (`factory-` prefix stripped,
   `code-reviewer`->`reviewer`, `gui-expert`->`gui_expert`, `farukon-expert`->`farukon_expert`,
+  `roblox-expert`->`roblox_expert`,
   `security-auditor`->`security_auditor`, `skill-manager`->`skill_manager`, `main` stays `main`);
   when the state carries no profile, the
   parent wire's `subagent.spawned.subagentName` supplies it. Per role the script accumulates
@@ -121,7 +122,7 @@ STRICT ATTRIBUTION
   on the wire needs no claim. `--strict` forces the same rule for `review`/`security_audit`
   runs, and there is deliberately NO opt-out that weakens it. A declared `task_type` outside the four
   is an input error (exit 2); a checkpoint without `task_type` keeps the historical behaviour. A
-  CONDITIONAL role (`gui_expert`, `farukon_expert`, `security_auditor`) never
+  CONDITIONAL role (`gui_expert`, `farukon_expert`, `roblox_expert`, `security_auditor`) never
   fails on its own: it must be claimed (`models_used`) AND required before its wire is demanded, so
   a task that does not use it produces no false failure. (business_tester is mandatory for
   implement/refactor via the checkpoint contract of check_factory_model.py, not conditional.)
@@ -205,7 +206,7 @@ UNUSED = "unused"
 # dash-to-underscore rule, so they are pinned here (the rest is `name.replace("-", "_")`).
 PROFILE_PREFIX = "factory-"
 ROLE_ALIASES = {"code-reviewer": "reviewer", "gui-expert": "gui_expert",
-                "farukon-expert": "farukon_expert",
+                "farukon-expert": "farukon_expert", "roblox-expert": "roblox_expert",
                 "security-auditor": "security_auditor", "skill-manager": "skill_manager"}
 # Vendor identity behind the alias spellings the CLI and the pipeline use. Spellings of the SAME
 # vendor normalize to ONE vendor key (`kimi-k3` and `moonshot-k3` are one vendor's model; dashscope
@@ -260,7 +261,7 @@ STRICT_TASK_TYPES = ("implement", "refactor")
 # when `models_used` omits it. The model check validates the list; this script only applies it.
 # business_tester is NOT here: implement/refactor runs always delegate it, so it sits in the
 # mandatory set of check_factory_model.py instead.
-CONDITIONAL_ROLES = ("gui_expert", "farukon_expert", "security_auditor")
+CONDITIONAL_ROLES = ("gui_expert", "farukon_expert", "roblox_expert", "security_auditor")
 # A version token at the head of an alias remainder (`k3`, `v4-pro`, `k3.1`): the only case in
 # which `canonical()` normalizes an alias to its `<vendor>/<version>` key, so `kimi-k3` and `k3`
 # compare equal while `qwen-max` / `deepseek-flash` stay as they are.
@@ -348,8 +349,8 @@ def role_from_profile(name: str) -> str:
     """The factory role a sub-agent profile name stands for; "" when the name is empty.
 
     `factory-code-reviewer` -> `reviewer`, `factory-gui-expert` -> `gui_expert`,
-    `factory-farukon-expert` -> `farukon_expert`; the dash-to-underscore rule covers most profiles
-    and ROLE_ALIASES pins the ones it cannot.
+    `factory-farukon-expert` -> `farukon_expert`, `factory-roblox-expert` -> `roblox_expert`;
+    the dash-to-underscore rule covers most profiles and ROLE_ALIASES pins the ones it cannot.
     """
     role = _text(name).lower()
     if role.startswith(PROFILE_PREFIX):
@@ -1105,7 +1106,8 @@ def required_unbacked(comparison: dict[str, str], claims: dict[str, str],
     claim (the evidence is the artifact).
 
     Two documented exemptions keep the rule from producing false failures:
-      * a CONDITIONAL role (`gui_expert`, `farukon_expert`, `security_auditor`) that the run does not
+      * a CONDITIONAL role (`gui_expert`, `farukon_expert`, `roblox_expert`, `security_auditor`)
+        that the run does not
         claim never fails on its own — its wire is demanded only when the run says it ran;
       * a role the pipeline claims as `unused` is not a claim the wire has to confirm for a
         non-required comparison, but a REQUIRED role marked unused is still a required role, so it

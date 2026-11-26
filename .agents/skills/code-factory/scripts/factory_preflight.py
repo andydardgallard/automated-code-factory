@@ -23,6 +23,7 @@ Usage:
   python factory_preflight.py [--out .code-factory/state/preflight.json] [--repo <root>]
   python factory_preflight.py --web-gui [--simulate-missing <name>] [--out ...] [--repo <root>]
   python factory_preflight.py --farukon [--simulate-missing <name>] [--out ...] [--repo <root>]
+  python factory_preflight.py --roblox [--simulate-missing <name>] [--out ...] [--repo <root>]
 
 `--web-gui` is OPT-IN and meant only for a run whose task is an applicable Web GUI task: it appends
 a nested `web_gui` capability block (node/npm/npx versions, Chrome / Chrome for Testing presence,
@@ -30,10 +31,11 @@ MCP server start feasibility) by delegating to the sibling `chrome_devtools_mcp.
 fail-soft and timeout-guarded, so a missing browser capability is DATA carrying a reason and never
 changes the exit code (which stays python+git only). WITHOUT the flag the output schema and the
 exit-code contract are exactly what they were before the flag existed.
-`--simulate-missing <name>` (repeatable, only meaningful together with `--web-gui` or `--farukon`)
-forces one capability to report missing (`node`, `npm`, `npx`, `chrome`, `chrome-for-testing`,
-`mcp-server` for the browser path; `cargo`, `platform`, `mcp-config` for the Farukon path), so the
-degraded behavior is testable without touching the host.
+`--simulate-missing <name>` (repeatable, only meaningful together with `--web-gui`, `--farukon` or
+`--roblox`) forces one capability to report missing (`node`, `npm`, `npx`, `chrome`,
+`chrome-for-testing`, `mcp-server` for the browser path; `cargo`, `platform`, `mcp-config` for the
+Farukon path; `studio-launcher`, `mcp-config` for the Roblox path), so the degraded behavior is
+testable without touching the host.
 
 `--farukon` is OPT-IN and meant only for a run whose task is an applicable Farukon task: it appends
 a nested `farukon` capability block (cargo present/version, whether the repository looks like a
@@ -49,6 +51,15 @@ missing OR the probe itself raises — an exception is recorded as `probe_error`
 report the failure, because an inspection that could not RUN is UNKNOWN, never evidence that the
 repository lacks the platform (so it is never `not_applicable`, and the affected criteria stay
 UNVERIFIED). Like the browser block it is fail-soft DATA and never changes the exit code.
+
+`--roblox` is OPT-IN and meant only for a run whose task is an applicable Roblox task: it appends a
+nested `roblox` capability block (the `%LOCALAPPDATA%\\Roblox\\mcp.bat` Studio MCP launcher, whether
+the repository really looks like a Roblox project, and whether the resolved global/user-scope
+`mcp.json` carries the managed `Roblox_Studio` entry) by delegating to the sibling `roblox_mcp.py`
+probe WITHOUT an MCP server start — the opt-in Studio handshake of that helper is never requested
+here — with the verdict `usable` / `degraded` / `not_applicable` and the same rules as the Farukon
+block: a probe that could not RUN is `degraded` (UNKNOWN, never evidence of absence), a capability
+that is missing keeps the affected criteria UNVERIFIED, and the exit code stays python+git only.
 
 The browser path is only usable for a repository that REALLY has one deployed: with `--repo` the
 resolved repository's managed `.kimi-code/mcp.json` is threaded into the delegated probe, and
@@ -100,6 +111,15 @@ FARUKON_HELPER = "farukon_mcp.py"
 FARUKON_USABLE = "usable"
 FARUKON_DEGRADED = "degraded"
 FARUKON_NOT_APPLICABLE = "not_applicable"
+# The conditional Roblox block: only `--roblox` appends it. Its two capabilities are collected
+# statically — no MCP server start and therefore no Studio process — so a probe can never launch the
+# game engine. The names are `roblox_mcp.CAPABILITY_NAMES`'s own spelling.
+ROBLOX_KEY = "roblox"
+ROBLOX_CAPABILITIES = ("studio_launcher", "mcp_config")
+ROBLOX_HELPER = "roblox_mcp.py"
+ROBLOX_USABLE = "usable"
+ROBLOX_DEGRADED = "degraded"
+ROBLOX_NOT_APPLICABLE = "not_applicable"
 # The managed MCP config of ONE project (machine-local, gitignored): the browser path of a run is
 # decided by the resolved repository's own deployment, never by the shipped template.
 MCP_CONFIG_RELPARTS = (".kimi-code", "mcp.json")
@@ -184,20 +204,25 @@ def collect_capabilities() -> dict:
     }
 
 
-def _load_chrome_helper():
-    """The sibling `chrome_devtools_mcp.py` module, loaded by path (no package, no side effects).
+def _load_sibling(module_name: str, filename: str):
+    """A sibling stdlib module of this script, loaded by path (no package, no side effects).
 
-    The definition of "browser capability present" has ONE home — that script — so the pre-flight
-    must not re-implement `which`/version/config checks. Loading by path keeps the probe independent
-    of the caller's cwd and of `sys.path`.
+    The definition of "<capability> is present here" has ONE home — the helper script — so the
+    pre-flight must not re-implement `which`/version/config checks. Loading by path keeps the probe
+    independent of the caller's cwd and of `sys.path`.
     """
-    helper_path = pathlib.Path(__file__).resolve().parent / CHROME_HELPER
-    spec = importlib.util.spec_from_file_location("chrome_devtools_mcp", helper_path)
+    helper_path = pathlib.Path(__file__).resolve().parent / filename
+    spec = importlib.util.spec_from_file_location(module_name, helper_path)
     if spec is None or spec.loader is None:
         raise OSError(f"cannot load {helper_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_chrome_helper():
+    """The sibling `chrome_devtools_mcp.py` module."""
+    return _load_sibling("chrome_devtools_mcp", CHROME_HELPER)
 
 
 def web_gui_version(reason: str) -> str | None:
@@ -333,19 +358,13 @@ def collect_web_gui_capabilities(simulate_missing: list[str] | tuple[str, ...] =
 
 
 def _load_farukon_helper():
-    """The sibling `farukon_mcp.py` module, loaded by path (no package, no side effects).
+    """The sibling `farukon_mcp.py` module."""
+    return _load_sibling("farukon_mcp", FARUKON_HELPER)
 
-    The definition of "the Farukon platform is usable here" has ONE home — that script — so the
-    pre-flight must not re-implement the host signature or the managed-config invariants. Loading by
-    path keeps the probe independent of the caller's cwd and of `sys.path`.
-    """
-    helper_path = pathlib.Path(__file__).resolve().parent / FARUKON_HELPER
-    spec = importlib.util.spec_from_file_location("farukon_mcp", helper_path)
-    if spec is None or spec.loader is None:
-        raise OSError(f"cannot load {helper_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+
+def _load_roblox_helper():
+    """The sibling `roblox_mcp.py` module."""
+    return _load_sibling("roblox_mcp", ROBLOX_HELPER)
 
 
 def capability_version(reason: str) -> str | None:
@@ -488,6 +507,101 @@ def collect_farukon_capabilities(simulate_missing: list[str] | tuple[str, ...] =
     return block
 
 
+def collect_roblox_capabilities(simulate_missing: list[str] | tuple[str, ...] = (),
+                                repo: str | None = None) -> dict:
+    """Nested `roblox` block for an APPLICABLE Roblox run — delegated, static, fail-soft.
+
+    Delegates to `roblox_mcp.py`'s probe WITHOUT `check_mcp_start`, so no MCP server is started and no
+    Roblox Studio process is launched: the launcher, the repository's Roblox markers and the resolved
+    managed `mcp.json` registration are checked statically, and a missing piece is DATA with a reason
+    (never a change of the exit code). `simulate_missing` forces a capability to report missing
+    without touching the host.
+
+    `repo` is the run's resolved repo_path and defaults to the caller's working directory — the same
+    default the rest of the run uses. The verdict is `not_applicable` when the repository carries no
+    Roblox marker, `degraded` when it does but a capability is missing, when the delegated probe
+    refuses the path (a registration that is not the managed definition does not make a usable path)
+    or when the probe itself could not RUN — a failed inspection is UNKNOWN, never proof of absence —
+    and `usable` only when the probe agrees.
+    """
+    root = pathlib.Path(os.path.abspath(str(repo) if repo else os.getcwd()))
+    block: dict = {"source": ROBLOX_HELPER, "repo": str(root), "managed_config": None,
+                   "simulate_missing": sorted(simulate_missing)}
+    reported: dict[str, dict] = {}
+    # The delegated probe's OWN verdict: `usable` is never computed here, only reported.
+    probe_usable = False
+    roblox_repository = False
+    entry_present = False
+    try:
+        helper = _load_roblox_helper()
+        result = helper.probe_capabilities(root)
+        capabilities = (result.get("capabilities")
+                        if isinstance(result.get("capabilities"), dict) else {})
+        roblox_repository = result.get("roblox_repository") is True
+        probe_usable = result.get("roblox_usable") is True
+        entry_present = result.get("config_entry_present") is True
+        block["managed_config"] = result.get("config")
+        for name in ROBLOX_CAPABILITIES:
+            cap = capabilities.get(name) if isinstance(capabilities.get(name), dict) else {}
+            reason = str(cap.get("reason") or "not reported by the probe")
+            reported[name] = {"present": cap.get("present") is True,
+                              # The Roblox capabilities report a launcher/config, not a version.
+                              "version": None,
+                              "reason": reason}
+    except Exception as exc:       # a broken probe is DATA: never a failed pre-flight
+        block["probe_error"] = f"{type(exc).__name__}: {exc}"
+        for name in ROBLOX_CAPABILITIES:
+            reported[name] = {"present": False, "version": None,
+                              "reason": f"the delegated probe failed: {block['probe_error']}"}
+    for name in simulate_missing:
+        if name in reported:
+            reported[name] = {
+                "present": False, "version": None,
+                "reason": (f"{name} is reported missing because --simulate-missing "
+                           f"{name.replace('_', '-')} forces a miss on this host")}
+    missing = [name for name in ROBLOX_CAPABILITIES if not reported[name]["present"]]
+    if block.get("probe_error"):
+        #    A probe that could not RUN proves nothing about the repository: "the inspection failed"
+        #    is not "the repository lacks Roblox", so this is degraded (and the criteria unverified)
+        #    rather than not_applicable — evaluating absence here would let an applicable run skip
+        #    the required degraded handling.
+        verdict, verdict_reason = ROBLOX_DEGRADED, (
+            "the delegated roblox_mcp.py probe could not inspect this repository: "
+            + block["probe_error"] + " — the Roblox capabilities are UNKNOWN, not absent, so the "
+            "role may only work through the Roblox Studio MCP tools and the affected criteria must "
+            "stay explicitly UNVERIFIED until the probe runs")
+    elif not roblox_repository:
+        verdict, verdict_reason = ROBLOX_NOT_APPLICABLE, (
+            f"{root} carries no Roblox marker (a Rojo default.project.json, .luau/.lua game sources, "
+            "a .rbxl/.rbxlx place or a Roblox_Studio entry in .kimi-code/mcp.json), so the "
+            "roblox-expert role does not apply here")
+    elif missing:
+        verdict, verdict_reason = ROBLOX_DEGRADED, (
+            "the repository is a Roblox project but these capabilities are missing: "
+            + ", ".join(missing) + " — the role may only work through the Roblox Studio MCP tools "
+            "and their criteria must stay explicitly UNVERIFIED until they are in place")
+    elif not probe_usable:
+        #    Every reported capability looks present, yet the delegated probe refuses the path: the
+        #    registration is not the MANAGED definition, or another invariant only the probe knows.
+        verdict, verdict_reason = ROBLOX_DEGRADED, (
+            "the repository is a Roblox project but the Roblox Studio path is not usable: the "
+            "registration is not the managed definition or another invariant failed — the role may "
+            "only work through the Roblox Studio MCP tools and their criteria must stay explicitly "
+            "UNVERIFIED until `roblox_mcp.py merge-config` / `validate-config` agree")
+    else:
+        verdict, verdict_reason = ROBLOX_USABLE, (
+            "the Studio MCP launcher and the managed Roblox_Studio registration are both in place")
+    block.update({
+        "capabilities": reported,
+        "missing": missing,
+        "roblox_usable": verdict == ROBLOX_USABLE,
+        "verdict": verdict,
+        "verdict_reason": verdict_reason,
+        "config_entry_present": bool(entry_present),
+    })
+    return block
+
+
 def write_json(path: pathlib.Path, data: dict) -> None:
     """Atomic write (temp file in the target directory + replace), UTF-8, LF endings."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -550,6 +664,20 @@ def format_summary(caps: dict, out: pathlib.Path) -> str:
             if not entry.get("present"):
                 lines.append(f"      reason: {entry.get('reason')}")
         lines.append(f"  farukon verdict: {block.get('verdict')}")
+    block = caps.get(ROBLOX_KEY)
+    if isinstance(block, dict):
+        # Only with `--roblox`: the conditional game-engine capability class, one line per
+        # capability with the reason of every missing one — DATA that never changes the exit code.
+        lines.append("  roblox (conditional game-engine path):")
+        lines.append(f"    repo: {block.get('repo')}")
+        lines.append(f"    managed config: {block.get('managed_config') or 'not checked'}")
+        for name in ROBLOX_CAPABILITIES:
+            entry = (block.get("capabilities") or {}).get(name) or {}
+            state = "present" if entry.get("present") else "missing"
+            lines.append(f"    {name}: {state}")
+            if not entry.get("present"):
+                lines.append(f"      reason: {entry.get('reason')}")
+        lines.append(f"  roblox verdict: {block.get('verdict')}")
     lines.append(f"  capabilities: {out}")
     return "\n".join(lines)
 
@@ -579,20 +707,24 @@ def canonical_web_gui_name(name: str, ap: argparse.ArgumentParser,
 
 
 def simulated_capabilities(args: argparse.Namespace,
-                           ap: argparse.ArgumentParser) -> tuple[list[str], list[str]]:
-    """Split `--simulate-missing` into `(browser names, farukon names)` for the given flags.
+                           ap: argparse.ArgumentParser
+                           ) -> tuple[list[str], list[str], list[str]]:
+    """Split `--simulate-missing` into `(browser, farukon, roblox)` names for the given flags.
 
     A name is only accepted for a block the invocation actually asks for, so the flag keeps its
-    fail-loud contract: a misspelling or a name of the other block is a usage error, never a silently
-    ignored simulation.
+    fail-loud contract: a misspelling or a name of another block is a usage error, never a silently
+    ignored simulation. `mcp-config` names a capability of BOTH the Farukon and the Roblox block, so
+    asking for both blocks reports it missing in both — the honest reading of an ambiguous request.
     """
     allowed = ((WEB_GUI_CAPABILITIES if args.web_gui else ())
-               + (FARUKON_CAPABILITIES if args.farukon else ()))
+               + (FARUKON_CAPABILITIES if args.farukon else ())
+               + (ROBLOX_CAPABILITIES if args.roblox else ()))
     if args.simulate_missing and not allowed:
-        ap.error("--simulate-missing requires --web-gui or --farukon")
+        ap.error("--simulate-missing requires --web-gui, --farukon or --roblox")
     keys = [canonical_web_gui_name(name, ap, allowed) for name in args.simulate_missing]
     return ([key for key in keys if key in WEB_GUI_CAPABILITIES],
-            [key for key in keys if key in FARUKON_CAPABILITIES])
+            [key for key in keys if key in FARUKON_CAPABILITIES],
+            [key for key in keys if key in ROBLOX_CAPABILITIES])
 
 
 def main() -> int:
@@ -614,19 +746,29 @@ def main() -> int:
                           "only for a run whose task is an applicable Farukon task; collected "
                           "statically, without a cargo build and without an MCP server start, with "
                           "the verdict usable/degraded/not_applicable"))
+    ap.add_argument("--roblox", action="store_true", dest="roblox",
+                    help=("OPT-IN: append the nested `roblox` capability block (the Studio MCP "
+                          "launcher, whether the repository is a Roblox project, the managed "
+                          "Roblox_Studio registration of the resolved global mcp.json) — only for a "
+                          "run whose task is an applicable Roblox task; collected statically, "
+                          "without starting an MCP server or Roblox Studio, with the verdict "
+                          "usable/degraded/not_applicable"))
     ap.add_argument("--simulate-missing", action="append", default=[], metavar="NAME",
                     dest="simulate_missing",
-                    help=("with --web-gui or --farukon: force one capability to report missing "
-                          f"({', '.join(WEB_GUI_CAPABILITIES + FARUKON_CAPABILITIES)}); a dashed "
-                          "spelling is accepted too"))
+                    help=("with --web-gui, --farukon or --roblox: force one capability to report "
+                          "missing "
+                          f"({', '.join(WEB_GUI_CAPABILITIES + FARUKON_CAPABILITIES + ROBLOX_CAPABILITIES)}); "
+                          "a dashed spelling is accepted too"))
     args = ap.parse_args()
-    web_missing, farukon_missing = simulated_capabilities(args, ap)
+    web_missing, farukon_missing, roblox_missing = simulated_capabilities(args, ap)
 
     caps = collect_capabilities()
     if args.web_gui:
         caps[WEB_GUI_KEY] = collect_web_gui_capabilities(web_missing, repo=args.repo)
     if args.farukon:
         caps[FARUKON_KEY] = collect_farukon_capabilities(farukon_missing, repo=args.repo)
+    if args.roblox:
+        caps[ROBLOX_KEY] = collect_roblox_capabilities(roblox_missing, repo=args.repo)
     out = anchored(args.out, args.repo)
     write_json(out, caps)
     print(format_summary(caps, out))

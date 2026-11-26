@@ -18,7 +18,7 @@ rem there BEFORE the CLI starts, with native commands only (a machine without an
 rem launches), and only this factory's own role profiles are written: the user's agents in that
 rem directory are untouched. A refresh that cannot complete ABORTS the launch — a session with
 rem missing or stale roles is exactly the failure this fallback exists to prevent.
-set "CF_AGENT_ROLES=advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester"
+set "CF_AGENT_ROLES=advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert roblox-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester"
 set "CF_AGENT_SRC=%KIMI_FACTORY_LAUNCH_DIR%\.agents\agents\sub-agents"
 set "CF_AGENT_DST="
 if not defined KIMI_CODE_HOME goto :cf_agent_user_home

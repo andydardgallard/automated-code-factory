@@ -14,7 +14,7 @@ against the failing pin.
 
 COVERED, through the shipped CLI (a subprocess, exactly as the flow calls it) and its public API:
 
-  - REAL-TREE INTEGRITY: the repository's own 15 profiles are all present and valid, every declared
+  - REAL-TREE INTEGRITY: the repository's own 16 profiles are all present and valid, every declared
     `name:` resolves back to its own role, the names are unique, and the declared
     `model_preference` is one the CLI knows — `skill_manager`, `diagnostician` and `coder` (the
     business scenario's roles) carry exactly the identity and model side they should;
@@ -155,8 +155,8 @@ def test_real_tree_integrity(tmp: pathlib.Path) -> None:
           f"the probe must report every role of model_matrix.ROLES: "
           f"missing={set(model_matrix.ROLES) - set(found)} "
           f"extra={set(found) - set(model_matrix.ROLES)}")
-    check(len(model_matrix.ROLES) == 15,
-          f"the factory ships 15 sub-agent profiles, the roster says {len(model_matrix.ROLES)}")
+    check(len(model_matrix.ROLES) == 16,
+          f"the factory ships 16 sub-agent profiles, the roster says {len(model_matrix.ROLES)}")
     for role, (status, _name, _pref) in found.items():
         check(status == "OK", f"real tree: {role} must be OK, got {status}")
     for role, identity in SCENARIO_IDENTITY.items():
@@ -168,7 +168,7 @@ def test_real_tree_integrity(tmp: pathlib.Path) -> None:
     import agent_catalog_check as probe
     api = probe.check_catalog()
     check(api["errors"] == [], f"the API must see a clean catalog, got {api['errors']}")
-    check(len(api["roles"]) == 15, f"the API must return 15 roles, got {len(api['roles'])}")
+    check(len(api["roles"]) == 16, f"the API must return 16 roles, got {len(api['roles'])}")
     names = [entry["name"] for entry in api["roles"]]
     check(len(set(names)) == len(names), f"profile identities must be unique, got {names}")
     for entry in api["roles"]:
@@ -539,7 +539,7 @@ def main() -> int:
               f"stable, so a catalog reload can still stall the run or force a role/model swap")
         return 1
     print("PASS - the sub-agent catalog is stable and detectable: the real tree is complete and "
-          "valid (15/15, unique identities, known model sides), repeated probing yields the same "
+          "valid (16/16, unique identities, known model sides), repeated probing yields the same "
           "role->name/model mapping, hermetically removing and re-adding skill_manager / "
           "diagnostician / coder in three cycles is a loud INVALID (exit 1, role and file named) "
           "and then the SAME catalog again (exit 0, identity and model unchanged), every invalid "

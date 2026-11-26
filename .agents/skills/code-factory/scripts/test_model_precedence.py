@@ -94,6 +94,7 @@ models:
   tester: kimi-k3
   gui_expert: deepseek-flash
   farukon_expert: deepseek-flash
+  roblox_expert: deepseek-flash
   business_tester: deepseek-flash
   refactorer: deepseek-flash
   reviewer: deepseek-flash
@@ -126,6 +127,7 @@ models:
   tester: deepseek-flash
   gui_expert: deepseek-flash
   farukon_expert: deepseek-flash
+  roblox_expert: deepseek-flash
   business_tester: deepseek-flash
   refactorer: deepseek-flash
   reviewer: kimi-code/k3

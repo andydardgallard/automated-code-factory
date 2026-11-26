@@ -94,6 +94,7 @@ ENGLISH = ".agents/skills/code-factory/scripts/check_english_only.py"
 RULEBOOK = ".agents/skills/code-factory/references/factory-rules.md"
 CODE_REVIEW = ".agents/skills/code-factory/references/code-review.md"
 FARUKON_REF = ".agents/skills/code-factory/references/farukon-mcp.md"
+ROBLOX_REF = ".agents/skills/code-factory/references/roblox-mcp.md"
 DELEGATION_GATE = ".agents/skills/code-factory/scripts/delegation_gate.py"
 TESTER = ".agents/agents/sub-agents/tester.md"
 REFERENCE_DOCS = ".agents/skills/code-factory/references/reference-docs.md"
@@ -101,7 +102,7 @@ VERIFICATION = ".agents/skills/code-factory/references/verification-strategy.md"
 
 # Every file a contract reads: a probe copies exactly these, then breaks one of them.
 FILES = (SKILL, CODE_FACTORY, AGENTS, README, BRIEFING, PROVIDERS, ERROR_ROUTING, EXAMPLE_TASK,
-         TASK_TEMPLATE, CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK, CODE_REVIEW, FARUKON_REF,
+         TASK_TEMPLATE, CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK, CODE_REVIEW, FARUKON_REF, ROBLOX_REF,
          DELEGATION_GATE, TESTER, REFERENCE_DOCS, VERIFICATION)
 
 FINISH_NODE = "Y"      # `Y[Finish: ...]` — the only place compaction/attribution are invoked
@@ -1051,6 +1052,140 @@ def check_farukon_wiring(root: pathlib.Path) -> list[str]:
     return problems
 
 
+# --------------------------------------------------------------------------------------------
+# T. The conditional Roblox path is wired exactly where its Farukon twin is
+# --------------------------------------------------------------------------------------------
+# (needle, what the carrier must say) of the IMPLEMENT node: the routing decision, the specialist,
+# the task-named model and the model that is logged.
+ROBLOX_M_NODE_TOKENS = (
+    ("roblox_mcp.py decide", "route on the deterministic applicability decision"),
+    ("factory-roblox-expert", "name the specialist that does the work"),
+    ("models.roblox_expert", "honor the task-named role model"),
+    ("models_used.roblox_expert", "log the model actually used"),
+)
+# The agent instruction carries the same wiring one phase at a time; each entry is checked against
+# the whole document, because the phases are prose, not flow nodes.
+ROBLOX_AGENT_TOKENS = (
+    ("  - factory-roblox-expert", "register the specialist as a subagent"),
+    ("references/roblox-mcp.md", "list the Roblox reference file"),
+    ("roblox_mcp.py decide", "decide applicability with the deterministic script"),
+    ("--roblox", "add the conditional `--roblox` pre-flight probe"),
+    ("models.roblox_expert", "honor the task-named role model"),
+    ("models_used.roblox_expert", "log the model actually used"),
+    ("mcp__Roblox_Studio__*", "give the Studio tools to the specialist and the tester"),
+    ("R1–R2", "route a Studio/MCP failure through the Roblox infrastructure rows"),
+)
+# The §1 rows of the error-routing table the conditional path depends on: (row id, category). Both
+# are INFRASTRUCTURE — a missing launcher or a Studio that will not start is repaired, never rolled
+# back as a code failure, and both sit BEFORE the generic rows.
+ROBLOX_ROUTING_ROWS = (("R1", "ROBLOX_STUDIO_TOOLCHAIN"), ("R2", "ROBLOX_MCP_STARTUP"))
+
+
+def check_roblox_wiring(root: pathlib.Path) -> list[str]:
+    """The Roblox twin of every Farukon carrier, checked where the mechanism lives.
+
+    The finding this pins: a conditional specialist is only real when the flow DECIDES its
+    applicability, the pre-flight PROBES for it, the task key names its model, the model actually
+    used is LOGGED, the provider-failure branch covers it and the tester OWNS the acceptance. A
+    reference file describing all of that while no node, phase or role card mentions the role would
+    be a capability nobody reaches.
+    """
+    problems: list[str] = []
+    skill = Doc.load(root, SKILL, problems)
+    prose = prose_only(skill)
+    for needle, what in (("references/roblox-mcp.md", "the Roblox reference file"),
+                         (".agents/agents/sub-agents/roblox-expert.md",
+                          "the specialist role card")):
+        if needle not in prose.text:
+            problems.append(f"{SKILL}:1: the reference-file list must name {what} ({needle!r})")
+    line, body = find_node(skill, PREFLIGHT_NODE)
+    if not body:
+        problems.append(f"{SKILL}:1: no pre-flight node `{PREFLIGHT_NODE}[...]` — the conditional "
+                        "Roblox probe has no phase to run in")
+    elif "--roblox" not in body:
+        problems.append(f"{SKILL}:{line}: an applicable Roblox run must add `--roblox` to the "
+                        "pre-flight probe (a capability nobody probes is a run that guesses)")
+    line, body = find_node(skill, CODER_NODE)
+    if not body:
+        problems.append(f"{SKILL}:1: no implement node `{CODER_NODE}[...]` — the Roblox path "
+                        "cannot be routed")
+    else:
+        for needle, what in ROBLOX_M_NODE_TOKENS:
+            if needle not in body:
+                problems.append(f"{SKILL}:{line}: the implement node must {what} ({needle!r})")
+    line, body = find_node(skill, ACCEPTANCE_NODE)
+    if not body:
+        problems.append(f"{SKILL}:1: no business-test node `{ACCEPTANCE_NODE}[...]` — the "
+                        "tester-owned Roblox acceptance cannot be wired")
+    else:
+        for needle, what in (("mcp__Roblox_Studio__*", "name the Studio tools the tester drives"),
+                             ("ACCEPTANCE", "mark the artifacts the tester owns as ACCEPTANCE"),
+                             ("never MET", "leave a missing capability UNVERIFIED, never MET"),
+                             ("scenario verify", "name the deterministic verdict gate")):
+            if needle not in body:
+                problems.append(f"{SKILL}:{line}: the business-test node must {what} ({needle!r})")
+    line, body = find_node(skill, "MS")
+    if body and "roblox_expert" not in body:
+        problems.append(f"{SKILL}:{line}: the provider-failure node must name `roblox_expert` "
+                        "among the delegated roles — a task-named game model stops the run too")
+    if not any("models.roblox_expert" in text and "models_used.roblox_expert" in text
+               for _line, text in prose.paragraphs()):
+        problems.append(f"{SKILL}:1: the models paragraph must carry `models.roblox_expert` as the "
+                        "optional task key AND its `models_used.roblox_expert` logging")
+
+    agent = Doc.load(root, CODE_FACTORY, problems)
+    for needle, what in ROBLOX_AGENT_TOKENS:
+        if needle not in agent.text:
+            problems.append(f"{CODE_FACTORY}:1: the agent instruction must {what} ({needle!r})")
+
+    tester = Doc.load(root, TESTER, problems)
+    if re.search(r"^[ \t]*-[ \t]+mcp__Roblox_Studio__\*\s*$", tester.text, re.M) is None:
+        problems.append(f"{TESTER}:1: the tester's tool list must carry `mcp__Roblox_Studio__*` "
+                        "exactly as it carries `mcp__farukon__*` — the acceptance run needs the "
+                        "Studio tools")
+    acceptance = [text for _line, text in tester.paragraphs()
+                  if "mcp__Roblox_Studio__*" in text and "ACCEPTANCE" in text
+                  and "DIAGNOSTIC" in text]
+    if not acceptance:
+        problems.append(f"{TESTER}:1: the tester must own the final Roblox acceptance: the "
+                        "`mcp__Roblox_Studio__*` paragraph marks its artifacts ACCEPTANCE and "
+                        "keeps them distinct from the specialist's DIAGNOSTIC set")
+
+    routing = Doc.load(root, ERROR_ROUTING, problems)
+    # The row's PATTERN cell carries unescaped `|` inside its alternation groups, so the cells are
+    # read with a bounded split: the id and the category come first, everything after them is the
+    # remaining columns (pattern + route), which is all this contract needs.
+    table = [(lineno, [cell.strip() for cell in line.strip().strip("|").split("|", 2)])
+             for lineno, line in enumerate(routing.lines, start=1)
+             if line.strip().startswith("|")]
+    for row_id, category in ROBLOX_ROUTING_ROWS:
+        rows = [(lineno, cells) for lineno, cells in table if cells and cells[0] == row_id]
+        if not rows:
+            problems.append(f"{ERROR_ROUTING}:1: §1 carries no row {row_id} — a Studio/MCP "
+                            "failure would fall through to a generic code-failure route")
+            continue
+        lineno, cells = rows[0]
+        if len(cells) < 3 or cells[1] != category:
+            problems.append(f"{ERROR_ROUTING}:{lineno}: row {row_id} must classify as {category}, "
+                            f"got {cells[1] if len(cells) > 1 else ''!r}")
+        elif "INFRASTRUCTURE" not in cells[2].upper():
+            problems.append(f"{ERROR_ROUTING}:{lineno}: row {row_id} must route to INFRASTRUCTURE "
+                            f"(repair, no code rollback), got {cells[2][:80]!r}")
+
+    reference = Doc.load(root, ROBLOX_REF, problems)
+    for needle, what in (("merge-config", "name the idempotent config merge"),
+                         ("validate-config", "name the config validator"),
+                         ("scenario run", "name the scenario runner"),
+                         ("scenario verify", "name the deterministic verdict gate"),
+                         ("KIMI_CODE_HOME", "state the global default the merge resolves"),
+                         ("screenshot_is_verdict",
+                          "state that a screenshot is never the verdict"),
+                         ("UNVERIFIED", "state the degradation contract (never a fabricated MET)")):
+        if reference.text and needle not in reference.text:
+            problems.append(f"{ROBLOX_REF}:1: the reference must {what} ({needle!r})")
+    return problems
+
+
 
 # --------------------------------------------------------------------------------------------
 # P. The pre-delegation gate binds EVERY budgeted delegation, the adversarial node is a real fork,
@@ -1676,6 +1811,7 @@ SECTIONS = (
     ("K", "the routing prose carries no dead route", check_routing_prose),
     ("L", "the operator manual describes the executable HITL gate", check_readme_approval),
     ("M", "the conditional Farukon path is wired like its Web GUI twin", check_farukon_wiring),
+    ("T", "the conditional Roblox path is wired like its Farukon twin", check_roblox_wiring),
     ("N", "the retry budget is counted by the pre-delegation gate", check_retry_budget_gate),
     ("O", "the W2/W3 machinery is reachable from the flow", check_w2_w3_wiring),
     ("P", "the pre-delegation gate binds every delegation and the adversarial leg is a fork",
@@ -1840,6 +1976,24 @@ PROBES = (
     ("M: the tester stops owning the replay acceptance", check_farukon_wiring,
      ((TESTER, "and marked ACCEPTANCE", "and marked DIAGNOSTIC"),),
      "must own the final replay acceptance"),
+    ("T: the Roblox routing sentence is dropped from the implement node", check_roblox_wiring,
+     ((SKILL, "Conditional Roblox routing: when the Phase 1 applicability decision "
+              "(roblox_mcp.py decide) is applicable",
+       "Conditional Roblox routing: when a Roblox task is applicable"),),
+     "roblox_mcp.py decide"),
+    ("T: the conditional `--roblox` pre-flight probe disappears", check_roblox_wiring,
+     ((SKILL, "--roblox, which appends the Studio-launcher",
+       "--studio, which appends the Studio-launcher"),),
+     "--roblox"),
+    ("T: the tester stops owning the Roblox acceptance", check_roblox_wiring,
+     ((TESTER, "and marked ACCEPTANCE; the `factory-roblox-expert`",
+       "and recorded for reference; the `factory-roblox-expert`"),),
+     "must own the final Roblox acceptance"),
+    ("T: the Roblox error-routing row stops being infrastructure", check_roblox_wiring,
+     ((ERROR_ROUTING,
+       "| R2 | ROBLOX_MCP_STARTUP |",
+       "| R2 | ROBLOX_MCP_STARTUP_WRONG_RESULTS |"),),
+     "row R2 must classify as ROBLOX_MCP_STARTUP"),
     ("N: the reviewer budget stops being counted by the pre-delegation gate", check_retry_budget_gate,
      ((CODE_REVIEW, "scripts/delegation_gate.py check --repo <resolved repo_path> --role reviewer",
        "scripts/count_reviews.py --repo <resolved repo_path> --role reviewer"),),

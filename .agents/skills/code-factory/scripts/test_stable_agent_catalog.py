@@ -18,7 +18,7 @@ THE CONTRACT PINNED HERE (what `prepare_factory.*` and the generated launchers m
   1. BOTH deployers (`prepare_factory.sh`, `prepare_factory.ps1`/`.cmd`) install the user-scope
      fallback at deployment time: every factory role is copied BYTE-FOR-BYTE from
      `<project>/.agents/agents/sub-agents/<file>.md` to the user catalog, under the file names the
-     CLI reads (the same 15 names the source directory carries, resolved through
+     CLI reads (the same 16 names the source directory carries, resolved through
      `model_matrix.ROLES` / `ROLE_FILES` — never a third roster copy). A copy that is already there
      but STALE is refreshed; a profile the factory does not manage is left untouched, byte for byte.
   2. BOTH generated launchers refresh that catalog BEFORE the CLI starts, so a project catalog lost
@@ -412,7 +412,7 @@ def assert_catalog(catalog: pathlib.Path, expected: dict[str, pathlib.Path], lab
     unexpected = sorted(set(files) - set(expected) - set(extra_allowed))
     expect(not unexpected,
            f"{label}: the factory wrote files it does not manage into {catalog}: {unexpected} - the "
-           "user-scope directory is shared with the user's own agents; only the 15 factory profiles "
+           "user-scope directory is shared with the user's own agents; only the 16 factory profiles "
            "may be written, and everything else must be left alone")
 
 

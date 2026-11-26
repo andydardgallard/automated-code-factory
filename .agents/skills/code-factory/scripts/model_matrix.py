@@ -54,17 +54,20 @@ import sys
 
 # Every role that can be named by a task's `models:` matrix, in the order the factory reports them.
 ROLES = ("analyzer", "planner", "coder", "tester", "gui_expert", "farukon_expert",
-         "business_tester", "refactorer", "reviewer", "supervisor", "diagnostician", "advisor",
-         "documenter", "security_auditor", "skill_manager")
-# The two sides of the generator != judge rule (gui_expert and farukon_expert implement, so they
-# are generator-side; the business_tester DOES the product as a user and reports, so it is
-# generator-side too, while the supervisor only JUDGES a permit and is judge-side).
-GENERATOR_SIDE = ("coder", "tester", "gui_expert", "farukon_expert", "business_tester")
+         "roblox_expert", "business_tester", "refactorer", "reviewer", "supervisor",
+         "diagnostician", "advisor", "documenter", "security_auditor", "skill_manager")
+# The two sides of the generator != judge rule (gui_expert, farukon_expert and roblox_expert
+# implement, so they are generator-side; the business_tester DOES the product as a user and
+# reports, so it is generator-side too, while the supervisor only JUDGES a permit and is
+# judge-side).
+GENERATOR_SIDE = ("coder", "tester", "gui_expert", "farukon_expert", "roblox_expert",
+                  "business_tester")
 JUDGE_SIDE = ("reviewer", "supervisor", "diagnostician", "advisor")
 
 # Role -> sub-agent file name, where the file name is not `<role>.md`.
 ROLE_FILES = {"reviewer": "code-reviewer.md", "gui_expert": "gui-expert.md",
-              "farukon_expert": "farukon-expert.md", "business_tester": "business-tester.md",
+              "farukon_expert": "farukon-expert.md", "roblox_expert": "roblox-expert.md",
+              "business_tester": "business-tester.md",
               "security_auditor": "security-auditor.md", "skill_manager": "skill-manager.md"}
 # The factory's own sub-agent definitions carry `model_preference:` in their YAML frontmatter.
 # A module-level constant, not an environment variable: nothing may silently re-point it.
@@ -381,8 +384,8 @@ def precedence() -> str:
         "(b) When the task does not name the role, its model comes from the factory's DEFAULT "
         "MATRIX — the CLI config's `default_model` / `[secondary_model] default_model` selected by "
         "the role's `model_preference` — where the generator != judge family rule IS enforced: a "
-        "same-family coder|tester|gui_expert|farukon_expert vs reviewer|diagnostician|advisor "
-        "pair with either "
+        "same-family coder|tester|gui_expert|farukon_expert|roblox_expert vs "
+        "reviewer|diagnostician|advisor pair with either "
         "side taken from the default matrix is an ERROR naming the fix (widen [secondary_model] so "
         "the two families differ, or pin models.<role> in the task). (c) There is no third path: "
         "the main agent never picks a model on its own, so an unnamed role goes to the default "

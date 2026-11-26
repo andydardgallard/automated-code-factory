@@ -1540,3 +1540,37 @@ unfinished:
     reason: carried — pre-existing defect not addressed by this release task; this run's acceptance completed within the configured timeout
     severity: critical
     follow_up: true
+
+## 2026-11-26T16:00:00Z — Roblox specialist role added; verify_acceptance hang fixed; live Studio acceptance proven
+
+title: Add a roblox_expert specialist role to the factory (Roblox game development)
+project: repo
+timestamp: 2026-11-26T16:00:00Z
+run_id: 20261126-8ab3e96d
+branch: factory/20261126-8ab3e96d
+commit: v12.26.0 — one release commit with code, tests, documentation, skill-base and this memory record
+task_type: implement
+goal: add a conditional Roblox game-development specialist with machine-checkable Studio evidence, and close the critical verify_acceptance long-output hang (owner task_00)
+changed_files: 38 changed + 11 created recorded in .code-factory/manifest.json [verified: manifest audit exit 0]
+created_files: roblox_mcp.py, test_roblox_mcp.py, references/roblox-mcp.md, sub-agents/roblox-expert.md, skill-base/skills/{game-development,roblox-studio-mcp,roblox-engine-api} (+LICENCE/NOTICE) [verified: manifest.json]
+results: integration=PASS (test_roblox_mcp.py 469 assertions; test_verify_acceptance.py incl. megabytes/grandchild cases) [verified: selftest logs]; regression=PASS 59/59 modules and vaccination=PASS 216/216 on the final tree [verified: test-results.md, results.jobfix.tsv]; business=3 scenarios match + scenario-1 defect found and fixed (Studio subject) [verified: business-adversarial/*.json]; live Studio=PASS — good scenario honest PASS with FACTORY-SCENARIO console markers, broken variant FAIL on the deliberate Luau error, scenario verify 0/1, real managed launcher, zero leaked processes [verified: ACCEPTANCE-5.md, acceptance-good-5/, acceptance-broken-5/]; review=APPROVE at r3 with 0 open findings (r1 major cleanup, r2 job-refusal fallback, capture-order defect all fixed vaccine-first) [verified: code-review-r3.md]; documentation=PASS derive-mode [verified: validate_documentation.py]; acceptance=SUCCESS, 3 verify criteria MET + 4 derived, FRESH mixed-scope evidence entries [verified: state/acceptance.md]; global mcp.json restored byte-identical after every live run [verified: sha256 78422e76...]; finish gates: all PASS EXCEPT permit-audit and strict model attribution, which fail on the owner-accepted early-spawn debt [verified: gate-Y.md]
+decisions: plan approved after ONE revision (owner added task_00 hang fix + GLOBAL user-scope MCP registration); the owner explicitly accepted the early generic-type spawn audit debt (agents 0-3) instead of a fresh-session restart, so permit-audit/attribution stay red by owner disposition, never hidden [verified: gate-Y.md and the AskUserQuestion record]; the Studio MCP toggle was enabled by the owner via Assistant → Manage MCP Servers, making the live proof possible [verified: probe-after-toggle.json tools/list]; fail-closed job-assignment refusal chosen over a job-independent fallback per the reviewer's sanctioned option [verified: code-review-r2/r3.md]
+assumptions: roblox-engine-api ships as a scoped INDEX skill (single-page http_doc limitation documented); D1 action-object window stays a documented heuristic limitation with pinned current behavior
+models_used: main=kimi-code/k3; analyzer/planner/supervisor/reviewer/business_tester=kimi-code/k3.1-pro; coder/tester/skill_manager/documenter=deepseek-flash; roblox_expert registered but never launched (non-Roblox repo) [verified: pipeline.yaml; early generic spawns are the accepted debt]
+factory_version: 12.26.0
+closed:
+  - item: factory defect — verify_acceptance.py hangs on criteria whose verify command produces long output (run_verify Popen shell=True + communicate; a full pytest run hangs past 420s while the same command direct finishes in 180s; blocks the acceptance node W) — investigate and fix; description: factory-defect-acceptance-hang.ru.md
+    evidence: run_verify now captures to temp files with bounded tail reads; vaccine-first RB-0 red on base (communicate() waited on inherited pipe handles) and green after; full-suite acceptance criterion test_vaccination.py completes inside the 600s timeout [verified: task00-evidence.md, test_verify_acceptance.py, state/acceptance.md]
+unfinished:
+  - item: platform anomaly found by specialist+tester: replay stop reports workspace_saved:false (temp per-instance dir never created, os error 3) — cosmetic, lifecycle clean; belongs to the farukon_v3.1.0 project's own backlog
+    reason: carried — out of this repository's scope and unchanged by this run
+    severity: info
+    follow_up: true
+  - item: early delegations of run 20261126-8ab3e96d used generic explore/plan types (agents 0-3), permanently failing permit-audit and strict attribution in that session
+    reason: owner explicitly accepted the debt instead of a fresh-session restart; all later delegations used genuine factory-* profiles
+    severity: warning
+    follow_up: true
+  - item: D1 decide heuristic (ACTION_OBJECT_WINDOW=3) over/under-fires on clause-level wording; documented with concrete examples and pinned current behavior
+    reason: carried — reviewer-minor, deliberately not redesigned in this release
+    severity: info
+    follow_up: true

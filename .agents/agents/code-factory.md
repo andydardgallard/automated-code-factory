@@ -8,6 +8,7 @@ subagents:
   - factory-coder
   - factory-gui-expert
   - factory-farukon-expert
+  - factory-roblox-expert
   - factory-tester
   - factory-diagnostician
   - factory-advisor
@@ -42,6 +43,7 @@ at the user unless asked.
   - `references/providers.md` — model routing for Kimi (K3) and Qwen providers (Phase 4)
   - `references/chrome-devtools-mcp.md` — conditional Chrome DevTools MCP browser path: activation, managed server/config facts, specialist vs tester evidence split, safety defaults, degradation (Phases 0/1/4/5/8)
   - `references/farukon-mcp.md` — conditional Farukon MCP platform path: activation, managed server/config facts, specialist vs tester evidence split, safety defaults, degradation (Phases 0/1/4/5/8)
+  - `references/roblox-mcp.md` — conditional Roblox Studio MCP game path: activation, managed server/config facts, specialist vs tester evidence split, safety defaults, degradation (Phases 0/1/4/5/8)
   - `references/refactoring.md` — refactor task type: freeze functionality, 100% tests unchanged
   - `references/security-audit.md` — security_audit task type: adaptive full audit + fix-task file
   - `references/documentation.md` — factory-documenter: documentation methodology + validator (Finish phase)
@@ -68,7 +70,7 @@ at the user unless asked.
 
 Read the relevant reference file when you reach its phase. Keep your own context lean — delegate
 heavy work to subagents (`factory-analyzer`, `factory-planner`, `factory-coder`,
-`factory-gui-expert`, `factory-farukon-expert`, `factory-tester`, `factory-business-tester`,
+`factory-gui-expert`, `factory-farukon-expert`, `factory-roblox-expert`, `factory-tester`, `factory-business-tester`,
 `factory-supervisor`, `factory-diagnostician`, `factory-advisor`, `factory-code-reviewer`) and accept
 only concise structured results.
 `factory-gui-expert` is the coder-class Web GUI specialist: it implements and debugs assigned UI
@@ -81,6 +83,11 @@ and debugs the assigned platform files through the `farukon` MCP server when the
 applies (Phase 0/1 decision) and is never invoked on any other run; the `mcp__farukon__*` platform
 tools belong to `factory-farukon-expert` and `factory-tester` ONLY — every other role receives no
 Farukon MCP tools.
+`factory-roblox-expert` is the coder-class Roblox game specialist: it implements, builds, runs and
+debugs the assigned game files through the `Roblox_Studio` MCP server when the task's Roblox path
+applies (Phase 0/1 decision) and is never invoked on any other run; the `mcp__Roblox_Studio__*`
+game-engine tools belong to `factory-roblox-expert` and `factory-tester` ONLY — every other role
+receives no Roblox Studio MCP tools.
 Every delegation uses the MANDATORY briefing template
 `references/handoff-briefing.md` (Task / Context / relevant files BY PATH, never pasted content /
 current state / what was tried and why it failed / decisions / acceptance criteria / constraints),
@@ -197,6 +204,10 @@ decision with its reason is recorded in the plan/state, so the existing task for
 capability (farukon MCP server + `factory-farukon-expert`) is likewise never a task field — it is
 decided from the task scope during analysis (Phase 1, `scripts/farukon_mcp.py decide`) and the
 decision with its reason is recorded in the plan/state, so the existing task format is untouched.
+**Roblox game path (NO new task field)**: whether this task activates the Roblox game capability
+(Roblox Studio MCP server + `factory-roblox-expert`) is likewise never a task field — it is decided
+from the task scope during analysis (Phase 1, `scripts/roblox_mcp.py decide`) and the decision with
+its reason is recorded in the plan/state, so the existing task format is untouched.
 **Stale task file**: when the launch directory holds a leftover `task.yaml` from a previous run and
 no new task was handed over, WARN the user and ask whether to re-run that stale task — the factory
 never silently re-runs a stale task.
@@ -340,6 +351,23 @@ scenario the tester must execute after the last code change and the managed `far
 repository carries; `not_applicable` keeps the specialist, the `mcp__farukon__*` tools and any
 cargo/toolchain requirement off for the whole run. Reference: `references/farukon-mcp.md`.
 
+**Roblox game applicability (conditional game path)**: decide whether THIS task needs the Roblox
+path and record the decision WITH its reason in the plan/state —
+`python .agents/skills/code-factory/scripts/roblox_mcp.py decide --task-file
+.code-factory/state/task.yaml --repo <resolved repo_path>`. Applicability needs BOTH a repository
+that IS a Roblox project (a Rojo `default.project.json`, `.luau`/`.lua` game sources, a `.rbxl`/
+`.rbxlx` place file, or an existing `Roblox_Studio` entry in `.kimi-code/mcp.json`) AND a task scope
+that names a Roblox game operation (place, script, Instance, GUI, gameplay, playtest, Studio) bound
+to such an object: the repository identity alone is never enough, task-file metadata (`models:`,
+`repo_path:`) and a `models.roblox_expert` pin are never scope, an operation on another subject and
+an operation on documentation stay out of scope, and a Roblox repository with an unrelated task stays
+`not_applicable`.
+The analyzer (read-only) also names which game files a specialist would own, the deterministic
+scenario the tester must execute after the last code change and the managed `Roblox_Studio` MCP
+registration the resolved configuration carries; `not_applicable` keeps the specialist, the
+`mcp__Roblox_Studio__*` tools and any Studio requirement off for the whole run — no Studio process is
+started and nothing is registered. Reference: `references/roblox-mcp.md`.
+
 **Repo-mismatch gate**: after analysis, verify that files, symbols, configs and data referenced
 by the task actually exist in the repo. If they are missing: in hitl mode STOP and ask the user
 for the missing pieces via `AskUserQuestion` (business language); in auto mode record the
@@ -359,6 +387,11 @@ When the Farukon path is `applicable`, the plan additionally names the platform 
 `factory-farukon-expert`, the replay business scenario the tester must execute after the last code
 change, and the managed `farukon` MCP entry (`farukon_mcp.py validate-config`, never assumed) — the
 plan never asks for an order path or a live-QUIK connection.
+When the Roblox path is `applicable`, the plan additionally names the game files owned by
+`factory-roblox-expert`, the deterministic scenario document the tester must execute after the last
+code change and the managed `Roblox_Studio` MCP registration (`roblox_mcp.py validate-config`, never
+assumed); a scenario with zero steps is not a plan deliverable, because a vacuous run could never
+produce an honest verdict.
 The `task_type` selects the planning mode:
 - `implement` (default) — normal DAG plan.
 - `review` — Phase 2b (the whole-codebase review) runs FIRST and its plan is the review DELIVERY,
@@ -473,6 +506,19 @@ UNVERIFIED — never reported MET — and a `not_applicable` run never probes ca
 server and never needs a Rust toolchain. The verdict is the delegated probe's own: `usable` only when
 it agrees, `degraded` when a capability is missing OR the probe itself raised (`probe_error` recorded)
 — a failed inspection proves nothing, so it is never read as `not_applicable`.
+**Roblox pre-flight (conditional)**: only when Phase 1 decided `applicable`, probe the game
+capabilities into the same capability file
+(`python .agents/skills/code-factory/scripts/factory_preflight.py --roblox --repo <resolved repo_path>
+--out .code-factory/state/preflight.json`): the `%LOCALAPPDATA%\Roblox\mcp.bat` Studio MCP launcher,
+whether the repository really looks like a Roblox project, and the managed `Roblox_Studio` entry of
+the resolved global/user-scope `mcp.json` (`scripts/roblox_mcp.py probe`, delegated). The probe is
+static: no MCP server is started and no Studio process is launched. A missing or incompatible
+capability is DATA with a reason, never a crash: it goes through the EXISTING infrastructure route
+(`references/error-routing.md` §1 rows R1–R2), the Roblox criteria of the task stay explicitly
+UNVERIFIED — never reported MET — and a `not_applicable` run never probes Studio and never registers
+anything. The verdict is the delegated probe's own: `usable` only when it agrees, `degraded` when a
+capability is missing OR the probe itself raised (`probe_error` recorded) — a failed inspection proves
+nothing, so it is never read as `not_applicable`.
 **Run id**: every artifact written from here on carries the run's `run_id`
 (`python .agents/skills/code-factory/scripts/run_id.py gen --task .code-factory/state/task.yaml` if
 it has not been generated yet) — write it as the required `run_id` key of the checkpoint
@@ -602,6 +648,21 @@ stop. Implementation failures and review rework use the EXISTING coder route and
 `retry_counters.coder`. The specialist never self-accepts: the final replay scenario belongs to
 `factory-tester` (Phase 8).
 
+**Roblox game implementation (conditional)**: when the task's Roblox path is `applicable`, the game
+files go to `factory-roblox-expert` (coder-class) instead of `factory-coder`: it implements, runs and
+debugs the place ONLY through the `mcp__Roblox_Studio__*` tools (start/stop of Studio or a headless
+playtest with a bounded stop in a `try/finally`, Instance/Script edits, the console read-back — no
+raw shell workaround where an MCP tool exists), runs the deterministic scenario through
+`scripts/roblox_mcp.py scenario run`, and leaves its DIAGNOSTIC artifacts under the resolved
+repository's `.code-factory/logs/roblox/<run_id>/`. Non-Roblox work stays with `factory-coder` (no
+routine Studio access). Honor `models.roblox_expert` from the task and log
+`models_used.roblox_expert` into `pipeline.yaml` and `report.md` — the role is generator-side like
+`models.coder` (same family rule, `references/providers.md` §5.1) and its fallback is
+`model_preference: secondary`. A run whose captured console output logged an error is never passed
+and a screenshot is never a verdict. Implementation failures and review rework use the EXISTING coder
+route and `retry_counters.coder`. The specialist never self-accepts: the final scenario belongs to
+`factory-tester` (Phase 8).
+
 **Reference skills (dynamic context)**: if the task has `reference_docs`/`reference_skills`,
 resolve them into skills via the `factory-skill-manager` subagent + `scripts/skill_base.py`
 (see `references/reference-docs.md`), then append the resolved skill instructions to each
@@ -660,6 +721,23 @@ root> --evidence .code-factory/logs/farukon/<run_id>/reproduction` is the gate t
 diagnosed root cause. A task that mandates live proof is never accepted by marking the criterion
 unverified: acceptance stays BLOCKED until those gates verify, and there is no unverified acceptance
 escape.
+**Roblox game business tests (conditional, Roblox tasks)**: after the LAST code change,
+`factory-tester` INDEPENDENTLY executes the final real game scenario through the
+`mcp__Roblox_Studio__*` tools — a deterministic start, the scenario steps, the captured Studio console
+output and a bounded stop in a `try/finally` — and OWNS the ACCEPTANCE artifacts under the resolved
+repository's `.code-factory/logs/roblox/<run_id>/`, distinct from the specialist's DIAGNOSTIC set. The
+specialist never issues the PASS; any later change makes the evidence STALE, so the scenario is re-run
+and re-stamped (`references/verification-strategy.md` §3.4), and on a missing Studio/MCP capability the
+affected Roblox criteria stay UNVERIFIED with an infrastructure diagnosis
+(`references/error-routing.md` §1 rows R1–R2) — never MET, and never silently skipped.
+The verdict is STRUCTURED, not an opinion: `python
+.agents/skills/code-factory/scripts/roblox_mcp.py scenario run --scenario <the plan's scenario
+document> --evidence .code-factory/logs/roblox/<run_id>` records the pass/fail from the captured
+console output and `python .agents/skills/code-factory/scripts/roblox_mcp.py scenario verify
+--evidence <the same directory>` is the gate that must exit 0. A run whose console log carries an
+error line is NEVER reported as passed, and a screenshot is never a verdict. A task that mandates live
+proof is never accepted by marking the criterion unverified: acceptance stays BLOCKED until that gate
+verifies, and there is no unverified acceptance escape.
 
 **Adversarial business testing (node S, IN PARALLEL with the tester — node BTR0 before a review's
 merge and verdict; implement/refactor/review only, never security_audit)**: launch
@@ -822,7 +900,8 @@ degraded baseline that the task type requires (a missing fresh regression entry 
 implement/refactor), the absence of any verified criterion, or STALE ledger evidence downgrades the
 verdict to DEGRADED — the exit code is 0 only for SUCCESS, so a
 degraded or unproven run can never be accepted silently. A criterion whose proof the task MANDATES —
-the Farukon reproduction and the five fresh sessions of a live-proof task — is never discharged by
+the Farukon reproduction and the five fresh sessions of a live-proof task, or the structured Roblox
+scenario verdict of a live-proof game task — is never discharged by
 the `derived`/`unverified` label: acceptance stays BLOCKED until it verifies, because there is no
 unverified acceptance escape. The scripts that write run artifacts all
 accept `--run-id <run_id>` (`verify_acceptance.py`, `evidence_ledger.py`,
@@ -960,6 +1039,12 @@ On ANY failure, do NOT roll back immediately. Follow `references/error-routing.m
    they repair the environment instead of rolling back code, and there is NO Farukon-specific role
    or budget — a platform implementation or replay-test failure keeps the EXISTING `coder` route and
    `retry_counters.coder`.
+   Roblox Studio/MCP capability failures (Roblox Studio not installed, the `%LOCALAPPDATA%\Roblox\
+   mcp.bat` launcher missing or unrunnable, MCP connection/startup failure, a `Roblox_Studio` entry
+   that is not the managed definition) classify the same way as infrastructure
+   (`references/error-routing.md` §1 rows R1–R2, ordered before the generic rows): they repair the
+   environment instead of rolling back code, and there is NO Roblox-specific role or budget — a game
+   implementation or scenario failure keeps the EXISTING `coder` route and `retry_counters.coder`.
    Record the error in `.code-factory/logs/errors.md` and update retry
    counters in `.code-factory/state/pipeline.yaml`. Feed the Diagnostician an error EXCERPT, never
    a whole log: read long logs with `scripts/log_tail.py` (counters + tail only).
@@ -1040,7 +1125,10 @@ write `.code-factory/report_code_changes.md` (next to it) via
 8. **Models** — the main agent PASSES the model explicitly to the Agent tool (`model:` is
    supported by the CLI) for every role the task's `models` matrix names, respecting the
    generator≠judge rule of `references/providers.md` (coder/tester and
-   reviewer/diagnostician/advisor come from different model families). The per-role
+   reviewer/diagnostician/advisor come from different model families). `models.roblox_expert` is the
+   optional task key for the Roblox specialist `factory-roblox-expert`: generator-class like
+   `models.coder`, used only when the Roblox path applies, defaulting to the role's secondary
+   fallback, and its actual model is logged as `models_used.roblox_expert`. The per-role
    `model_preference` (primary|secondary) in the sub-agent `.md` is the FALLBACK, resolved against
    `config.toml` `default_model`/`[secondary_model]`, used only for roles the task does not name.
    Log the actual model to `.code-factory/state/pipeline.yaml` (`models_used`) and include it in

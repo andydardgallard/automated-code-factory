@@ -193,16 +193,23 @@ def installer_missing_node_message(absent: tuple[str, ...] = ("node",)) -> str:
     return lines[-1]
 
 
-# §1 rows 1-20 plus the Farukon infrastructure rows F1-F2, the browser/MCP infrastructure rows
-# I1-I4 and the agent-catalog row A1, in table (match) order: id, category, route to. F1-F2 sit
-# between rows 4 and I1, and I1-I4 plus A1 between rows 4 and 5 ON PURPOSE — that position is what
-# keeps a toolchain/browser capability or catalog line from being stolen by the generic `command not
-# found` / `file not found` rows (see the Notes of §1 in references/error-routing.md).
+# §1 rows 1-20 plus the Roblox Studio infrastructure rows R1-R2, the Farukon infrastructure rows
+# F1-F2, the browser/MCP infrastructure rows I1-I4 and the agent-catalog row A1, in table (match)
+# order: id, category, route to. R1-R2 and F1-F2 sit between rows 4 and I1, and I1-I4 plus A1
+# between rows 4 and 5 ON PURPOSE — that position is what keeps a Studio/Rust toolchain, a browser
+# capability or a catalog line from being stolen by the generic `command not found` / `file not
+# found` rows (see the Notes of §1 in references/error-routing.md).
 EXPECTED = [
     ("1", "MISSING_INPUT", "human"),
     ("2", "WRONG_RESULTS", "diagnostician"),
     ("3", "INFRASTRUCTURE", "infrastructure"),
     ("4", "INFRASTRUCTURE", "infrastructure"),
+    # The Roblox Studio infrastructure rows: the Studio MCP launcher / Windows host toolchain (R1)
+    # and the Studio MCP startup (R2) sit BEFORE the Farukon and browser rows and before every
+    # generic row, so a missing mcp.bat is not stolen by `command not found` and a Studio start or
+    # handshake line is not claimed by the generic MCP row I3.
+    ("R1", "ROBLOX_STUDIO_TOOLCHAIN", "infrastructure"),
+    ("R2", "ROBLOX_MCP_STARTUP", "infrastructure"),
     # The Farukon platform infrastructure rows: the Rust toolchain (F1) and the Farukon MCP
     # startup/launch (F2) sit BEFORE the browser rows and before every generic row, so a missing
     # `cargo` is not stolen by `command not found` and a farukon_mcp handshake line is not claimed
@@ -324,6 +331,37 @@ SAMPLES = [
     ("test farukon_mcp::tests::replay ... FAILED", "19", "ASSERTION", "coder"),
     ("thread 'farukon_mcp' panicked at src/main.rs:4", "18", "RUNTIME_CRASH", "coder"),
     ("AssertionError: the farukon replay scenario produced no trades", "19", "ASSERTION", "coder"),
+    # Roblox Studio INFRASTRUCTURE rows (§1 rows R1-R2): the Studio MCP launcher / Windows host
+    # toolchain and the Studio MCP startup. They must never be swallowed by the generic
+    # BAD_COMMAND/MISSING_FILE rows or by the generic MCP row I3, and they never reach the coder.
+    ("the Roblox Studio MCP launcher path cannot be determined: %LOCALAPPDATA% is not set on this "
+     "host", "R1", "ROBLOX_STUDIO_TOOLCHAIN", "infrastructure"),
+    ("%LOCALAPPDATA% is not set; the Roblox_Studio entry cannot be registered", "R1",
+     "ROBLOX_STUDIO_TOOLCHAIN", "infrastructure"),
+    ("Roblox Studio is not installed on this machine", "R1", "ROBLOX_STUDIO_TOOLCHAIN",
+     "infrastructure"),
+    ("'cmd.exe' is not recognized as an internal or external command", "R1",
+     "ROBLOX_STUDIO_TOOLCHAIN", "infrastructure"),
+    ("cmd.exe: command not found", "R1", "ROBLOX_STUDIO_TOOLCHAIN", "infrastructure"),
+    ("Roblox Studio failed to start: the Studio process exited with code 1", "R2",
+     "ROBLOX_MCP_STARTUP", "infrastructure"),
+    ("the Studio mcp.bat exited with code 1 before serving", "R2", "ROBLOX_MCP_STARTUP",
+     "infrastructure"),
+    # The wording the opt-in `--check-mcp-start` handshake emits when Studio answers nothing: it is
+    # a STARTUP problem of the managed Studio entry, never a scenario verdict.
+    ("no initialize response within the 60s budget for Roblox_Studio (stage initialize)", "R2",
+     "ROBLOX_MCP_STARTUP", "infrastructure"),
+    ("the server closed stdin before the tools/list request (Roblox_Studio, stage tools/list)", "R2",
+     "ROBLOX_MCP_STARTUP", "infrastructure"),
+    # The conflict the idempotent merge REPORTS (exit 3, target untouched): the operator's entry
+    # differs from the managed one, so the registration is an environment problem, not a code one.
+    ("conflict: the existing Roblox_Studio entry differs from the managed one", "R2",
+     "ROBLOX_MCP_STARTUP", "infrastructure"),
+    # A Roblox IMPLEMENTATION failure is NOT infrastructure: an assertion over the captured console
+    # output keeps the existing ASSERTION/coder route, and a Luau runtime error has no
+    # infrastructure shape at all (it matches no row, so the run is diagnosed, never "repaired").
+    ("AssertionError: the Roblox scenario expected 3 coins but the console logged 0", "19",
+     "ASSERTION", "coder"),
     # Browser/MCP INFRASTRUCTURE rows (§1 rows I1-I4): a missing capability is an environment
     # problem, not a code problem. It must never be swallowed by the generic BAD_COMMAND/MISSING_FILE
     # rows, and it never reaches the coder — the coder route stays the ONLY implementation route.
@@ -448,10 +486,10 @@ def main() -> int:
     got_providers = [(e["id"], e["category"], e["route"]) for e in doc["provider_patterns"]]
     expect(got_providers == EXPECTED_PROVIDERS, f"§1.1 provider rows A-F changed: {got_providers}")
     expect(doc["retry_budgets"] == BUDGETS, f"retry budgets: {doc['retry_budgets']}")
-    expect(len(er.match_order(doc)) == 33,
-           "27 §1 rows (1-20 plus the Farukon infrastructure rows F1-F2, the browser/MCP "
-           "infrastructure rows I1-I4 and the agent-catalog row A1) + 6 provider rows must be "
-           "classified")
+    expect(len(er.match_order(doc)) == 35,
+           "29 §1 rows (1-20 plus the Roblox infrastructure rows R1-R2, the Farukon infrastructure "
+           "rows F1-F2, the browser/MCP infrastructure rows I1-I4 and the agent-catalog row A1) + 6 "
+           "provider rows must be classified")
     by_id = {entry["id"]: entry for entry in doc["patterns"]}
     expect(doc["patterns"][-1]["patterns"] == [], "the terminal UNKNOWN row carries no regex")
     expect(all(e["patterns"] for e in doc["patterns"][:-1]),
@@ -683,8 +721,8 @@ def main() -> int:
         expect(merged_ids[:2] == ["6", "L1"],
                f"project patterns must come first: {merged_ids}")
         expect(merged_ids.count("6") == 1, f"id 6 must be deduplicated: {merged_ids}")
-        expect(len(merged_ids) == 28,
-               f"2 learned + the 26 untouched defaults were expected: {merged_ids}")
+        expect(len(merged_ids) == 30,
+               f"2 learned + the 28 untouched defaults were expected: {merged_ids}")
         expect([e["id"] for e in merged["provider_patterns"]] == ["A", "B", "C", "D", "E", "F"],
                "the provider rows must all survive the merge")
         expect(merged["retry_budgets"] == {**BUDGETS, "coder": 5},
@@ -817,7 +855,7 @@ def main() -> int:
         merged = er.combine(er.load_document(learned, require_full=False), doc)
         merged_ids = [e["id"] for e in merged["patterns"]]
         expect(merged_ids[:2] == ["6", "P1"], f"learned entries must come first: {merged_ids}")
-        expect(len(merged_ids) == 28 and merged_ids.count("6") == 1,
+        expect(len(merged_ids) == 30 and merged_ids.count("6") == 1,
                f"a learned id must replace, not duplicate, its built-in row: {merged_ids}")
         expect([e["id"] for e in merged["provider_patterns"]]
                == [e["id"] for e in doc["provider_patterns"]],
@@ -942,13 +980,15 @@ def main() -> int:
     allowed = {"__future__", "argparse", "json", "pathlib", "re", "sys"}
     expect(imported <= allowed, f"error_router must be stdlib-only, imports={imported}")
 
-    print("PASS - error_router.py mirrors the error-routing tables (27 section-1 rows, the Farukon "
-          "infrastructure rows F1-F2 and the agent-catalog row A1 included, + 6 provider "
-          "rows, rows I1/F1/F2 agreeing with the documented cells), classifies samples "
+    print("PASS - error_router.py mirrors the error-routing tables (29 section-1 rows, the Roblox "
+          "Studio infrastructure rows R1-R2, the Farukon infrastructure rows F1-F2 and the "
+          "agent-catalog row A1 included, + 6 provider rows, rows R1/R2/I1/F1/F2 agreeing with "
+          "the documented cells), classifies samples "
           "deterministically "
           "(including the missing-Node wordings the Web GUI probe and the installer themselves emit, "
-          "the missing-cargo and handshake-timeout wordings farukon_mcp.py emits, and the "
-          "farukon implementation failures that must stay on the coder route), "
+          "the missing-cargo and handshake-timeout wordings farukon_mcp.py emits, the Studio "
+          "launcher/startup wordings the Roblox path produces, and the farukon/Roblox "
+          "implementation failures that must stay on the coder route), "
           "merges the project-learned patterns over "
           "the defaults (project-first, both applied), falls back to the defaults with a warning "
           "when the learned file is unusable, merges byte-identically, anchors relative paths at "

@@ -359,7 +359,7 @@ $shLines = @(
     '# this factory''s own role profiles are written: the user''s agents in that directory are untouched.',
     '# A refresh that cannot complete ABORTS the launch — a session with missing or stale roles is',
     '# exactly the failure this fallback exists to prevent.',
-    'CF_AGENT_ROLES="advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester"',
+    'CF_AGENT_ROLES="advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert roblox-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester"',
     'CF_AGENT_SRC="$KIMI_FACTORY_LAUNCH_DIR/.agents/agents/sub-agents"',
     'if [ -n "${KIMI_CODE_HOME:-}" ]; then',
     '    CF_AGENT_DST="$KIMI_CODE_HOME/agents"',
@@ -460,7 +460,7 @@ $cmdLines = @(
     'rem launches), and only this factory''s own role profiles are written: the user''s agents in that',
     'rem directory are untouched. A refresh that cannot complete ABORTS the launch — a session with',
     'rem missing or stale roles is exactly the failure this fallback exists to prevent.',
-    'set "CF_AGENT_ROLES=advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester"',
+    'set "CF_AGENT_ROLES=advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert roblox-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester"',
     'set "CF_AGENT_SRC=%KIMI_FACTORY_LAUNCH_DIR%\.agents\agents\sub-agents"',
     'set "CF_AGENT_DST="',
     'if not defined KIMI_CODE_HOME goto :cf_agent_user_home',
@@ -544,9 +544,9 @@ if ($ShWritten)  { Info "    Launcher: created $LauncherSh" }
 # The user home is read from %USERPROFILE%, never from $HOME: PowerShell derives $HOME from the
 # profile registry, so an environment override would point the copies somewhere the CLI never looks.
 $AgentSrc     = Join-Path $ProjectAgents 'agents\sub-agents'
-# The 15 role profiles the factory ships — the same roster the generated launchers verify
+# The 16 role profiles the factory ships — the same roster the generated launchers verify
 # (model_matrix.ROLES/ROLE_FILES is the one source; test_stable_agent_catalog.py pins the two).
-$AgentRoles   = 'advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester'
+$AgentRoles   = 'advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert roblox-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester'
 $AgentCatalog = ''
 if ($env:KIMI_CODE_HOME)  { $AgentCatalog = Join-Path $env:KIMI_CODE_HOME 'agents' }
 elseif ($env:USERPROFILE) { $AgentCatalog = Join-Path $env:USERPROFILE '.kimi-code\agents' }

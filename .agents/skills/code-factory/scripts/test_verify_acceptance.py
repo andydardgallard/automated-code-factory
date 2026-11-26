@@ -21,6 +21,14 @@ deliverables (report, merged-findings, follow-up) instead of a regression=pass e
 and the exit codes do not move, and an implement-context run stays byte-identical to the
 task-type-blind output apart from that line.
 
+The capture of a verify command is independent of its OUTPUT VOLUME and of the handles its children
+inherit (cases 25/25b/25c): megabytes on stdout and on stderr are MET with a bounded, explicitly
+truncated tail excerpt, a grandchild that keeps the capture handles open long after the main command
+exited no longer delays the gate (it returns at the command's REAL exit), and the timeout path still
+kills the whole tree and reports its note. Each of those cases bounds itself twice — an elapsed
+assertion and an OUTER subprocess watchdog — so a capture regression fails the suite in seconds
+instead of hanging it.
+
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
 from __future__ import annotations
@@ -30,15 +38,46 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
+
+# Imported for one fact only: the bounded tail window the capture reads back (case 25). It is what
+# makes the wait independent of the output volume, so its absence IS this module's pre-fix red.
+import verify_acceptance
 
 TOOL = pathlib.Path(__file__).with_name("verify_acceptance.py")
 LEDGER_TOOL = pathlib.Path(__file__).with_name("evidence_ledger.py")
 PY = f'"{sys.executable}"'
+# A grandchild that inherits the capture handles is the real-world case (a test runner's workers,
+# cmd.exe under `shell=True`): it must not hold the gate open after the MAIN command exits. The
+# cases below let it live this many seconds, bound themselves to half of it by an elapsed assertion
+# and to WATCHDOG_SECONDS by an outer watchdog, so they are red on the pre-fix tree and can never
+# hang this suite.
+GRANDCHILD_SECONDS = 15
+WATCHDOG_SECONDS = 10
 
 
 def run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(TOOL), *args],
                           capture_output=True, text=True, errors="replace")
+
+
+def run_bounded(label: str, seconds: float,
+                *args: str) -> tuple[subprocess.CompletedProcess[str], float]:
+    """Run the acceptance CLI under an OUTER watchdog; (result, elapsed seconds).
+
+    Self-bounding is the point: a capture that waits for something the verify command left behind is
+    killed after `seconds` and reported as a failure of THIS case, so a regression can never stall
+    the suite that runs it.
+    """
+    started = time.monotonic()
+    try:
+        res = subprocess.run([sys.executable, str(TOOL), *args], capture_output=True, text=True,
+                             errors="replace", timeout=seconds)
+    except subprocess.TimeoutExpired:
+        raise AssertionError(f"{label}: the acceptance gate did not return within {seconds}s — the "
+                             "capture still waits for something the verify command left behind") \
+            from None
+    return res, time.monotonic() - started
 
 
 def run_ledger(*args: str) -> subprocess.CompletedProcess[str]:
@@ -559,6 +598,124 @@ def main() -> int:
         expect("Verdict: **FAILURE**" in md_review_regfail.read_text(encoding="utf-8"),
                "a failed baseline is a FAILURE in every task-type context")
 
+        # 25. The capture is independent of the output VOLUME and of INHERITED handles: a verify
+        #     command that writes megabytes on stdout and on stderr, each spawning a grandchild that
+        #     keeps the capture handles open for GRANDCHILD_SECONDS after the command exits, must be
+        #     MET well inside --timeout, with the tail of BOTH streams kept and the truncation
+        #     explicit. The excerpt is read back through a bounded window (OUTPUT_TAIL_BYTES), so the
+        #     report cannot grow with the volume. On the pre-fix tree this case's very first
+        #     assertion is its red: the module had no bounded tail window at all, which is the
+        #     mechanism whose absence let `communicate()` wait for a pipe EOF a grandchild holds open.
+        expect(verify_acceptance.OUTPUT_TAIL_BYTES > verify_acceptance.EXCERPT_MAX_CHARS,
+               "the bounded tail window must exceed the excerpt it feeds")
+        flood = tmp / "flood.py"
+        flood.write_text(
+            "import subprocess, sys, tempfile\n"
+            "CHUNK = 'x' * 4093 + chr(10)\n"
+            "stream = sys.stdout if sys.argv[1] == 'stdout' else sys.stderr\n"
+            "for _ in range(600):\n"                        # ~2.4 MB on the chosen stream
+            "    stream.write(CHUNK)\n"
+            "stream.write(sys.argv[2] + chr(10))\n"
+            "stream.flush()\n"
+            "# a grandchild that INHERITS the capture handles and outlives this command; it must not\n"
+            "# keep this case's temporary directory as its working directory, or a leftover process\n"
+            "# would make the case's own cleanup fail\n"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(%s)' % sys.argv[3]],\n"
+            "                 close_fds=False, cwd=tempfile.gettempdir())\n",
+            encoding="utf-8")
+        criteria = write_criteria(tmp, [
+            {"criterion": "megabytes on stdout",
+             "verify": f'{PY} flood.py stdout STDOUT-TAIL-MARKER {GRANDCHILD_SECONDS}'},
+            {"criterion": "megabytes on stderr",
+             "verify": f'{PY} flood.py stderr STDERR-TAIL-MARKER {GRANDCHILD_SECONDS}'},
+        ], name="flood.json")
+        md_flood = tmp / "acceptance_flood.md"
+        res, elapsed = run_bounded("megabytes on both streams", WATCHDOG_SECONDS,
+                                   "--input", str(criteria), "--output", str(md_flood),
+                                   "--repo", str(tmp), "--regression", "pass", "--timeout", "60",
+                                   *SUCCESS_ARGS)
+        expect(res.returncode == 0,
+               f"megabytes on both streams must be MET: {res.stdout!r} {res.stderr!r}")
+        text = md_flood.read_text(encoding="utf-8")
+        expect("Verdict: **SUCCESS**" in text, f"both flooded criteria are MET: {text[:300]!r}")
+        expect("STDOUT-TAIL-MARKER" in text,
+               "the tail of a flooded stdout must survive into the excerpt")
+        expect("STDERR-TAIL-MARKER" in text,
+               "the tail of a flooded stderr must survive into the excerpt")
+        expect("truncated" in text, "a truncated excerpt must say so")
+        expect(len(text) < 20000,
+               f"the excerpt must stay BOUNDED whatever the volume: the report is {len(text)} chars")
+        expect(elapsed < GRANDCHILD_SECONDS / 2,
+               f"the gate returned after {elapsed:.1f}s with a grandchild still alive for "
+               f"{GRANDCHILD_SECONDS}s — it waited for the capture handles, not for the command")
+
+        # 25b. A grandchild that inherits the capture handles outlives the MAIN command: the gate
+        #      must return at the command's REAL exit (not when the last holder of the handle goes
+        #      away) and still record that command's real exit code and output.
+        leaker = tmp / "leaker.py"
+        leaker.write_text(
+            "import subprocess, sys, tempfile\n"
+            "print('MAIN-DONE')\n"
+            "sys.stdout.flush()\n"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(%s)' % sys.argv[1]],\n"
+            "                 close_fds=False, cwd=tempfile.gettempdir())\n"
+            "sys.exit(7)\n",
+            encoding="utf-8")
+        criteria = write_criteria(tmp, [
+            {"criterion": "a leaked child holds the capture handles",
+             "verify": f'{PY} leaker.py {GRANDCHILD_SECONDS}'},
+        ], name="leaker.json")
+        md_leaker = tmp / "acceptance_leaker.md"
+        res, elapsed = run_bounded("a handle-inheriting grandchild", WATCHDOG_SECONDS,
+                                   "--input", str(criteria), "--output", str(md_leaker),
+                                   "--repo", str(tmp), "--regression", "pass", "--timeout", "60")
+        expect(elapsed < GRANDCHILD_SECONDS / 2,
+               f"the gate must return when the COMMAND exits, not the grandchild: it took "
+               f"{elapsed:.1f}s while the grandchild lives {GRANDCHILD_SECONDS}s")
+        expect(res.returncode == 1, "the leaked-child command exits 7, so the run must fail")
+        text = md_leaker.read_text(encoding="utf-8")
+        expect("| 7 |" in text, f"the REAL exit code must be recorded: {text!r}")
+        expect("MAIN-DONE" in text, "the command's own output must still be captured")
+        expect("timeout after" not in text, "no timeout may be reported: the command exited by itself")
+
+        # 25c. The timeout path is unchanged and has no SECONDARY hang: the whole tree is killed, the
+        #      same note is reported, and the children really stop — a surviving one would keep
+        #      appending to the heartbeat file.
+        beat = tmp / "beat-count.txt"
+        beat.write_text("", encoding="utf-8")
+        (tmp / "beat_child.py").write_text(
+            "import sys, time\n"
+            "for _ in range(150):\n"
+            "    with open(sys.argv[1], 'a', encoding='utf-8') as handle:\n"
+            "        handle.write('c')\n"
+            "    time.sleep(0.2)\n",
+            encoding="utf-8")
+        (tmp / "hangtree.py").write_text(
+            "import subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, 'beat_child.py', sys.argv[1]], close_fds=False)\n"
+            "for _ in range(150):\n"
+            "    with open(sys.argv[1], 'a', encoding='utf-8') as handle:\n"
+            "        handle.write('p')\n"
+            "    time.sleep(0.2)\n",
+            encoding="utf-8")
+        criteria = write_criteria(tmp, [
+            {"criterion": "hangs with a child", "verify": f'{PY} hangtree.py beat-count.txt'},
+        ], name="hangtree.json")
+        md_hangtree = tmp / "acceptance_hangtree.md"
+        res, _elapsed = run_bounded("a hanging process tree", WATCHDOG_SECONDS,
+                                    "--input", str(criteria), "--output", str(md_hangtree),
+                                    "--repo", str(tmp), "--regression", "pass", "--timeout", "1")
+        expect(res.returncode == 1, "a timed-out process tree must fail the acceptance")
+        text = md_hangtree.read_text(encoding="utf-8")
+        expect("Verdict: **FAILURE**" in text, "a timeout must yield FAILURE")
+        expect("timeout after 1s (process tree killed)" in text,
+               f"the timeout note must be unchanged: {text[:600]!r}")
+        before = beat.stat().st_size
+        time.sleep(1.5)
+        expect(beat.stat().st_size == before,
+               f"the killed process tree must stop writing (it grew from {before} to "
+               f"{beat.stat().st_size} bytes after the timeout)")
+
     print("PASS - verify_acceptance.py behaves as expected (MET/FAILED/UNVERIFIED with "
           "derived/unverified labels, excerpts, SUCCESS/DEGRADED/FAILURE verdicts, the "
           "evidence ledger gate: a FRESH regression=pass entry is required for SUCCESS (no ledger "
@@ -568,7 +725,9 @@ def main() -> int:
           "the --task-type context: implement is unchanged apart from its header line, "
           "review/security_audit report a failure as an OWNER DECISION on the unmodified tree "
           "and prove their deliverables (report, merged-findings, follow-up) FRESH instead of a "
-          "regression=pass entry they can never produce).")
+          "regression=pass entry they can never produce; and the capture: megabytes on both streams "
+          "and a handle-inheriting grandchild no longer delay the gate, while the timeout path still "
+          "kills the tree and reports its note).")
     return 0
 
 

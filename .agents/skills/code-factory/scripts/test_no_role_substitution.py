@@ -18,7 +18,8 @@ This test pins it:
   B. every carrier quotes that block BYTE-IDENTICALLY exactly once;
   C. the SKILL.md flow carries the branch for EVERY named-role delegation:
      - the provider-failure node MS is fed by EVERY delegation site of the flow's DELEGATION TABLE —
-       the coder/refactorer/gui_expert/farukon_expert M, the analyzer E and SC, the planner F and
+       the coder/refactorer/gui_expert/farukon_expert/roblox_expert M, the analyzer E and SC, the
+       planner F and
        PC, the tester N, Q and S, the business_tester BT and BTR0, the reviewer CR and CR0, the
        diagnostician DG, the advisor ADV, the documenter DOC2, the security auditor SA and the
        supervisor watchdog launch SWD — each with a `provider error at delegation` edge — and its
@@ -107,7 +108,7 @@ DELEGATION_TABLE = (
     ("SC", ("analyzer",)),
     ("F", ("planner",)),
     ("PC", ("planner",)),
-    ("M", ("coder", "refactorer", "gui_expert", "farukon_expert")),
+    ("M", ("coder", "refactorer", "gui_expert", "farukon_expert", "roblox_expert")),
     ("N", ("tester",)),
     ("Q", ("tester",)),
     ("S", ("tester",)),
@@ -135,8 +136,8 @@ NEW_ROLES = ("business_tester", "supervisor")
 CARD_FRAGMENTS = ("model-unavailable-stop", "never performs this role's work",
                   "never substitutes another model")
 # The role families the branch must name in words, so the coverage is readable and not only drawn.
-ROLE_FRAGMENTS = ("analyzer", "planner", "coder", "gui_expert", "farukon_expert", "tester",
-                  "business_tester", "reviewer", "supervisor", "diagnostician", "advisor",
+ROLE_FRAGMENTS = ("analyzer", "planner", "coder", "gui_expert", "farukon_expert", "roblox_expert",
+                  "tester", "business_tester", "reviewer", "supervisor", "diagnostician", "advisor",
                   "documenter", "security auditor")
 # The ONLY legal destinations of the provider-failure node: the owner's decision (hitl) and the
 # terminal finish node (auto FAILED). No implementation/delivery/review node may follow a provider
@@ -673,7 +674,8 @@ def main() -> int:
           f"byte-identically in every one of them; the SKILL.md flow routes a provider failure of "
           f"ANY task-named role delegation into the stop branch — the coverage is derived from the "
           f"flow's delegation table reconciled against the role registry (analyzer, planner, "
-          f"coder/refactorer/gui_expert/farukon_expert, tester, business_tester, reviewer, "
+          f"coder/refactorer/gui_expert/farukon_expert/roblox_expert, tester, business_tester, "
+          f"reviewer, "
           f"supervisor, diagnostician, advisor, documenter, security auditor — nodes "
           f"{', '.join(FAILURE_FROM)}) — and the branch only asks the owner (VMS), re-resolves an "
           f"owner-authorized matrix and retries the SAME role, or ends the run (auto FAILED / owner "

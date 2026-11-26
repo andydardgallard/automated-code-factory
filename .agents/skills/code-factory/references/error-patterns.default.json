@@ -35,6 +35,33 @@
       "route": "infrastructure"
     },
     {
+      "id": "R1",
+      "category": "ROBLOX_STUDIO_TOOLCHAIN",
+      "patterns": [
+        "the Roblox Studio MCP launcher path cannot be determined",
+        "%LOCALAPPDATA%[^\\n]{0,80}(is not set|not set)",
+        "Studio MCP launcher[^\\n]{0,120}does not exist",
+        "Roblox[ _-]?Studio[^\\n]{0,60}(is not installed|not installed|is missing|cannot be found|was not found)",
+        "'?cmd\\.exe'?\\s*:\\s*(command not found|not found|no such file or directory)",
+        "'?cmd\\.exe'?\\s+is\\s+not\\s+recognized"
+      ],
+      "route": "infrastructure"
+    },
+    {
+      "id": "R2",
+      "category": "ROBLOX_MCP_STARTUP",
+      "patterns": [
+        "Roblox[ _-]?Studio[^\\n]{0,80}(failed to start|did not start|could not start|cannot start|exited|crash|abort|timed? out|timeout|not found|no such file|does not expose|closed stdin)",
+        "(failed to start|did not start|could not start|start [^\\n]{0,20}failed|cannot start|unable to start|failed to connect|could not connect|timed? out|timeout|exited unexpectedly|crash)[^\\n]{0,60}Roblox[ _-]?Studio",
+        "\\bmcp\\.bat\\b[^\\n]{0,80}(failed|not found|no such file|exited|timed? out|timeout|refused)",
+        "\\bmcp\\b[^\\n]{0,60}handshake[^\\n]{0,120}(Roblox|Studio|mcp\\.bat)",
+        "(no (initialize|tools/list) response|closed stdin before|answered (initialize|tools/list) with)[^\\n]{0,120}(Roblox_Studio|mcp\\.bat|cmd\\.exe /c)",
+        "does not expose every Roblox (Studio )?tool",
+        "conflict:[^\\n]{0,80}Roblox_Studio"
+      ],
+      "route": "infrastructure"
+    },
+    {
       "id": "F1",
       "category": "FARUKON_TOOLCHAIN",
       "patterns": [

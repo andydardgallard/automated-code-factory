@@ -274,6 +274,41 @@ is the contract:
 - **Scope**: `security_audit` runs have no adversarial business tester (that is the
   `factory-security-auditor`'s work), and a breakage is never reported as an acceptance verdict.
 
+### 3.4 Roblox game business tests (Roblox tasks) — tester-owned acceptance
+
+When the task's Roblox path is applicable (`references/roblox-mcp.md`), the business test of the game
+scenario runs through the `mcp__Roblox_Studio__*` tools and is owned by `factory-tester`:
+
+- **Independence**: `factory-roblox-expert` may start Studio, edit the place and debug during
+  implementation, but the FINAL scenario is executed by the tester AFTER the last code change — never
+  by the implementer, and never by reusing the specialist's diagnostic run as acceptance.
+- **Fresh session, real MCP calls**: the acceptance run is a new session that really calls the Roblox
+  Studio MCP tools (deterministic start, the scenario steps, the console read-back, a bounded stop in
+  a `try/finally`), not a restatement of the specialist's transcript.
+- **The verdict is STRUCTURED, not an opinion**: `python
+  .agents/skills/code-factory/scripts/roblox_mcp.py scenario run --scenario <the plan's scenario
+  document> --evidence .code-factory/logs/roblox/<run_id>` records the scenario's pass/fail together
+  with the CAPTURED console output, and `roblox_mcp.py scenario verify --evidence <the same
+  directory>` is the gate that must exit 0 before the criterion is MET. A run whose captured console
+  output logged an error line is FAIL, never PASS: the error-log rule is computed from the captured
+  output, not judged.
+- **A screenshot is never a verdict**: an image content block is an artifact somebody may look at; it
+  can neither establish a pass nor repair a logged error. Only the structured verdict plus the console
+  capture count.
+- **Evidence location**: the artifacts live under the resolved repository's
+  `.code-factory/logs/roblox/<run_id>/` and carry the run_id — the scenario and its step list, the
+  console capture, the structured verdict and the stop confirmation. The specialist's files are marked
+  SPECIALIST/DIAGNOSTIC and stay distinct from the tester's ACCEPTANCE files; both sets are
+  referenced from `business-tests.md`, `test-results.md` and `report.md`.
+- **FRESH/STALE applies** (§2.2): any code change after the scenario run makes that evidence STALE —
+  the scenario is re-run and re-stamped, never carried forward.
+- **Degradation**: when Roblox Studio, the `Roblox_Studio` MCP server or one of its tools is missing,
+  the Roblox criterion is reported UNVERIFIED (never MET) with an infrastructure diagnosis
+  (`references/error-routing.md` §1 rows R1–R2); no artifact is fabricated to fill the gap.
+- **No unverified acceptance escape**: when the task MANDATES live proof, an unverified criterion
+  BLOCKS acceptance instead of being accepted as an unverified label — the run stays blocked until
+  `roblox_mcp.py scenario verify` exits 0, and a missing capability is not an acceptance path.
+
 ## 4. Rollback mechanism (critical)
 
 Trigger: ANY test failure (integration, regression, business) or acceptance-criteria miss.
@@ -420,6 +455,7 @@ SUCCESS | FAILED
 | coder | ... |
 | gui_expert | ... (only when the Web GUI path applied) |
 | farukon_expert | ... (only when the Farukon path applied) |
+| roblox_expert | ... (only when the Roblox path applied) |
 | tester | ... |
 | diagnostician | ... |
 

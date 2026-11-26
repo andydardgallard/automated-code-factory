@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.25.0 -->
+<!-- code-factory-version: 12.26.0 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -32,6 +32,7 @@ projects or creates projects from scratch.
 │       │   ├── reference-docs.md    # reference_docs/reference_skills: skill base + matrix
 │       │   ├── chrome-devtools-mcp.md  # conditional browser path: applicability, MCP config, evidence split, degradation
 │       │   ├── farukon-mcp.md       # conditional platform path: applicability, managed server/config, evidence split, stage-1 safety, degradation
+│       │   ├── roblox-mcp.md        # conditional Roblox game path: applicability, GLOBAL managed server/config, specialist-vs-tester evidence split, scenario verdict, safety, degradation
 │       │   ├── factory-rules.md     # single rulebook of mandatory rules + carriers line
 │       │   └── error-patterns.default.json  # snapshot of the error-routing tables: defaults on which the project's project-learned overlay is layered
 │       ├── scripts/
@@ -63,7 +64,7 @@ projects or creates projects from scratch.
 │       │   ├── model_attribution.py        # artifact-backed model attribution from the CLI session wire (cross-checks models_used; STRICT by default for implement/refactor — a role named in pipeline.yaml required_roles that claims a model but leaves no wire trace FAILS; the run's OWN session is resolved from the pipeline binding, an explicit --session <dir> is used verbatim and a blank one is an input error, and a wire that cannot be attributed to this run is DEGRADED with the reason, never a confident verdict about another run)
 │       │   ├── test_model_attribution.py   # model attribution self-test
 │       │   ├── agent_catalog_check.py      # on-disk sub-agent catalog probe (zero tokens): check [--root <dir>] [--role <role>] — FAIL-CLOSED on catalog COMPLETENESS: every role of model_matrix.ROLES/ROLE_FILES must have a profile whose frontmatter parses inside the strict YAML subset the profiles use (a quoted scalar, an inline `#` comment AFTER the value and a balanced flow list parse; a malformed quote or an unterminated collection is reported INVALID with its line number instead of being guessed at), a name: resolving back to that role, a name no stray profile re-declares and a primary|secondary model_preference; exit 0 = the catalog is valid (Unknown agent type = CLI-side loss: retry the SAME role with the SAME model), exit 1 = a profile MISSING/INVALID and exit 2 = a bad root or role, both a FACTORY DEFECT that stops the run
-│       │   ├── test_agent_catalog_stability.py # catalog probe self-test (real 15-profile tree, repeated-refresh stability, hermetic remove/re-add, invalid frontmatter variants, malformed-YAML-vs-valid-inline-comment pairs, input boundaries, one shared roster) + the AGENT_CATALOG degradation route
+│       │   ├── test_agent_catalog_stability.py # catalog probe self-test (real 16-profile tree, repeated-refresh stability, hermetic remove/re-add, invalid frontmatter variants, malformed-YAML-vs-valid-inline-comment pairs, input boundaries, one shared roster) + the AGENT_CATALOG degradation route
 │       │   ├── review_followup_task.py     # deterministic review follow-up task generator (.code-factory/review/fix-tasks.yaml; a refuted finding is omitted with its evidence stated, never silently)
 │       │   ├── test_review_followup_task.py # review follow-up task generator self-test
 │       │   ├── test_review_report_only.py  # report-only review guard (the review verdict reaches no write node)
@@ -83,6 +84,8 @@ projects or creates projects from scratch.
 │       │   ├── test_chrome_devtools_mcp.py # Chrome DevTools MCP helper self-test
 │       │   ├── farukon_mcp.py              # conditional platform path: decide (requires an explicit platform SUBJECT, not identity vocabulary alone), merge-config, probe (--check-mcp-start opt-in; the timeout must be finite and non-negative, zero = immediate), validate-config
 │       │   ├── test_farukon_mcp.py         # Farukon MCP helper self-test (decide, merge, conflict exit 3, handshake, invariants)
+│       │   ├── roblox_mcp.py               # conditional Roblox game path: decide (Roblox repository AND Roblox task text — either alone keeps it off), merge-config (USER-SCOPE GLOBAL default, --target override, conflict exit 3), validate-config, probe (--check-mcp-start opt-in), scenario run/verdict/verify (structured verdict from captured console output)
+│       │   ├── test_roblox_mcp.py          # Roblox MCP helper self-test (decide matrix, global/target merge, conflict exit 3, scenario verdict, input boundaries)
 │       │   ├── modern_web_guidance.py      # pinned Modern Web Guidance adapter: status/search/retrieve/legacy-scan/check-session + `build` as the only writer — the corpus is read as DATA from the run cache, freshness is fail-closed on the full 40-hex pinned commit, and the usage journal is bound to THIS run
 │       │   ├── test_modern_web_guidance.py # Modern Web Guidance adapter self-test (pin freshness, ranking, unstable gating, scan, session evidence)
 │       │   ├── mcp_json_merge.py           # shared text-preserving JSON merge of the two MCP helpers (library only, no CLI)
@@ -113,7 +116,7 @@ projects or creates projects from scratch.
 │       │   ├── test_repo_stats.py          # analyses self-test
 │       │   ├── log_tail.py                 # counters + tail of a long log (without pulling it into context)
 │       │   ├── test_log_tail.py            # log tail self-test
-│       │   ├── factory_preflight.py        # environment pre-flight (python/python3/py etc.; --web-gui adds the browser capability block, --farukon the platform block)
+│       │   ├── factory_preflight.py        # environment pre-flight (python/python3/py etc.; --web-gui adds the browser capability block, --farukon the platform block, --roblox the static Studio block)
 │       │   ├── test_factory_preflight.py   # pre-flight self-test
 │       │   ├── action_gate.py              # destructive actions: ALLOW/CONFIRM/HARD_DENY (shell wrappers classified by payload; process signalling — kill/pkill/killall/taskkill/Stop-Process — classified by blast radius, since a kill has no path to scope; mutating git stash → CONFIRM, `stash list/show` → ALLOW; a push whose destination is `HEAD`/`@` → CONFIRM) + `audit`: the commands the CLI really EXECUTED, from the session wire, joined with the journal — a destructive command with no decision fails, malformed evidence fails closed
 │       │   ├── test_action_gate.py         # action gate self-test (+ --help/usage under cp1251)
@@ -121,7 +124,7 @@ projects or creates projects from scratch.
 │       │   ├── test_task_graph.py          # task graph self-test
 │       │   ├── evidence_ledger.py          # evidence ledger with FRESH/STALE/UNSCOPED signatures (an empty or missing signed scope is UNSCOPED, never FRESH; `stamp` refuses `--files` that name no file, and `sign`/`stamp` reject an absolute, `..`-carrying or outside-`--repo` path — evidence covers the repository)
 │       │   ├── test_evidence_ledger.py     # evidence ledger self-test
-│       │   ├── verify_acceptance.py        # machine verification of acceptance criteria (anti-tautology: SUCCESS needs the FRESH `--ledger` evidence the task type requires — `regression=pass` for implement/refactor, the review deliverables for review/security_audit — so no ledger = DEGRADED)
+│       │   ├── verify_acceptance.py        # machine verification of acceptance criteria (anti-tautology: SUCCESS needs the FRESH `--ledger` evidence the task type requires — `regression=pass` for implement/refactor, the review deliverables for review/security_audit — so no ledger = DEGRADED; a verify command's stdout/stderr go to TEMP FILES and are read back as a bounded tail, so bulk output or a handle-inheriting grandchild cannot hang the gate)
 │       │   ├── test_verify_acceptance.py   # acceptance check self-test
 │       │   ├── verify_quotes.py            # verbatim quote check of evidence quotes (Evidence-Preserving Reducer)
 │       │   ├── test_verify_quotes.py       # quote check self-test
@@ -146,6 +149,7 @@ projects or creates projects from scratch.
         ├── coder.md                 # subagent: code implementation
         ├── gui-expert.md            # subagent: Web GUI implementation and browser debugging (Chrome DevTools MCP)
         ├── farukon-expert.md        # subagent: Farukon platform implementation, build/run/debug (Farukon MCP)
+        ├── roblox-expert.md         # subagent: Roblox game implementation and operation, play-test/debug (Roblox Studio MCP; diagnostic evidence only)
         ├── tester.md                # subagent: tests and result verification
         ├── business-tester.md       # subagent: adversarial user-level breakage testing (generator-side, parallel with the tester)
         ├── diagnostician.md         # subagent: deep error analysis (read-only)
@@ -260,7 +264,7 @@ repeatedly reloaded and dropped a factory role, and the CLI then answers `Unknow
 profile that is on disk.
 
 Both deployers (`prepare_factory.sh` and `prepare_factory.ps1`, the latter also via
-`prepare_factory.cmd`) therefore install ALL 15 factory role profiles into the user-scope catalog at
+`prepare_factory.cmd`) therefore install ALL 16 factory role profiles into the user-scope catalog at
 preparation time, and both generated launchers (`start.sh`, `start.cmd`) REFRESH those copies
 BEFORE the CLI starts. Each copy is byte-for-byte the profile of the project's own
 `.agents/agents/sub-agents/`, so a stale copy left by an older release is replaced and a project
@@ -334,7 +338,7 @@ working interpreter an existing `.kimi-code/mcp.json` is left untouched, no new 
 managed entry launches a per-installation path only the helper derives) and the deployment reports
 the skip. The factory itself uses Python
 for the memory, version, browser-path and platform-path scripts (`memory_project.py`,
-`version_manager.py`, `chrome_devtools_mcp.py`, `farukon_mcp.py`, etc.).
+`version_manager.py`, `chrome_devtools_mcp.py`, `farukon_mcp.py`, `roblox_mcp.py`, etc.).
 
 The Windows launchers get CRLF on checkout regardless of the `core.autocrlf` setting: the `.cmd`
 and `.ps1` files are marked in `.gitattributes` as `text eol=crlf` (the same protection as
@@ -611,6 +615,13 @@ rework is handed to `factory-farukon-expert`/`factory-coder` under the SAME code
 a `FAILED farukon_mcp::tests::…` line, a panic) deliberately keeps its COMPILE_ERROR / ASSERTION /
 RUNTIME_CRASH route to the coder. There is no Farukon-specific `recommended_role` and no separate
 Farukon retry budget.
+Roblox routing adds no role and no budget either: the Studio launcher/Windows toolchain and the
+`Roblox_Studio` MCP server startup/launch/registration failures are matched by the INFRASTRUCTURE rows
+R1–R2 of `references/error-routing.md` — ordered before the generic rows, so a Roblox line is never
+claimed by a neighbouring family — while a Roblox implementation or scenario failure (a Luau
+syntax/runtime error, a failing play-test with a real error in the captured console) keeps the
+existing CODER route and `retry_counters.coder`. When R1/R2 fire, the affected Roblox criteria stay
+UNVERIFIED, never MET.
 
 Agent-catalog routing adds no role and no budget either: an `Unknown agent type` answer at the spawn of
 ANY role is matched by row A1/`AGENT_CATALOG` of `references/error-routing.md` §1.3 and takes the
@@ -668,6 +679,12 @@ submits and interrupted flows. It runs IN PARALLEL with the tester at the busine
 are DIAGNOSTIC — the acceptance evidence stays tester-owned — and a breakage classifies through
 `error_router.py` like a tester failure and takes the SAME route (rollback, then the coder with the
 EXISTING coder budget): there is no separate business-tester budget.
+
+Roblox game scenarios are business-tested too, tester-owned: for an applicable Roblox task
+`factory-tester` runs the FINAL scenario through `mcp__Roblox_Studio__*` in a fresh session and the
+verdict is the STRUCTURED one — `roblox_mcp.py scenario run` captures the Studio console output and
+`scenario verify` must exit 0 on the tester's own evidence directory; an error-logged run is never a
+PASS and a screenshot is never a verdict (see the Roblox section below).
 
 ## Web GUI and the Chrome DevTools MCP path (conditional)
 
@@ -840,6 +857,80 @@ Reference: `references/farukon-mcp.md`.
   the specialist, starts the server or calls a platform tool, and does not need cargo or a Rust
   toolchain to succeed.
 
+## Roblox game development and the Roblox Studio MCP path (conditional)
+
+The factory's game-development specialist, and a conditional capability: it exists for tasks that
+build, run, test or debug a Roblox place, and is invisible for every other task. Reference:
+`references/roblox-mcp.md`.
+
+- **Applicability is deterministic and carries reasons**, never a model call:
+  `roblox_mcp.py decide --task-file .code-factory/state/task.yaml --repo <resolved repo_path>`.
+  TWO independent conditions must hold and either one alone keeps the role OFF: (1) the repository IS
+  a Roblox project — a Rojo `<name>.project.json` descriptor, a place file (`*.rbxl`/`*.rbxlx`), a
+  `.luau`/`.lua` source that really references the Roblox API (`game:GetService(...)`,
+  `Instance.new(...)`, `script.Parent`, a Roblox service), or an existing `Roblox_Studio` entry in the
+  project's `.kimi-code/mcp.json`; (2) the metadata-stripped task text binds an explicit Roblox
+  SUBJECT (`roblox`, `roblox studio`, `rojo`, `luau`, a place file, the Studio MCP server) to an
+  ACTION (`add`, `create`, `build`, `fix`, `playtest`, `script`, `run`, `debug`, …). Task-file
+  METADATA is not scope — a `models.roblox_expert` model pin, the repository identity alone or the
+  task text alone stay `not_applicable` — and an explicit exclusion phrase in the task text
+  (`no roblox`, `without roblox`, `out of scope`) always wins, because deactivating by mistake costs a
+  missed specialist run while activating by mistake puts a Studio session on unrelated work.
+- **Roles and evidence split**: `factory-roblox-expert` (`sub-agents/roblox-expert.md`,
+  coder-class, generator-side) implements, builds, play-tests and debugs the ASSIGNED place files
+  through the `mcp__Roblox_Studio__*` tools and writes SPECIALIST/DIAGNOSTIC artifacts under
+  `.code-factory/logs/roblox/<run_id>/`; `factory-tester` independently runs the FINAL scenario after
+  the last code change and owns the ACCEPTANCE artifacts in the same run directory, labelled and
+  distinct. Acceptance is `roblox_mcp.py scenario verify` exiting 0 on the tester's OWN evidence
+  directory — the specialist's artifacts are never reused as acceptance, and the specialist never
+  issues a final PASS for its own work. Only these two roles receive the Studio tools; Roblox failures
+  and review rework use the EXISTING coder route and `retry_counters.coder` — no separate role key and
+  no separate retry budget.
+- **Server and configuration — GLOBAL by default**: the server key is `Roblox_Studio`, transported
+  over stdio, and it is BUILT INTO Roblox Studio (Studio → Assistant → Manage MCP servers → *Enable
+  Studio as MCP server*); the client names its tools `mcp__Roblox_Studio__<tool>`, and the catalogue
+  is `skill-base/skills/roblox-studio-mcp/SKILL.md`. `roblox_mcp.py merge-config` registers the
+  managed entry `{"command": "cmd.exe", "args": ["/c", "<absolute %LOCALAPPDATA%>\\Roblox\\mcp.bat"]}`
+  — the variable EXPANDED and symlink-resolved at merge time — into the USER-SCOPE GLOBAL CLI config,
+  resolved by the script and echoed in its result: `$KIMI_CODE_HOME/mcp.json` when that variable is
+  set (it relocates the whole data root), else `~/.kimi-code/mcp.json` (`%USERPROFILE%` on Windows,
+  `$HOME` on POSIX). An undeterminable or nonexistent data root is a usage error (exit 2): a typo'd
+  environment must never create a stray data-root tree. `--target <path>` is the explicit override for
+  tests/fixtures and follows the SAME contract (symlink-resolved, its parent must exist). The merge is
+  idempotent and text-preserving — every unrelated byte survives, a second run is byte-identical, an
+  equal entry reports `unchanged` — and an existing DIFFERENT `Roblox_Studio` entry is preserved and
+  reported as a CONFLICT with exit 3, never overwritten. The write is atomic; an invalid-JSON target
+  is never touched. `validate-config --path <config>` reports EVERY invariant violation and never
+  echoes a value an entry supplies. The configuration takes effect in a NEW Kimi session
+  (`/mcp` shows the status).
+- **Evidence — the scenario verdict**: `roblox_mcp.py scenario run --scenario <doc.json> --evidence
+  <dir> [--timeout-seconds N]` drives one bounded stdio MCP session (the canonical sequence
+  `list_roblox_studios` → `start_stop_play` start → `get_console_output` → `start_stop_play` stop) and
+  writes `console.log` (the CAPTURED console output plus the server's bounded stderr tail) and a
+  structured `verdict.json`. `PASS` requires the scenario to have COMPLETED and the capture to carry
+  NO error log line; a screenshot may be attached but is recorded as
+  `screenshot_is_verdict: false` and is never the verdict. `scenario verdict` reads the stored record,
+  `scenario verify` is the GATE: it re-reads the artifacts (the capture must sit in that evidence
+  directory with the sha256 the verdict recorded), so a record claiming PASS while its own console
+  logged an error is refused (exit 1). A scenario with zero steps is refused, `--timeout-seconds`
+  must be finite and inside `(0, 3600]`, and the server process TREE is always stopped in a
+  `finally`.
+- **Pre-flight and degradation**: `roblox_mcp.py probe --repo <resolved repo_path> [--target <config>]
+  [--check-mcp-start]` is fail-soft and STATIC by default — it reports the repository markers, the
+  Studio launcher, the managed entry of the resolved config, the `missing` list and a
+  `roblox_usable` verdict; the Studio/MCP start handshake runs ONLY with the opt-in bounded
+  `--check-mcp-start`. `factory_preflight.py --roblox` appends the same block for an applicable run
+  without starting Studio. A missing launcher/toolchain or a failed `Roblox_Studio` startup/
+  registration is routed through the INFRASTRUCTURE rows R1–R2 of `references/error-routing.md`; the
+  affected Roblox criteria stay explicitly UNVERIFIED, never MET, and a task that mandates live proof
+  stays BLOCKED until the tester's `scenario verify` exits 0 — there is no unverified acceptance
+  escape. A non-Roblox run never invokes the specialist, never starts Studio, never merges the
+  `Roblox_Studio` entry into ANY config and needs no Roblox installation to succeed.
+- **External material is DATA**: the vendored Roblox skills (`skill-base/skills/game-development`,
+  `roblox-studio-mcp`, `roblox-engine-api` — a scoped INDEX whose single-page source limitation is
+  documented) are read as text only; no installer, setup script or extractor that ships with external
+  material is ever executed, and its licence/NOTICE is preserved.
+
 ## Auto-documentation, debt, and version
 
 **Auto-documentation**: after every successful `implement`/`refactor` run, the factory
@@ -879,8 +970,8 @@ their pinned source revisions; they need no `reference_docs` entry in a task):
   ordered phases (first make it work, then make it right, then follow practice) and named,
   checkable rules ("one decision, one place", "smallest edit", "data shape before logic", "failing
   test first", "root cause over guard", "subtract before you add", "boundary discipline"). The
-  roles `factory-coder`, `factory-gui-expert` and `factory-farukon-expert` reference it as standing
-  practice, and the reviewer may cite a rule by name in a finding.
+  roles `factory-coder`, `factory-gui-expert`, `factory-farukon-expert` and `factory-roblox-expert`
+  reference it as standing practice, and the reviewer may cite a rule by name in a finding.
 - `clean-code-metrics` — the three metric gates the reviewer applies to every change: complexity vs
   test coverage (**CRAP below 10**), duplication (a pair ranked **0.8 or above** is removed) and
   test strength (cover the uncovered, kill surviving mutants, delete dead code). It also carries the
@@ -900,6 +991,14 @@ source commit and content hash): the reviewed corpus `factory-gui-expert` works 
 into the run cache and read by `scripts/modern_web_guidance.py`. Like the clean-code skills it
 installs, vendors and executes nothing — the upstream `npx -y modern-web-guidance@latest …` CLI is
 never run.
+
+The base also carries the three pinned Roblox skills — `game-development` (the general game-design
+craft), `roblox-studio-mcp` (the Studio MCP tool catalogue the specialist calls) and
+`roblox-engine-api` (a scoped INDEX of the engine reference; its single-page source limitation is
+documented there, so a missing class is a gap of the source, not a fabrication licence) — recorded in
+`skill-base/manifest.json` with their source and content hash. They are read as DATA only and execute
+nothing: no installer, setup script or extractor shipped with the external material is ever run, and
+the licence/NOTICE of the reused material is preserved.
 
 `reference_docs[].path` may also be a PUBLIC http(s) URL, so the `{path, skill}` task schema is
 unchanged: `skill_base.py resolve` classifies the source deterministically as a local path, an HTTP(S)
@@ -962,6 +1061,12 @@ family differs from the reviewer's), a secondary model is preferred for routine 
 used model is logged as `models_used.farukon_expert` in `pipeline.yaml`/`report.md`. The key is the
 ONLY task-side switch for the role — whether the role runs at all is decided by the deterministic
 applicability check, never by the presence of the key.
+The optional `models.roblox_expert` key names the model of the Roblox specialist
+`factory-roblox-expert` and behaves exactly like `models.farukon_expert`: it is generator-side (so its
+family differs from the reviewer's), a secondary model is preferred for routine game work, and the
+used model is logged as `models_used.roblox_expert` in `pipeline.yaml`/`report.md`. The key is the
+ONLY task-side switch for the role — whether it runs at all is decided by the deterministic
+applicability check, never by the presence of the key.
 The optional `models.business_tester` key names the model of the adversarial tester
 `factory-business-tester`: generator-side like `models.coder` (so its family differs from the
 reviewer's), logged as `models_used.business_tester`. The optional `models.supervisor` key names the
@@ -970,7 +1075,7 @@ and is logged as `models_used.supervisor`.
 Attribution of the logged models is STRICT BY DEFAULT for `implement`/`refactor`: the run writes
 `task_type` and `required_roles` into `.code-factory/state/pipeline.yaml` (the mandatory non-empty
 set: analyzer, planner, coder, tester, business_tester, reviewer, documenter — the conditional roles
-gui_expert, farukon_expert and security_auditor may be listed too), and
+gui_expert, farukon_expert, roblox_expert and security_auditor may be listed too), and
 `model_attribution.py` FAILS a run in which a required role claims a model in `models_used` but
 leaves no trace in the CLI session wire. A missing wire is DEGRADED only outside strict attribution,
 and `--strict` turns it on for `review`/`security_audit` as well; there is no weakening opt-out.
@@ -1001,7 +1106,9 @@ Recommended role mapping:
   may use a secondary model for routine UI implementation (`models.gui_expert`), with complex visual
   analysis delegated to a read-only primary role; the Farukon platform specialist
   `factory-farukon-expert` is generator-side in the same way and may use a secondary model for routine
-  platform work (`models.farukon_expert`); the adversarial tester `factory-business-tester` is
+  platform work (`models.farukon_expert`); the Roblox specialist `factory-roblox-expert` is
+  generator-side too and may use a secondary model for routine game work (`models.roblox_expert`); the
+  adversarial tester `factory-business-tester` is
   generator-side in the same way (`models.business_tester`) and runs in parallel with the tester;
 - planner-2 (committee on double rejection): a model from a family CONTRASTING with the planner
   (`sub-agents/planner.md`; `model_preference: secondary` is only a fallback), so that the second plan is

@@ -155,7 +155,7 @@ STRICT_TASK_TYPES = ("implement", "refactor")
 # The roles whose presence depends on the task: they may be listed in `required_roles`, and nothing
 # fabricates them as mandatory for every run. A conditional role is a REGISTERED role like any other
 # here; the list exists so the validation states the contract instead of implying "every role".
-CONDITIONAL_ROLES = ("gui_expert", "farukon_expert", "security_auditor")
+CONDITIONAL_ROLES = ("gui_expert", "farukon_expert", "roblox_expert", "security_auditor")
 # The roles EVERY implement/refactor run delegates, so strict attribution has something to check: the
 # phase table's mandatory set — business_tester included, because implement and refactor flows always
 # require the adversarial business test, not only when the task remembers to ask for it. A checkpoint
@@ -403,13 +403,14 @@ def required_roles_errors(data: dict) -> list[str]:
     default for implement/refactor, so "present but empty" would silently disable it).
     `required_roles` must be a list of REGISTERED roles, duplicate-free, without `main` (the session
     model is not a delegable role). CONDITIONAL_ROLES may be listed — a task that really needs the
-    Web GUI or Farukon specialist states it — and nothing here fabricates them as mandatory for
-    every run: the list only validates what the run declared.
+    Web GUI, the Farukon or Roblox specialist states it — and nothing here fabricates them as
+    mandatory for every run: the list only validates what the run declared.
 
     An `implement` or `refactor` checkpoint must DECLARE the mandatory set (`MANDATORY_ROLES`): an
     omitted or empty list would disable strict attribution for exactly the runs it exists for, so
-    both are errors. The conditional roles stay optional — the Web GUI, the Farukon specialist and
-    the auditor are declared when the task really needs them — while the adversarial business tester
+    both are errors. The conditional roles stay optional — the Web GUI, the Farukon and Roblox
+    specialists and the auditor are declared when the task really needs them — while the adversarial
+    business tester
     is part of the mandatory set: implement and refactor flows always require it.
     """
     errors: list[str] = []

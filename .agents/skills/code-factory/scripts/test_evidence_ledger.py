@@ -10,8 +10,11 @@ mixed-scope ledger verifies with no `--files` at all, and a caller scope that di
 stamped one is a fail-closed STALE whose reason names the scope mismatch instead of a file change,
 (d) a broken ledger is refused, never overwritten, and never leaves a temp file behind, and (e) an
 entry whose recorded scope is EMPTY signs no file, so it is never FRESH — and `stamp` refuses to
-write such an entry at all. `--run-id` attributes an entry to its run, and a value that is not
-`YYYYMMDD`-`<8 lowercase hex>` is a usage error (exit 2) that records nothing.
+write such an entry at all. `stamp` likewise refuses a missing or unreadable evidence file (a
+`missing` marker reproduces on every tree that lacks the file), while `check` keeps reporting a
+deletion that happens AFTER a successful stamp as STALE. `--run-id` attributes an entry to its
+run, and a value that is not `YYYYMMDD`-`<8 lowercase hex>` is a usage error (exit 2) that records
+nothing.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -347,8 +350,83 @@ def main() -> int:
                    f"a symlink resolving outside --repo must be rejected by stamp: "
                    f"{res.returncode} {res.stderr!r}")
 
+        # 16. Boundary (C04): `stamp` refuses a missing or unreadable evidence file BEFORE it
+        #     writes anything — a `missing` marker reproduces on every tree that lacks the file, so
+        #     a `regression=pass` stamp over a nonexistent path would later be FRESH evidence for
+        #     code nobody tested. An existing READABLE file is signable (zero bytes included), and
+        #     `check` keeps detecting a deletion that happens AFTER a successful stamp.
+        missing_ledger = tmp / "missing-file" / "evidence.json"
+        res = stamp(tmp, missing_ledger, "regression", "pass", "a.py", "ghost.py")
+        expect(res.returncode == 1,
+               f"stamping a nonexistent path must be refused: {res.stdout!r}{res.stderr!r}")
+        expect("error:" in res.stderr and "ghost.py" in res.stderr and "missing" in res.stderr,
+               f"the refusal must name the missing file: {res.stderr!r}")
+        expect("Traceback" not in res.stderr,
+               f"a missing evidence file must not raise a traceback: {res.stderr!r}")
+        expect(not missing_ledger.exists(),
+               "a refused stamp must not create a ledger")
+        # ... and it must not damage an existing ledger (refused before the write).
+        before = m1ledger.read_text(encoding="utf-8")
+        res = stamp(m1repo, m1ledger, "regression", "pass", "inner.py", "ghost.py")
+        expect(res.returncode == 1 and "error:" in res.stderr,
+               f"a refused stamp must exit 1 with an error: {res.stderr!r}")
+        expect(m1ledger.read_text(encoding="utf-8") == before,
+               "a refused stamp must leave the existing ledger byte-identical")
+        # A directory (or another non-regular file) cannot be signed either.
+        (m1repo / "adir").mkdir()
+        res = stamp(m1repo, m1ledger, "unit", "pass", "adir")
+        expect(res.returncode == 1 and "unreadable" in res.stderr,
+               f"a non-regular file must be refused as unreadable: {res.stderr!r}")
+        # A readable ZERO-BYTE file is a legitimate evidence file.
+        empty_file = m1repo / "empty.txt"
+        empty_file.write_text("", encoding="utf-8")
+        empty_ledger = tmp / "empty-file" / "evidence.json"
+        res = stamp(m1repo, empty_ledger, "regression", "pass", "empty.txt")
+        expect(res.returncode == 0,
+               f"a readable zero-byte file must still stamp: {res.stderr!r}")
+        res = check(m1repo, empty_ledger, "empty.txt")
+        expect(res.returncode == 0,
+               f"a readable zero-byte file must be FRESH evidence: {res.stdout!r}")
+        # A file that becomes unreadable is refused too (skipped where the host cannot make a file
+        # unreadable — an elevated/root account opens anything).
+        secret = m1repo / "secret.txt"
+        secret.write_text("S\n", encoding="utf-8")
+        try:
+            os.chmod(secret, 0o000)
+            try:
+                secret.read_bytes()
+            except OSError:
+                res = stamp(m1repo, m1ledger, "unit", "pass", "secret.txt")
+                expect(res.returncode == 1 and "unreadable" in res.stderr,
+                       f"an unreadable evidence file must be refused: {res.stderr!r}")
+        finally:
+            try:
+                os.chmod(secret, 0o644)
+            except OSError:
+                pass
+        # A deletion AFTER a successful stamp is still a change: STALE, exit 1 — and the deleted
+        # file cannot be re-stamped into a fresh `pass` entry.
+        doomed = m1repo / "doomed.py"
+        doomed.write_text("D\n", encoding="utf-8")
+        doomed_ledger = tmp / "doomed" / "evidence.json"
+        res = stamp(m1repo, doomed_ledger, "regression", "pass", "doomed.py")
+        expect(res.returncode == 0, f"stamping an existing file must exit 0: {res.stderr!r}")
+        expect(check(m1repo, doomed_ledger, "doomed.py").returncode == 0,
+               "the freshly stamped evidence must be FRESH")
+        doomed.unlink()
+        res = check(m1repo, doomed_ledger, "doomed.py")
+        expect(res.returncode == 1,
+               f"deleting a signed file after stamping must be STALE: {res.stdout!r}")
+        expect("STALE" in res.stdout.split("regression")[1][:40],
+               f"the regression row must be STALE after the deletion: {res.stdout!r}")
+        res = stamp(m1repo, doomed_ledger, "regression", "pass", "doomed.py")
+        expect(res.returncode == 1,
+               f"a deleted file must not be re-stamped into fresh evidence: {res.stderr!r}")
+
     print("PASS - evidence_ledger.py behaves as expected (deterministic sign, atomic stamp, "
           "FRESH/STALE check with stale evidence rejected and an empty signed scope never FRESH, "
+          "a missing/unreadable evidence file refused at stamping while a later deletion stays "
+          "STALE, "
           "run id attributed per entry — a malformed --run-id is a usage error (exit 2) that "
           "records nothing).")
     return 0

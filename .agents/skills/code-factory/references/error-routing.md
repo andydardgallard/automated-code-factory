@@ -33,6 +33,8 @@ specific first. First match wins.
 | 2 | WRONG_RESULTS | `zero Total_Return\|no trades occurred\|all combinations produced identical\|expected .* but got\|regression\|no meaningful signals\|no nonzero\|zero return` | DIAGNOSTICIAN |
 | 3 | INFRASTRUCTURE | `Merge conflict in (target/|node_modules/|__pycache__/|build/|dist/)` | INFRASTRUCTURE (auto-fix) |
 | 4 | INFRASTRUCTURE | `(build artifacts|target/|node_modules/) (tracked|committed) in git` | INFRASTRUCTURE (auto-fix) |
+| R1 | ROBLOX_STUDIO_TOOLCHAIN | `the Roblox Studio MCP launcher path cannot be determined\|%LOCALAPPDATA%[^\n]{0,80}(is not set|not set)\|Studio MCP launcher[^\n]{0,120}does not exist\|Roblox[ _-]?Studio[^\n]{0,60}(is not installed|not installed|is missing|cannot be found|was not found)\|'?cmd\.exe'?\s*:\s*(command not found|not found|no such file or directory)\|'?cmd\.exe'?\s+is\s+not\s+recognized` | INFRASTRUCTURE (auto-fix) |
+| R2 | ROBLOX_MCP_STARTUP | `Roblox[ _-]?Studio[^\n]{0,80}(failed to start|did not start|could not start|cannot start|exited|crash|abort|timed? out|timeout|not found|no such file|does not expose|closed stdin)\|(failed to start|did not start|could not start|start [^\n]{0,20}failed|cannot start|unable to start|failed to connect|could not connect|timed? out|timeout|exited unexpectedly|crash)[^\n]{0,60}Roblox[ _-]?Studio\|\bmcp\.bat\b[^\n]{0,80}(failed|not found|no such file|exited|timed? out|timeout|refused)\|\bmcp\b[^\n]{0,60}handshake[^\n]{0,120}(Roblox|Studio|mcp\.bat)\|(no (initialize|tools/list) response|closed stdin before|answered (initialize|tools/list) with)[^\n]{0,120}(Roblox_Studio|mcp\.bat|cmd\.exe /c)\|does not expose every Roblox (Studio )?tool\|conflict:[^\n]{0,80}Roblox_Studio` | INFRASTRUCTURE (auto-fix) |
 | F1 | FARUKON_TOOLCHAIN | `\bcargo'?\s*:\s*(command not found|not found|no such file or directory)\|\bcargo'?\s+is\s+not\s+recognized\|\bcargo\b[^\n]{0,40}was not found on PATH\|error:\s*linker\s+\S+\s+not found\|\brustup\b[^\n]{0,80}(error|failed|could not|not installed)\|\btoolchain\b[^\n]{0,60}(is not installed|not installed|failed to install|install failed)\|\brustc\b[^\n]{0,40}(command not found|not found|not recognized)` | INFRASTRUCTURE (auto-fix) |
 | F2 | FARUKON_MCP_STARTUP | `farukon[ _-]?mcp\b[^\n]{0,80}(failed to start|did not start|could not start|cannot start|exited|crash|abort|timed? out|timeout|not found|no such file|does not expose|closed stdin)\|(failed to start|did not start|could not start|start [^\n]{0,20}failed|cannot start|unable to start|failed to connect|could not connect|timed? out|timeout|exited unexpectedly|crash)[^\n]{0,60}farukon[ _-]?mcp\b\|\bmcp\b[^\n]{0,60}handshake[^\n]{0,60}(failed|timed? out|timeout|error|refused|no response)\|(no (initialize|tools/list) response|closed stdin before|answered (initialize|tools/list) with)[^\n]{0,120}(farukon|cargo run)\|\A(?![\s\S]*error\[E\d+\])[\s\S]*could not compile[^\n]{0,60}farukon[ _-]?mcp\|does not expose every Farukon tool` | INFRASTRUCTURE (auto-fix) |
 | I1 | BROWSER_TOOLCHAIN | `(node|npm|npx)'?\s*:\s*(command not found|not found|no such file or directory)\|'?(node|npm|npx)'?\s+is\s+not\s+recognized\|spawn\s+(node|npm|npx)\b[^\n]{0,20}(ENOENT|EACCES|failed)\|(node|npm|npx)\b[^\n]{0,20}was not found on PATH; a Web GUI run cannot start\|(node|npm|npx)\b[^\n]{0,20}was not found on PATH:[^\n]{0,60}the pinned chrome[- ]devtools[- ]mcp[^\n]{0,40}cannot be installed` | INFRASTRUCTURE (auto-fix) |
@@ -80,6 +82,28 @@ Notes:
   `\A(?![\s\S]*error\[E\d+\])…`, which refuses to match as soon as ANY `error[Exxxx]` appears in the
   log. `scripts/test_error_router.py` pins both halves with a complete Cargo log containing
   `error[E0308]` AND the final summary (it must reach row 8/CODER).
+- Rows R1–R2 are the Roblox Studio infrastructure family (the Studio MCP launcher / Windows host
+  toolchain and the `Roblox_Studio` MCP server startup/launch/registration). They sit between the
+  git-hygiene rows 3/4 and the Farukon rows F1–F2 — BEFORE those and before the browser rows and
+  every generic row — because every one of their patterns carries a Roblox/Studio/`mcp.bat` token, so
+  a row can only claim a Roblox line while the ordering is what keeps a Roblox line out of a
+  neighbouring family: without that position `Roblox Studio is not installed` would be stolen by
+  `not installed`-style generic wording, a `mcp.bat` launch line by `file not found` (BA), and a
+  `Roblox_Studio` handshake line by the generic `mcp … handshake` shape of F2/I3 (which would label it
+  FARUKON_MCP_STARTUP / MCP_STARTUP). The rows carry the wording the probe, the scenario runner and the
+  config merger of `scripts/roblox_mcp.py` THEMSELVES emit (a missing launcher, an undeterminable
+  `%LOCALAPPDATA%`, a server that exited during `initialize`, a `mcpServers.Roblox_Studio` conflict),
+  not only shell-level spellings. `scripts/test_error_router.py` pins the JSON↔table agreement and the
+  ordering of every other infrastructure row; its row set must be extended by the same amount whenever
+  an infrastructure family is added.
+- Roblox-expert IMPLEMENTATION and scenario FAILURES (a Luau syntax/runtime error, a failing play-test
+  scenario, a place that will not build, a test that asserts the wrong thing) are NOT infrastructure:
+  they keep the existing CODER route and `retry_counters.coder` — there is no separate Roblox role key
+  and no separate Roblox retry budget, so the specialist's own budget is the coder's. Rows R1–R2 route
+  the Studio launcher/toolchain and the `Roblox_Studio` MCP startup/registration only, and when they
+  fire the affected Roblox criteria stay UNVERIFIED in that case. A `Roblox_Studio` registration
+  CONFLICT is reported by the merge with exit 3 and the target file is left untouched — it is row R2,
+  never an overwrite: the operator resolves it.
 - Rows I1–I4 are the browser/MCP infrastructure family (node/npm/npx, Chrome/Chrome for Testing,
   MCP startup, chrome-devtools-mcp launch). They sit between the git-hygiene rows 3/4 and the generic
   rows 5/7 ON PURPOSE: without that position a browser capability line would be stolen by

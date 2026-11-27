@@ -43,7 +43,10 @@ start.cmd
 start.sh
 
 # --- Code Factory (auto-added by prepare_factory.ps1) ---
-.agents/
+# NOTE: `.agents/` is deliberately NOT ignored here. This repository IS the factory, so its
+# `.agents/` tree is SOURCE, not a deployment copy; ignoring it would let a new factory script be
+# silently hidden from commits and from the tracked review inventory. A generated TARGET project's
+# ignore file still gets `.agents/` from the deployer, where that tree is a deployment copy.
 .code-factory/
 .kimi-code/mcp.json
 .kimi-code/vendor/

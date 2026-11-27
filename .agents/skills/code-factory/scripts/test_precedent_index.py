@@ -24,10 +24,14 @@ stale index with exit 3 instead of answering `matches: 0`.
 Creating a symbolic link needs privileges on Windows (Administrator or Developer Mode): when the OS
 refuses, the test prints a note and skips only that sub-check instead of failing.
 
-If this interpreter's sqlite3 was built without FTS5 the tool cannot exist at all, so the test
-prints SKIP and exits 0 instead of failing on an environment it does not control.
+FTS5 is a REQUIRED dependency of the tool this test certifies: on an interpreter whose sqlite3 was
+built without it the tool cannot exist at all, so the test prints one `error:` line on stderr and
+exits 2 — never a green SKIP or PASS, which would certify an FTS5 index that was never exercised.
+A child process re-runs this module with a stubbed `fts5_error` to prove that verdict, while the
+real host still runs every assertion below.
 
-Exit code 0 = all assertions pass (or SKIP), 1 = a check did not behave as expected.
+Exit code 0 = all assertions pass, 1 = a check did not behave as expected, 2 = the required
+dependency (FTS5) is missing.
 """
 from __future__ import annotations
 
@@ -473,13 +477,42 @@ def check_freshness() -> None:
         fresh_status(root)   # restoring the content restores FRESH — no false positive
 
 
+def check_missing_fts5() -> None:
+    """A host without FTS5 must be a loud REQUIRED-dependency failure, never a green SKIP/PASS.
+
+    The simulation runs in a child process that re-imports this module with `fts5_error` stubbed,
+    so the host doing the real run keeps its own FTS5 and every assertion above still executed.
+    """
+    driver = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+        "import precedent_index\n"
+        "import test_precedent_index\n"
+        "precedent_index.fts5_error = lambda: 'no such module: fts5'\n"
+        "sys.exit(test_precedent_index.main())\n"
+    )
+    res = subprocess.run([sys.executable, "-c", driver],
+                         capture_output=True, text=True, errors="replace")
+    expect(res.returncode == 2,
+           f"a host without FTS5 must exit 2, not {res.returncode}: "
+           f"{res.stdout!r}{res.stderr!r}")
+    expect("PASS" not in res.stdout,
+           f"a host without FTS5 must never report PASS: {res.stdout!r}")
+    expect("FTS5" in res.stderr and "no such module: fts5" in res.stderr,
+           f"the failure must name the missing dependency: {res.stderr!r}")
+    expect("Traceback" not in res.stderr and len(res.stderr.strip().splitlines()) == 1,
+           f"the failure must be exactly one message line: {res.stderr!r}")
+
+
 def main() -> int:
-    # 0. Without FTS5 the tool cannot exist: report SKIP instead of failing on the environment.
+    # 0. FTS5 is a REQUIRED dependency, not a skippable environment detail: without it the tool
+    #    cannot exist, and a green SKIP would certify functionality that never ran.
     unsupported = pi.fts5_error()
     if unsupported is not None:
-        print(f"SKIP - sqlite3 in {sys.executable} has no FTS5 ({unsupported}); "
-              f"precedent_index.py cannot be exercised here.")
-        return 0
+        sys.stderr.write(f"error: sqlite3 in {sys.executable} has no FTS5 ({unsupported}); "
+                         f"precedent_index.py cannot be exercised, and FTS5 is a REQUIRED "
+                         f"dependency — this is a failure, not a skip.\n")
+        return 2
 
     check_library()
 
@@ -611,6 +644,9 @@ def main() -> int:
     allowed = {"__future__", "argparse", "datetime", "hashlib", "pathlib", "repo_inventory",
                "sqlite3", "subprocess", "sys"}
     expect(imported <= allowed, f"precedent_index.py must be stdlib-only, imports={imported}")
+
+    # 13. A host without FTS5 is a nonzero REQUIRED-dependency result, never a green SKIP/PASS.
+    check_missing_fts5()
 
     print("PASS - precedent_index.py builds a deterministic FTS5 precedent index of memory/ and "
           "the code base (git ls-files or walk — a tracked symbolic link skipped by both), finds "

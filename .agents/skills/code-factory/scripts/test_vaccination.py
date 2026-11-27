@@ -168,6 +168,29 @@ claim), and the coder delegation ceiling follows the approved plan's coder tasks
 reserve. Each is a FOCUSED probe replayed against `CL_BASE_SHA`, the HEAD this run started from
 (the change set was still uncommitted there), and its claim lives in `CL_FINDINGS`.
 
+The `RB` group is the acceptance-GATE repair of THIS run (run 20261126-8ab3e96d): `run_verify` used
+to capture a verify command's stdout/stderr in PIPES and wait with `communicate()`, which returns
+only at EOF — and EOF arrives when the LAST holder of a write end closes it, so a grandchild the
+command spawned (a test runner's worker, cmd.exe under `shell=True`) kept the gate waiting long
+after the command itself had exited: the carried long-output hang. The fix captures into temporary
+FILES and reads the excerpt back through a bounded tail window, so the wait ends at the command's
+REAL exit and memory stays bounded whatever the volume. Its vaccine is STRUCTURAL on
+`test_verify_acceptance.py`, replayed against `RB_BASE_SHA` (the HEAD this run started from): the
+new case cannot even reach its behavioural assertions on the pre-fix tree, because the bounded tail
+window it starts from does not exist there — the mechanism the defect lacked. The case bounds
+itself twice (an elapsed assertion and an OUTER watchdog of `--timeout` + margin), so the pre-fix
+replay fails in seconds and can never stall this suite. Its claim lives in `RB_FINDINGS`.
+
+The same `RB` group carries this run's conditional-`roblox_expert` capability (RB-1..RB-5, also
+replayed against `RB_BASE_SHA`, the tree that predates the whole feature): the BOTH-conditions
+applicability decision, the idempotent/conflict-reporting global merge, the scenario verdict that an
+error log can never turn into a PASS, the external material shipped as DATA (installers never
+executed, licence/NOTICE preserved) and the role registered generator-side with a 16-entry catalog.
+Each is a FOCUSED probe reusing the shipped self-tests' own fixtures and cases, and each declares the
+failure it must produce on that pre-fix tree (`roblox_mcp.py` and the generated skills simply do not
+exist there, and `model_matrix.ROLES` still holds 15 roles), so every one of them bites by
+construction.
+
 Cross-checks run before anything slow, and `--registry-only` stops after them:
   - every `vaccine: <ID>` of the disposition file is registered, and every registered vaccine is
     claimed by name (the disposition, a release claim list or a reconstructed claim) — reported both
@@ -197,7 +220,13 @@ Cross-checks run before anything slow, and `--registry-only` stops after them:
   - `check_claim_fixtures()` does the same for the reconstructed claims: four claim lists the
     harness MUST refuse (a document that does not exist, an evidence anchor that rotted, an
     unregistered vaccine, a claim re-numbered instead of keyed by its vaccine) plus the shipped
-    list, which must pass.
+    list, which must pass;
+  - `check_timeout_capture()` re-proves the CAPTURE of a check's own output: every check is run with
+    its stdout/stderr in TEMPORARY FILES, never pipes, so its `wait()` ends at its REAL exit instead
+    of at a pipe EOF that a grandchild holding the inherited handles keeps open, and a timeout kills
+    the whole process TREE with a bounded grace. The fixture hangs past a 1s budget while leaving
+    such a grandchild alive, and must return inside the budget with the timeout reported and no
+    process left behind — the hang that stalled a full-suite baseline at 1200s.
 
 The disposition file lives under the gitignored `.code-factory/`, so a FRESH CLONE keeps no run
 artifact. Its ABSENCE is not a failure: the harness's durable ground truth is its own REGISTRY, and a
@@ -237,6 +266,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -296,6 +326,12 @@ WS_BASE_SHA = "2b36c3589d4e40181db15046719e516deb031bae"
 # run-keyed launch state and the plan-derived coder ceiling are proven against the tree that
 # predates them.
 CL_BASE_SHA = "b2ca3af643787f3e9932d4cf250cfb48f08118be"
+# The pre-fix HEAD of THIS run's acceptance-gate repair (run 20261126-8ab3e96d started from it): the
+# `RB` group replays that commit, whose `run_verify` still waited for the pipe EOF a grandchild
+# keeps open — the carried long-output hang this change closes.
+RB_BASE_SHA = "fc1196b75fd6d81489d73357d7dcd9c2bc69c9e9"
+# The same pre-fix commit replays this run's conditional-Roblox capability (RB-1..RB-5): nothing of
+# the feature exists there — no `roblox_mcp.py`, no generated Roblox skill, and a 15-role roster.
 
 # The four kinds of focused check a vaccine can name (see the module docstring).
 MODULE = "module"
@@ -324,6 +360,7 @@ PROBE_FIXTURES = ("test_action_gate.py", "test_calibrate_reviewer.py", "test_che
                   "test_security_audit_guarantee.py", "test_supervisor_watchdog.py",
                   "test_agent_catalog_stability.py", "test_run_guard.py",
                   "test_validate_documentation.py", "test_version_manager.py",
+                  "test_roblox_mcp.py",
                   "test_verify_acceptance.py", "test_windows_scripts.py")
 
 # The disposition contract: every group of the task's sources, exhaustively. `RF` is an earlier
@@ -337,7 +374,7 @@ EXPECTED_GROUPS = (("RV", 20), ("BL", 8), ("PR", 18), ("RF", 15), ("NM", 2), ("C
 # The id prefix that tags a registered vaccine with its group. The five historical groups below
 # carry no tag (their vaccines are the release-wide `V-memory-*`, `V-model-*`, ... entries).
 GROUP_TAGS = {"RF": "V-rf-", "NM": "V-nm-", "CC": "V-cc-", "FX": "V-fx-", "DP": "V-dp-",
-              "FK": "V-fk-", "FB": "V-fb-", "WS": "V-ws-", "CL": "V-cl-"}
+              "FK": "V-fk-", "FB": "V-fb-", "WS": "V-ws-", "CL": "V-cl-", "RB": "V-rb-"}
 # Groups whose per-run disposition artifact is NOT kept anywhere a clone can read: `.code-factory/`
 # is gitignored, so their item texts are gone. Their vaccines are still attributable by tag (RF/NM)
 # or by the shared historical release base (RV/BL/PR), and that attribution is what keeps the
@@ -1358,7 +1395,8 @@ PROBE_FK_GENERATOR_SIDE = '''\
 import sys
 sys.path.insert(0, ".")
 import model_matrix as mm
-expected = ("coder", "tester", "gui_expert", "farukon_expert", "business_tester")
+expected = ("coder", "tester", "gui_expert", "farukon_expert", "roblox_expert",
+            "business_tester")
 if mm.GENERATOR_SIDE != expected:
     raise AssertionError("the farukon_expert generator side must be pinned in GENERATOR_SIDE: "
                          + repr(mm.GENERATOR_SIDE))
@@ -4178,6 +4216,112 @@ with tempfile.TemporaryDirectory() as td:
     t.test_coder_ceiling_from_plan(pathlib.Path(td))
 '''
 
+# THIS run's conditional-Roblox vaccines (RB-1..RB-5). Each probe states the missing helper FIRST as
+# its own controlled failure, so the pre-fix tree (which predates `roblox_mcp.py` entirely) produces
+# the failure the vaccine declares instead of an unclaimed import crash; on the working tree it then
+# drives the SHIPPED self-test cases, so a regression in them re-breaks this vaccine as well.
+PROBE_RB_DECIDE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+if not pathlib.Path("roblox_mcp.py").is_file():
+    raise AssertionError("roblox_mcp.py does not exist: nothing can decide that BOTH the Roblox "
+                         "repository identity AND the Roblox task text are required")
+import test_roblox_mcp as t
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    t.test_decide(root / "decide")
+    t.test_non_roblox_repository(root / "non-roblox")
+'''
+
+PROBE_RB_MERGE = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+if not pathlib.Path("roblox_mcp.py").is_file():
+    raise AssertionError("roblox_mcp.py does not exist: nothing can prove the merge is idempotent, "
+                         "conflict-reporting with exit 3 and hermetic on the GLOBAL default target")
+import test_roblox_mcp as t
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    t.test_merge_config_default_target(root / "default")
+    t.test_merge_config_target_override(root / "override")
+    t.test_merge_preserves_unrelated_entries(root / "preserve")
+    t.test_merge_conflict_never_overwrites(root / "conflict")
+'''
+
+PROBE_RB_SCENARIO = '''\
+import pathlib, sys, tempfile
+sys.path.insert(0, ".")
+if not pathlib.Path("roblox_mcp.py").is_file():
+    raise AssertionError("roblox_mcp.py does not exist: nothing can derive a scenario verdict from "
+                         "the captured console output, so an error log could still be reported as a "
+                         "pass")
+import test_roblox_mcp as t
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    t.test_scenario_runner(root / "scenario")
+    t.test_scenario_verify(root / "verify")
+'''
+
+PROBE_RB_MATERIAL = '''\
+import json, pathlib, sys
+sys.path.insert(0, ".")
+BASE = pathlib.Path.cwd().parents[3] / "skill-base"
+SKILLS = ("roblox-engine-api", "roblox-studio-mcp", "game-development")
+absent = [name for name in SKILLS if not (BASE / "skills" / name / "SKILL.md").is_file()]
+if absent:
+    raise AssertionError("the generated Roblox skills do not exist: "
+                         f"{', '.join(absent)} — external material must be shipped as data")
+manifest = json.loads((BASE / "manifest.json").read_text(encoding="utf-8"))["skills"]
+for name in SKILLS:
+    folder = BASE / "skills" / name
+    entry = manifest.get(name)
+    if not entry:
+        raise AssertionError(f"skill-base/manifest.json must pin {name}")
+    digest = entry.get("sha256") or ""
+    if entry.get("source_type") not in ("http_doc", "http_git") or len(digest) != 64:
+        raise AssertionError(f"{name} must be pinned with a source kind and a hash: {entry}")
+    kept = sorted(path.name for path in folder.iterdir()
+                  if path.name.upper().startswith(("LICENSE", "NOTICE", "COPYING")))
+    if not kept:
+        raise AssertionError(f"{name} must keep the material's licence/NOTICE: none of "
+                             "LICENSE*/NOTICE*/COPYING* is in " + str(folder))
+    installers = sorted(path.name for path in folder.iterdir()
+                        if path.suffix.lower() in (".sh", ".ps1", ".cmd", ".bat", ".py", ".js",
+                                                   ".exe", ".msi"))
+    if installers:
+        raise AssertionError(f"{name} ships executable material {installers} — a vendored pack is "
+                             "read as DATA, its installers are never executed")
+'''
+
+PROBE_RB_ROLE = '''\
+import json, subprocess, sys
+sys.path.insert(0, ".")
+import model_matrix as mm
+import model_attribution as ma
+import check_factory_model as cfm
+ROLE = "roblox_expert"
+if ROLE not in mm.ROLES:
+    raise AssertionError("roblox_expert must be a registered role of model_matrix.ROLES")
+if ROLE not in mm.GENERATOR_SIDE:
+    raise AssertionError("roblox_expert must sit on the GENERATOR side like the other specialists")
+if not (mm.SUBAGENTS_DIR / mm.ROLE_FILES.get(ROLE, "roblox-expert.md")).is_file():
+    raise AssertionError("roblox_expert must map to its shipped role card")
+if "roblox-expert" not in ma.ROLE_ALIASES or ma.ROLE_ALIASES["roblox-expert"] != ROLE:
+    raise AssertionError("model_attribution.ROLE_ALIASES must resolve the profile name to the role")
+if ROLE not in ma.CONDITIONAL_ROLES or ROLE not in cfm.CONDITIONAL_ROLES:
+    raise AssertionError("roblox_expert must stay a CONDITIONAL role in the attribution and the "
+                         "model gate")
+resolved = mm.resolve_all({ROLE: "deepseek-flash"}, {}).get(ROLE) or {}
+if resolved.get("model") != "deepseek-flash" or resolved.get("source") != "task":
+    raise AssertionError(f"precedence() must accept models.roblox_expert: {resolved}")
+probe = subprocess.run([sys.executable, "agent_catalog_check.py", "check"], capture_output=True,
+                       text=True, errors="replace")
+ok = [line for line in probe.stdout.splitlines() if line.startswith("OK ")]
+if probe.returncode != 0 or len(ok) != 16:
+    raise AssertionError(f"the catalog must report 16 valid roles, got {len(ok)} "
+                         f"(exit {probe.returncode}): {probe.stdout!r} {probe.stderr!r}")
+'''
+
 # THIS run's (CL) four defect fixes (run 20261125-5beb8e51), claimed next to the vaccines exactly as
 # the WS/CC/FK/FB groups are: the run keeps no disposition artifact a clone could read, so this list
 # IS the durable claim — one item per testable fix, each naming the focused probe.
@@ -4195,6 +4339,37 @@ CL_FINDINGS: tuple[tuple[str, str, str], ...] = (
      "V-cl-c-run-guard"),
     ("CL-5", "the coder delegation ceiling follows the approved plan's coder tasks plus the one-retry "
              "reserve, so an owner-added coder task is not refused mid-run", "V-cl-d-coder-ceiling"),
+)
+
+# THIS run's (RB) acceptance-gate repair (run 20261126-8ab3e96d), claimed next to the vaccine exactly
+# as the WS/CL groups are: the run keeps no disposition artifact a clone could read, so this list IS
+# the durable claim.
+RB_FINDINGS: tuple[tuple[str, str, str], ...] = (
+    ("RB-0", "the acceptance gate's capture no longer depends on the output VOLUME or on the handles "
+             "a verify command leaves behind: megabytes on stdout and stderr, and a grandchild that "
+             "inherits the capture handles and outlives the command, are MET inside `--timeout` with "
+             "a bounded, explicitly truncated tail excerpt, while the timeout path still kills the "
+             "whole tree and reports its note", "V-rb-long-output-no-hang"),
+    ("RB-1", "`decide` requires the Roblox repository markers AND the Roblox task text: repository "
+             "identity alone, task text alone and a `models.roblox_expert` pin alone all keep the "
+             "role off, so no non-Roblox run is dragged into the Studio path",
+     "V-rb-decide-both-conditions"),
+    ("RB-2", "`merge-config` never overwrites: it is idempotent, preserves every unrelated entry, "
+             "reports a differing `Roblox_Studio` entry with exit 3 and leaves the target "
+             "untouched — for the DEFAULT user-scope global target (hermetic, `KIMI_CODE_HOME` in a "
+             "temp dir) and for an explicit symlink-resolved `--target` alike, and never for the "
+             "operator's real global file", "V-rb-merge-never-overwrites"),
+    ("RB-3", "the scenario verdict is derived from the CAPTURED console output: a run that logged an "
+             "error is FAIL, and a screenshot is recorded as an artifact that is never the verdict, "
+             "so no image can stand in for evidence", "V-rb-error-log-never-pass"),
+    ("RB-4", "the external Roblox material is shipped and read as DATA: installers are never "
+             "executed, the licence/NOTICE of every vendored pack is preserved, and each generated "
+             "skill is pinned in the manifest with its source kind and content hash",
+     "V-rb-material-as-data"),
+    ("RB-5", "`roblox_expert` is registered GENERATOR-side in one roster — `ROLES`, "
+             "`GENERATOR_SIDE`, `ROLE_FILES`, `ROLE_ALIASES`, `CONDITIONAL_ROLES` and the catalog's "
+             "16 entries — so `precedence()` accepts `models.roblox_expert` instead of an "
+             "alias-less 16th role", "V-rb-role-registered-generator-side"),
 )
 
 REVIEW_20261105_FINDINGS: tuple[tuple[str, str, str], ...] = (
@@ -4460,6 +4635,7 @@ RELEASE_CLAIMS: tuple[tuple[str, str, tuple[tuple[str, str, str], ...]], ...] = 
     ("REVIEW_20261105_FINDINGS", "V-rg-", REVIEW_20261105_FINDINGS),
     ("WS_FINDINGS", "V-ws-", WS_FINDINGS),
     ("CL_FINDINGS", "V-cl-", CL_FINDINGS),
+    ("RB_FINDINGS", "V-rb-", RB_FINDINGS),
 )
 
 
@@ -5184,6 +5360,32 @@ REGISTRY: tuple[Vaccine, ...] = (
             r"run_guard\.py does not exist", CL_BASE_SHA),
     Vaccine("V-cl-d-coder-ceiling", PROBE, PROBE_CL_D_CODER_CEILING,
             r"the coder budget is the plan's 3 coder tasks \+ 1 retry reserve", CL_BASE_SHA),
+    # ---- RB: THIS run's acceptance-gate repair (run 20261126-8ab3e96d), replayed against RB_BASE_SHA
+    # The new case's FIRST assertion is this structural red: `verify_acceptance.OUTPUT_TAIL_BYTES`
+    # (the bounded tail window the capture reads back through) does not exist on the pre-fix tree, so
+    # the case fails there for exactly the mechanism the fix introduces — while every behavioural
+    # assertion of that same case (megabytes on both streams, the inherited-handle grandchild, the
+    # killed process tree) runs on the working tree.
+    Vaccine("V-rb-long-output-no-hang", STRUCTURAL, "test_verify_acceptance.py",
+            r"AttributeError: module 'verify_acceptance' has no attribute 'OUTPUT_TAIL_BYTES'",
+            RB_BASE_SHA),
+    # ---- RB (this run's conditional Roblox capability), replayed against the same RB_BASE_SHA
+    # That tree predates the whole feature: `roblox_mcp.py` does not exist (RB-1..RB-3), the three
+    # generated skills do not exist (RB-4) and `model_matrix.ROLES` still holds 15 roles (RB-5). Each
+    # probe states that absence as its OWN controlled failure, then drives the shipped self-test
+    # cases on the working tree; the scenario probe's fake server is bounded by `--timeout-seconds`,
+    # so the pre-fix replay can never stall this suite.
+    Vaccine("V-rb-decide-both-conditions", PROBE, PROBE_RB_DECIDE,
+            r"roblox_mcp\.py does not exist: nothing can decide that BOTH", RB_BASE_SHA),
+    Vaccine("V-rb-merge-never-overwrites", PROBE, PROBE_RB_MERGE,
+            r"roblox_mcp\.py does not exist: nothing can prove the merge is idempotent",
+            RB_BASE_SHA),
+    Vaccine("V-rb-error-log-never-pass", PROBE, PROBE_RB_SCENARIO,
+            r"roblox_mcp\.py does not exist: nothing can derive a scenario verdict", RB_BASE_SHA),
+    Vaccine("V-rb-material-as-data", PROBE, PROBE_RB_MATERIAL,
+            r"the generated Roblox skills do not exist", RB_BASE_SHA),
+    Vaccine("V-rb-role-registered-generator-side", PROBE, PROBE_RB_ROLE,
+            r"roblox_expert must be a registered role of model_matrix\.ROLES", RB_BASE_SHA),
 )
 
 # `- RV-12: fixed: ... | vaccine: V-memory-identity` — one item per finding, never wrapped. The id
@@ -6013,9 +6215,10 @@ def run_module(scripts: pathlib.Path, tool: str, timeout: int) -> Run:
     return _spawn([sys.executable, str(scripts / tool)], scripts, timeout)
 
 
-def run_probe(scripts: pathlib.Path, source: str, timeout: int) -> Run:
+def run_probe(scripts: pathlib.Path, source: str, timeout: int,
+              args: list[str] | None = None) -> Run:
     """Execute one focused probe (`python -c`) with the same interpreter and directory."""
-    return _spawn([sys.executable, "-c", source], scripts, timeout)
+    return _spawn([sys.executable, "-c", source, *(args or [])], scripts, timeout)
 
 
 def run_check(scripts: pathlib.Path, vaccine: Vaccine, timeout: int) -> Run:
@@ -6025,19 +6228,164 @@ def run_check(scripts: pathlib.Path, vaccine: Vaccine, timeout: int) -> Run:
     return run_module(scripts, vaccine.target, timeout)
 
 
+# Bytes read back from the tail of each captured stream. Bounded on purpose: a check may print
+# megabytes, while only its last lines can name its defect, so no capture grows with the volume.
+OUTPUT_TAIL_BYTES = 64 * 1024
+TRUNCATION_MARK = "[... earlier output truncated]"
+# Seconds a killed process TREE is given to die before its captured output is read anyway: a tree
+# that refuses to die must not become the secondary hang this capture removes.
+KILL_GRACE_SECONDS = 10
+# The inherited-handle regression: the grandchild inherits the capture handles and outlives its
+# parent by far more than the check's budget, so a wait on the handles is measurable, not merely long.
+TIMEOUT_FIXTURE_SECONDS = 1
+GRANDCHILD_SLEEP_SECONDS = 30
+# The elapsed bound of that regression: the budget, the kill grace and room for the process start.
+TIMEOUT_FIXTURE_BOUND_SECONDS = TIMEOUT_FIXTURE_SECONDS + KILL_GRACE_SECONDS + 5
+
+# The regression's child: it starts a grandchild that INHERITS stdout/stderr and outlives it, writes
+# the grandchild's pid so the fixture can prove the tree is gone, then hangs itself.
+INHERITED_HANDLE_PROBE = """import subprocess, sys, time
+inner = f"import pathlib, time; pathlib.Path({sys.argv[1]!r}).write_text(str(__import__('os').getpid())); time.sleep(%d)"
+subprocess.Popen([sys.executable, "-c", inner])
+time.sleep(%d)
+""" % (GRANDCHILD_SLEEP_SECONDS, GRANDCHILD_SLEEP_SECONDS)
+
+
+def read_tail(stream) -> str:
+    """The last OUTPUT_TAIL_BYTES of a captured stream, decoded as UTF-8, truncation marked."""
+    try:
+        stream.seek(0, os.SEEK_END)
+        start = max(0, stream.tell() - OUTPUT_TAIL_BYTES)
+        stream.seek(start)
+        data = stream.read()
+    except OSError:      # a stream we cannot re-read is not a reason to lose the check
+        return ""
+    text = data.decode("utf-8", errors="replace") if isinstance(data, bytes) else str(data)
+    return f"{TRUNCATION_MARK}\n{text}" if start else text
+
+
+def kill_tree(proc: subprocess.Popen) -> None:
+    """Kill a timed-out check AND its children: a leaked runner must not outlive the harness.
+
+    Windows: `taskkill /F /T` kills the whole tree (the real work runs in grandchildren).
+    POSIX: SIGKILL to the process group the child was started in.
+    """
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=10)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
 def _spawn(argv: list[str], cwd: pathlib.Path, timeout: int) -> Run:
-    """One child process, its bytes decoded as UTF-8, a timeout reported as `code=None`."""
+    """One child process, its bytes decoded as UTF-8, a timeout reported as `code=None`.
+
+    Output is captured into temporary FILES, never pipes: `wait()` then returns at the check's REAL
+    exit instead of at a pipe EOF that a grandchild holding the inherited handles keeps open — the
+    hang that stalled a full-suite baseline. A timeout kills the whole process TREE and waits for it
+    with a bounded grace, so a tree that refuses to die is not a second hang.
+    """
     env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
     env["PYTHONIOENCODING"] = "utf-8"     # the child's bytes are decoded as UTF-8 below
+    popen_kwargs = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+                    else {"start_new_session": True})
     started = _now()
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(argv, cwd=str(cwd), stdout=out, stderr=err, env=env,
+                                **popen_kwargs)
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            kill_tree(proc)
+            try:                # bounded: a tree that will not die must not block the harness twice
+                proc.wait(timeout=KILL_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        stdout, stderr = read_tail(out), read_tail(err)
+    return Run(None if timed_out else proc.returncode, stdout, stderr, _now() - started)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Is `pid` still running? Windows asks tasklist; POSIX uses signal 0."""
+    if os.name == "nt":
+        try:
+            res = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                                 capture_output=True, text=True, errors="replace", timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return str(pid) in res.stdout
     try:
-        res = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
-                             errors="replace", env=env, timeout=timeout)
-        return Run(res.returncode, res.stdout, res.stderr, _now() - started)
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        return Run(None, stdout, stderr, _now() - started)
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _kill_pid(pid: int) -> None:
+    """Last-resort cleanup: this regression must never leave a process behind."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=10)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def check_timeout_capture() -> list[str]:
+    """Prove the capture cannot hang on handles a grandchild inherited, and leaks nothing.
+
+    The wrapped check hangs past `TIMEOUT_FIXTURE_SECONDS` and leaves a grandchild holding the
+    inherited stdout/stderr for `GRANDCHILD_SLEEP_SECONDS`. With pipes the old
+    `subprocess.run(capture_output=True)` killed the direct child and then waited for a pipe EOF the
+    grandchild returned only after its own sleep — the 1200s baseline hang. The capture must return
+    inside `TIMEOUT_FIXTURE_BOUND_SECONDS`, report the timeout, and leave no process behind.
+    """
+    problems: list[str] = []
+    with tempfile.TemporaryDirectory() as td:
+        pidfile = pathlib.Path(td) / "grandchild.pid"
+        started = _now()
+        run = run_probe(SCRIPT_DIR, INHERITED_HANDLE_PROBE, TIMEOUT_FIXTURE_SECONDS,
+                        [str(pidfile)])
+        elapsed = _now() - started
+        if run.code is not None:
+            problems.append(f"CAPTURE FIXTURE: the hanging check exited {run.code} instead of "
+                            f"timing out — the regression no longer exercises the timeout path")
+        if elapsed > TIMEOUT_FIXTURE_BOUND_SECONDS:
+            problems.append(f"CAPTURE FIXTURE: the capture returned after {elapsed:.1f}s for a "
+                            f"{TIMEOUT_FIXTURE_SECONDS}s budget while its grandchild sleeps "
+                            f"{GRANDCHILD_SLEEP_SECONDS}s — it waited for the inherited handles "
+                            f"instead of for the check, or the tree kill did not bound the wait")
+        pid = 0
+        deadline = _now() + KILL_GRACE_SECONDS
+        while not pidfile.is_file() and _now() < deadline:
+            time.sleep(0.05)
+        try:
+            pid = int(pidfile.read_text(encoding="utf-8").strip()) if pidfile.is_file() else 0
+        except (OSError, ValueError):       # a half-written pid is not a live process we can name
+            pid = 0
+        if not pid:
+            problems.append("CAPTURE FIXTURE: the grandchild never reported its pid, so the "
+                            "regression cannot prove that the process tree was terminated")
+        else:
+            deadline = _now() + KILL_GRACE_SECONDS
+            while _pid_alive(pid) and _now() < deadline:
+                time.sleep(0.05)
+            if _pid_alive(pid):
+                _kill_pid(pid)
+                problems.append(f"CAPTURE FIXTURE: the check's process TREE was not terminated: "
+                                f"grandchild {pid} still runs after the timeout — a leaked process "
+                                f"would outlive the harness")
+    return problems
 
 
 def _now() -> float:
@@ -6332,6 +6680,7 @@ def main(argv: list[str]) -> int:
     problems.extend(check_disposition_fixtures())
     problems.extend(check_base_fixtures())
     problems.extend(check_claim_fixtures())
+    problems.extend(check_timeout_capture())
     if problems:
         print(f"FAIL - {len(problems)} vaccination cross-check problem(s) under {REPO_ROOT}:")
         for problem in problems:

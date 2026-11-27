@@ -19,6 +19,10 @@ reference_docs:
     skill: "playwright-mcp"
   - path: "https://github.com/ChromeDevTools/chrome-devtools-mcp.git"  # public Git repo URL
     skill: "chrome-devtools-mcp"
+  - path: "https://create.roblox.com/docs/studio/mcp"                  # public document URL
+    skill: "roblox-studio-mcp"
+  - path: "https://create.roblox.com/docs/reference/engine"           # public document URL
+    skill: "roblox-engine-api"
 reference_skills:
   - "market-making"                       # reuse an existing skill by name
 ```
@@ -30,6 +34,14 @@ reference_skills:
 - `reference_skills` — names of already-created skills to reuse without re-specifying a path. If a
   name is missing from the base → **error** telling the user to provide the path in
   `reference_docs`.
+- A Roblox game run gets its knowledge the same way: `references/roblox-mcp.md` is the factory's own
+  conditional-path document, while the vendored `roblox-studio-mcp`, `roblox-engine-api` and
+  `game-development` skills are generated from the task's `reference_docs` and read as DATA (see
+  *Security contract* below) — no installer, setup script or archive extractor from a downloaded pack
+  is ever executed, and each generated skill keeps its source's licence/NOTICE. The Roblox engine
+  reference is a multi-page tree but only ONE page is fetchable as an `http_doc`, so
+  `roblox-engine-api` ships as a scoped INDEX skill whose SKILL.md states exactly what it covers and
+  what it does not; supplementary pages need their own reviewed `reference_docs` entries.
 - Both absent → the factory works exactly as before (no skill instructions are injected).
 
 ## Persistent skill base
@@ -202,6 +214,7 @@ Which subagents receive the resolved skill instructions in their dynamic context
 | coder | yes | always, if any skills exist |
 | gui-expert | yes | always, if any skills exist |
 | farukon-expert | yes | always, if any skills exist |
+| roblox-expert | yes | always, if any skills exist |
 | tester | conditional | only if a skill contains business criteria |
 | reviewer | yes | always, if any skills exist |
 | documenter | yes | always, if any skills exist |

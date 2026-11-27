@@ -1,7 +1,8 @@
 # Subagent Briefing (handoff template)
 
 The single briefing template the main agent uses when launching ANY subagent:
-`factory-analyzer`, `factory-coder`, `factory-gui-expert`, `factory-farukon-expert`, `factory-tester`,
+`factory-analyzer`, `factory-coder`, `factory-gui-expert`, `factory-farukon-expert`,
+`factory-roblox-expert`, `factory-tester`,
 `factory-business-tester`, `factory-supervisor`, `factory-diagnostician`, `factory-code-reviewer`,
 `factory-advisor`. The briefing is the subagent's
 only input: it does not see the main agent's dialog history and must not request it. Whatever did
@@ -19,6 +20,13 @@ files the briefing assigns, writes only those files, works ONLY through the `far
 the same constraints as `factory-coder` (§2 Constraints), and NEVER the no-edits suffix of §4. Its
 MCP artifacts are diagnostic evidence — the acceptance evidence is produced by the tester
 (`references/verification-strategy.md` §3.2).
+
+`factory-roblox-expert` (`.agents/agents/sub-agents/roblox-expert.md`) is the same **coder-class
+execution role** for a Roblox game task: it implements, runs and debugs the game files the briefing
+assigns, writes only those files, works ONLY through the `Roblox_Studio` MCP tools
+(`mcp__Roblox_Studio__*`), gets the same constraints as `factory-coder` (§2 Constraints), and NEVER
+the no-edits suffix of §4. Its Studio/scenario artifacts are diagnostic evidence — the acceptance
+verdict is produced by the tester (`references/verification-strategy.md` §3.4).
 
 `factory-business-tester` (`.agents/agents/sub-agents/business-tester.md`) is a **read-only
 adversarial** role: the briefing names the delivered change, the user story, the acceptance criteria,
@@ -119,7 +127,8 @@ stdlib-only (new dependencies are forbidden), the actual model (`model_preferenc
 environment interpreter (on Windows — `python`, `python3` may be absent), the ban on running the
 full test suite where the tester does that, and the no-edits suffix for analytical roles.
 
-The `factory-coder`, `factory-gui-expert` and `factory-farukon-expert` briefings always carry the ban
+The `factory-coder`, `factory-gui-expert`, `factory-farukon-expert` and `factory-roblox-expert`
+briefings always carry the ban
 on git mutations of the shared working tree in Constraints: `git stash` / `git reset` / `git
 checkout` / `git clean` are not performed on the shared tree; the base version of a file is viewed
 via `git show HEAD:<file>` or a separate temp clone — the tree is shared by the main agent and
@@ -149,7 +158,7 @@ delete any file" — `analyzer`, `planner`, `code-reviewer`, `security-auditor`,
 `advisor` (the same list the canonical `handoff-briefing` rule names). A role without edit rights
 cannot "fix along the way" what it finds — it reports it in the handoff, and the main agent decides.
 For `advisor` this is additionally pinned by `disallowedTools: Write, Edit`.
-The editing roles (`coder`, `gui-expert`, `farukon-expert`, `refactorer`, `tester`, `documenter`,
+The editing roles (`coder`, `gui-expert`, `farukon-expert`, `roblox-expert`, `refactorer`, `tester`, `documenter`,
 `skill-manager`) receive the opposite: the exact file set they may touch, plus the
 `no-shared-tree-git-mutations` ban on this shared working tree.
 

@@ -33,6 +33,14 @@ Exit code 0 only for SUCCESS, so a degraded or degenerate run can never be accep
 Command execution: `shell=True` is intentional — the commands are authored by the task owner
 (task.yaml), not by untrusted input, and they run with `cwd=<repo>`. On Windows they are executed
 by cmd.exe, on POSIX by /bin/sh: for portable tasks keep `verify` free of shell-specific syntax.
+The output of a command is captured into TEMPORARY FILES, not pipes: `communicate()` on a pipe
+returns only at EOF, and EOF arrives when the LAST holder of the write end closes it — a grandchild
+spawned by the verify command (a test runner's worker, cmd.exe under `shell=True`) inherits that
+write end and keeps it open after the command itself has exited, which held the gate long past the
+command's real exit (the long-output hang). A file has no end-of-stream to await, so the capture
+waits for the command's REAL exit; a pipe buffer can neither fill up and deadlock, and the excerpt
+is read back from the tail of each file through a bounded window (`OUTPUT_TAIL_BYTES`), so memory
+stays bounded whatever the output volume.
 `--timeout` (default 600s, 0 = unlimited) kills the whole timed-out process tree and marks the
 criterion FAILED, so a hung command can never block the gate. Only ZERO is unlimited: a negative
 value is rejected as a usage error, because a mistyped `-1` must not silently disarm the guard.
@@ -77,6 +85,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 
 # Sibling script imported as a library: the acceptance gate and the reviewer must share ONE
 # implementation of the FRESH/STALE rule (a subprocess would fork it into two).
@@ -87,6 +96,14 @@ BACKTICKS = re.compile(r"`+")
 EXCERPT_MAX_CHARS = 4096
 EXCERPT_MAX_LINES = 20
 TRUNCATION_MARK = "[... output truncated, showing the tail]"
+# Bytes read back from the tail of each captured stream. Bounded on purpose: a verify command may
+# write megabytes, and only the last lines of it can reach the excerpt (`tail_excerpt`), so the
+# capture must never be read into memory in full. Larger than EXCERPT_MAX_CHARS, so the window
+# always holds everything the excerpt can keep.
+OUTPUT_TAIL_BYTES = 64 * 1024
+# Seconds a killed process tree is given to die before its captured output is read anyway: a tree
+# that refuses to die must not become the secondary hang the fix removes.
+KILL_GRACE_SECONDS = 10
 REGRESSION_CHOICES = ("pass", "fail", "not-run")
 VERDICTS = ("SUCCESS", "DEGRADED", "FAILURE")
 TASK_TYPES = ("implement", "review", "refactor", "security_audit")
@@ -133,6 +150,23 @@ def _as_text(raw) -> str:
     return str(raw)
 
 
+def read_tail(stream, limit: int = OUTPUT_TAIL_BYTES) -> str:
+    """The last `limit` bytes of a captured stream, as text.
+
+    Bounded on purpose: only the tail can reach the excerpt, so a command that writes megabytes must
+    not be read back in full. A multi-byte character cut by the window boundary is decoded with
+    `errors="replace"` — exactly what the pipe's text mode did before.
+    """
+    try:
+        stream.seek(0, os.SEEK_END)
+        end = stream.tell()
+        stream.seek(max(0, end - limit))
+        data = stream.read()
+    except OSError:      # a stream we cannot re-read is not a reason to lose the criterion
+        return ""
+    return _as_text(data)
+
+
 def kill_tree(proc: subprocess.Popen) -> None:
     """Kill a timed-out command AND its children; a leaked test runner must not block the gate.
 
@@ -154,29 +188,39 @@ def kill_tree(proc: subprocess.Popen) -> None:
 
 
 def run_verify(command: str, repo: pathlib.Path, timeout: int) -> dict:
-    """Execute one `verify` command in `repo` and return its observed evidence."""
+    """Execute one `verify` command in `repo` and return its observed evidence.
+
+    Output is captured into temporary FILES, never pipes (see the module docstring): `wait()` then
+    returns at the command's real exit instead of at a pipe EOF that a grandchild keeps open, and no
+    pipe buffer can fill up. The captured text is read back with a bounded tail window, so the
+    excerpt is exactly what the pipe version produced for the tail, whatever the volume.
+    """
     popen_kwargs = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
                     else {"start_new_session": True})
-    try:
-        proc = subprocess.Popen(command, shell=True, cwd=str(repo), stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, errors="replace", **popen_kwargs)
-    except OSError as exc:  # never crash silently; a criterion we cannot run is FAILED
-        return {"exit_code": None, "excerpt": "", "status": "FAILED",
-                "note": f"could not run the command: {exc}"}
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout if timeout > 0 else None)
-    except subprocess.TimeoutExpired:
-        kill_tree(proc)
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         try:
-            stdout, stderr = proc.communicate(timeout=10)
+            proc = subprocess.Popen(command, shell=True, cwd=str(repo), stdout=out, stderr=err,
+                                    **popen_kwargs)
+        except OSError as exc:  # never crash silently; a criterion we cannot run is FAILED
+            return {"exit_code": None, "excerpt": "", "status": "FAILED",
+                    "note": f"could not run the command: {exc}"}
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout if timeout > 0 else None)
         except subprocess.TimeoutExpired:
-            stdout, stderr = "", ""
-        out = _as_text(stdout) + _as_text(stderr)
-        return {"exit_code": None, "excerpt": tail_excerpt(out),
+            timed_out = True
+            kill_tree(proc)
+            try:                # bounded: a tree that will not die must not block the gate twice
+                proc.wait(timeout=KILL_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        # stdout before stderr, exactly the order the pipe capture concatenated them in.
+        text = read_tail(out) + read_tail(err)
+    if timed_out:
+        return {"exit_code": None, "excerpt": tail_excerpt(text),
                 "status": "FAILED", "note": f"timeout after {timeout}s (process tree killed)"}
-    out = (stdout or "") + (stderr or "")
     return {"exit_code": proc.returncode,
-            "excerpt": tail_excerpt(out),
+            "excerpt": tail_excerpt(text),
             "status": "MET" if proc.returncode == 0 else "FAILED",
             "note": ""}
 

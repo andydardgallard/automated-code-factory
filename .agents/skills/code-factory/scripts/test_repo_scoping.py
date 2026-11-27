@@ -29,6 +29,11 @@ of the review inventory while the flag-less walk still sees it; and the LEGACY d
 the same invocations WITHOUT `--repo`, run from cwd = the target repository, land in that repository
 (backward compatibility).
 
+It also pins the repository-ROOT ignore contract: this repository ships `.agents/` as SOURCE, so a
+new file there must stay visible to git — a probe on a hypothetical future script
+(`git check-ignore -v --no-index`) fails while the root ignores that tree, because such a rule hides
+a new factory source file from every commit and from the tracked review inventory.
+
 The temp directories are removed at the end with a retry + read-only-attribute fallback (git keeps
 its objects read-only and Windows can hold a just-closed file briefly). `git` must be on PATH: the
 mini-run is a git-native run, and the test fails loudly rather than silently skipping that half.
@@ -50,6 +55,10 @@ import time
 from datetime import date
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
+ROOT = SCRIPTS.parents[3]  # scripts -> code-factory -> skills -> .agents -> repository root
+# A hypothetical FUTURE factory source file: `check-ignore --no-index` answers for a path that does
+# not exist yet, so this regression keeps holding for every script added later.
+SOURCE_PROBE = ".agents/skills/code-factory/scripts/probe_new_factory_source.py"
 RUN_ID = SCRIPTS / "run_id.py"
 PREFLIGHT = SCRIPTS / "factory_preflight.py"
 TASK_GRAPH = SCRIPTS / "task_graph.py"
@@ -79,6 +88,22 @@ def git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
     """`git -C <repo> <args>` — every repository this test touches lives in its own temp directory."""
     return subprocess.run(["git", "-C", str(repo), *args],
                           capture_output=True, text=True, errors="replace")
+
+
+def assert_source_tree_not_ignored() -> None:
+    """The repository root must not ignore a NEW factory source file under `.agents/`.
+
+    A deployer adds `.agents/` to a TARGET project's ignore file, where that tree is a deployment
+    copy and not the target's source. This repository is the factory itself: its `.agents/` tree IS
+    its source, so a rule here would let a new script be silently hidden from every commit and from
+    the tracked review inventory. `check-ignore -v --no-index` reports the matching rule (and works
+    for a path that does not exist yet), exit 0 ignored / 1 not ignored / 127+ error.
+    """
+    res = git(ROOT, "check-ignore", "-v", "--no-index", "--", SOURCE_PROBE)
+    expect(res.returncode == 1,
+           f"the repository root must not ignore the factory source tree: {SOURCE_PROBE} is "
+           f"IGNORED by {res.stdout.strip() or res.stderr.strip() or 'git check-ignore'}, so a new "
+           f"factory source file would be silently hidden from commits and the review inventory")
 
 
 def git_ok(repo: pathlib.Path, *args: str) -> str:
@@ -167,6 +192,9 @@ def remove_tree(path: pathlib.Path, attempts: int = 3) -> None:
 def main() -> int:
     expect(shutil.which("git") is not None,
            "git must be on PATH: this mini-run is a git-native run (see the git-native rule)")
+    # The repository's own ignore file must keep the factory source tree visible — checked BEFORE
+    # any temp work, so this regression fails fast and never depends on a temp repository.
+    assert_source_tree_not_ignored()
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="factory-repo-scoping-"))
     try:
         # 1. Setup: a "launch" directory (the deployment folder, git init-ed so a stray artifact
@@ -354,7 +382,9 @@ def main() -> int:
           "preflight, task graph, error routing, quote verification, tracked inventory) places and "
           "reads its artifacts under <repo>/.code-factory/ via --repo, leaving the launch directory, "
           "its work tree, its HEAD and its reflog untouched; the git half lives in the target "
-          "(`git -C <repo>`); and the flag-less invocation still resolves against the cwd.")
+          "(`git -C <repo>`); and the flag-less invocation still resolves against the cwd. The "
+          "repository root also keeps its own factory source tree visible: a new `.agents/` file is "
+          "not ignored.")
     return 0
 
 

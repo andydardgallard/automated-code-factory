@@ -19,7 +19,13 @@ divergent digest), offline/stale reuse after the source stops, Git materializati
 `.git` exclusion, fresh-clone hash stability, resolved revision), manifest backward compatibility and
 the `resolve` / `hash` / `record` CLI contract for URLs.
 
-Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
+The `git` executable is a REQUIRED dependency of this suite: without it the Git-over-HTTP cases
+cannot run at all, so the run ends as NOT RUN with exit 2 — never a printed skip behind a PASS,
+which would certify Git materialization that was never exercised. A child process re-runs this
+module with `git_available` stubbed to prove that verdict.
+
+Exit code 0 = all assertions pass, 1 = a check did not behave as expected, 2 = the required
+dependency (the `git` executable) is missing, so the suite is INCOMPLETE.
 """
 from __future__ import annotations
 
@@ -44,6 +50,7 @@ import skill_base as sb
 
 SCRIPT = pathlib.Path(__file__).resolve().parent / "skill_base.py"
 SLOW_SECONDS = 5.0
+MISSING_GIT_EXIT = 2        # a REQUIRED dependency is absent: the suite is INCOMPLETE, not green
 
 # --- hermetic fixture network ---------------------------------------------------------------------
 #
@@ -275,6 +282,18 @@ def git(*args: str, cwd: pathlib.Path) -> str:
     if result.returncode != 0:
         raise AssertionError(f"fixture: git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout
+
+
+def git_available() -> bool:
+    """A REQUIRED dependency of this suite: without it no Git-over-HTTP case can run at all.
+
+    The caller must treat `False` as NOT RUN (exit 2), not as a skippable extra: a green verdict
+    from a host that never executed the Git cases would certify materialization that never happened.
+    """
+    try:
+        return subprocess.run(["git", "--version"], capture_output=True).returncode == 0
+    except OSError:
+        return False
 
 
 def error_of(call) -> str:
@@ -692,7 +711,33 @@ def test_clone_supervision(check: Check, root: pathlib.Path) -> None:
           "an aborted clone must remove its temporary clone folder")
 
 
-def run(check: Check, root: pathlib.Path) -> None:
+def check_missing_git(check: Check) -> None:
+    """A host without git must be a NOT RUN result, never a green SKIP/PASS.
+
+    The simulation runs in a child process that re-imports this module with `git_available`
+    stubbed, so the host doing the real run keeps its own git and every Git assertion above still
+    executed.
+    """
+    driver = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+        "import test_remote_reference_docs as suite\n"
+        "suite.git_available = lambda: False\n"
+        "sys.exit(suite.main())\n"
+    )
+    result = subprocess.run([sys.executable, "-c", driver], capture_output=True, text=True,
+                            errors="replace")
+    check(result.returncode == MISSING_GIT_EXIT,
+          f"a host without git must exit {MISSING_GIT_EXIT}, not {result.returncode}: "
+          f"{result.stdout!r}{result.stderr!r}")
+    check("PASS" not in result.stdout + result.stderr,
+          f"a host without git must never report PASS: {result.stdout!r}{result.stderr!r}")
+    check("NOT RUN" in result.stderr and "git" in result.stderr,
+          f"the verdict must name the missing dependency: {result.stderr!r}")
+
+
+def run(check: Check, root: pathlib.Path) -> bool:
+    """Runs every fixture-backed case; returns False when the Git cases could NOT run at all."""
     www = root / "www"
     www.mkdir()
     (www / "guide.md").write_text("# Guide\n", encoding="utf-8")
@@ -723,26 +768,28 @@ def run(check: Check, root: pathlib.Path) -> None:
 
     test_clone_supervision(check, root)
 
-    try:
-        result = subprocess.run(["git", "--version"], capture_output=True, text=True)
-        git_available = result.returncode == 0
-    except OSError:
-        git_available = False
-    if git_available:
-        test_git(check, root, www)
-    else:
-        check.skip("the git executable is unavailable: the Git-over-HTTP cases were not run")
+    if not git_available():
+        return False
+    test_git(check, root, www)
+    return True
 
 
 def main() -> int:
     check = Check()
     with fixture_network(), tempfile.TemporaryDirectory() as td:
         try:
-            run(check, pathlib.Path(td))
+            git_ran = run(check, pathlib.Path(td))
+            if git_ran:
+                check_missing_git(check)      # only on a git-capable host: it proves the verdict
         except AssertionError as exc:
             print(f"FAIL - {exc}")
             print(f"FAIL - {check.count} checks passed before the failure.")
             return 1
+    if not git_ran:
+        print(f"NOT RUN - {check.count} checks passed, but the Git-over-HTTP cases did not run: "
+              f"the git executable is unavailable on this host, so this suite CANNOT be counted "
+              f"as a passed module.", file=sys.stderr)
+        return MISSING_GIT_EXIT
     print(f"PASS - {check.count} checks of the remote reference_docs contract behave as expected.")
     return 0
 

@@ -46,7 +46,7 @@ SUBCOMMANDS
         mutable record. Writes `<launch-dir>/.code-factory/state/watchdog-bootstrap-<launch_id>
         .json`:
         {"launch_id": "<nonce>", "begun_at": "<ISO>", "run_id": null, "events": [...],
-         "activated": null, "completed": null, "history": []}
+         "supervisor_model": null, "activated": null, "completed": null, "history": []}
         and returns the `launch_id` every later operation is addressed by. A COMPLETED or ABANDONED
         keyed bootstrap is an IMMUTABLE history entry of the launch directory: it is never rewritten
         and never carried into another bootstrap (no cross-run `history`; the field stays for the
@@ -54,6 +54,19 @@ SUBCOMMANDS
         single-occupancy refusal is inverted on purpose (owner-approved).
         The unkeyed `watchdog-bootstrap.json` is the LEGACY (pre-key) shape: still resolvable, never
         silently migrated, and `history` still validates on it.
+  resolve-model --launch-dir <dir> --task <task file as handed over> [--config <path>]
+                [--launch-id <id>]
+        resolve and RECORD the supervisor's model BEFORE it is spawned. The handed-over task's
+        `models.supervisor` pin is authoritative and recorded VERBATIM (never substituted); only an
+        ABSENT pin falls back to the role's `model_preference: primary` side of the factory's
+        DEFAULT MATRIX — the ONE precedence of `model_matrix.py`, never a per-run choice of the main
+        agent. The command returns the `model` the Agent tool must be given and stores it in the
+        bootstrap as `supervisor_model` (`model`, `source`, `resolved_at`), so the launch-scoped
+        record the spawn is bound to and the model `models_used.supervisor` reports at the finish
+        carry the SAME value. Exit 1 when NO model resolves at all (a STOP: the run never spawns a
+        role nobody gave a model to), exit 2 on an empty/unreadable task file, a malformed `models:`
+        matrix, an unusable `--config` value or a DIFFERENT second resolution — a supervisor's model
+        is never swapped mid-launch.
   observe --launch-dir <dir> --event <event> --seq <int> [--detail <text>] [--launch-id <id>]
         record ONE Phase 0 observation under the bootstrap. The event vocabulary is CLOSED
         (`parse`, `resolve`, `memory-read`, `memory-write`, `run-id`) and the sequence is
@@ -65,9 +78,12 @@ SUBCOMMANDS
   activate --launch-dir <dir> --repo <root> [--launch-id <id>]
         bind the addressed bootstrap ATOMICALLY to the run that now exists: exit 1 (fail closed)
         while a mandated Phase 0 operation was never observed or was observed OUT OF ORDER, exit 2
-        on an input error (a second activation, another run's state — archive it). On success the
-        run-bound state is written with `launch.at` = the bootstrap's OWN `begun_at` (the moment
-        supervision really started, never a later stand-in) and carries the ordered observations.
+        on an input error (a second activation, another run's state — archive it). The transition
+        covers TWO writes, so it is RECOVERABLE: when the run-bound state was written but the
+        bootstrap was not, retrying the SAME bootstrap finishes the binding instead of refusing the
+        run as already launched. On success the run-bound state is written with `launch.at` = the
+        bootstrap's OWN `begun_at` (the moment supervision really started, never a later stand-in)
+        and carries the ordered observations.
   complete --launch-dir <dir> [--launch-id <id>]
         close the bootstrap of the run `activate` bound: the record names that run, the finished
         run's own watchdog state is left untouched, and ONE completion per binding is allowed. An
@@ -106,8 +122,9 @@ SUBCOMMANDS
         a phase gate)
 
 EXIT CODES: 0 clean / recorded, 1 anomalies found, an unresolved deny, NO recorded launch for
-this run, or an activation whose mandated Phase 0 operations were unobserved or out of order (the
-phase gate fails closed), 2 input error (a malformed state, a stale run binding, a bad argument —
+this run, a `models.supervisor` resolution that yields NO model (a STOP, never a substitute), or an
+activation whose mandated Phase 0 operations were unobserved or out of order (the phase gate fails
+closed), 2 input error (a malformed state, a stale run binding, a bad argument —
 a message naming the fix, never a traceback).
 """
 from __future__ import annotations
@@ -127,6 +144,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
     # reuses must be importable without depending on the caller's sys.path.
     sys.path.insert(0, str(_SCRIPTS_DIR))
 from model_matrix import ROLES  # noqa: E402
+import model_matrix  # noqa: E402  (the ONE model-precedence resolver, reused)
 
 WATCHDOG_REL = pathlib.Path(".code-factory") / "state" / "watchdog.json"
 # The LEGACY unkeyed bootstrap (pre-key shape): still resolvable, never silently migrated.
@@ -150,6 +168,13 @@ PHASE0_REQUIRED = ("parse", "resolve", "memory-read", "run-id")
 # The counters of the WIP checkpoint that the flow MANDATES but that are NOT factory roles: they
 # carry no retry budget, and no deny is ever routed to them.
 NON_ROLE_COUNTERS = ("plan_rejections",)
+# The role whose model is resolved BEFORE the supervisor is spawned. The task's `models.supervisor`
+# pin wins verbatim; an ABSENT pin takes the role's `model_preference` side of the default matrix
+# (supervisor.md declares `primary`), so the main agent never picks the model itself.
+SUPERVISOR_ROLE = "supervisor"
+SUPERVISOR_MODEL_KEY = "supervisor_model"
+# Where a resolved model may come from: the task's matrix, or the factory's default matrix.
+SUPERVISOR_SOURCES = ("task", "default")
 # The scan's own rule citations (the rulebook rules each check stands on).
 RULE_BUDGETS = "retry-budgets"
 RULE_PERMITS = "permit-trail"
@@ -167,6 +192,15 @@ class ActivationRefused(WatchdogError):
     This is not the caller's malformed input — the inputs are well-formed — it is the RUN's
     record of Phase 0 proving that the old order (parse first, supervise later) was used. A phase
     gate may not pass on such a run, so it exits 1 and names every operation that went unwatched.
+    """
+
+
+class ModelUnresolved(WatchdogError):
+    """The supervisor's model resolves to NOTHING: exit 1 (a STOP), never a substitute.
+
+    A task that names no `models.supervisor` and a default matrix that offers the role no model
+    leave the spawn with no model at all — and there is no third path (rule
+    `models-generator-ne-judge`), so the run stops here instead of letting the main agent pick one.
     """
 
 
@@ -195,6 +229,38 @@ def _checked_repo(repo: str | pathlib.Path) -> pathlib.Path:
     if not root.is_dir():
         raise WatchdogError(f"repository root does not exist: {root}")
     return root
+
+
+def _checked_task_file(task: str | pathlib.Path) -> pathlib.Path:
+    """The handed-over task file: an existing, non-EMPTY regular file.
+
+    `--task` is the file the owner handed over, so its purpose is fixed: an absent path, a
+    directory and a zero-byte file are all input errors naming the fix. An empty file would
+    otherwise read as "no models matrix", silently resolving the default matrix for a task nobody
+    wrote.
+    """
+    path = pathlib.Path(os.path.abspath(str(task)))
+    if not path.is_file():
+        raise WatchdogError(f"--task {path} is not an existing file: pass the task file AS HANDED "
+                            f"OVER (the same file `task_parser.py parse` reads), never a directory "
+                            f"or a guess")
+    if path.stat().st_size < 1:
+        raise WatchdogError(f"--task {path} is empty: the supervisor's model is resolved from the "
+                            f"handed-over task's `models:` matrix, so an empty file resolves "
+                            f"nothing — pass the task file the owner handed over")
+    return path
+
+
+def _checked_config_file(config: str | pathlib.Path | None) -> pathlib.Path | None:
+    """The optional explicit CLI config: `None` (the module default) or an existing file."""
+    if config is None:
+        return None
+    path = pathlib.Path(os.path.abspath(str(config)))
+    if not path.is_file():
+        raise WatchdogError(f"--config {path} is not an existing file: it must be the CLI config "
+                            f"carrying `default_model` / `[secondary_model] default_model`, or be "
+                            f"omitted to read the factory's default config")
+    return path
 
 
 def _run_id(root: pathlib.Path) -> str:
@@ -250,7 +316,24 @@ def _validate_text(value: str, label: str) -> str:
 
 def _fresh(run_id: str) -> dict:
     return {"run_id": run_id, "launch": None, "scans": 0, "events": [], "anomalies": [],
-            "denies": []}
+            "denies": [], SUPERVISOR_MODEL_KEY: None}
+
+
+def _validate_model_record(path: pathlib.Path, value: object) -> None:
+    """`supervisor_model` is null or `{model, source, resolved_at}` — fail closed on anything else.
+
+    The record is what the supervisor is spawned with, so a hand-edited or half-written record is
+    an input error naming the shape instead of a model the main agent would have to interpret.
+    """
+    if value is None:
+        return
+    if (not isinstance(value, dict)
+            or not isinstance(value.get("model"), str) or not value["model"].strip()
+            or value.get("source") not in SUPERVISOR_SOURCES
+            or not isinstance(value.get("resolved_at"), str) or not value["resolved_at"]):
+        raise WatchdogError(f"{path}: {SUPERVISOR_MODEL_KEY} must be null or an object with a "
+                            f"non-empty 'model', a 'source' of "
+                            f"{'|'.join(SUPERVISOR_SOURCES)} and a non-empty 'resolved_at'")
 
 
 def _validate_state(path: pathlib.Path, data: object) -> dict:
@@ -301,6 +384,7 @@ def _validate_state(path: pathlib.Path, data: object) -> dict:
                                      or not isinstance(resolved.get("evidence"), str)):
             raise WatchdogError(f"{where}: resolved must be null or an object with string 'at' "
                                 f"and 'evidence'")
+    _validate_model_record(path, data.get(SUPERVISOR_MODEL_KEY))
     return data
 
 
@@ -411,6 +495,7 @@ def _validate_bootstrap(path: pathlib.Path, data: object) -> dict:
             raise WatchdogError(f"{where} must be an object with string event/at")
         if not isinstance(entry.get("seq"), int) or isinstance(entry.get("seq"), bool):
             raise WatchdogError(f"{where}: seq must be an integer")
+    _validate_model_record(path, data.get(SUPERVISOR_MODEL_KEY))
     activated = data.get("activated")
     if activated is not None and (not isinstance(activated, dict)
                                   or not isinstance(activated.get("at"), str)
@@ -554,6 +639,84 @@ def begin(launch_dir: str | pathlib.Path) -> dict:
     path = _atomic_json(_bootstrap_path(directory, launch_id), data)
     return {"status": "begun", "launch_id": launch_id, "run_id": None, "events": 0,
             "begun_at": data["begun_at"], "history": 0, "state": str(path)}
+
+
+def resolve_model(launch_dir: str | pathlib.Path, task: str | pathlib.Path,
+                  config: str | pathlib.Path | None = None,
+                  launch_id: str | None = None) -> dict:
+    """Resolve and RECORD the supervisor's model from the handed-over task BEFORE the spawn.
+
+    (defect C11) The supervisor used to be spawned with whatever model the main agent had in hand,
+    so a task pin `models.supervisor: k3.1-pro` silently ran on another model and the finish
+    attribution failed against a claim nobody could have honoured. The model is therefore resolved
+    DETERMINISTICALLY from the task the owner handed over, through the ONE precedence of
+    `model_matrix.py`: a `models.supervisor` pin is recorded VERBATIM (never substituted), and only
+    an ABSENT pin falls back to the role's `model_preference: primary` side of the default matrix.
+    The resolution is stored in the launch-scoped bootstrap, so the value the main agent spawns
+    with and the value `models_used.supervisor` reports at the finish come from the SAME record.
+
+    Ordering: this reads only the task's `models:` block, never the parsed task, so it runs after
+    `begin` and BEFORE the spawn without dragging any Phase 0 operation out of order.
+    """
+    # Boundary (rule `input-validation`): the empty forms are never legitimate — an empty path
+    # would silently mean the CURRENT DIRECTORY through `os.path.abspath`, and an empty
+    # `--launch-id` is a malformed key, not "the single uncompleted bootstrap".
+    if len(str(launch_dir).strip()) < 1:
+        raise WatchdogError("--launch-dir may not be empty: it must be the directory the factory "
+                            "was launched from")
+    if len(str(task).strip()) < 1:
+        raise WatchdogError("--task may not be empty: it must be the task file AS HANDED OVER")
+    if config is not None and len(str(config).strip()) < 1:
+        raise WatchdogError("--config may not be empty when given: omit it to read the factory's "
+                            "default CLI config")
+    if launch_id is not None and len(str(launch_id).strip()) < 1:
+        raise WatchdogError("--launch-id may not be empty when given: omit the flag to address the "
+                            "launch directory's ONE uncompleted bootstrap")
+    directory = _checked_launch_dir(launch_dir)
+    resolved = resolve_bootstrap(directory, launch_id)
+    data = resolved["bootstrap"]
+    finished = data.get("completed")
+    if finished is not None:
+        raise WatchdogError(f"the bootstrap in {directory} was closed "
+                            f"{_closed_phrase(finished)}: its supervisor model is history — `begin` "
+                            f"a fresh bootstrap for the next independent run")
+    task_path = _checked_task_file(task)
+    config_path = _checked_config_file(config)
+    try:
+        task_matrix = model_matrix.task_models(task_path)
+        default_matrix = model_matrix.load_default_matrix(config_path)
+    except model_matrix.ModelMatrixError as exc:
+        raise WatchdogError(f"{exc}") from exc
+    except OSError as exc:
+        raise WatchdogError(f"cannot read the handed-over task {task_path}: {exc}") from exc
+    entry = model_matrix.resolve(task_matrix, default_matrix, SUPERVISOR_ROLE)
+    model = entry["model"]
+    if not model:
+        raise ModelUnresolved(
+            f"no model resolves for role {SUPERVISOR_ROLE!r}: the handed-over task {task_path} "
+            f"names no `models.{SUPERVISOR_ROLE}` and the factory's default matrix offers none "
+            f"(source 'none') — there is no third path, so pin `models.{SUPERVISOR_ROLE}` in the "
+            f"task or let that role's side of the default matrix declare a model BEFORE the "
+            f"supervisor is spawned")
+    kept = data.get(SUPERVISOR_MODEL_KEY)
+    if kept is not None:
+        if kept["model"] == model:
+            return {"status": "resolved", "launch_id": resolved["launch_id"],
+                    "role": SUPERVISOR_ROLE, "model": model, "source": kept["source"],
+                    "recorded": False, "warnings": entry["warnings"],
+                    "state": str(resolved["path"])}
+        raise WatchdogError(
+            f"the supervisor's model of this launch is already resolved to {kept['model']!r} "
+            f"(source {kept['source']!r}), but {task_path} now resolves {model!r}: a supervisor's "
+            f"model is never swapped mid-launch — restore the handed-over task's "
+            f"`models.{SUPERVISOR_ROLE}` pin, or `abandon --reason` this bootstrap and `begin` a "
+            f"fresh launch")
+    data[SUPERVISOR_MODEL_KEY] = {"model": model, "source": entry["source"],
+                                  "resolved_at": _now()}
+    path = _atomic_json(resolved["path"], data)
+    return {"status": "resolved", "launch_id": resolved["launch_id"], "role": SUPERVISOR_ROLE,
+            "model": model, "source": entry["source"], "recorded": True,
+            "warnings": entry["warnings"], "state": str(path)}
 
 
 def _closed_phrase(finished: dict) -> str:
@@ -735,6 +898,22 @@ def _phase0_problem(observed: list[str]) -> str | None:
     return None
 
 
+def _pending_activation(existing: dict | None, data: dict, run_id: str) -> bool:
+    """True when the run's launch is THIS bootstrap's own HALF-FINISHED activation.
+
+    (defect C07) `activate` is one logical transition over two files: the run-bound state (which
+    carries `launch.at` = the bootstrap's `begun_at`) and then the bootstrap (which carries the
+    binding). If the second write fails, the run looks "already launched" although nothing bound
+    it, and a retry of the SAME bootstrap used to be refused — the run could never be supervised.
+    The launch time is the bootstrap's own microsecond `begun_at`, so a matching `launch.at` is
+    that interruption and never a competing supervisor: retrying finishes the same transition.
+    """
+    if existing is None or existing["run_id"] != run_id or existing["launch"] is None:
+        return False
+    return (existing["launch"].get("authority") == "run"
+            and existing["launch"].get("at") == data["begun_at"])
+
+
 def activate(launch_dir: str | pathlib.Path, repo: str | pathlib.Path,
              launch_id: str | None = None) -> dict:
     """Bind the bootstrap ATOMICALLY to the run that now exists (exit 1 = Phase 0 was unwatched)."""
@@ -762,19 +941,24 @@ def activate(launch_dir: str | pathlib.Path, repo: str | pathlib.Path,
         raise WatchdogError(f"{root / WATCHDOG_REL} belongs to run {existing['run_id']!r}, but the "
                             f"current pipeline run is {run_id!r}: the watchdog state is bound to "
                             f"one run — archive the stale file instead of activating over it")
-    if existing is not None and existing["launch"] is not None:
+    if existing is not None and existing["launch"] is not None \
+            and not _pending_activation(existing, data, run_id):
         raise WatchdogError(f"the watchdog of run {run_id!r} was already launched at "
                             f"{existing['launch']['at']}: ONE watchdog per run — archive the "
                             f"stale state or resume the supervisor instead of re-activating")
     state = existing if existing is not None else _fresh(run_id)
     state["launch"] = {"at": data["begun_at"], "authority": "run"}
     state["events"] = [dict(entry) for entry in data["events"]]
+    # The resolved supervisor model travels WITH the binding: the run's own record then names the
+    # model its supervisor was spawned with, so the finish attribution can be checked against it.
+    state[SUPERVISOR_MODEL_KEY] = data.get(SUPERVISOR_MODEL_KEY)
     path = _write_state(root, state)
     data["run_id"] = run_id
     data["activated"] = {"at": _now(), "run_id": run_id, "repo": str(root)}
     _atomic_json(resolved["path"], data)
     return {"status": "activated", "launch_id": resolved["launch_id"], "run_id": run_id,
-            "events": len(state["events"]), "launch": state["launch"], "state": str(path)}
+            "events": len(state["events"]), "launch": state["launch"],
+            "supervisor_model": state[SUPERVISOR_MODEL_KEY], "state": str(path)}
 
 
 def launch(root: str | pathlib.Path) -> dict:
@@ -840,7 +1024,8 @@ def status(root: str | pathlib.Path) -> dict:
     data = read_state(root)
     if data is None:
         return {"status": "unlaunched", "launched": False, "scans": 0, "anomalies": [],
-                "unresolved_denies": [], "state": str(root / WATCHDOG_REL),
+                "unresolved_denies": [], SUPERVISOR_MODEL_KEY: None,
+                "state": str(root / WATCHDOG_REL),
                 "fail_closed": (f"no {WATCHDOG_REL.as_posix()} for this run: the watchdog was never "
                                 f"launched, so no phase gate can claim the run was supervised — "
                                 f"launch it at run start with `supervisor_watchdog.py launch`")}
@@ -855,12 +1040,14 @@ def status(root: str | pathlib.Path) -> dict:
         return {"status": "unlaunched", "launched": False, "run_id": data["run_id"],
                 "scans": data["scans"], "anomalies": data["anomalies"],
                 "unresolved_denies": unresolved, "state": str(root / WATCHDOG_REL),
+                SUPERVISOR_MODEL_KEY: data.get(SUPERVISOR_MODEL_KEY),
                 "fail_closed": (f"{root / WATCHDOG_REL} records no launch for run {run_id!r}: the "
                                 f"watchdog of this run was never started, so the phase gate cannot "
                                 f"pass — launch it with `supervisor_watchdog.py launch`")}
     return {"status": "blocked" if unresolved else "ok", "launched": True,
             "run_id": data["run_id"], "scans": data["scans"], "anomalies": data["anomalies"],
-            "unresolved_denies": unresolved, "state": str(root / WATCHDOG_REL)}
+            "unresolved_denies": unresolved, SUPERVISOR_MODEL_KEY: data.get(SUPERVISOR_MODEL_KEY),
+            "state": str(root / WATCHDOG_REL)}
 
 
 # -------------------------------------------------------------------------------------------- scan
@@ -1025,6 +1212,23 @@ def build_parser() -> argparse.ArgumentParser:
                         ".code-factory/state/watchdog-bootstrap-<launch id>.json)")
     p.set_defaults(func=_cmd_begin)
 
+    p = add(sub, "resolve-model", help="resolve and RECORD the supervisor's model from the "
+                                       "handed-over task BEFORE the spawn (a task pin wins "
+                                       "verbatim; only an absent pin takes the primary default)")
+    p.add_argument("--launch-dir", required=True,
+                   help="the directory the factory was launched from (holds the bootstrap the "
+                        "resolution is recorded in)")
+    p.add_argument("--task", required=True,
+                   help="the task file AS HANDED OVER (the same file the parse reads); only its "
+                        "`models:` matrix is read here")
+    p.add_argument("--config", default=None,
+                   help="the CLI config carrying default_model / [secondary_model] default_model "
+                        "(default: the factory's own config)")
+    p.add_argument("--launch-id", default=None,
+                   help="the launch nonce `begin` returned (omit it while the launch directory "
+                        "holds exactly ONE uncompleted bootstrap)")
+    p.set_defaults(func=_cmd_resolve_model)
+
     p = add(sub, "observe", help="record ONE Phase 0 observation (closed vocabulary, "
                                  "strictly increasing sequence)")
     p.add_argument("--launch-dir", required=True)
@@ -1106,6 +1310,11 @@ def _cmd_begin(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_resolve_model(args: argparse.Namespace) -> int:
+    _emit(resolve_model(args.launch_dir, args.task, args.config, args.launch_id))
+    return 0
+
+
 def _cmd_observe(args: argparse.Namespace) -> int:
     _emit(observe(args.launch_dir, args.event, args.seq, args.detail, args.launch_id))
     return 0
@@ -1164,6 +1373,9 @@ def main() -> int:
     except ActivationRefused as exc:
         print(f"supervisor_watchdog.py: FAIL - {exc}", file=sys.stderr)
         return 1                       # fail closed: Phase 0 was not supervised as mandated
+    except ModelUnresolved as exc:
+        print(f"supervisor_watchdog.py: FAIL - {exc}", file=sys.stderr)
+        return 1                       # a STOP: the supervisor has no model to be spawned with
     except WatchdogError as exc:
         print(f"supervisor_watchdog.py: {exc}", file=sys.stderr)
         return 2

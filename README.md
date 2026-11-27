@@ -1,5 +1,5 @@
-# Autonomous Code Factory v12.25.0
-<!-- code-factory-version: 12.25.0 -->
+# Autonomous Code Factory v12.26.1
+<!-- code-factory-version: 12.26.1 -->
 
 An autonomous code-writing factory for the **Kimi Code CLI** (0.34+, Node).
 
@@ -41,6 +41,11 @@ green-field) — the stack is detected automatically.
   of the target repo, deployed by `prepare_factory`); the `factory-tester` independently replays the
   final scenario, read-only in stage 1, and a mandated live proof needs five consecutive healthy
   sessions verified by the adapter
+- **Conditional Roblox game path** — the `factory-roblox-expert` subagent builds, runs, tests and
+  debugs Roblox places through the built-in **Roblox Studio MCP server**; registration is GLOBAL
+  (the user-scope `mcp.json`, merged idempotently, never overwritten) and the acceptance evidence is a
+  STRUCTURED scenario verdict with the captured Studio console output — an error-logged run is never a
+  PASS and a screenshot is never a verdict
 - **Remote `reference_docs`** — a public http(s) document or Git-repository URL becomes a reusable
   skill, with the same deterministic reuse/update as a local document
 
@@ -52,16 +57,18 @@ green-field) — the stack is detected automatically.
 │   ├── skills/code-factory/         # flow skill (SKILL.md) + references + scripts
 │   │   ├── references/chrome-devtools-mcp.md  # conditional browser path (Chrome DevTools MCP)
 │   │   ├── references/farukon-mcp.md          # conditional platform path (Farukon MCP)
+│   │   ├── references/roblox-mcp.md           # conditional Roblox path (Roblox Studio MCP)
 │   │   ├── scripts/chrome_devtools_mcp.py     # browser-path decide/merge-config/probe (stdlib)
 │   │   ├── scripts/farukon_mcp.py             # platform-path decide/merge-config/probe + record-session/verify gates (stdlib)
+│   │   ├── scripts/roblox_mcp.py              # Roblox-path decide/merge-config/probe + scenario run/verdict/verify (stdlib)
 │   │   ├── scripts/modern_web_guidance.py     # pinned Modern Web Guidance adapter: search/retrieve/scan (stdlib)
-│   │   ├── scripts/test_chrome_devtools_mcp.py, scripts/test_farukon_mcp.py  # self-tests
+│   │   ├── scripts/test_chrome_devtools_mcp.py, scripts/test_farukon_mcp.py, scripts/test_roblox_mcp.py  # self-tests
 │   │   ├── scripts/test_modern_web_guidance.py  # self-test (pin freshness, ranking, session evidence)
 │   │   ├── scripts/test_remote_reference_docs.py  # self-test (remote reference_docs)
 │   │   ├── assets/chrome-devtools.mcp.json    # managed MCP server definition (pinned release)
 │   │   ├── assets/chrome-devtools-smoke.html  # opt-in real-Chrome smoke fixture
 │   │   └── assets/task-template.yaml # business task template
-│   └── agents/                      # main agent + subagents (sub-agents/gui-expert.md, sub-agents/farukon-expert.md included)
+│   └── agents/                      # main agent + subagents (sub-agents/gui-expert.md, sub-agents/farukon-expert.md, sub-agents/roblox-expert.md included)
 ├── AGENTS.md                        # context for Kimi agents
 ├── CHANGELOG.md                     # version history (SemVer)
 ├── prepare_factory.sh               # deploy the factory into a project (1 command)
@@ -172,7 +179,10 @@ reviewer; secondary (fast) — coder, tester; the Web GUI specialist `factory-gu
 suffice, with complex visual analysis delegated to a read-only primary role. The Farukon platform
 specialist `factory-farukon-expert` (`models.farukon_expert`) is generator-side in exactly the same
 sense: a secondary model is enough for routine platform work, and the used model is logged as
-`models_used.farukon_expert`.
+`models_used.farukon_expert`. The Roblox specialist `factory-roblox-expert`
+(`models.roblox_expert`, generator-side like `models.coder`) follows the same rule and is logged as
+`models_used.roblox_expert`; whether it runs at all is decided by the deterministic applicability
+check, never by the presence of the key.
 
 ## Web GUI and Chrome DevTools MCP (conditional)
 
@@ -269,6 +279,56 @@ launch failure before a single protocol frame plus a healthy control session). R
 run-scoped and immutable, never synthesized, and a task that mandates live proof is never finished
 by leaving the criterion unverified — acceptance stays blocked until both verifiers exit 0.
 
+## Roblox game development and the Roblox Studio MCP path (conditional)
+
+The factory's only game-development specialist, and a conditional one: it exists for tasks that
+build, run, test or debug a Roblox place, and is invisible for every other task. `roblox_mcp.py
+decide` is deterministic and carries reasons (never a model call), and TWO independent conditions
+must hold — either one alone keeps the role OFF: the repository IS a Roblox project (a Rojo
+`*.project.json` descriptor, a place file, a `.luau`/`.lua` source that really references the Roblox
+API, or a managed `Roblox_Studio` entry) AND the task text binds a Roblox SUBJECT to an ACTION
+clause by clause — a documentation clause discards only its own action, never the game work of the
+next clause. Task
+metadata is not scope, so a `models.roblox_expert` model pin never activates the role, and an explicit
+exclusion phrase in the task text always wins.
+
+Only then does `factory-roblox-expert` implement, build, play-test and debug the ASSIGNED place files
+through the `mcp__Roblox_Studio__*` tools, while `factory-tester` independently runs the FINAL
+scenario after the last code change and owns the acceptance evidence in
+`.code-factory/logs/roblox/<run_id>/` — the specialist never issues a final PASS for its own work.
+Game failures and review rework use the EXISTING coder route and `retry_counters.coder`; analyzer,
+planner, diagnostician and reviewer stay read-only, and only these two roles receive the Studio tools.
+A non-Roblox task never invokes the specialist, starts Studio, registers anything or needs a Roblox
+installation to succeed.
+
+Registration is GLOBAL, not per project: `roblox_mcp.py merge-config` writes the built-in
+`Roblox_Studio` stdio server into the USER-SCOPE CLI config — `$KIMI_CODE_HOME/mcp.json` when set,
+else `~/.kimi-code/mcp.json` — resolved and echoed by the script, never typed by hand; `--target` is
+an explicit override for tests. The merge is idempotent and text-preserving (every unrelated byte
+survives), and an existing DIFFERENT `Roblox_Studio` entry is reported with exit 3 and left untouched.
+Studio itself must have *Enable Studio as MCP server* switched on, and a running session only sees the
+entry after a restart (`/mcp` shows the status). `validate-config` checks the managed entry against
+the reviewed invariants without echoing any value an entry supplies.
+
+The evidence model is what makes the path trustworthy: `roblox_mcp.py scenario run --scenario <doc>
+--evidence <dir>` drives one bounded MCP session, captures the console output into `console.log` and
+writes a STRUCTURED `verdict.json`. `PASS` requires the scenario to have COMPLETED and the captured
+console to carry no error log line — any error line is `FAIL`, a `tools/call` answer carrying a
+present non-boolean `isError` is refused instead of being read as success, and a screenshot may be
+attached as an
+artifact but is NEVER the verdict (the record says `screenshot_is_verdict: false`). `scenario verify`
+re-reads the artifacts instead of trusting the verdict field — the capture must sit in that evidence
+directory with the recorded sha256 — so a verdict claiming PASS while its log logged an error is
+refused. Missing Studio, a missing `Roblox_Studio` server or tool keeps the Roblox criteria
+UNVERIFIED (never MET) — the missing launcher/toolchain and the MCP startup/registration failures are
+rows R1–R2 of `references/error-routing.md`, and a task that mandates live proof stays BLOCKED until
+the tester's `scenario verify` exits 0. Studio is never STARTED unless explicitly asked: the probe is
+static and fail-soft, and its handshake runs only with the opt-in `--check-mcp-start`
+(`factory_preflight.py --roblox` appends the same capability block). The external Roblox material is
+vendored into `skill-base/skills/` (`game-development`, `roblox-studio-mcp`, `roblox-engine-api`) and
+read as DATA only — no installer shipped with it is ever executed, and its licence/NOTICE is
+preserved. See `.agents/skills/code-factory/references/roblox-mcp.md`.
+
 ## Remote reference_docs (public URLs)
 
 A `reference_docs[].path` is not limited to a local file or folder: `skill_base.py resolve` classifies
@@ -301,4 +361,4 @@ change to the beginning or middle of a prompt invalidates the cache.
 Versioning follows [Semantic Versioning](https://semver.org/). The [`VERSION`](./VERSION)
 file is the single source of truth — all other version mentions are synced from it by
 `scripts/version_manager.py`. Change history is in
-[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.25.0**.
+[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.26.1**.

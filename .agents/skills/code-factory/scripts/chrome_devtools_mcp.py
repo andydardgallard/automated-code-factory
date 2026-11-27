@@ -27,7 +27,8 @@ Exit codes:
      entry file does not exist, and `vendor-install` reports a failed/skipped install this way —
      the deployers turn that into a SKIP and write no managed entry, so a deployment never fails
      because the browser path could not be prepared
-  2  usage error (argparse, including an unknown `--simulate-missing` name)
+  2  usage error (argparse, including an unknown `--simulate-missing` name and a `--timeout` that is
+     not whole seconds in 1..3600)
   3  `merge-config` conflict: a DIFFERENT `chrome-devtools` entry already exists — it is
      preserved byte-for-byte and reported, never silently replaced
 
@@ -87,6 +88,7 @@ PINNED_VERSION = "1.11.0"
 PROBE_TIMEOUT = 30
 VERSION_PROBE_TIMEOUT = 5
 VENDOR_INSTALL_TIMEOUT = 300
+VENDOR_INSTALL_TIMEOUT_RANGE = (1, 3600)      # inclusive whole seconds a vendor install may take
 EXIT_CONFLICT = 3
 EXIT_INSTALL = 1
 
@@ -585,6 +587,36 @@ def _run_npm(argv: list[str], timeout: int) -> tuple[int | None, str]:
     return result.returncode, ((result.stdout or "").strip() or (result.stderr or "").strip())
 
 
+def vendor_install_timeout(value: object) -> int:
+    """Validate a vendor-install deadline: whole decimal seconds, `VENDOR_INSTALL_TIMEOUT_RANGE`.
+
+    The value bounds the only call that may hang on foreign work (`npm`), so a purpose-fitted range
+    replaces a bare int: zero or a negative deadline makes `subprocess` raise instead of waiting, a
+    fractional or exponent form silently changes the unit, and an absurd deadline is indistinguishable
+    from no deadline at all — each one is a usage error raised BEFORE the vendor directory, the npm
+    command or any config entry is touched. `bool` is an `int` subclass, so `True`/`False` would pass
+    as 1/0 and are rejected explicitly. No float conversion: whole seconds only, from an int or from
+    the decimal-digit text the CLI hands over.
+    """
+    low, high = VENDOR_INSTALL_TIMEOUT_RANGE
+    expected = f"whole seconds in {low}..{high} inclusive"
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise InputError(f"timeout must be {expected}, got {value!r} ({type(value).__name__})")
+    if isinstance(value, str):
+        text = value.strip()
+        # Decimal digits only: `int()` would also take "1_0", "+5" and Unicode digits, `float()` would
+        # turn "0.5" into a number whose unit is no longer seconds.
+        if not re.fullmatch(r"[0-9]+", text):
+            raise InputError(f"timeout must be {expected}, got {value!r}")
+        digits = text.lstrip("0")
+        if len(digits) > len(str(high)):        # too many digits to fit: compared as text, so no
+            raise InputError(f"timeout must be {expected}, got {value!r}")   # huge int is parsed
+        value = int(digits or "0")
+    if not low <= value <= high:
+        raise InputError(f"timeout must be {expected}, got {value}")
+    return value
+
+
 def vendor_install(target: str | pathlib.Path, asset: str | pathlib.Path | None = None,
                    simulate_missing: tuple[str, ...] | list[str] = (), offline: bool | None = None,
                    npm: str | None = None, runner=None, timeout: int = VENDOR_INSTALL_TIMEOUT) -> dict:
@@ -605,7 +637,12 @@ def vendor_install(target: str | pathlib.Path, asset: str | pathlib.Path | None 
     `offline=True` (or `CHROME_DEVTOOLS_MCP_VENDOR_OFFLINE=1`) is the documented test seam: it
     writes a placeholder entry + package.json instead of calling npm. `runner` is the injectable
     command runner used by the tests (`_run_npm` by default), so the suite never reaches the network.
+
+    `timeout` is validated FIRST (`vendor_install_timeout`): an unusable deadline is an `InputError`
+    raised before this function reads or writes anything, so it can never reach a filesystem shape or
+    an npm call.
     """
+    timeout = vendor_install_timeout(timeout)
     vendor = pathlib.Path(os.path.abspath(str(target)))
     entry = vendored_entry(vendor)
     package, version = asset_pin(asset)
@@ -1418,6 +1455,14 @@ def cmd_validate_config(args: argparse.Namespace) -> int:
     return 1
 
 
+def _timeout_argument(text: str) -> int:
+    """argparse `type` for `vendor-install --timeout`: an unusable value is a usage error (exit 2)."""
+    try:
+        return vendor_install_timeout(text)
+    except InputError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="chrome_devtools_mcp.py", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1463,8 +1508,11 @@ def build_parser() -> argparse.ArgumentParser:
                    dest="simulate_missing",
                    help="force a capability to report missing "
                         f"({', '.join(_toggle(n) for n in CAPABILITY_NAMES)})")
-    p.add_argument("--timeout", type=int, default=VENDOR_INSTALL_TIMEOUT,
-                   help=f"seconds before the install is abandoned (default: {VENDOR_INSTALL_TIMEOUT})")
+    p.add_argument("--timeout", type=_timeout_argument, default=VENDOR_INSTALL_TIMEOUT,
+                   metavar="SECONDS",
+                   help="whole seconds before the install is abandoned "
+                        f"({VENDOR_INSTALL_TIMEOUT_RANGE[0]}..{VENDOR_INSTALL_TIMEOUT_RANGE[1]}, "
+                        f"default: {VENDOR_INSTALL_TIMEOUT})")
     p.add_argument("--repo", default=None, help="anchor a RELATIVE --target at this repository root")
     p.add_argument("--json", action="store_true", dest="as_json", help="machine-readable output")
     p.set_defaults(func=cmd_vendor_install)

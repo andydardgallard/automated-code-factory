@@ -4,12 +4,18 @@ Deterministic Mermaid flowchart syntax check for the Code Factory's SKILL.md (ze
 
 Validates the `flowchart` block structurally, without requiring mmdc/npm:
   1. a ```mermaid code block exists and starts with `flowchart` (or `graph`);
-  2. `[`, `{`, `(` are balanced on every line (no unclosed shapes);
+  2. the shape delimiters `[`/`]`, `{`/`}` and `(`/`)` open and close in ORDER and NEST they
+     stack on every line (a closer must match the innermost still-open opener);
   3. every edge (`-->`) has a non-empty source AND target (after stripping `-->|label|`).
 
 In Mermaid a bare node id is valid (an edge implicitly defines its endpoints), so this checker
 catches shape/bracket typos and dangling edges — the two structural failures that break rendering —
 without rejecting legitimate bare connector nodes.
+
+Counting brackets per kind is not enough: `A] --> B[` (reversed) and `A([)]` (crossed) have equal
+counts yet render nothing. The check therefore walks a stack, and text inside `"..."` — where a
+backslash escapes the next character — is label content, so brackets there neither open nor close a
+shape and a legitimately quoted or escaped label never fails.
 
 Usage:
   python3 validate_mermaid.py [--file <path>]
@@ -25,6 +31,9 @@ import sys
 
 EDGE_SPLIT = re.compile(r"-->")
 LABEL = re.compile(r"-->\|[^|\n]*\|")
+
+DELIMITERS = {"[": "]", "{": "}", "(": ")"}          # opener -> its closer
+CLOSERS = {closer: opener for opener, closer in DELIMITERS.items()}
 
 
 def extract_block(text: str) -> str | None:
@@ -42,6 +51,41 @@ def extract_block(text: str) -> str | None:
     return "\n".join(out) if in_block else None
 
 
+def delimiter_errors(line_no: int, s: str) -> list[str]:
+    """Report the first delimiter order/nesting fault of one line; quoted text is exempt.
+
+    The stack holds the still-open delimiters with their column. A closer must match the top of the
+    stack: a stray `]` (`A] --> B[`) closes nothing, and `)` over an open `[` (`A([)]`) is crossed
+    nesting. One fault is reported per line — the rest of a broken line is not worth cascading.
+    """
+    stack: list[tuple[str, int]] = []
+    in_quote = escaped = False
+    for pos, ch in enumerate(s):
+        if escaped:                              # the escaped character is label text, not syntax
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == '"':
+            in_quote = not in_quote
+        elif in_quote:
+            continue
+        elif ch in DELIMITERS:
+            stack.append((ch, pos))
+        elif ch in CLOSERS:
+            if not stack:
+                return [f"line {line_no}: unbalanced '{ch}' closes no open delimiter: {s[:80]}"]
+            opener, opened_at = stack[-1]
+            if opener != CLOSERS[ch]:
+                return [f"line {line_no}: unbalanced nesting: '{ch}' closes '{opener}' opened at "
+                        f"column {opened_at + 1} (expected '{DELIMITERS[opener]}'): {s[:80]}"]
+            stack.pop()
+    if stack:
+        opener, opened_at = stack[-1]
+        return [f"line {line_no}: unbalanced '{opener}' opened at column {opened_at + 1} "
+                f"and never closed: {s[:80]}"]
+    return []
+
+
 def check_block(block: str) -> list[str]:
     errors: list[str] = []
     lines = [ln for ln in block.splitlines() if ln.strip()]
@@ -53,13 +97,8 @@ def check_block(block: str) -> list[str]:
             continue
         if s.startswith("%%"):
             continue
-        # bracket balance
-        if s.count("[") != s.count("]"):
-            errors.append(f"line {idx}: unbalanced '[' / ']': {s[:80]}")
-        if s.count("{") != s.count("}"):
-            errors.append(f"line {idx}: unbalanced '{{' / '}}': {s[:80]}")
-        if s.count("(") != s.count(")"):
-            errors.append(f"line {idx}: unbalanced '(' / ')': {s[:80]}")
+        # delimiter order and nesting
+        errors.extend(delimiter_errors(idx, s))
         # edges must have non-empty endpoints
         stripped = LABEL.sub("-->", s)
         if "-->" in stripped:

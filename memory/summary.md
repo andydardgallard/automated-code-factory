@@ -10,15 +10,15 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.24.1 — run 20261123-9598a460 preserved and released the completed change set through
-a clean current-session lifecycle. Genuine factory roles, allowed/bound permits, strict model
-attribution, phase K/Y and action/manifest/delegation/permit audits all pass. Final regression is
-55/55 and vaccination 205/205; archived Farukon reproduction and five consecutive sessions validate.
-Review approved the patch, DOC2 passed derive-mode, and acceptance is SUCCESS with six FRESH
-mixed-scope evidence entries. Open backlog: 2 carried items (the Farukon workspace_saved anomaly and
-the pre-existing verify_acceptance long-output hang). Self-test files: 55.
-Latest run: implement 20261123-9598a460 (task_finish_factory.yaml, hitl) — SUCCESS acceptance and
-v12.24.1 release on factory/20261122-ef747283.
+Factory v12.26.1 — the review follow-up completed all 30 findings of review 20261126-0caddbd9
+plus six adversarial/review boundary findings. Regression is 59/59 modules and vaccination 216/216;
+business checks are 103/103 MATCH and adversarial replay is 70 held / 0 broke / 2 environment-unverified.
+Review approved with all 36 dispositions closed; acceptance SUCCESS; phase K/Y gates and documentation
+validation pass. Strict supervisor attribution retains the disclosed initial wrong-model wire mismatch.
+Open backlog: 3 carried items (the out-of-scope Farukon anomaly, the prior run's early-spawn audit debt,
+and this run's stopped initial-supervisor attribution debt). Closed backlog items: 60. Self-test files: 59.
+Latest run: implement 20261126-39892599 (fix-tasks.yaml, hitl) — SUCCESS acceptance and v12.26.1 release
+on factory/20261126-39892599.
 
 ## Key decisions
 - The long-term memory `memory/` belongs to ONE target project (`repo_path`); the field

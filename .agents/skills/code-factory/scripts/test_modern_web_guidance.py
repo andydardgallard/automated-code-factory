@@ -871,6 +871,7 @@ def test_legacy_scan_degenerate_inputs(tmp: pathlib.Path) -> None:
     patterns = [dict(pattern, guidance_id="dialog-focus-management")
                 for pattern in mwg.LEGACY_PATTERNS]
     findings: list[dict] = []
+    outcome: object = None  # bound before the try: the message below is built in both branches
     try:
         outcome = mwg.scan_file(blocked, repo, findings, patterns)
     except mwg.CliError:

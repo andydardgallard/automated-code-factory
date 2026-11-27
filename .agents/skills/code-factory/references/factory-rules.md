@@ -199,13 +199,13 @@ carriers: .agents/skills/code-factory/SKILL.md; .agents/agents/code-factory.md; 
 <!-- factory-rule: plan-committee end -->
 
 ## no-shared-tree-git-mutations
-carriers: .agents/README.md; .agents/agents/code-factory.md; .agents/skills/code-factory/SKILL.md; .agents/skills/code-factory/references/handoff-briefing.md; .agents/agents/sub-agents/coder.md; .agents/agents/sub-agents/gui-expert.md; .agents/agents/sub-agents/farukon-expert.md; .agents/agents/sub-agents/refactorer.md
+carriers: .agents/README.md; .agents/agents/code-factory.md; .agents/skills/code-factory/SKILL.md; .agents/skills/code-factory/references/handoff-briefing.md; .agents/agents/sub-agents/coder.md; .agents/agents/sub-agents/gui-expert.md; .agents/agents/sub-agents/farukon-expert.md; .agents/agents/sub-agents/roblox-expert.md; .agents/agents/sub-agents/refactorer.md
 <!-- factory-rule: no-shared-tree-git-mutations begin -->
 **No shared-tree git mutations (canonical wording):** subagents do NOT run `git stash`, `git reset`, `git checkout` or `git clean` on the run's shared working tree — it is shared by the main agent and other parallel subagents, and such operations create a race risk and the loss of others' changes. To prove a bug pre-existed or to view a file's base version, `git show HEAD:<file>` or a separate temp clone is used; only the main agent performs working-tree git mutations.
 <!-- factory-rule: no-shared-tree-git-mutations end -->
 
 ## english-only
-carriers: .agents/README.md; .agents/agents/code-factory.md; .agents/skills/code-factory/SKILL.md; .agents/skills/code-factory/references/planning-guide.md; .agents/agents/sub-agents/coder.md; .agents/agents/sub-agents/gui-expert.md; .agents/agents/sub-agents/farukon-expert.md; .agents/agents/sub-agents/tester.md; .agents/agents/sub-agents/documenter.md
+carriers: .agents/README.md; .agents/agents/code-factory.md; .agents/skills/code-factory/SKILL.md; .agents/skills/code-factory/references/planning-guide.md; .agents/agents/sub-agents/coder.md; .agents/agents/sub-agents/gui-expert.md; .agents/agents/sub-agents/farukon-expert.md; .agents/agents/sub-agents/roblox-expert.md; .agents/agents/sub-agents/tester.md; .agents/agents/sub-agents/documenter.md
 <!-- factory-rule: english-only begin -->
 **English-only (canonical wording):** every artifact the factory produces is written in English only: code and comments of target projects, documentation, docstrings, commit messages, reports (`.code-factory/report*.md`, logs), memory entries, plans and subagent briefings. The factory accepts a task file in any language, but everything it produces from it is English. EXCEPTION: live communication with the user stays in the user's business language, and HISTORY is never rewritten — `CHANGELOG.md` and memory records written before this rule are frozen by `memory/.english-freeze` (one record heading per line) and are never edited; every NEW memory record is gated by `scripts/check_english_only.py`, whose memory pass runs by default over v2 records that are not frozen (`--no-memory` is the one documented escape).
 <!-- factory-rule: english-only end -->

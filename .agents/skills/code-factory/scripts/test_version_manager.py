@@ -4,8 +4,9 @@ Deterministic self-test for `version_manager.py` (zero LLM tokens, stdlib only).
 
 Verifies get/bump/sync/validate/set, the deterministic version-type matrix (`suggest`), the Rust
 (`Cargo.toml`) manifests in the single source of truth, the symlink guard of the manifest scan (a
-cycle terminates, a link escaping the repository is excluded), plus the "stdlib only" contract (no
-third-party imports).
+cycle terminates, a link escaping the repository is excluded), the release history of the real
+`CHANGELOG.md` (no bare release heading; a release without surviving evidence says so), plus the
+"stdlib only" contract (no third-party imports).
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -20,6 +21,20 @@ import sys
 import tempfile
 
 import version_manager as vm
+
+# scripts/ -> code-factory/ -> skills/ -> .agents/ -> repository root. The release-history
+# regression below reads the REAL CHANGELOG, so a script copied out of the tree (a standalone
+# harness) skips that group instead of inventing a root.
+SCRIPTS = pathlib.Path(__file__).resolve().parent
+ROOT = SCRIPTS.parents[3] if len(SCRIPTS.parents) > 3 else None
+
+RELEASE_HEADING = re.compile(r"^## \[(\d+\.\d+\.\d+)\][^\n]*$", re.M)
+# The releases whose user-facing notes were backfilled from surviving evidence (task N06).
+BACKFILLED_RELEASES = ("12.22.0", "12.24.0", "12.24.1", "12.25.0")
+# Releases that shipped with a bare heading BEFORE this backfill and whose records are outside its
+# evidence scope: they are recorded debt, not a licence. The check tolerates them SHRINKING (any
+# backfill removes a name) and fails on the set growing by even one new empty release.
+LEGACY_EMPTY_RELEASES = ("12.21.0", "12.20.0", "12.19.1", "12.9.1", "12.9.0")
 
 
 def expect(cond: bool, msg: str) -> None:
@@ -130,6 +145,68 @@ def suggest(**flags) -> tuple[str, int]:
     with contextlib.redirect_stdout(buf):
         code = vm.suggest(ns)
     return buf.getvalue().strip(), code
+
+
+def empty_release_sections(changelog: str) -> list[str]:
+    """Versions whose `## [x.y.z]` section carries no body text at all.
+
+    A section body runs from its release heading to the next release heading (or the end of the
+    file); a body of nothing but blank lines documents no release at all, which is exactly the
+    defect the release-history regression pins.
+    """
+    heads = list(RELEASE_HEADING.finditer(changelog))
+    empty: list[str] = []
+    for i, head in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(changelog)
+        if not changelog[head.end():end].strip():
+            empty.append(head.group(1))
+    return empty
+
+
+def release_section(changelog: str, version: str) -> str | None:
+    """The body of one release section, or None when the version has no heading."""
+    heads = list(RELEASE_HEADING.finditer(changelog))
+    for i, head in enumerate(heads):
+        if head.group(1) == version:
+            end = heads[i + 1].start() if i + 1 < len(heads) else len(changelog)
+            return changelog[head.end():end]
+    return None
+
+
+def check_release_history() -> None:
+    """29. Release history: no release heading is empty and a thin release SAYS it is thin.
+
+    Four substantial releases shipped with empty user-facing notes because their sections were
+    created as bare headings. Every section must now carry notes, the four backfilled releases must
+    be non-empty, and 12.25.0 — whose journal record and release archive are both absent — must
+    declare that limitation and the evidence it stands on instead of borrowing a neighbouring
+    release's achievements. The detector is proven to bite on a synthetic empty section.
+    """
+    # the detector is not vacuous: one empty section among two populated ones is named by version
+    synthetic = ("# Changelog\n\n## [9.9.0] — 2026-01-01\n\n## [9.8.0] — 2026-01-01\n\n"
+                 "### Added\n- real notes\n")
+    expect(empty_release_sections(synthetic) == ["9.9.0"],
+           "the empty-section detector must name exactly the bare heading")
+
+    if ROOT is None or not (ROOT / "CHANGELOG.md").is_file():
+        print("SKIP - release-history check: no CHANGELOG.md above this script.")
+        return
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    empty = empty_release_sections(changelog)
+    new_empty = [v for v in empty if v not in LEGACY_EMPTY_RELEASES]
+    expect(not new_empty,
+           f"no release may ship with a bare heading; new empty sections: {new_empty}")
+    for version in BACKFILLED_RELEASES:
+        body = release_section(changelog, version)
+        expect(body is not None and body.strip(),
+               f"release {version} must exist with non-empty notes")
+    limited = release_section(changelog, "12.25.0") or ""
+    expect(re.search(r"no journal record", limited, re.I),
+           "12.25.0 must state that no journal record survives for it")
+    expect(re.search(r"no release archive|no archive", limited, re.I),
+           "12.25.0 must state that no release archive survives for it")
+    expect(re.search(r"unknown rather than inferred", limited, re.I),
+           "12.25.0 must mark the unattestable facts unknown instead of inferred")
 
 
 def main() -> int:
@@ -421,6 +498,10 @@ def main() -> int:
         code, out, err = run_validate(root)
         expect(code == 0 and "PASS" in out,
                f"the exact README title must still pass validate: {err!r}")
+
+    # 29. release history: no bare release headings, the four backfilled releases carry notes, and
+    #     12.25.0 declares its missing evidence instead of borrowing a neighbour's achievements.
+    check_release_history()
 
     # 17. stdlib-only contract (no third-party imports).
     src = pathlib.Path(vm.__file__).read_text(encoding="utf-8")

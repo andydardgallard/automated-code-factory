@@ -13,7 +13,8 @@ out at another revision is re-checked-out/re-cloned instead of being signed, a c
 another revision is refused under `--offline`, an unreachable revision is exit 1 with an explicit
 message and no traceback, a clone already at the pinned revision is reused without the network,
 `--revision` with a local path or an http document (and a non-hex revision) is a usage error
-(exit 2), the `-` hash of a pinned record (no warning noise), the repeatable
+(exit 2), a SUPPLIED but empty/blank `--revision` is a usage error instead of an absent pin, the `-`
+hash of a pinned record (no warning noise), the repeatable
 `--extra-source SOURCE[@REVISION]` and the `sources` list of a multi-source entry (the top-level
 `source`/`sha256` stay the primary source's values), a hexadecimal URL query value staying part of
 its source, an offline pinned reuse REFUSING a cached tree whose bytes were changed while its
@@ -172,6 +173,18 @@ def test_usage_errors(check: Check, root: pathlib.Path, base: pathlib.Path, serv
                                                    "record", "bad", local_doc.name,
                                                    sb.hash_path(local_doc),
                                                    "--extra-source", f"{local_doc.name}@{shas[0]}"),
+        # REGRESSION (business-adversarial BA-045): a SUPPLIED but empty/blank revision used to be
+        # read as absent, so the source was resolved at its moving HEAD while the caller believed it
+        # was pinned. Both paths are attacked: a local source (which resolves with no network) and
+        # an uncached offline URL (which used to reach a cache miss instead of a usage refusal).
+        "an empty revision of a local source": cli("--repo", str(root), "resolve", local_doc.name,
+                                                   "--revision", ""),
+        "an empty revision of an offline URL": cli("--repo", str(root), "resolve", url, "--offline",
+                                                   "--revision", ""),
+        "a blank revision of a local source": cli("--repo", str(root), "hash", local_doc.name,
+                                                  "--revision", "   "),
+        "a blank revision of an offline URL": cli("--repo", str(root), "hash", url, "--offline",
+                                                  "--revision", " \t "),
     }
     for what, result in cases.items():
         check(result.returncode == 2,
@@ -181,6 +194,22 @@ def test_usage_errors(check: Check, root: pathlib.Path, base: pathlib.Path, serv
               f"{what} must print the usage, got: {result.stderr!r}")
     check("hex" in cases["a branch name is not a revision"].stderr.lower(),
           "a non-hex revision must say that a hex commit sha is required")
+    for what in ("an empty revision of a local source", "an empty revision of an offline URL",
+                 "a blank revision of a local source", "a blank revision of an offline URL"):
+        check("empty" in cases[what].stderr.lower(),
+              f"{what} must be refused as an EMPTY revision, not resolved unpinned: "
+              f"{cases[what].stderr!r}")
+    check(sb.pinned_revision(None) is None,
+          "an OMITTED --revision stays absent: None is not an empty authoring error")
+    check(sb.pinned_revision(shas[0]) == shas[0], "a real sha is still normalized and returned")
+    for blank in ("", " ", "\t"):
+        try:
+            sb.pinned_revision(blank)
+        except sb.UsageError as exc:
+            check("empty" in str(exc), f"a blank revision must say it is empty: {exc}")
+        else:
+            raise AssertionError(f"pinned_revision({blank!r}) must raise UsageError, not return "
+                                 "None and resolve the source unpinned")
 
     check(sb._parse_extra_source("docs/a.md") == ("docs/a.md", None),
           "an extra source without a pin has no pinned revision")

@@ -347,10 +347,25 @@ def plan_text(root: pathlib.Path) -> str:
         raise PermitError(f"cannot read {path}: {exc}") from exc
 
 
+def declared_files(raw: str) -> list[str]:
+    """The paths one plan entry's `files:` value declares, without the list syntax around them.
+
+    The planning guide's canonical form is a BRACKETED list (`files: [a.py, b.py]`); a bare
+    comma-separated list is the legacy form and stays valid. One optional OUTER bracket pair and the
+    surrounding whitespace are removed, so a declared path is otherwise taken verbatim — the
+    brackets are list syntax, never part of the first or last path. An empty list (`files: []`) stays
+    legitimately empty, which the audit reads as "the plan does not say", never as "anything goes".
+    """
+    body = raw.strip()
+    if body.startswith("[") and body.endswith("]"):
+        body = body[1:-1]
+    return [item.strip() for item in body.split(",") if item.strip()]
+
+
 def plan_tasks(root: pathlib.Path) -> dict[str, list[str]]:
     """`{task_id: [declared file, ...]}` of the approved plan's DAG.
 
-    A plan line `- task_09: ... files: a.py, b.py; deps: [...]` declares the files that task may
+    A plan line `- task_09: ... files: [a.py, b.py]; deps: [...]` declares the files that task may
     touch; a task whose entry carries no `files:` field maps to an EMPTY list, which the audit treats
     as "the plan does not say", never as "anything is allowed".
     """
@@ -369,8 +384,7 @@ def plan_tasks(root: pathlib.Path) -> dict[str, list[str]]:
             continue
         files = FILES_FIELD.search(body)
         if files and current is not None:
-            declared = [item.strip() for item in files.group("files").split(",") if item.strip()]
-            tasks[current] = declared
+            tasks[current] = declared_files(files.group("files"))
     return tasks
 
 

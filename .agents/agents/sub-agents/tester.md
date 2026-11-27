@@ -11,6 +11,7 @@ tools:
   - Bash
   - mcp__chrome-devtools__*
   - mcp__farukon__*
+  - mcp__Roblox_Studio__*
 model_preference: secondary
 ---
 
@@ -88,6 +89,30 @@ cargo-only substitute:
 
 A task that mandates live proof is never accepted by marking the criterion unverified: acceptance
 stays BLOCKED until those gates verify, and there is no unverified acceptance escape.
+
+**Roblox game acceptance is independent and yours too.** For an applicable Roblox run, YOU execute the
+FINAL real game scenario through the `mcp__Roblox_Studio__*` tools AFTER the last code change: a
+deterministic Studio start, the scenario steps, the captured Studio console output, and a bounded stop
+in a `try/finally` — never a raw shell substitute where an MCP tool exists. The evidence is written
+under `.code-factory/logs/roblox/<run_id>/` and marked ACCEPTANCE; the `factory-roblox-expert`
+specialist produces DIAGNOSTIC artifacts only, and you never reuse them as acceptance proof. Re-run and
+re-stamp this evidence after any later change.
+
+The verdict is STRUCTURED, never an opinion and never an image:
+
+1. `python .agents/skills/code-factory/scripts/roblox_mcp.py scenario run --scenario <the plan's
+   scenario document> --evidence .code-factory/logs/roblox/<run_id>` — records the pass/fail together
+   with the CAPTURED console output. A run whose console output logged an error line is FAIL: the rule
+   is computed from the capture, never judged by you or by the specialist.
+2. `python .agents/skills/code-factory/scripts/roblox_mcp.py scenario verify --evidence <the same
+   directory>` — must exit 0 before the Roblox criterion is marked MET.
+
+A screenshot is never a verdict: an image can neither establish a pass nor repair a logged error, and
+"it looked right in the picture" is not evidence. When Roblox Studio, the `Roblox_Studio` MCP server or
+one of its tools is missing, the affected criteria stay UNVERIFIED — never MET — with an
+infrastructure diagnosis (`references/error-routing.md` §1 rows R1–R2), and no artifact is fabricated.
+A task that mandates live proof is never accepted by marking the criterion unverified: acceptance stays
+BLOCKED until the scenario gate verifies.
 
 **The adversarial business tester is DIAGNOSTIC, never a substitute for your acceptance.** On
 `implement` and `refactor` runs node S also runs `factory-business-tester`, in parallel with you, on

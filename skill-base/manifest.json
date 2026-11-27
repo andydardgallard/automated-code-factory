@@ -95,6 +95,42 @@
       "sha256": "fd1d4e999316b52bc5b959e8b63cf1750cb3720afbd54fade367217a5b63c7f9",
       "source_type": "http_git",
       "resolved_revision": "64a6d708f5a43f2cd3fde5d4d7db3905ba1bdf65"
+    },
+    "game-development": {
+      "name": "game-development",
+      "created_at": "2026-11-25T22:45:10+00:00",
+      "last_used": "2026-11-25T22:45:10+00:00",
+      "task_ids": [
+        "20261126-8ab3e96d"
+      ],
+      "source": "https://github.com/gamedev-skills/awesome-gamedev-agent-skills.git",
+      "sha256": "82bf0c16ee2d76eec1725f59b2d2220851cc4efa8a7cafad8caf9a88ff437216",
+      "source_type": "http_git",
+      "resolved_revision": "c6ca6c41c839b68319ffc08430b99ab768debc32"
+    },
+    "roblox-studio-mcp": {
+      "name": "roblox-studio-mcp",
+      "created_at": "2026-11-25T22:45:13+00:00",
+      "last_used": "2026-11-25T22:45:13+00:00",
+      "task_ids": [
+        "20261126-8ab3e96d"
+      ],
+      "source": "https://create.roblox.com/docs/studio/mcp",
+      "sha256": "367ffd4dcbb18678fde5a56f85caa81794c9084a9854a7b67044b1ff8ef5e641",
+      "source_type": "http_doc",
+      "resolved_revision": null
+    },
+    "roblox-engine-api": {
+      "name": "roblox-engine-api",
+      "created_at": "2026-11-25T22:45:13+00:00",
+      "last_used": "2026-11-25T22:45:13+00:00",
+      "task_ids": [
+        "20261126-8ab3e96d"
+      ],
+      "source": "https://create.roblox.com/docs/reference/engine",
+      "sha256": "839f9965e2401bee6c01ca0b15f6b1c06dd129e3785c94fbeca71ae2af461c1f",
+      "source_type": "http_doc",
+      "resolved_revision": null
     }
   }
 }

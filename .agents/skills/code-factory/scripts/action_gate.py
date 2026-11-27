@@ -76,9 +76,21 @@ commands. Only what the enclosing shell really executes is read: a substitution 
 single-quoted string (`echo '$(rm -rf /)'`) and one whose `$` is escaped in POSIX double quotes
 (`echo "\\$(rm -rf /)"`) are text and stay ALLOW, while a `)` that never closes, an EMPTY body
 (`echo $()`) and a nesting deeper than `MAX_WRAPPER_DEPTH` levels CONFIRM. Nothing is
-evaluated or executed: no variable, arithmetic, glob or backtick expansion, and no substitution or
-launcher is run to classify it. The gate still classifies what the line literally runs beyond these
-constructs, which is why the two are read as commands rather than expanded.
+evaluated or executed: no variable, arithmetic or glob expansion, and no substitution or launcher is
+run to classify it. The gate still classifies what the line literally runs beyond these constructs,
+which is why the two are read as commands rather than expanded.
+
+Backtick substitutions (fixed contract, run 20261126-39892599): a backtick body is the older twin of
+`$(...)`, runs the same way and is therefore read the same way — `echo `rm -rf /`` and
+`echo "`git push origin main`"` are the deletion and the push they would run, a balanced body is
+classified as ONE operand (separators inside it included) and a NESTED one (`` `echo \\`rm -rf /\\`` ``)
+recursively. It was the bypass of the `$(...)` fix: reading only `$(` ALLOWed the identical command in
+backticks. What the shell does NOT run stays text: a backtick inside a literal single-quoted string
+and an escaped one outside quotes or in POSIX double quotes (`echo \\`rm -rf /\\``) are ALLOW, and a
+PowerShell payload collects NOTHING, because a backtick there is the ESCAPE character. A backtick that
+never closes, an EMPTY body and a nesting deeper than `MAX_WRAPPER_DEPTH` levels CONFIRM, so an
+unreadable substitution is never called harmless. cmd.exe reads its bodies anyway, exactly like its
+`$(...)` twin, because the CALLER's shell may expand them first.
 
 PowerShell backslash semantics (fixed contract, run 20261017-4beb46d5): the DECODED payload of a
 `powershell`/`pwsh` wrapper is command TEXT in PowerShell's OWN dialect, so it is split into simple
@@ -475,6 +487,9 @@ def split_commands(action: str, dialect: str = POSIX_DIALECT) -> list[str]:
         elif ch == "$" and action.startswith("$(", i):
             i = copy_substitution(action, i, buf, POSIX_DIALECT)
             continue
+        elif ch == "`":
+            i = copy_backtick(action, i, buf)
+            continue
         else:
             match = COMMAND_SPLIT_RE.match(action, i)
             if match:
@@ -585,6 +600,21 @@ def copy_substitution(text: str, start: int, buf: list[str], dialect: str) -> in
     to the end of the line, so `substitution_bodies` still reports it as unreadable.
     """
     end = matching_paren(text, start + 2, dialect)
+    stop = len(text) if end is None else end + 1
+    buf.append(text[start:stop])
+    return stop
+
+
+def copy_backtick(text: str, start: int, buf: list[str]) -> int:
+    """Copy the whole backtick substitution starting at `start` into `buf`; return the next index.
+
+    The backtick twin of `copy_substitution`, for the same reason: its body is ONE operand of the
+    enclosing command whatever separators it contains, so `` echo `git push origin main && echo ok` ``
+    must reach `backtick_bodies` whole instead of being torn into two harmless fragments (and then
+    misread as an UNCLOSED substitution). An unclosed backtick is copied to the end of the line, so
+    `backtick_bodies` still reports it as unreadable.
+    """
+    end = matching_backtick(text, start + 1)
     stop = len(text) if end is None else end + 1
     buf.append(text[start:stop])
     return stop
@@ -704,6 +734,96 @@ def substitution_bodies(text: str, dialect: str = POSIX_DIALECT) -> tuple[list[s
             if end is None:
                 return bodies, False
             bodies.append(text[i + 2:end])
+            i = end + 1
+            continue
+        i += 1
+    return bodies, True
+
+
+def matching_backtick(text: str, start: int, dialect: str = POSIX_DIALECT) -> int | None:
+    """Index of the backtick CLOSING a substitution body that starts at `start`, or None.
+
+    A backtick body ends at the next UNESCAPED backtick: quoting inside it does not matter, because a
+    backtick is special in the shell's double quotes too and the inner text is parsed only after the
+    body has been cut out as a whole. POSIX lets a backslash escape the delimiter (`` \\` ``) — that is
+    exactly how a NESTED backtick substitution is written — while cmd.exe has no escape character.
+    """
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if dialect == POSIX_DIALECT and ch == "\\":
+            i += 2                                      # `` \` `` / `\\`: the delimiter is escaped
+            continue
+        if ch == "`":
+            return i
+        i += 1
+    return None
+
+
+def backtick_bodies(text: str, dialect: str = POSIX_DIALECT) -> tuple[list[str], bool]:
+    """`(inner command texts of the backtick substitutions this shell runs, was it fully read)`.
+
+    A backtick substitution is the older twin of `$(...)` and runs the same way, so it is read the same
+    way — as a potential COMMAND, never expanded: `echo `rm -rf /`` is the root deletion the shell
+    would run, and reading only `$(` let that bypass through as ALLOW. Which bodies really run follows
+    the enclosing dialect's quoting, exactly like `substitution_bodies`:
+
+      * POSIX: a backtick inside a literal single-quoted string is text, and so is one whose backtick
+        is escaped outside quotes or in double quotes (`echo "\\`rm -rf /\\`"`),
+      * PowerShell: NOTHING is collected — a backtick there is the ESCAPE character, never a
+        substitution (`"a`tb"` is a tab), so reading it as a command would deny ordinary text,
+      * cmd.exe: the shell runs no substitution, but the bodies are read anyway for the same reason
+        `$(...)` is — the CALLER's shell may expand the text before cmd.exe ever sees it.
+
+    A nested substitution is written with an escaped backtick (`` `echo \\`rm -rf /\\`` ``), so ONE
+    level of that escaping is removed from each POSIX body — including a body cut from a
+    double-quoted string (`` echo "`echo \\`rm -rf /\\``" ``), where the escaping was left in place
+    and the nested deletion read as inert text: the returned text is then read recursively, and
+    `classify`'s `MAX_WRAPPER_DEPTH` bounds the nesting. No expansion is attempted — this scans
+    quoting and cuts spans, it does not evaluate anything.
+
+    `False` means a backtick never closes, so no command string can be proven — the caller CONFIRMs it.
+    """
+    if dialect == POWERSHELL_DIALECT:
+        return [], True
+    bodies: list[str] = []
+    quote = ""
+    posix = dialect == POSIX_DIALECT
+    quotes = DIALECT_QUOTES[dialect]
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if posix and ch == "\\" and i + 1 < len(text) and text[i + 1] in QUOTE_ESCAPES[quote]:
+                i += 2                                  # escaped (`\``, `\"`): never a substitution
+                continue
+            if ch == quote:
+                quote = ""
+                i += 1
+                continue
+            if ch == "`" and quote == '"':              # a single-quoted backtick is literal text
+                end = matching_backtick(text, i + 1, dialect)
+                if end is None:
+                    return bodies, False
+                body = text[i + 1:end]
+                bodies.append(body.replace("\\`", "`") if posix else body)
+                i = end + 1
+                continue
+            i += 1
+            continue
+        if ch in quotes:
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and posix:
+            i += 2                                      # `` \`...\` `` outside quotes is literal text
+            continue
+        if ch == "`":
+            end = matching_backtick(text, i + 1, dialect)
+            if end is None:
+                return bodies, False
+            body = text[i + 1:end]
+            bodies.append(body.replace("\\`", "`") if posix else body)
             i = end + 1
             continue
         i += 1
@@ -1539,11 +1659,12 @@ def classify(action: str, scopes: list[str], depth: int = 0,
     POSIX. A nested wrapper decides its own dialect again from its name, so the rules of one payload
     never leak into another.
 
-    A segment is more than the command it names: a readable `$(...)` substitution inside it is a
-    command the SHELL runs, so its body is classified here too, at every nesting level
-    (`substitution_bodies` decides which substitutions this dialect really executes). Nesting is
-    BOUNDED by `MAX_WRAPPER_DEPTH` and an empty body CONFIRMs, so neither a pathologically nested line
-    nor a body with no command in it can be read as harmless (or crash the gate).
+    A segment is more than the command it names: a readable `$(...)` or backtick substitution inside
+    it is a command the SHELL runs, so its body is classified here too, at every nesting level
+    (`substitution_bodies` / `backtick_bodies` decide which substitutions this dialect really
+    executes). Nesting is BOUNDED by `MAX_WRAPPER_DEPTH` and an empty body CONFIRMs, so neither a
+    pathologically nested line nor a body with no command in it can be read as harmless (or crash the
+    gate).
     """
     worst, reasons = ALLOW, []
     order = {ALLOW: 0, CONFIRM: 1, HARD_DENY: 2}
@@ -1557,25 +1678,29 @@ def classify(action: str, scopes: list[str], depth: int = 0,
             worst = cls
             reasons.append(reason)
 
-    for segment in split_commands(action, dialect):
-        merge(*classify_command(tokens(segment), scopes, depth, segment, dialect))
-        bodies, complete = substitution_bodies(segment, dialect)
+    def classify_bodies(bodies: list[str], complete: bool, notation: str) -> None:
+        """Classify every readable substitution body of one `notation`; unreadable ones CONFIRM."""
         for body in bodies:                          # readable bodies are classified either way
             if not body.strip():
-                merge(CONFIRM, ("a `$(...)` command substitution is empty: it carries no command that "
-                                "could be proven harmless"))
+                merge(CONFIRM, (f"a {notation} command substitution is empty: it carries no command "
+                                f"that could be proven harmless"))
                 continue
             if depth >= MAX_WRAPPER_DEPTH:
-                merge(CONFIRM, (f"a `$(...)` command substitution nests deeper than "
+                merge(CONFIRM, (f"a {notation} command substitution nests deeper than "
                                 f"{MAX_WRAPPER_DEPTH} levels: the innermost command cannot be proven "
                                 f"harmless"))
                 continue
             body_cls, body_reason = classify(body, scopes, depth + 1, dialect)
             if body_cls != ALLOW:                    # a harmless body cannot change the verdict
-                merge(body_cls, f"a `$(...)` command substitution: {body_reason}")
+                merge(body_cls, f"a {notation} command substitution: {body_reason}")
         if not complete:
-            merge(CONFIRM, ("a `$(...)` command substitution never closes: the command it would run "
-                            "cannot be proven harmless"))
+            merge(CONFIRM, (f"a {notation} command substitution never closes: the command it would "
+                            f"run cannot be proven harmless"))
+
+    for segment in split_commands(action, dialect):
+        merge(*classify_command(tokens(segment), scopes, depth, segment, dialect))
+        classify_bodies(*substitution_bodies(segment, dialect), "`$(...)`")
+        classify_bodies(*backtick_bodies(segment, dialect), "`` `...` ``")
     if not reasons:
         return ALLOW, "no destructive command found"
     return worst, "; ".join(reasons)

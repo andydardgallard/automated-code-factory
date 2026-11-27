@@ -288,12 +288,18 @@ def pinned_revision(value: str | None) -> str | None:
 
     ONLY a hex commit sha (full or abbreviated) may pin a source: a branch or a tag name moves, so
     pinning one would sign content that can change after the manifest was written.
+
+    An OMITTED option (`None`) means "no pin", but a SUPPLIED empty or blank one is an authoring
+    error, not an absent pin: `--revision ""` used to fall through as None and the source was
+    resolved at its moving HEAD, so the caller believed content was pinned when it was not (BA-045).
     """
     if value is None:
         return None
     text = value.strip()
     if not text:
-        return None
+        raise UsageError(f"--revision '{value}' is empty: a supplied revision must name the exact "
+                         "hex commit sha to pin, so omit the option to resolve the source's "
+                         "current HEAD, or write the full or the abbreviated sha of the commit")
     if not _HEX_REVISION.match(text):
         raise UsageError(f"--revision '{value}' is not a hex commit sha: a pinned revision must be "
                          "the full or the abbreviated sha of the commit the skill was generated "
@@ -763,12 +769,28 @@ def _git_head(repo: pathlib.Path, *, timeout: float) -> str | None:
     return sha or None
 
 
+_FULL_REVISION_LENGTHS = (40, 64)   # sha1 and sha256 object names
+
+
 def _revision_matches(head: str | None, revision: str) -> bool:
-    """Whether a full HEAD sha and a possibly abbreviated revision denote the same commit."""
+    """Whether a full HEAD sha and a possibly abbreviated revision denote the same commit.
+
+    A revision denotes the commit only as CANONICAL equality with the full HEAD sha or as a
+    GENUINE ABBREVIATION of it — a proper hex prefix, never longer than the sha itself. An
+    overlong value (a 64-char forgery offered against a 40-char HEAD) names a different object
+    instead of abbreviating this one, and an empty or non-hex value names nothing, so all of them
+    are refused rather than matching a prefix.
+    """
     if not head or not revision:
         return False
     left, right = head.strip().lower(), revision.strip().lower()
-    return left == right or left.startswith(right) or right.startswith(left)
+    if len(left) not in _FULL_REVISION_LENGTHS:
+        return False              # not a full sha, so it cannot anchor an abbreviation of itself
+    if not (_HEX_REVISION.match(left) and _HEX_REVISION.match(right)):
+        return False
+    if left == right:
+        return True                   # canonical resolved equality
+    return len(right) < len(left) and left.startswith(right)
 
 
 def _clone_is_pinned(clone: pathlib.Path, revision: str, *, timeout: float) -> str | None:

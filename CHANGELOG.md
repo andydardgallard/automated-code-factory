@@ -5,11 +5,200 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — на [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [12.26.1] — 2026-11-27
+
+### Fixed
+
+- **Controls and evidence (C01, C02, C04, C06, C11, M06).** The Diagnostician path no longer resets a
+  retry counter by hand: it goes through the ordinary pre-delegation gate that increments and refuses,
+  so a consumed budget cannot be refunded by prose. The destructive-action gate reads a BACKTICK
+  substitution exactly like its `$(...)` twin — body classified recursively, never executed, quoted
+  and escaped text staying text, and an unclosed, empty or too-deeply nested body failing closed with
+  `CONFIRM` — closing the bypass the old notation left open. `evidence_ledger.py stamp` refuses a
+  file that does not exist or cannot be read (an existing readable zero-byte file remains valid
+  evidence), while `check` keeps the `missing`/`unreadable` markers so a deletion AFTER stamping is
+  still detected. The supervisor's model is resolved from the task AS HANDED OVER and recorded before
+  the spawn (`supervisor_watchdog.py resolve-model`): a task pin verbatim, only an absent pin taking
+  the default matrix, no model a STOP rather than a substitute. Its activation spans two writes and is
+  recoverable, so a lost second write no longer refuses the run as already launched. The permit gate
+  reads the plan's canonical bracketed `files: [a.py, b.py]` list as those paths, and the
+  retroactive-authorization case is re-pinned through the supported path with its exact diagnostic.
+- **Input contracts (M01–M05, M09/N03, N02, N04).** One validated model matrix now backs both the
+  resolver and the task parser: a wrong-shaped `models:` block, an unknown role, an empty alias, a
+  malformed `default_model` or a config table header that is not closed with the SAME number of
+  brackets it opens (`[[secondary_model]`, `[secondary_model]]`) is an actionable contract error
+  naming the file, the line and the fix, never a silently empty matrix, a literal `[unterminated`
+  alias or a `default_model` read in the wrong section. An INDENTED header is legal TOML: it is
+  stripped first, so it is read as its section (or refused when malformed) exactly like a flush-left
+  one and an indented `[secondary_model]` is no longer skipped. The task parser treats a quote as a
+  delimiter only where a quoted scalar can begin — after a flow opener, a comma or a `key:`
+  separator, with whitespace only padding a token — so the apostrophe of `[Bob's]` or `[Bob 's]`
+  stays plain text instead of opening a quoted region that swallowed the closing bracket and refused
+  a valid value. An unquoted YAML anchor or alias is refused instead of being read as text, while a
+  quoted one stays literal. `chrome_devtools_mcp.py vendor-install --timeout` accepts whole decimal
+  seconds in `1..3600` and validates them BEFORE any side effect. A pinned revision matches the HEAD
+  only as canonical equality or a genuine hex abbreviation of a full sha, so an overlong forgery is
+  refused. Roblox `isError` is strictly boolean when present — `"true"`, `1`, `null` are refused,
+  never coerced into success — and the applicability check binds action to object CLAUSE by clause,
+  so proximity no longer lets a documentation clause discard real game work or let one escape.
+- **Conditional paths (C03, C05, N07).** `agent_catalog_check.py --root <repo>` reads the DEPLOYED
+  `.agents/agents/sub-agents` catalog first and the legacy `agents/sub-agents` second, so a factory
+  or installed-project root no longer reports every role missing. A Farukon session's stop reaches the
+  descendants even after its launcher exited (a Windows job object plus a POSIX process group, every
+  step bounded), so no platform instance is leaked. The vendored Roblox guidance limits its
+  LocalScript prohibition to unsupported locations and enumerates the supported client containers —
+  `StarterPlayerScripts` (cloned into `PlayerScripts`), `StarterCharacterScripts` (cloned into the
+  character), `StarterGui` (cloned into `PlayerGui`) and a `Tool` under `StarterPack` (cloned into
+  the player's `Backpack`) — instead of the three containers it used to name.
+- **Test harnesses (C08, C09, C10, M07, M08, N05).** `test_business_tester_flow.py --no-drive` is
+  validation-only and proves no drive invocation happens; `test_vaccination.py` sends subprocess
+  output to temporary files and terminates the process tree with a bounded wait; `validate_mermaid.py`
+  checks delimiter ORDER and NESTING with a quote/escape-aware stack, so reversed or crossed shapes
+  fail where equal counts passed; a missing FTS5 and a missing `git` are loud nonzero results instead
+  of a false PASS; and the Modern Web Guidance test no longer reads an unassigned outcome.
+
+### Changed
+
+- **Memory and release history (C12, C13, N06).** The contaminated `2026-10-25` records are repaired
+  against same-run evidence, with unsupported historical results recorded as `unknown` instead of
+  invented; run `20261101-e519a1da` is restored as its own record with one `unfinished:` section and
+  explicit unknown metadata; the journal contract now rejects a duplicated `results` sub-key, an
+  evidence mark citing a LATER run, and a second `unfinished:`/`closed:` block in one record. The
+  empty `12.22.0`/`12.24.0`/`12.24.1` release sections are backfilled from surviving journal evidence
+  and `12.25.0` states its evidence limitation honestly.
+- **Documentation maps (M10, N01, N07).** The `.gitignore` no longer hides the factory's own
+  `.agents/` source tree; all three fingerprint references teach the ONE derived-state design
+  (`.code-factory/state/fingerprint.json`, no embedded marker); and the behavior maps in `README.md`,
+  `AGENTS.md`, this manual and `SKILL.md` describe the stabilized behavior above.
+
+## [12.26.1] — 2026-11-27
+
+## [12.26.0] — 2026-11-26
+
+### Added
+
+- **The 16th role: `factory-roblox-expert` and a conditional Roblox game path.** A new specialist
+  (`sub-agents/roblox-expert.md`, coder-class, generator-side, `models.roblox_expert`) builds, runs,
+  play-tests and debugs Roblox places through the BUILT-IN Roblox Studio MCP server
+  (`mcp__Roblox_Studio__*`). Activation is deterministic and carries reasons, never a model call:
+  `roblox_mcp.py decide` requires TWO independent conditions — the repository really IS a Roblox
+  project (Rojo descriptor, place file, a Luau source using the Roblox API, a managed
+  `Roblox_Studio` entry) AND the metadata-stripped task text binds a Roblox SUBJECT to an ACTION.
+  Either condition alone keeps the role off, repository identity and task text are not scope, and a
+  `models.roblox_expert` model pin never activates anything.
+- **Deterministic helper `roblox_mcp.py`** (stdlib, zero tokens): `decide`, `merge-config`,
+  `validate-config`, a fail-soft `probe` whose Studio start is strictly opt-in (`--check-mcp-start`),
+  and the scenario runner `scenario run`/`verdict`/`verify`. Registration is GLOBAL by default, into
+  the USER-SCOPE CLI config resolved and echoed by the script (`$KIMI_CODE_HOME/mcp.json`, else
+  `~/.kimi-code/mcp.json`), with `--target` as an explicit override for tests; the merge is
+  idempotent and text-preserving, and a DIFFERENT `Roblox_Studio` entry is reported as a conflict
+  (exit 3) and left untouched, never overwritten. An undeterminable data root is a usage error.
+  `test_roblox_mcp.py` pins the contract (decide matrix, the global and override targets, the
+  conflict, the scenario verdict, every CLI input boundary).
+- **A structured evidence model instead of an opinion.** `scenario run` drives one bounded MCP
+  session, captures the Studio console output into `console.log` and writes a `verdict.json`; `PASS`
+  requires the scenario to have COMPLETED with NO error log line, so an error-logged run is never a
+  PASS, and a screenshot is recorded as an artifact with `screenshot_is_verdict: false` — never the
+  verdict. `scenario verify` re-reads the artifacts (including the recorded console sha256) instead
+  of trusting the verdict field. The tester owns acceptance, the specialist only produces diagnostic
+  evidence, and `references/roblox-mcp.md` documents the whole path.
+- **Three vendored Roblox skills** — `game-development`, `roblox-studio-mcp` and `roblox-engine-api`
+  (a scoped INDEX whose single-page source limitation is documented) — pinned in
+  `skill-base/manifest.json`, read as DATA only, licence/NOTICE preserved, nothing installed or
+  executed. The role is registered across `model_matrix`, `model_attribution`, `check_factory_model`,
+  both deployers' 16-profile lists, the flow wiring (pre-flight `--roblox`, the implement and
+  acceptance nodes) and the R1/R2 Roblox infrastructure rows of the error router.
+
+### Fixed
+
+- **Critical: `verify_acceptance.py` hung on verify commands with long output.** `run_verify` waited
+  on pipes that a verify command's grandchildren (pytest workers, `cmd.exe` under `shell=True`)
+  inherit and keep open, so a run could block long past its own finish — and megabytes on both
+  streams could deadlock the pipe buffers. The runner now redirects stdout/stderr to temp files,
+  waits on the process with the existing timeout, and reads a BOUNDED tail window back into the
+  unchanged excerpt; the observable contract is untouched (same exit codes, MET/FAILED mapping,
+  timeout note, excerpt shape, `shell=True`/`cwd` semantics). New self-bounding regression cases
+  cover megabytes on both streams, a handle-inheriting grandchild and the timeout path, and the
+  vaccination group RB-0..RB-5 proves the fix (and the new role) fail on the pre-fix tree.
+
 ## [12.25.0] — 2026-11-26
+
+### Note — release notes reconstructed from limited evidence
+
+- **No journal record and no release archive survive for this release.** The change journal jumps
+  from the 12.24.1 record straight to the 12.26.0 one, `.code-factory/` holds no archive of the
+  12.25.0 run, and the section in this file was created empty by the release itself. Nothing below
+  is taken from a neighbouring release.
+- The only same-version evidence is the release commit — `fc1196b` "v12.25.0: stabilize agent
+  catalog and permit lifecycle" — so the scope is recorded at exactly the confidence that commit
+  carries, as the set of files it touched and no further: new `agent_catalog_check.py` and
+  `run_guard.py` with their self-tests (`test_stable_agent_catalog.py`, `test_run_guard.py`,
+  `test_agent_catalog_stability.py`), hardened `permit_gate.py` and `delegation_gate.py` with their
+  self-tests, a reworked `supervisor_watchdog.py`, sync of `AGENTS.md`, `.agents/README.md`,
+  `SKILL.md`, `README.md`, the error-routing tables, `prepare_factory.ps1`/`.sh` and `start.cmd`.
+- No acceptance result, review verdict, model attribution, vaccination count or regression summary
+  for this release can be attested from surviving evidence, so none is asserted here. Those facts
+  are recorded as unknown rather than inferred.
 
 ## [12.24.1] — 2026-11-23
 
+### Added
+
+- **The pinned Modern Web Guidance adapter** — `modern_web_guidance.py` reads the guidance corpus as
+  DATA from one reviewed commit (never `npx`), fails closed on the full sha, requires an explicit
+  `.mwgrc` opt-in plus a declared fallback for unstable guidance, and `check-session` demands this
+  run's own search→retrieval journal. `test_modern_web_guidance.py` and
+  `skill-base/skills/modern-web-guidance/SKILL.md` ship with it [verified: `.code-factory/manifest.json`].
+
+### Fixed
+
+- **Session identity and action audit were taken from timestamps instead of the wire.** The
+  current CLI session is now derived from wire evidence (`test_permit_gate.py` overlapping-session
+  regression), an explicit session is forwarded to every wire audit while `auto` honours the
+  run-bound pipeline session (`test_gate_all.py`, `test_action_gate.py`), so permit, delegation and
+  model-attribution audits report on the session that really ran [verified:
+  `.code-factory/logs/gate-K.md`, `gate-Y.md`, `state/model-attribution.json`].
+
+### Note
+
+- **This is a PRESERVED release, not a reimplementation.** The inherited change set (42 changed + 3
+  created files) was carried forward and released after retesting rather than rewritten; the
+  preceding run that produced it failed its own finish audit and released nothing, so 12.24.1 is the
+  first release of those fixes [verified: `.code-factory/manifest.json`, `.code-factory/logs/code-review.md`].
+  Integration and business checks PASS, regression 55/55 with vaccination 205/205, review APPROVE
+  with no open critical or major findings, acceptance SUCCESS with 4/4 executable criteria MET.
+
 ## [12.24.0] — 2026-11-06
+
+### Added
+
+- **A watchdog that watches the run on its own.** `supervisor_watchdog.py` (with
+  `test_supervisor_watchdog.py`) monitors a run continuously through the zero-token deterministic
+  scanners, spends an LLM turn only on flagged anomalies, and can stop or correct a violation —
+  replacing the earlier single-shot supervisor check [verified: `.code-factory/manifest.json`].
+- **`rollback.py`** (with `test_rollback.py`): the failure path of the pipeline is now a tested
+  script instead of prose [verified: `.code-factory/manifest.json`].
+- **The `verified-acceptance` rule split by task type.** `implement` proves `regression=pass` FRESH,
+  `review`/`audit` prove their deliverables FRESH; the amended canonical wording was propagated to
+  all 96 carriers and `check_factory_rules.py` exits 0 on them [verified: `.code-factory/logs/code-review.md`].
+
+### Fixed
+
+- **The whole accepted findings list of review `20261104-b5b601f6`** — 60 findings (40 critical /
+  16 major / 4 minor) closed across 77 files in one run, including the two owner requirements added
+  after delivery: `.example.task.yaml` lists all 15 registry roles, and the supervisor became the
+  autonomous watchdog above. Review converged over 4 iterations to APPROVE with 0 open findings;
+  acceptance SUCCESS with 30/30 verify criteria MET, regression 54/54, vaccination 169/169
+  [verified: `.code-factory/logs/code-review.md`, `state/acceptance.md`, `logs/regression-final.log`].
+
+### Known limitations (carried)
+
+- `verify_acceptance.py` still hangs on criteria whose verify command produces long output — the
+  critical factory defect this release does NOT fix (closed in 12.26.0) [verified: the 12.26.0 entry].
+- Five minor contract gaps from the adversarial sweep stay open: `permit_gate add` without a run
+  binding, `calibrate --memory-root` passing silently, an unregistered `models` key being accepted,
+  `chrome decide` on a nonexistent repository, and `task_parser` YAML anchors [verified:
+  `logs/business-adversarial/20261105-11a026da.json`].
 
 ## [12.23.0] — 2026-11-04
 
@@ -90,6 +279,37 @@
   and non-negative before the process is launched (zero = immediate).
 
 ## [12.22.0] — 2026-11-03
+
+### Added
+
+- **The `factory-farukon-expert` role and the Farukon MCP integration** — a coder-class specialist
+  that develops and operates the Farukon platform only through its 8 MCP tools, built as a full
+  analogy of the `gui-expert` path: `scripts/farukon_mcp.py` (`decide`/`merge-config`/`probe`/
+  `validate-config`), `test_farukon_mcp.py` (298 assertions), `references/farukon-mcp.md`,
+  `sub-agents/farukon-expert.md`, the `models.farukon_expert` task key, the `model_matrix`/
+  `model_attribution` registry and alias, `factory_preflight.py --farukon`, the F1/F2 error-router
+  rows, and the flow, briefing and reference-doc wiring — 34 files [verified:
+  `.code-factory/manifest.json`].
+- **Real-platform evidence for the new path**: Scenario B ran a genuine MCP session through the new
+  specialist (build, replay start, `connector_state`, bounded stop, instance `rt-760-0`) and an
+  independent tester accepted the result 6/6 on instance `rt-760-1`; 47/47 self-test files green
+  after every rework round [verified: `.code-factory/logs/business-tests.md`, `factory-suite.log`].
+
+### Fixed
+
+- **The MCP protocol-version mismatch surfaced by the live session.** The CLI requests protocol
+  `2025-11-25` while the server answered at most `2025-06-18`; per the standing decision the CLI is
+  never modified, so echo-negotiation was implemented on the SERVER side and shipped as platform
+  v3.4.1 (commit `17b3366d`, platform regression 451/0) [verified: platform git log, tester run].
+
+### Known limitations (carried)
+
+- Five review findings of iteration 5 ship OPEN by owner decision (0 critical): generic identity
+  terms (`integration`/`runtime`) activate unrelated tasks, the opt-in handshake timeout arguments
+  accept non-finite values, `decide_applicability` and `validate_config` exceed the cyclomatic gate,
+  and the ~70-line JSON text-surgery shared with `chrome_devtools_mcp.py` stays duplicated — a
+  documented standalone-deployment trade-off the reviewer wants reconsidered [verified:
+  `.code-factory/logs/code-review.md`].
 
 ## [12.21.0] — 2026-11-01
 

@@ -42,7 +42,19 @@ Cases (fixtures live in a tempdir; nothing is written into the repository):
      no model at all is a warning ("cannot be fully checked"), not a silent pass;
  13. VACCINATION probe for "no third path": a completely EMPTY configuration (no task `models:`
      block, no default matrix) is a resolution ERROR and `resolve` exits 1 — the pre-fix code
-     printed source "none" as warnings only and exited 0.
+     printed source "none" as warnings only and exited 0;
+ 16. M02 REGRESSION: a malformed default-config model-selection entry (an unclosed array, an
+     unclosed quote, no value, an unclosed table header) is a CONTRACT ERROR naming the file, the
+     line and the fix, in the API and in `default`/`resolve` (exit 2) — it is never read as a model
+     alias and never silently yields the defaults. TOML allows leading whitespace before a header,
+     so an INDENTED header is read as its section while an indented malformed one is still refused
+     (the two used to be skipped alike);
+ 17. M03 REGRESSION: a `models` value that is not a role->alias mapping (a list of entries, a
+     string, a list/mapping/number or an empty value on one role) is refused by the resolver API
+     and by `resolve` (exit 2) instead of being treated as an absent matrix;
+ 18. N02 REGRESSION: an unsupported role key is refused by `validate_matrix`/`resolve`/
+     `resolve_all` and by `resolve --task` (exit 2, naming the role and the supported roster), so
+     `made_up_role` can never appear in a resolved matrix.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -94,6 +106,7 @@ models:
   tester: kimi-k3
   gui_expert: deepseek-flash
   farukon_expert: deepseek-flash
+  roblox_expert: deepseek-flash
   business_tester: deepseek-flash
   refactorer: deepseek-flash
   reviewer: deepseek-flash
@@ -126,6 +139,7 @@ models:
   tester: deepseek-flash
   gui_expert: deepseek-flash
   farukon_expert: deepseek-flash
+  roblox_expert: deepseek-flash
   business_tester: deepseek-flash
   refactorer: deepseek-flash
   reviewer: kimi-code/k3
@@ -645,6 +659,207 @@ def case_15_example_task_lists_every_role() -> None:
                f"the example entry for {role} must state its generator/judge side: {ln!r}")
 
 
+def case_16_malformed_default_config_is_refused(root: pathlib.Path) -> None:
+    """M02: malformed default-config content is a CONTRACT ERROR, never a model alias.
+
+    Pre-fix `_config_defaults` regex-read every `default_model` line and `_unquote` passed a broken
+    value through untouched, so `default_model = [unterminated` became the alias `[unterminated`
+    and `default` exited 0 printing it for every primary-preference role (BA-011).
+    """
+    for name, text, needles in (
+            ("config-unclosed-array.toml", "default_model = [unterminated\n",
+             ("default_model", "line 1", "model alias")),
+            ("config-unclosed-quote.toml", 'default_model = "kimi-code/k3\n',
+             ("default_model", "line 1", "quote")),
+            ("config-no-value.toml", "default_model =\n",
+             ("default_model", "line 1", "no value")),
+            ("config-unclosed-header.toml",
+             'default_model = "kimi-code/k3"\n\n[secondary_model\n'
+             'default_model = "deepseek-flash"\n',
+             ("table header", "line 3", "secondary_model")),
+            # A header closed with a DIFFERENT number of brackets than it opened: one loose regex
+            # accepted both, so the section was silently misread instead of failing (review-1
+            # finding 2).
+            ("config-unclosed-array-table.toml",
+             'default_model = "kimi-code/k3"\n\n[[secondary_model]\n'
+             'default_model = "deepseek-flash"\n',
+             ("table header", "line 3", "secondary_model")),
+            ("config-extra-closing-bracket.toml",
+             'default_model = "kimi-code/k3"\n\n[secondary_model]]\n'
+             'default_model = "deepseek-flash"\n',
+             ("table header", "line 3", "secondary_model"))):
+        path = write(root, name, text)
+        try:
+            mm.load_default_matrix(path)
+        except ValueError as exc:
+            message = str(exc)
+            expect(name in message, f"{name}: the error must name the config file: {message!r}")
+            for needle in needles:
+                expect(needle in message,
+                       f"{name}: the error must carry {needle!r}: {message!r}")
+        else:
+            raise AssertionError(f"{name}: malformed config content must raise, not load a matrix")
+
+        res = run("default", "--config", str(path))
+        expect(res.returncode == 2,
+               f"{name}: `default` must exit 2, got {res.returncode}: {out(res)!r}")
+        expect(out(res).strip() == "", f"{name}: no matrix may be printed: {out(res)!r}")
+        expect(b"Traceback" not in res.stderr, f"{name}: no traceback: {err(res)!r}")
+        expect(name in err(res), f"{name}: the message must name the file: {err(res)!r}")
+
+    # `resolve` refuses the same config instead of resolving roles from it.
+    task_file = write(root, "task-broken-config.yaml", FIXTURE_TASK)
+    broken = run("resolve", "--task", str(task_file),
+                 "--config", str(root / "config-unclosed-array.toml"))
+    expect(broken.returncode == 2,
+           f"a malformed config must stop the resolution: {out(broken)!r} {err(broken)!r}")
+    expect(out(broken).strip() == "", f"nothing may be resolved: {out(broken)!r}")
+    expect(b"Traceback" not in broken.stderr, f"no traceback: {err(broken)!r}")
+
+    # Contrast: an ordinary config of the same shape still loads — the check is about MALFORMED
+    # content, not about refusing configuration.
+    expect(mm._config_defaults(write(root, "config-still-valid.toml", FIXTURE_CONFIG))
+           == ("kimi-code/k3", "deepseek-flash"),
+           "a well-formed config must still yield the primary and secondary default models")
+    # …and a header closed with the SAME count it opened is still read as its section in either
+    # form: the check is about a MISMATCHED count, not about refusing a header shape.
+    expect(mm._config_defaults(write(root, "config-array-table.toml",
+                                     '[[secondary_model]]\ndefault_model = "deepseek-flash"\n'))
+           == ("", "deepseek-flash"),
+           "a well-formed header must still be read as its own section")
+
+    # REGRESSION (review-2 finding 1): TOML allows LEADING WHITESPACE before a table header, so an
+    # indented header is legal and must select its section — while an indented MALFORMED header must
+    # still be refused. The raw-line `not raw[:1].isspace()` guard skipped both, so a real config
+    # written with indented tables lost its `[secondary_model]` section without a word.
+    for name, text in (
+            ("config-indented-section.toml",
+             'default_model = "kimi-code/k3"\n\n  [secondary_model]\n'
+             '  default_model = "deepseek-flash"\n'),
+            ("config-indented-array-table.toml",
+             'default_model = "kimi-code/k3"\n\n\t[[secondary_model]]\n'
+             '\tdefault_model = "deepseek-flash"\n')):
+        path = write(root, name, text)
+        expect(mm._config_defaults(path) == ("kimi-code/k3", "deepseek-flash"),
+               f"{name}: an indented TOML table header is legal and must select its section, "
+               f"got {mm._config_defaults(path)!r}")
+
+    for name, text in (
+            ("config-indented-unclosed-header.toml",
+             'default_model = "kimi-code/k3"\n\n  [secondary_model\n'
+             '  default_model = "deepseek-flash"\n'),
+            ("config-indented-mismatched-header.toml",
+             'default_model = "kimi-code/k3"\n\n  [[secondary_model]\n'
+             '  default_model = "deepseek-flash"\n'),
+            ("config-indented-extra-bracket.toml",
+             'default_model = "kimi-code/k3"\n\n\t[secondary_model]]\n'
+             '\tdefault_model = "deepseek-flash"\n')):
+        path = write(root, name, text)
+        try:
+            mm._config_defaults(path)
+        except ValueError as exc:
+            message = str(exc)
+            for needle in (name, "table header", "line 3"):
+                expect(needle in message,
+                       f"{name}: an indented malformed header must be refused with the file, the "
+                       f"line and the header — missing {needle!r} in {message!r}")
+        else:
+            raise AssertionError(f"{name}: an INDENTED malformed header must still be refused")
+
+
+def case_17_wrong_shaped_models_is_refused(root: pathlib.Path) -> None:
+    """M03: a `models` value that is not a role->alias mapping fails, it never means "absent".
+
+    Pre-fix `_matrix()` turned anything that was not a dict into `{}` and `_model()` stringified
+    every other value, so `resolve --task <models list>` exited 0 with every role on the default
+    matrix (BA-010) and `{"coder": ["kimi-k3"]}` resolved the alias "['kimi-k3']".
+    """
+    for label, task_matrix in (("a list of entries", [{"coder": "kimi-k3"}]),
+                               ("a list of roles", ["coder"]),
+                               ("a bare string", "coder: kimi-k3"),
+                               ("a role value that is a list", {"coder": ["kimi-k3"]}),
+                               ("a role value that is a mapping", {"coder": {"model": "kimi-k3"}}),
+                               ("a role value that is a number", {"coder": 3}),
+                               ("an empty role value", {"coder": "   "})):
+        try:
+            mm.validate_matrix(task_matrix, "the task's models matrix")
+        except ValueError as exc:
+            expect("models matrix" in str(exc),
+                   f"{label}: the error must name the matrix: {str(exc)!r}")
+        else:
+            raise AssertionError(f"{label}: a wrong-shaped models value must be refused")
+
+    for label, call in (
+            ("resolve with a wrong-shaped task matrix",
+             lambda: mm.resolve({"coder": ["kimi-k3"]}, {}, "coder")),
+            ("resolve with a wrong-shaped default matrix",
+             lambda: mm.resolve({}, ["coder"], "coder")),
+            ("resolve_all with a wrong-shaped task matrix",
+             lambda: mm.resolve_all({"coder": ["kimi-k3"]}, {}))):
+        try:
+            call()
+        except ValueError:
+            continue
+        raise AssertionError(f"{label}: must be refused, never treated as an absent matrix")
+
+    # The CLI: a models block written as a LIST or with an inline value is a contract error
+    # (exit 2), never a silent fallback to the default matrix.
+    no_defaults = write(root, "config-no-defaults.toml", "# no models configured here\n")
+    for name, text, line in (
+            ("task-models-list.yaml",
+             "title: models list fixture\nrepo_path: .\nmodels:\n"
+             "  - coder: kimi-k3\n  - reviewer: deepseek-flash\n", "line 4"),
+            ("task-models-inline.yaml",
+             "title: models inline fixture\nrepo_path: .\nmodels: [coder: kimi-k3]\n", "line 3")):
+        task_file = write(root, name, text)
+        res = run("resolve", "--task", str(task_file), "--config", str(no_defaults))
+        expect(res.returncode == 2,
+               f"{name}: a wrong-shaped models block must exit 2, got {res.returncode}: "
+               f"{out(res)!r}")
+        expect(out(res).strip() == "", f"{name}: nothing may be resolved: {out(res)!r}")
+        expect(name in err(res), f"{name}: the message must name the file: {err(res)!r}")
+        expect(line in err(res), f"{name}: the message must name {line}: {err(res)!r}")
+        expect("Traceback" not in err(res), f"{name}: no traceback: {err(res)!r}")
+
+
+def case_18_unknown_model_role_is_refused(root: pathlib.Path) -> None:
+    """N02: an unsupported role key is refused by the resolver AND by the task reader.
+
+    Pre-fix `resolve_all` appended every extra key of either matrix, so a misspelled
+    `made_up_role: deepseek-flash` was printed as a valid resolved entry with exit 0 (BA-009) and
+    the user could believe the assignment took effect. The Phase-0 parser refuses the same key
+    (`test_task_error_is_actionable.py` case 8).
+    """
+    for label, call in (
+            ("validate_matrix", lambda: mm.validate_matrix({"made_up_role": "deepseek-flash"},
+                                                           "the matrix")),
+            ("resolve", lambda: mm.resolve({"made_up_role": "deepseek-flash"}, {}, "coder")),
+            ("resolve_all", lambda: mm.resolve_all({}, {"made_up_role": "deepseek-flash"}))):
+        try:
+            call()
+        except ValueError as exc:
+            message = str(exc)
+            expect("made_up_role" in message, f"{label}: the error must name the role: {message!r}")
+            expect("supported" in message,
+                   f"{label}: the error must name the supported roles: {message!r}")
+        else:
+            raise AssertionError(f"{label}: an unsupported role key must be refused")
+
+    # The CLI resolves no matrix at all from such a task: exit 2, the role and the roster named.
+    no_defaults = write(root, "config-no-defaults.toml", "# no models configured here\n")
+    task_file = write(root, "task-unknown-role.yaml",
+                      "title: unknown role fixture\nrepo_path: .\nmodels:\n"
+                      "  coder: kimi-k3\n  made_up_role: deepseek-flash\n")
+    res = run("resolve", "--task", str(task_file), "--config", str(no_defaults))
+    expect(res.returncode == 2,
+           f"an unsupported role must exit 2, got {res.returncode}: {out(res)!r}")
+    expect(out(res).strip() == "", f"nothing may be resolved: {out(res)!r}")
+    expect("line 5" in err(res) and "made_up_role" in err(res),
+           f"the message must name the line and the role: {err(res)!r}")
+    expect("analyzer" in err(res), f"the message must name the supported roles: {err(res)!r}")
+    expect("Traceback" not in err(res), f"no traceback: {err(res)!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -663,12 +878,16 @@ def main() -> int:
         case_13_empty_matrix_is_a_resolution_error(root)
         case_14_new_roles_are_registered_and_sided()
         case_15_example_task_lists_every_role()
+        case_16_malformed_default_config_is_refused(root)
+        case_17_wrong_shaped_models_is_refused(root)
+        case_18_unknown_model_role_is_refused(root)
 
     print("PASS - model_matrix.py keeps the task's model verbatim on a collision (warning only), "
           "falls back to the default matrix for an unnamed role (error when the default matrix "
           "collides), refuses to start on a role it cannot resolve (empty matrix = error, no "
           "third path), keeps the committee's contrasting second planner as the only override, "
-          "and reports an unclassifiable alias instead of crashing.")
+          "reports an unclassifiable alias instead of crashing, and refuses a malformed config, a "
+          "wrong-shaped models value and an unsupported role key with an actionable exit 2.")
     return 0
 
 

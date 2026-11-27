@@ -21,6 +21,7 @@ place `override` is ever involved; `resolve()` never sets it.
 Public API (`precedence()` returns the same rulebook as one English paragraph):
 
   family(alias) -> "kimi"|"deepseek"|"qwen"   vendor family of a model alias; ValueError if unknown
+  validate_matrix(value, origin)              one models matrix as role -> alias, validated
   load_default_matrix(config_path=None)       role -> model from config.toml + sub-agent frontmatter
   resolve(task_matrix, default_matrix, role)  one role: model, source (task|default|none), warnings
   resolve_all(task_matrix, default_matrix)    every role, in ROLES order
@@ -28,6 +29,12 @@ Public API (`precedence()` returns the same rulebook as one English paragraph):
   check_resolution(resolved)                  the full pre-flight: unresolved roles + families
   committee_second_planner(first_model, ...)  the contrasting planner of the plan committee
   precedence()                                the precedence, one paragraph
+
+A models matrix is a MAPPING: a supported role key (`ROLES`) -> ONE non-empty model alias string
+(and nothing else — a list, a mapping inside a role or an empty value is a contract error, never a
+silently empty matrix). `load_default_matrix` reads only the model-selection entries of the CLI
+config, and it validates them: a malformed value or an unclosed table header is an actionable
+config error, never a literal model alias.
 
 CLI:
   python model_matrix.py family --model deepseek-flash
@@ -39,10 +46,11 @@ prints the resolved matrix of a task plus the family check. Exit codes: 0 = succ
 found a resolution ERROR — either a REQUIRED role with no model at all (source `none`: no task
 entry and no default-matrix entry, and there is no third path), or the default matrix breaks its
 own generator != judge rule; 2 = a contract error with a message and no traceback — an alias
-`family` cannot place into a known family, or a task file `resolve` cannot read. A missing config
-file or missing sub-agent file degrades gracefully
-(that role is simply absent from the default matrix) — the factory then has no model to offer and
-says so instead of inventing one.
+`family` cannot place into a known family, a task file `resolve` cannot read, a models matrix that
+is not a mapping of supported roles to non-empty alias strings, or a CLI config whose
+model-selection entries are malformed. A missing config file or missing sub-agent file degrades
+gracefully (that role is simply absent from the default matrix) — the factory then has no model to
+offer and says so instead of inventing one.
 """
 from __future__ import annotations
 
@@ -54,17 +62,20 @@ import sys
 
 # Every role that can be named by a task's `models:` matrix, in the order the factory reports them.
 ROLES = ("analyzer", "planner", "coder", "tester", "gui_expert", "farukon_expert",
-         "business_tester", "refactorer", "reviewer", "supervisor", "diagnostician", "advisor",
-         "documenter", "security_auditor", "skill_manager")
-# The two sides of the generator != judge rule (gui_expert and farukon_expert implement, so they
-# are generator-side; the business_tester DOES the product as a user and reports, so it is
-# generator-side too, while the supervisor only JUDGES a permit and is judge-side).
-GENERATOR_SIDE = ("coder", "tester", "gui_expert", "farukon_expert", "business_tester")
+         "roblox_expert", "business_tester", "refactorer", "reviewer", "supervisor",
+         "diagnostician", "advisor", "documenter", "security_auditor", "skill_manager")
+# The two sides of the generator != judge rule (gui_expert, farukon_expert and roblox_expert
+# implement, so they are generator-side; the business_tester DOES the product as a user and
+# reports, so it is generator-side too, while the supervisor only JUDGES a permit and is
+# judge-side).
+GENERATOR_SIDE = ("coder", "tester", "gui_expert", "farukon_expert", "roblox_expert",
+                  "business_tester")
 JUDGE_SIDE = ("reviewer", "supervisor", "diagnostician", "advisor")
 
 # Role -> sub-agent file name, where the file name is not `<role>.md`.
 ROLE_FILES = {"reviewer": "code-reviewer.md", "gui_expert": "gui-expert.md",
-              "farukon_expert": "farukon-expert.md", "business_tester": "business-tester.md",
+              "farukon_expert": "farukon-expert.md", "roblox_expert": "roblox-expert.md",
+              "business_tester": "business-tester.md",
               "security_auditor": "security-auditor.md", "skill_manager": "skill-manager.md"}
 # The factory's own sub-agent definitions carry `model_preference:` in their YAML frontmatter.
 # A module-level constant, not an environment variable: nothing may silently re-point it.
@@ -126,18 +137,73 @@ def _comment_free(line: str) -> str:
     return re.sub(r"\s+#.*$", "", line).strip()
 
 
-def _unquote(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        return value[1:-1]
-    return value
+CONFIG_TABLE = re.compile(r"^\[(?P<name>[^\[\]]+)\]$")
+CONFIG_ARRAY_TABLE = re.compile(r"^\[\[(?P<name>[^\[\]]+)\]\]$")
+CONFIG_ENTRY = re.compile(r'^(?P<key>[A-Za-z0-9_."\-]+)\s*=\s*(?P<value>.*)$')
+
+
+def _config_section(line: str) -> str | None:
+    """The table name a config header line declares, or None when the header is malformed.
+
+    TOML closes a table header with the SAME number of brackets it opens: `[secondary_model]`, or
+    the array-of-tables form `[[secondary_model]]`. One loose regex accepted a mismatched count
+    (`[[secondary_model]`, `[secondary_model]]`), so the section a `default_model` belongs to was
+    silently misread instead of failing. Leading whitespace is stripped by the caller: TOML allows
+    it before a header, so an indented header is judged exactly like a flush-left one.
+    """
+    for pattern in (CONFIG_TABLE, CONFIG_ARRAY_TABLE):
+        match = pattern.match(line)
+        if match:
+            return match.group("name").strip()
+    return None
+
+
+def _config_alias(config_path: pathlib.Path, number: int, value: str) -> str:
+    """One `default_model` value as a model alias; a malformed value is a config ERROR.
+
+    A `default_model` is a TOML string: ONE quoted alias (`default_model = "kimi-code/k3"`) or one
+    bare token. An unclosed quote, an unclosed array, an empty value or text after the closing
+    quote is refused with the file, the line and the fix — the reader used to pass such a value
+    through `_unquote` untouched, so `default_model = [unterminated` became the model alias
+    `[unterminated` for every primary-preference role.
+    """
+    text = value.strip()
+    fix = ('write ONE model alias — a quoted string or a bare token, e.g. '
+           'default_model = "kimi-code/k3" (no array, inline table, spaces or commas)')
+    if not text:
+        problem = "the default_model entry has no value"
+    elif text[0] in "\"'":
+        quote = text[0]
+        end = text.find(quote, 1)
+        if end < 0:
+            problem = f"the quoted default_model value {text!r} never closes"
+            fix = f"close the quote ('default_model = {quote}kimi-code/k3{quote}')"
+        elif text[end + 1:].strip():
+            problem = f"the default_model value {text!r} has text after its closing quote"
+        elif not text[1:end].strip():
+            problem = "the default_model value is empty"
+        else:
+            return text[1:end].strip()
+    elif re.fullmatch(r"[^\s\[\]{},]+", text):
+        return text
+    else:
+        problem = f"the default_model value {text!r} is not a model alias"
+    raise ModelMatrixError(f"{config_path}: line {number}: {problem} — {fix}")
 
 
 def _config_defaults(config_path: pathlib.Path) -> tuple[str, str]:
     """(default_model, [secondary_model] default_model) of the CLI config; ("", "") if unreadable.
 
     Parsed with regexes, not `tomllib` (which exists only from Python 3.11), and only the two keys
-    the precedence needs are read — the config also carries secrets, which stay untouched.
+    the precedence needs are read — the config also carries secrets, which stay untouched. What it
+    DOES read is validated, because a misread here hands a role a model nobody configured: a table
+    header must be closed with the same number of brackets it opens (otherwise the section a
+    `default_model` belongs to is silently misread)
+    and a `default_model` value must be one model alias (`_config_alias`). Leading whitespace is
+    legal TOML before a header and is stripped first, so an indented header is READ as its section
+    (or refused when malformed) exactly like a flush-left one; skipping indented lines hid a real
+    `[secondary_model]` section and every malformed indented header alike. Malformed content raises
+    ModelMatrixError naming the file, the line and the fix.
     """
     try:
         text = config_path.read_text(encoding="utf-8", errors="replace")
@@ -146,22 +212,38 @@ def _config_defaults(config_path: pathlib.Path) -> tuple[str, str]:
     primary = ""
     secondary = ""
     section = ""
-    for raw in text.splitlines():
+    for number, raw in enumerate(text.splitlines(), 1):
         line = _comment_free(raw)
         if not line:
             continue
-        header = re.match(r"^\[\[?(.+?)\]\]?$", line)
-        if header:
-            section = header.group(1).strip()
+        if line.startswith("["):
+            name = _config_section(line)
+            if name is None:
+                raise ModelMatrixError(
+                    f"{config_path}: line {number}: the table header {line!r} is not closed — a "
+                    f"table header is written '[name]' on one line with the SAME number of "
+                    f"closing brackets (e.g. '[secondary_model]'); without it a default_model "
+                    f"below is read in the wrong section")
+            section = name
             continue
-        pair = re.match(r'^([A-Za-z0-9_."\-]+)\s*=\s*(.*)$', line)
-        if not pair or pair.group(1).strip("\"'") != "default_model":
+        pair = CONFIG_ENTRY.match(line)
+        key = pair.group("key").strip("\"'") if pair else ""
+        value = pair.group("value") if pair else ""
+        if key == "default_model":
+            alias = _config_alias(config_path, number, value)
+            if section == "":
+                primary = primary or alias
+            elif section == "secondary_model":
+                secondary = secondary or alias
             continue
-        value = _unquote(pair.group(2))
-        if section == "":
-            primary = primary or value
-        elif section == "secondary_model":
-            secondary = secondary or value
+        if not pair and line.startswith("default_model"):
+            raise ModelMatrixError(
+                f"{config_path}: line {number}: {line!r} is not a model-selection entry — write "
+                f"default_model = \"kimi-code/k3\" on one line")
+        if pair and not value.strip():
+            raise ModelMatrixError(
+                f"{config_path}: line {number}: the entry {key!r} has no value — write "
+                f"'{key} = <value>' or delete the line")
     return primary, secondary
 
 
@@ -201,7 +283,9 @@ def load_default_matrix(config_path: str | pathlib.Path | None = None) -> dict[s
     A role with no sub-agent file, or whose side of the config declares no `default_model`, is
     simply ABSENT from the returned dict — the factory has no model to offer for it and must not
     invent one. A missing config file returns `{}` instead of raising: the factory degrades to
-    "no default matrix", never to a crash.
+    "no default matrix", never to a crash. MALFORMED config content is different: a
+    `default_model` that is not a model alias, or a table header that is not closed, raises
+    ModelMatrixError naming the file, the line and the fix (`_config_defaults`).
     """
     path = pathlib.Path(config_path) if config_path is not None else DEFAULT_CONFIG
     primary, secondary = _config_defaults(path)
@@ -216,9 +300,47 @@ def load_default_matrix(config_path: str | pathlib.Path | None = None) -> dict[s
     return matrix
 
 
-def _matrix(value) -> dict:
-    """A task/default matrix as a dict; anything that is not a mapping counts as empty."""
-    return value if isinstance(value, dict) else {}
+def _checked_role(role, where: str) -> str:
+    """`role` when it is a supported model role; a contract error naming the roster otherwise."""
+    if not isinstance(role, str) or role not in ROLES:
+        raise ModelMatrixError(
+            f"{where}{role!r} is not a supported model role — the supported roles are: "
+            f"{', '.join(ROLES)}; fix the key name or drop the entry")
+    return role
+
+
+def _checked_alias(role: str, alias, where: str) -> str:
+    """One role's model alias: a non-empty string; a contract error naming the role otherwise."""
+    if not isinstance(alias, str) or not alias.strip():
+        raise ModelMatrixError(
+            f"{where}models.{role} is not a model alias ({alias!r}) — one role takes ONE "
+            f"non-empty model alias string (e.g. '{role}: kimi-code/k3'), not an empty value, a "
+            f"list or a mapping")
+    return alias.strip()
+
+
+def validate_matrix(value, origin: str) -> dict[str, str]:
+    """A models matrix as role -> alias; anything else is a contract error, never an empty matrix.
+
+    `None` is a legitimate absence (no `models:` block at all) and yields `{}`, exactly like an
+    explicitly empty mapping. Everything else must be a MAPPING of a supported role
+    (`ROLES`) to one non-empty model alias string — a list of entries, a bare string, a list or a
+    mapping inside a role and an empty alias are all refused with a message naming the matrix, the
+    offending key and the roster. The pre-fix resolver coerced every one of them to an empty matrix
+    (or to the alias `str(value)`), so a wrong-shaped block silently resolved the defaults.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ModelMatrixError(
+            f"{origin}: {value!r} is not a models matrix — it must be a MAPPING of a supported "
+            f"role to one model alias (one '<role>: <alias>' entry per role), not a "
+            f"{type(value).__name__}; the supported roles are: {', '.join(ROLES)}")
+    matrix: dict[str, str] = {}
+    for role, alias in value.items():
+        _checked_role(role, f"{origin}: ")
+        matrix[role] = _checked_alias(role, alias, f"{origin}: ")
+    return matrix
 
 
 def _model(value) -> str:
@@ -232,18 +354,21 @@ def resolve(task_matrix, default_matrix, role: str) -> dict:
     """The model of ONE role and where it came from.
 
     Returns {"role", "model", "source": "task"|"default"|"none", "warnings", "override"}.
-    A role named by the task keeps its task value verbatim (`override` stays False, no family
-    substitution whatever the families say); otherwise the default matrix decides; otherwise the
-    model is empty, the source is "none" and a warning says the model must be supplied. `override`
-    exists for the ONE exception (the committee's second planner) and `resolve` never raises it.
+    Both matrices are validated first (see `validate_matrix`): a wrong-shaped or unsupported
+    models matrix raises instead of resolving the defaults. A role named by the task keeps its task
+    value verbatim (`override` stays False, no family substitution whatever the families say);
+    otherwise the default matrix decides; otherwise the model is empty, the source is "none" and a
+    warning says the model must be supplied. `override` exists for the ONE exception (the
+    committee's second planner) and `resolve` never raises it.
     """
-    task = _matrix(task_matrix)
-    default = _matrix(default_matrix)
+    return _resolve(validate_matrix(task_matrix, "the task's models matrix"),
+                    validate_matrix(default_matrix, "the default matrix"), role)
+
+
+def _resolve(task: dict[str, str], default: dict[str, str], role: str) -> dict:
+    """`resolve` over two ALREADY validated matrices (no re-validation per role)."""
     warnings: list[str] = []
     model = _model(task.get(role))
-    if role in task and not model:
-        warnings.append(f"{role}: models.{role} is present in the task but empty — treated as "
-                        f"absent, so the default matrix applies")
     if model:
         return {"role": role, "model": model, "source": "task", "warnings": warnings,
                 "override": False}
@@ -257,11 +382,15 @@ def resolve(task_matrix, default_matrix, role: str) -> dict:
 
 
 def resolve_all(task_matrix, default_matrix) -> dict[str, dict]:
-    """`resolve` for every role: ROLES order first, then any extra role either matrix carries."""
-    task = _matrix(task_matrix)
-    default = _matrix(default_matrix)
-    order = list(ROLES) + sorted((set(task) | set(default)) - set(ROLES))
-    return {role: resolve(task, default, role) for role in order}
+    """`resolve` for every role, in ROLES order.
+
+    An unsupported role key makes either matrix a contract error: `ROLES` is the whole roster the
+    factory launches, so a key outside it can never be a resolved entry (the pre-fix code appended
+    every extra key and printed it as if the assignment had taken effect).
+    """
+    task = validate_matrix(task_matrix, "the task's models matrix")
+    default = validate_matrix(default_matrix, "the default matrix")
+    return {role: _resolve(task, default, role) for role in ROLES}
 
 
 def _default_side(role: str, source: str) -> str:
@@ -381,8 +510,8 @@ def precedence() -> str:
         "(b) When the task does not name the role, its model comes from the factory's DEFAULT "
         "MATRIX — the CLI config's `default_model` / `[secondary_model] default_model` selected by "
         "the role's `model_preference` — where the generator != judge family rule IS enforced: a "
-        "same-family coder|tester|gui_expert|farukon_expert vs reviewer|diagnostician|advisor "
-        "pair with either "
+        "same-family coder|tester|gui_expert|farukon_expert|roblox_expert vs "
+        "reviewer|diagnostician|advisor pair with either "
         "side taken from the default matrix is an ERROR naming the fix (widen [secondary_model] so "
         "the two families differ, or pin models.<role> in the task). (c) There is no third path: "
         "the main agent never picks a model on its own, so an unnamed role goes to the default "
@@ -425,8 +554,8 @@ def check_resolution(resolved) -> dict[str, list[str]]:
 # CLI
 # --------------------------------------------------------------------------------------------
 
-MODELS_HEADER = re.compile(r"^models:\s*(#.*)?$")
-MODELS_ENTRY = re.compile(r"^(\s+)([A-Za-z0-9_]+)\s*:\s*(\S.*?)\s*$")
+MODELS_HEADER = re.compile(r"^models:\s*(?P<rest>.*)$")
+MODELS_ENTRY = re.compile(r"^\s+(?P<role>[A-Za-z0-9_]+)\s*:\s*(?P<value>.*)$")
 
 
 def task_models(path: pathlib.Path) -> dict[str, str]:
@@ -434,25 +563,52 @@ def task_models(path: pathlib.Path) -> dict[str, str]:
 
     A deliberately small regex reader: the factory owns the task format, and the only block it
     needs here is a flat `role: alias` mapping. Every other key of the task is left to the main
-    agent — this script must not grow a YAML parser.
+    agent — this script must not grow a YAML parser. What it DOES read is validated like a matrix
+    (`validate_matrix`): a value on the `models:` line (a list or an inline shape), a line that is
+    not `<role>: <alias>`, an unsupported role key, a duplicate role and a missing or unquoted
+    alias are contract errors naming the file, the line and the fix. The pre-fix reader stopped at
+    the first such line and returned an empty matrix, so a malformed block silently resolved the
+    default models — and an unsupported role was printed as a valid entry.
     """
     text = path.read_text(encoding="utf-8", errors="replace")
     entries: dict[str, str] = {}
     inside = False
-    for raw in text.splitlines():
+    for number, raw in enumerate(text.splitlines(), 1):
         line = raw.rstrip()
+        where = f"{path}: line {number}: "
         if not inside:
-            if MODELS_HEADER.match(line):
+            header = MODELS_HEADER.match(line)
+            if header:
+                rest = header.group("rest").strip()
+                if rest and not rest.startswith("#"):
+                    raise ModelMatrixError(
+                        f"{where}'models:' carries the value {rest!r} — a models matrix is a "
+                        f"MAPPING, so leave the line as 'models:' and indent one "
+                        f"'<role>: <model alias>' entry per line")
                 inside = True
             continue
         if not line.strip() or line.lstrip().startswith("#"):
             continue
+        if not line[:1].isspace():
+            break                                   # the block ended: a new top-level key
         match = MODELS_ENTRY.match(line)
         if not match:
-            break                                   # the block ended: a new top-level key
-        value = re.sub(r"\s+#.*$", "", match.group(3)).strip().strip("\"'")
-        if value:
-            entries[match.group(2)] = value
+            raise ModelMatrixError(
+                f"{where}{line.strip()!r} is not a matrix entry — every entry of the models matrix "
+                f"is one line '<role>: <model alias>' indented under 'models:' (a list or a nested "
+                f"mapping is not a matrix)")
+        role = _checked_role(match.group("role"), where)
+        if role in entries:
+            raise ModelMatrixError(f"{where}duplicate models entry '{role}' — each role appears "
+                                   f"once in the matrix")
+        alias = re.sub(r"\s+#.*$", "", match.group("value")).strip()
+        if alias[:1] in ("'", '"'):
+            if len(alias) < 2 or alias[-1] != alias[0]:
+                raise ModelMatrixError(
+                    f"{where}models.{role} has the unterminated quoted alias {alias!r} — close the "
+                    f"quote on this line or write the alias without quotes")
+            alias = alias[1:-1]
+        entries[role] = _checked_alias(role, alias, where)
     return entries
 
 
@@ -466,7 +622,11 @@ def cmd_family(args) -> int:
 
 
 def cmd_default(args) -> int:
-    matrix = load_default_matrix(args.config)
+    try:
+        matrix = load_default_matrix(args.config)
+    except ModelMatrixError as exc:
+        print(f"model_matrix.py: {exc}", file=sys.stderr)
+        return 2
     if not matrix:
         print(f"model_matrix.py: no default matrix resolved from {args.config or DEFAULT_CONFIG} "
               f"— no default_model there, or no sub-agent frontmatter", file=sys.stderr)
@@ -479,10 +639,13 @@ def cmd_default(args) -> int:
 def cmd_resolve(args) -> int:
     try:
         task_matrix = task_models(pathlib.Path(args.task))
-    except (OSError, ValueError) as exc:
+        default_matrix = load_default_matrix(args.config)
+    except OSError as exc:
         print(f"model_matrix.py: cannot read the task file {args.task}: {exc}", file=sys.stderr)
         return 2
-    default_matrix = load_default_matrix(args.config)
+    except ModelMatrixError as exc:
+        print(f"model_matrix.py: {exc}", file=sys.stderr)
+        return 2
     resolved = resolve_all(task_matrix, default_matrix)
     report = check_resolution(resolved)
     if args.json:

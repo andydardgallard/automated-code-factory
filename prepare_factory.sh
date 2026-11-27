@@ -229,7 +229,7 @@ export KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1
 # this factory's own role profiles are written: the user's agents in that directory are untouched.
 # A refresh that cannot complete ABORTS the launch — a session with missing or stale roles is
 # exactly the failure this fallback exists to prevent.
-CF_AGENT_ROLES="advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester"
+CF_AGENT_ROLES="advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert roblox-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester"
 CF_AGENT_SRC="$KIMI_FACTORY_LAUNCH_DIR/.agents/agents/sub-agents"
 if [ -n "${KIMI_CODE_HOME:-}" ]; then
     CF_AGENT_DST="$KIMI_CODE_HOME/agents"
@@ -303,9 +303,9 @@ info "    Launcher: created $LAUNCHER"
 # factory's role profiles are written — a profile the factory does not manage is a copy the user
 # owns and is never modified or deleted (its own agents live in the same directory).
 AGENT_SRC="$PROJECT_DIR/.agents/agents/sub-agents"
-# The 15 role profiles the factory ships — the same roster the generated launcher verifies
+# The 16 role profiles the factory ships — the same roster the generated launcher verifies
 # (model_matrix.ROLES/ROLE_FILES is the one source; test_stable_agent_catalog.py pins the two).
-AGENT_ROLES="advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester"
+AGENT_ROLES="advisor analyzer business-tester code-reviewer coder diagnostician documenter farukon-expert roblox-expert gui-expert planner refactorer security-auditor skill-manager supervisor tester"
 if [[ -n "${KIMI_CODE_HOME:-}" ]]; then
     AGENT_CATALOG="$KIMI_CODE_HOME/agents"
 elif [[ -n "${HOME:-}" ]]; then

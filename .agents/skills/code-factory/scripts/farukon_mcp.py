@@ -109,6 +109,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import ctypes
 import json
 import math
 import os
@@ -977,32 +978,107 @@ def _drain(stream, sink: "collections.deque") -> None:
         pass
 
 
-def _terminate_tree(proc: subprocess.Popen) -> None:
-    """Terminate the child AND the process it spawned (cargo run starts the platform binary)."""
-    if proc.poll() is not None:
+_KERNEL32 = None
+
+
+def _kernel32():
+    """kernel32 with the job-object bindings this module needs (loaded once, Windows only)."""
+    global _KERNEL32
+    if _KERNEL32 is None:
+        lib = ctypes.WinDLL("kernel32", use_last_error=True)
+        lib.CreateJobObjectW.restype = ctypes.c_void_p
+        lib.CreateJobObjectW.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p)
+        lib.AssignProcessToJobObject.restype = ctypes.c_int
+        lib.AssignProcessToJobObject.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
+        lib.TerminateJobObject.restype = ctypes.c_int
+        lib.TerminateJobObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+        lib.CloseHandle.restype = ctypes.c_int
+        lib.CloseHandle.argtypes = (ctypes.c_void_p,)
+        _KERNEL32 = lib
+    return _KERNEL32
+
+
+def _adopt_tree(proc: subprocess.Popen) -> int | None:
+    """Put the child in a JOB OBJECT, so its DESCENDANTS stay reachable after the child exits.
+
+    Windows' `taskkill /T` walks the tree of a LIVE pid, so a launcher that starts the server and
+    exits (a `cargo run` wrapper, a Node launcher) would put the surviving server out of reach. The
+    job does not: it is adopted immediately after creation, so the processes the launcher spawns are
+    created INSIDE it and `_terminate_job` kills them whether or not the launcher still exists. The
+    job is an ADDITIONAL reach, never the only one: a host that refuses it keeps the leader-dependent
+    `taskkill`, and POSIX needs nothing here because a process group already outlives its leader.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        kernel32 = _kernel32()
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        if kernel32.AssignProcessToJobObject(job, ctypes.c_void_p(int(proc._handle))):
+            return job
+        kernel32.CloseHandle(job)
+    except (OSError, AttributeError, ValueError, ctypes.ArgumentError):
+        return None
+    return None
+
+
+def _terminate_job(job: int | None) -> None:
+    """Kill every process still in the job object and release it (two API calls)."""
+    if job is None or os.name != "nt":
         return
     try:
-        if os.name == "nt":
+        kernel32 = _kernel32()
+        kernel32.TerminateJobObject(job, 1)
+        kernel32.CloseHandle(job)
+    except (OSError, AttributeError, ctypes.ArgumentError):
+        pass
+
+
+def _group_signal(proc: subprocess.Popen, sig: int) -> None:
+    """Send `sig` to the group the child was started in — a group OUTLIVES its leader.
+
+    The handshake starts the child in a NEW SESSION, so its pid IS the group id; `getpgid` cannot
+    answer for an already reaped pid, so the child's own pid is the fallback group id.
+    """
+    try:
+        group = os.getpgid(proc.pid)
+    except OSError:
+        group = proc.pid
+    try:
+        os.killpg(group, sig)
+    except OSError:
+        pass
+
+
+def _terminate_tree(proc: subprocess.Popen, job: int | None = None) -> None:
+    """Terminate the child AND the processes it spawned (cargo run starts the platform binary).
+
+    The direct child's liveness is NO proof that its tree is gone: a launcher can exit while the
+    server it started survives, so the descendant cleanup below runs EVEN when `proc` has already
+    exited (that early return leaked exactly the platform instance the probe is meant to close).
+    Windows: `taskkill /F /T` reaches the tree of a live leader, then the session's job object
+    (`_adopt_tree`) reaches the descendants that outlived it; POSIX: SIGTERM, then SIGKILL, to the
+    process group. Every step is bounded by TERMINATE_TIMEOUT.
+    """
+    if os.name == "nt":
+        try:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                            capture_output=True, timeout=TERMINATE_TIMEOUT)
-        else:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (OSError, subprocess.SubprocessError):
-        pass
+        except (OSError, subprocess.SubprocessError):
+            pass
+    else:
+        _group_signal(proc, signal.SIGTERM)
     try:
         proc.wait(timeout=TERMINATE_TIMEOUT)
-        return
     except subprocess.TimeoutExpired:
-        pass
-    try:
         if os.name != "nt":
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except OSError:
-        pass
-    try:
-        proc.kill()
-    except OSError:
-        pass
+            _group_signal(proc, signal.SIGKILL)
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    _terminate_job(job)
 
 
 def _close_stdin(proc: subprocess.Popen) -> None:
@@ -1181,9 +1257,9 @@ def mcp_start_handshake(repo: str | pathlib.Path, argv: list[str] | None = None,
     answers the WHOLE listing and then dies is not green either: `post_list_alive` records that the
     process was gone right after `tools/list`.
 
-    The child process TREE is terminated on every path (a Node wrapper's server is a grandchild), so
-    a probe never leaves a platform instance behind. Failures are DATA: `ok=False` with a message,
-    never an exception.
+    The child process TREE is terminated on every path (a Node wrapper's server is a grandchild) —
+    including when the launcher itself has already exited, so a probe never leaves a platform
+    instance behind. Failures are DATA: `ok=False` with a message, never an exception.
 
     TIMEOUT POLICY (validated BEFORE any process is started, because a budget that defeats the
     bounded wait makes the probe hang instead of reporting): a timeout must be a real int/float
@@ -1222,6 +1298,9 @@ def mcp_start_handshake(repo: str | pathlib.Path, argv: list[str] | None = None,
                              f"{type(exc).__name__}: {exc}")
         return result
     state = {"frames": 0, "tail": collections.deque(maxlen=STDOUT_TAIL_LINES)}
+    # Adopted BEFORE the launcher can spawn anything, so the server it starts belongs to the job and
+    # stays reachable after the launcher exits (`_terminate_tree`).
+    job = _adopt_tree(proc)
     lines: "queue.Queue" = queue.Queue()
     errors: "collections.deque" = collections.deque(maxlen=STDERR_TAIL_LINES)
     out_thread = threading.Thread(target=_pump, args=(proc.stdout, lines, state), daemon=True)
@@ -1379,7 +1458,7 @@ def mcp_start_handshake(repo: str | pathlib.Path, argv: list[str] | None = None,
         return result
     finally:
         _close_stdin(proc)
-        _terminate_tree(proc)
+        _terminate_tree(proc, job)
 
 
 # --------------------------------------------------------------------------- capability probe

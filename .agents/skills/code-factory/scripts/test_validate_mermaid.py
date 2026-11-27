@@ -2,8 +2,9 @@
 """
 Deterministic self-test for `validate_mermaid.py` (zero LLM tokens).
 
-Verifies the structural Mermaid checker: valid flowcharts pass; missing block, unbalanced
-brackets and dangling edges fail.
+Validates the structural Mermaid checker: valid flowcharts pass; missing block, unbalanced
+brackets, crossed/reversed delimiters and dangling edges fail; quoted, escaped and deeply nested
+labels stay valid.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -47,6 +48,33 @@ NO_HEADER = """```mermaid
 ```
 """
 
+REVERSED = """```mermaid
+flowchart TD
+    A] --> B[
+```
+"""
+
+CROSSED = """```mermaid
+flowchart TD
+    A([)] --> B[End]
+```
+"""
+
+# Delimiter-shaped characters inside a quoted label are label text, never syntax.
+QUOTED = r"""```mermaid
+flowchart TD
+    A["array[0] {x} (y) and a stray ] here"] --> B[Ok]
+    B["escaped \" ] ( { quote"] --> C[Next]
+```
+"""
+
+# `[(cylinder)]`, `{{hexagon}}` and `([stadium])` are legitimately nested shapes.
+NESTED = """```mermaid
+flowchart TD
+    A[(Database)] --> B{{Hexagon}} --> C([Stadium])
+```
+"""
+
 
 def main() -> int:
     # 1. valid block passes.
@@ -69,7 +97,26 @@ def main() -> int:
     expect(any("flowchart" in e for e in vmm.check_block(vmm.extract_block(NO_HEADER))),
            "missing header must be reported")
 
-    print("PASS - mermaid validator detects valid, missing, unbalanced, dangling and no-header cases.")
+    # 6. reversed delimiters (`A] ... B[`) have equal counts, so they need the stack.
+    reversed_errors = vmm.check_block(vmm.extract_block(REVERSED))
+    expect(any("closes no open delimiter" in e for e in reversed_errors),
+           f"reversed delimiters must be reported: {reversed_errors}")
+
+    # 7. crossed nesting (`([)]`) has equal counts too, and one fault is reported once.
+    crossed_errors = vmm.check_block(vmm.extract_block(CROSSED))
+    expect(len(crossed_errors) == 1 and "unbalanced nesting" in crossed_errors[0],
+           f"crossed delimiters must be reported exactly once: {crossed_errors}")
+
+    # 8. quoted and escaped label text never opens or closes a shape.
+    quoted_errors = vmm.check_block(vmm.extract_block(QUOTED))
+    expect(quoted_errors == [], f"quoted/escaped labels must stay valid: {quoted_errors}")
+
+    # 9. legitimately nested shape pairs stay valid.
+    nested_errors = vmm.check_block(vmm.extract_block(NESTED))
+    expect(nested_errors == [], f"nested shape pairs must stay valid: {nested_errors}")
+
+    print("PASS - mermaid validator detects valid, missing, unbalanced, reversed, crossed, dangling "
+          "and no-header cases, and keeps quoted, escaped and nested labels valid.")
     return 0
 
 

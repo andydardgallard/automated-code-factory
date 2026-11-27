@@ -55,7 +55,15 @@ Deterministic self-test for `memory_project.py` (zero LLM tokens).
     matching record, `memory/` without `change-log.md` is an error (unless `--allow-fresh`) while an
     absent `memory/` stays a fresh-project note, `journal_blocks` carries 1-based `start`/`end`, and
     a `## Current state` whose open/closed/test counts diverge from the live state warns on `check`
-    and fails under `--strict` (implied by `--run-id`).
+    and fails under `--strict` (implied by `--run-id`),
+  - record INTEGRITY: a `results` sub-key declared twice (`integration=…; …; integration=…`) is an
+    error naming the repeated key, while a key merely NAMED in prose is not, and an evidence mark
+    `[verified: …]` naming a run LATER than the record is an error — the record's own run id, an
+    earlier run and a later run named outside an evidence mark stay legal,
+  - record ATTRIBUTION: a second `unfinished:` block in one record (an appended record that lost its
+    heading) and an item naming a run LATER than the record are errors — a record carries one block
+    and only its own items, while its own run id and earlier runs stay legal; an explicit `unknown`
+    factory version is accepted and any other malformed value is still refused.
 
 Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
 """
@@ -1500,6 +1508,126 @@ def main() -> int:
         expect([problem["kind"] for problem in payload["errors"]] == ["ambiguous-run-id"],
                f"the report must expose the ambiguity as an error: {payload!r}")
 
+        # 37. Record integrity — a `results` sub-key declared TWICE. The three 2026-10-25 records
+        #     each carried a whole second map entry per key (`…; integration=SKIP …; regression=…`),
+        #     so no reader could tell which verdict held. Only a SEGMENT-leading key counts, so a
+        #     value that names another key in PROSE stays legal.
+        integrity = tmp / "integrity"
+        integrity.mkdir()
+        expect(run("init", "--repo", str(integrity)).returncode == 0,
+               "init of the integrity fixture must exit 0")
+        clean_results = ("integration=PASS [verified: .code-factory/logs/test-results.md]; "
+                         "regression=PASS (inferred from this entry's own integration=PASS line); "
+                         "business=PASS; review=approve")
+        clean_entry = re.sub(
+            r"^results: .*$", "results: " + clean_results,
+            journal_entry("2026-10-25T14:04:33+03:00", "integrity",
+                          run_id="20261025-aaaabbbb", factory_version="12.9.0", marks=True),
+            flags=re.MULTILINE)
+        write_journal(integrity, clean_entry)
+        res = run("check", "--repo", str(integrity))
+        expect(res.returncode == 0,
+               f"a key named in prose is not a duplicate result key: {res.stderr!r}")
+        # The same record with a REAL second `integration=` segment is refused, and the error names
+        # the repeated key.
+        write_journal(integrity, clean_entry.replace(
+            "review=approve",
+            "review=approve; integration=SKIP (no code change was delivered)"))
+        res = run("check", "--repo", str(integrity))
+        expect(res.returncode == 1,
+               f"a duplicated result sub-key must exit 1: {res.stdout!r} {res.stderr!r}")
+        expect("results declares 'integration=' 2 times" in res.stderr,
+               f"the failure must name the repeated key: {res.stderr!r}")
+
+        # 38. An EVIDENCE mark may not name a run LATER than the record itself: a proof cannot come
+        #     from a run that had not happened yet — that is how a later run's business log ended up
+        #     inside the three 2026-10-25 records. The record's OWN run id (same date) and any
+        #     EARLIER run stay legitimate, and so does a later run named OUTSIDE an evidence mark
+        #     (an owner-authorized supplement note).
+        def with_evidence(evidence: str) -> str:
+            results = ("integration=not-run [verified: task_type review]; regression=PASS; "
+                       "business=PASS; review=approve; note=" + evidence)
+            return re.sub(r"^results: .*$", "results: " + results, clean_entry,
+                          flags=re.MULTILINE)
+
+        write_journal(integrity, with_evidence(
+            "a later run's log [verified: .code-factory/logs/business-20261104-ccccdddd.json]"))
+        res = run("check", "--repo", str(integrity))
+        expect(res.returncode == 1,
+               f"evidence naming a later run must exit 1: {res.stdout!r} {res.stderr!r}")
+        expect("cites run '20261104-ccccdddd' as evidence" in res.stderr,
+               f"the failure must name the later run: {res.stderr!r}")
+        expect("LATER than the record itself (2026-10-25)" in res.stderr,
+               f"the failure must name the record's own date: {res.stderr!r}")
+        for legit in ("its own log [verified: .code-factory/logs/20261025-aaaabbbb.json]",
+                      "an older run [verified: .code-factory/logs/20261001-ddddeeee.json]",
+                      "supplemented later in run 20261104-ccccdddd [inferred]"):
+            write_journal(integrity, with_evidence(legit))
+            res = run("check", "--repo", str(integrity))
+            expect(res.returncode == 0,
+                   f"a legitimate evidence reference must stay valid ({legit!r}): {res.stderr!r}")
+
+        # 39. Record ATTRIBUTION — a record carries ONE `unfinished:` block and only its OWN items.
+        #     The journal that motivated this check held run 20261101-e519a1da's findings appended
+        #     to the 20261031 record: two adjacent `unfinished:` sections and no record of its own.
+        own_block = ("unfinished:\n"
+                     "  - item: module-kind vaccines stay fragile\n"
+                     "    reason: carried\n"
+                     "    severity: info\n"
+                     "    follow_up: false\n")
+        attributed = journal_entry("2026-10-31T21:18:00+03:00", "integrity",
+                                   run_id="20261031-dd7ffa0e", factory_version="12.19.1",
+                                   marks=True, unfinished=own_block)
+        write_journal(integrity, attributed)
+        res = run("check", "--repo", str(integrity))
+        expect(res.returncode == 0,
+               f"one block with the record's own items must stay valid: {res.stderr!r}")
+        # A SECOND `unfinished:` in one record is an appended record that lost its heading.
+        write_journal(integrity, attributed + own_block)
+        res = run("check", "--repo", str(integrity))
+        expect(res.returncode == 1,
+               f"two unfinished blocks in one record must exit 1: {res.stdout!r} {res.stderr!r}")
+        expect("'unfinished:' is opened 2 times in one record" in res.stderr,
+               f"the failure must name the repeated block: {res.stderr!r}")
+        # An item may not name a run LATER than the record: that debt is the later run's own. Its
+        # own run id (same date) and any EARLIER run stay legitimate.
+        foreign = own_block.replace("module-kind vaccines stay fragile",
+                                    "10 review findings of run 20261101-e519a1da")
+        write_journal(integrity, attributed.replace(own_block, foreign))
+        res = run("check", "--repo", str(integrity))
+        expect(res.returncode == 1,
+               f"an item naming a later run must exit 1: {res.stdout!r} {res.stderr!r}")
+        expect("names run '20261101-e519a1da'" in res.stderr,
+               f"the failure must name the foreign run: {res.stderr!r}")
+        expect("LATER than the record itself (2026-10-31)" in res.stderr,
+               f"the failure must name the record's own date: {res.stderr!r}")
+        for legit_item in ("findings of run 20261031-dd7ffa0e", "findings of run 20261001-ddddeeee"):
+            write_journal(integrity, attributed.replace(
+                "module-kind vaccines stay fragile", legit_item))
+            res = run("check", "--repo", str(integrity))
+            expect(res.returncode == 0,
+                   f"an own or earlier run reference must stay legal ({legit_item!r}): "
+                   f"{res.stderr!r}")
+
+        # 40. An UNKNOWN factory version is stated, never invented: the marker is the bare word
+        #     (plus an optional spaced explanation), while any other malformed value stays refused.
+        for marker in ("unknown", "unknown — no run artifact survived"):
+            write_journal(integrity, re.sub(r"^factory_version: .*$", "factory_version: " + marker,
+                                            attributed, flags=re.MULTILINE))
+            res = run("check", "--repo", str(integrity))
+            expect(res.returncode == 0,
+                   f"an explicit unknown factory_version must stay valid ({marker!r}): "
+                   f"{res.stderr!r}")
+        for bad in ("twelve", "unknown-12.20.0"):
+            write_journal(integrity, re.sub(r"^factory_version: .*$", "factory_version: " + bad,
+                                            attributed, flags=re.MULTILINE))
+            res = run("check", "--repo", str(integrity))
+            expect(res.returncode == 1,
+                   f"an invalid factory_version must exit 1 ({bad!r}): "
+                   f"{res.stdout!r} {res.stderr!r}")
+            expect("invalid factory_version" in res.stderr,
+                   f"the failure must name the field ({bad!r}): {res.stderr!r}")
+
     print("PASS - memory_project.py behaves as expected (init creates once, never rewrites and "
           "pins the repository identity; check enforces one owner/repository — the identity, not "
           "the folder name — fails on mixed/mismatched/foreign memory, on a duplicated run_id, on "
@@ -1519,7 +1647,11 @@ def main() -> int:
           "(including the mandatory repo_path); the "
           "memory format v2 requires run_id + provenance marks + unfinished/factory_version on "
           "current-generation records and "
-          "only warns on pre-v2 ones; an unverifiable project_id never becomes the identity).")
+          "only warns on pre-v2 ones; an unverifiable project_id never becomes the identity; a "
+          "result sub-key declared twice and an evidence mark naming a LATER run are refused, while "
+          "a same-date or earlier reference stays legal; the same holds for a second `unfinished:` "
+          "block and for an item naming a LATER run, while an explicit `unknown` factory_version "
+          "stays valid).")
     return 0
 
 

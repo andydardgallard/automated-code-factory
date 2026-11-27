@@ -14,10 +14,14 @@ against the failing pin.
 
 COVERED, through the shipped CLI (a subprocess, exactly as the flow calls it) and its public API:
 
-  - REAL-TREE INTEGRITY: the repository's own 15 profiles are all present and valid, every declared
+  - REAL-TREE INTEGRITY: the repository's own 16 profiles are all present and valid, every declared
     `name:` resolves back to its own role, the names are unique, and the declared
     `model_preference` is one the CLI knows — `skill_manager`, `diagnostician` and `coder` (the
     business scenario's roles) carry exactly the identity and model side they should;
+  - REPOSITORY ROOT: `--root <repository root>` resolves the DEPLOYED `.agents/agents/sub-agents`
+    catalog — the exact invocation that once reported all 16 profiles missing — and yields the same
+    mapping as the default probe, so the deployed layout wins over a legacy/hermetic
+    `agents/sub-agents` copy that happens to sit next to it;
   - REPEATED LIVE REFRESH STABILITY: probing several times in a row yields the SAME role -> name /
     model mapping each time — a reload changes nothing on disk, so the probe cannot drift;
   - HERMETIC REMOVE/RE-ADD (three cycles over `skill_manager`, `diagnostician`, `coder`): removing
@@ -68,6 +72,9 @@ DOC = SCRIPTS.parent / "references" / "error-routing.md"
 PATTERNS = SCRIPTS.parent / "references" / "error-patterns.default.json"
 # `.agents/skills/code-factory/scripts` -> `.agents/agents/sub-agents` (the shipped profiles).
 REAL_PROFILES = SCRIPTS.parents[2] / "agents" / "sub-agents"
+# The repository root — the directory a real invocation passes as `--root`; its deployed catalog
+# lives under `.agents/` and must be what gets probed.
+REPO_ROOT = REAL_PROFILES.parents[2]
 LEGACY_ENV = {**os.environ, "PYTHONIOENCODING": "cp1251"}
 
 # The business scenario's roles: the catalog must survive their loss and return unchanged.
@@ -155,8 +162,8 @@ def test_real_tree_integrity(tmp: pathlib.Path) -> None:
           f"the probe must report every role of model_matrix.ROLES: "
           f"missing={set(model_matrix.ROLES) - set(found)} "
           f"extra={set(found) - set(model_matrix.ROLES)}")
-    check(len(model_matrix.ROLES) == 15,
-          f"the factory ships 15 sub-agent profiles, the roster says {len(model_matrix.ROLES)}")
+    check(len(model_matrix.ROLES) == 16,
+          f"the factory ships 16 sub-agent profiles, the roster says {len(model_matrix.ROLES)}")
     for role, (status, _name, _pref) in found.items():
         check(status == "OK", f"real tree: {role} must be OK, got {status}")
     for role, identity in SCENARIO_IDENTITY.items():
@@ -168,13 +175,57 @@ def test_real_tree_integrity(tmp: pathlib.Path) -> None:
     import agent_catalog_check as probe
     api = probe.check_catalog()
     check(api["errors"] == [], f"the API must see a clean catalog, got {api['errors']}")
-    check(len(api["roles"]) == 15, f"the API must return 15 roles, got {len(api['roles'])}")
+    check(len(api["roles"]) == 16, f"the API must return 16 roles, got {len(api['roles'])}")
     names = [entry["name"] for entry in api["roles"]]
     check(len(set(names)) == len(names), f"profile identities must be unique, got {names}")
     for entry in api["roles"]:
         check(entry["model_preference"] in probe.PREFERENCES,
               f"{entry['role']}: model_preference must be one of {probe.PREFERENCES}, "
               f"got {entry['model_preference']!r}")
+
+
+def test_repository_root_probe(tmp: pathlib.Path) -> None:
+    """`--root <repository root>` probes the deployed `.agents/agents/sub-agents` catalog.
+
+    This is the invocation that once reported every profile missing, so it is pinned against the
+    real tree: the probe must resolve what the CLI reads instead of the project root it was given.
+    """
+    import agent_catalog_check as probe
+    resolved = probe.profiles_dir(REPO_ROOT)
+    check(resolved == REAL_PROFILES,
+          f"--root {REPO_ROOT} must resolve the deployed catalog {REAL_PROFILES}, "
+          f"got {resolved}")
+    res = run("check", "--root", str(REPO_ROOT))
+    expect(res, 0, "--root at the repository root")
+    check(str(REAL_PROFILES) in res.stdout,
+          f"the probe must report the deployed profiles directory: {res.stdout!r}")
+    check(report(res) == report(run("check")),
+          "--root at the repository root must yield the SAME role->name/model mapping as the "
+          "default probe")
+    api = probe.check_catalog(REPO_ROOT)
+    check(api["errors"] == [],
+          f"the API must see a clean catalog at the repository root, got {api['errors']}")
+
+
+def test_deployed_layout_wins(tmp: pathlib.Path) -> None:
+    """The deployed layout is preferred over a legacy `agents/sub-agents` copy beside it."""
+    root = fixture(tmp, "deployed")            # a legacy `agents/sub-agents` copy of the catalog
+    deployed = root / ".agents" / "agents" / "sub-agents"
+    deployed.mkdir(parents=True)
+    for profile in sorted(REAL_PROFILES.glob("*.md")):
+        (deployed / profile.name).write_bytes(profile.read_bytes())
+    # The legacy copy is broken (the substitution trap). Reading it would be a loud exit 1; the
+    # deployed catalog is what the CLI reads, so a clean exit is the only correct answer.
+    (profiles_of(root) / profile_file("coder")).write_text(
+        "---\nname: factory-tester\n---\n", encoding="utf-8")
+
+    res = run("check", "--root", str(root))
+    expect(res, 0, "a root carrying both layouts")
+    check(str(deployed) in res.stdout,
+          f"the probe must report the deployed profiles directory: {res.stdout!r}")
+    check(report(res).get("coder", ("", "", ""))[1:] == SCENARIO_IDENTITY["coder"],
+          f"coder must keep its shipped identity/model {SCENARIO_IDENTITY['coder']}, "
+          f"got {report(res).get('coder')}")
 
 
 def test_repeated_refresh_is_stable(tmp: pathlib.Path) -> None:
@@ -505,6 +556,8 @@ def test_one_roster_shared(tmp: pathlib.Path) -> None:
 
 SECTIONS = (
     test_real_tree_integrity,
+    test_repository_root_probe,
+    test_deployed_layout_wins,
     test_repeated_refresh_is_stable,
     test_remove_and_readd,
     test_invalid_profiles_are_reported,
@@ -539,7 +592,7 @@ def main() -> int:
               f"stable, so a catalog reload can still stall the run or force a role/model swap")
         return 1
     print("PASS - the sub-agent catalog is stable and detectable: the real tree is complete and "
-          "valid (15/15, unique identities, known model sides), repeated probing yields the same "
+          "valid (16/16, unique identities, known model sides), repeated probing yields the same "
           "role->name/model mapping, hermetically removing and re-adding skill_manager / "
           "diagnostician / coder in three cycles is a loud INVALID (exit 1, role and file named) "
           "and then the SAME catalog again (exit 0, identity and model unchanged), every invalid "

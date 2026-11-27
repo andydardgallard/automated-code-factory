@@ -1,5 +1,5 @@
 # Code Factory (for Kimi Code CLI)
-<!-- code-factory-version: 12.26.0 -->
+<!-- code-factory-version: 12.26.1 -->
 
 An autonomous code-writing factory. It takes a business task from a user who does not
 know programming, analyzes the project, plans changes, clarifies only business logic,
@@ -41,7 +41,7 @@ projects or creates projects from scratch.
 │       │   ├── project_fingerprint.py      # two-level fingerprint: structural + content, recorded in DERIVED STATE — .code-factory/state/fingerprint.json (--write-state / --check-state); AGENTS.md embeds no marker, a stale marker is ignored with a warning
 │       │   ├── check_factory_model.py      # check: 8 sections + both fingerprints + memory format (factory root — SKIP)
 │       │   ├── test_factory_model.py       # self-test of the model scripts
-│       │   ├── memory_project.py           # project memory: init/name/check/compact/rename/backlog/compact-check/validate-fix-tasks
+│       │   ├── memory_project.py           # project memory: init/name/check/compact/rename/backlog/compact-check/validate-fix-tasks (a results sub-key declared twice or an evidence mark naming a LATER run is an error, one unfinished:/closed: block per record, and a fact no artifact supports says `unknown` instead of inventing a value)
 │       │   ├── test_memory_project.py      # self-test of the project memory script
 │       │   ├── check_factory_rules.py      # reconciliation of rulebook and carriers: factory-rule blocks byte-for-byte + the approval-gate workflow prose outside them
 │       │   ├── test_factory_rules.py       # self-test of the rule reconciliation
@@ -59,11 +59,11 @@ projects or creates projects from scratch.
 │       │   ├── test_calibrate_reviewer.py  # reviewer calibration self-test
 │       │   ├── precedent_index.py          # FTS5 precedent index: memory + codebase (build/status/query --fresh)
 │       │   ├── test_precedent_index.py     # precedent index self-test
-│       │   ├── model_matrix.py             # the single model-precedence resolver: task matrix > default matrix, family check, committee second planner; `resolve` exits 1 on an ERROR — a role with NO model (source `none`) or a default matrix that breaks generator != judge
+│       │   ├── model_matrix.py             # the single model-precedence resolver: task matrix > default matrix, family check, committee second planner; `resolve` exits 1 on an ERROR — a role with NO model (source `none`) or a default matrix that breaks generator != judge; `validate_matrix` is the ONE matrix contract (a mapping of supported roles to non-empty aliases — a list, a nested mapping, an empty value or an unknown role is a contract error, never an empty matrix) and the CLI config's own `default_model` and table headers are validated the same way (exit 2)
 │       │   ├── test_model_precedence.py    # model precedence self-test
 │       │   ├── model_attribution.py        # artifact-backed model attribution from the CLI session wire (cross-checks models_used; STRICT by default for implement/refactor — a role named in pipeline.yaml required_roles that claims a model but leaves no wire trace FAILS; the run's OWN session is resolved from the pipeline binding, an explicit --session <dir> is used verbatim and a blank one is an input error, and a wire that cannot be attributed to this run is DEGRADED with the reason, never a confident verdict about another run)
 │       │   ├── test_model_attribution.py   # model attribution self-test
-│       │   ├── agent_catalog_check.py      # on-disk sub-agent catalog probe (zero tokens): check [--root <dir>] [--role <role>] — FAIL-CLOSED on catalog COMPLETENESS: every role of model_matrix.ROLES/ROLE_FILES must have a profile whose frontmatter parses inside the strict YAML subset the profiles use (a quoted scalar, an inline `#` comment AFTER the value and a balanced flow list parse; a malformed quote or an unterminated collection is reported INVALID with its line number instead of being guessed at), a name: resolving back to that role, a name no stray profile re-declares and a primary|secondary model_preference; exit 0 = the catalog is valid (Unknown agent type = CLI-side loss: retry the SAME role with the SAME model), exit 1 = a profile MISSING/INVALID and exit 2 = a bad root or role, both a FACTORY DEFECT that stops the run
+│       │   ├── agent_catalog_check.py      # on-disk sub-agent catalog probe (zero tokens): check [--root <dir>] [--role <role>] — `--root` resolves the DEPLOYED layout `.agents/agents/sub-agents` FIRST (a factory checkout or an installed target project), then the LEGACY `agents/sub-agents` (an older checkout or a hermetic fixture), then the root itself as a profiles directory; FAIL-CLOSED on catalog COMPLETENESS: every role of model_matrix.ROLES/ROLE_FILES must have a profile whose frontmatter parses inside the strict YAML subset the profiles use (a quoted scalar, an inline `#` comment AFTER the value and a balanced flow list parse; a malformed quote or an unterminated collection is reported INVALID with its line number instead of being guessed at), a name: resolving back to that role, a name no stray profile re-declares and a primary|secondary model_preference; exit 0 = the catalog is valid (Unknown agent type = CLI-side loss: retry the SAME role with the SAME model), exit 1 = a profile MISSING/INVALID and exit 2 = a bad root or role, both a FACTORY DEFECT that stops the run
 │       │   ├── test_agent_catalog_stability.py # catalog probe self-test (real 16-profile tree, repeated-refresh stability, hermetic remove/re-add, invalid frontmatter variants, malformed-YAML-vs-valid-inline-comment pairs, input boundaries, one shared roster) + the AGENT_CATALOG degradation route
 │       │   ├── review_followup_task.py     # deterministic review follow-up task generator (.code-factory/review/fix-tasks.yaml; a refuted finding is omitted with its evidence stated, never silently)
 │       │   ├── test_review_followup_task.py # review follow-up task generator self-test
@@ -77,14 +77,14 @@ projects or creates projects from scratch.
 │       │   ├── test_env_propagation.sh     # self-test: the pre-flight probe reads the model env flag (set/unset)
 │       │   ├── validate_documentation.py   # documentation validator (documentation subagent)
 │       │   ├── test_validate_documentation.py  # documentation validator self-test
-│       │   ├── skill_base.py               # persistent skill base (reference_docs; local paths + public http(s) URLs)
+│       │   ├── skill_base.py               # persistent skill base (reference_docs; local paths + public http(s) URLs; a pinned revision matches the HEAD only as CANONICAL equality or a GENUINE hex abbreviation of it, so an overlong or non-hex value names a different object and is refused)
 │       │   ├── test_skill_base.py          # skill base self-test
 │       │   ├── test_remote_reference_docs.py # remote reference_docs self-test (loopback HTTP + local/bare Git fixtures)
-│       │   ├── chrome_devtools_mcp.py      # conditional browser path: decide/discover-e2e/browser-matrix/vendor-install/merge-config/probe/validate-config
+│       │   ├── chrome_devtools_mcp.py      # conditional browser path: decide/discover-e2e/browser-matrix/vendor-install/merge-config/probe/validate-config (`vendor-install --timeout` is whole decimal seconds 1..3600 inclusive, checked BEFORE the vendor directory or npm is touched — zero, negative, fractional or huge values are a usage error, exit 2)
 │       │   ├── test_chrome_devtools_mcp.py # Chrome DevTools MCP helper self-test
-│       │   ├── farukon_mcp.py              # conditional platform path: decide (requires an explicit platform SUBJECT, not identity vocabulary alone), merge-config, probe (--check-mcp-start opt-in; the timeout must be finite and non-negative, zero = immediate), validate-config
+│       │   ├── farukon_mcp.py              # conditional platform path: decide (requires an explicit platform SUBJECT, not identity vocabulary alone), merge-config, probe (--check-mcp-start opt-in; the timeout must be finite and non-negative, zero = immediate), validate-config; every started session is closed with its DESCENDANTS — taskkill plus a Windows job object and a POSIX process group — even when the launcher already exited
 │       │   ├── test_farukon_mcp.py         # Farukon MCP helper self-test (decide, merge, conflict exit 3, handshake, invariants)
-│       │   ├── roblox_mcp.py               # conditional Roblox game path: decide (Roblox repository AND Roblox task text — either alone keeps it off), merge-config (USER-SCOPE GLOBAL default, --target override, conflict exit 3), validate-config, probe (--check-mcp-start opt-in), scenario run/verdict/verify (structured verdict from captured console output)
+│       │   ├── roblox_mcp.py               # conditional Roblox game path: decide (Roblox repository AND Roblox task text bound CLAUSE by CLAUSE — a documentation clause discards only its own action, so it neither over-fires nor under-fires; either condition alone keeps it off), merge-config (USER-SCOPE GLOBAL default, --target override, conflict exit 3), validate-config, probe (--check-mcp-start opt-in), scenario run/verdict/verify (structured verdict from captured console output; a tools/call result with a PRESENT non-boolean `isError` is refused, never coerced into success)
 │       │   ├── test_roblox_mcp.py          # Roblox MCP helper self-test (decide matrix, global/target merge, conflict exit 3, scenario verdict, input boundaries)
 │       │   ├── modern_web_guidance.py      # pinned Modern Web Guidance adapter: status/search/retrieve/legacy-scan/check-session + `build` as the only writer — the corpus is read as DATA from the run cache, freshness is fail-closed on the full 40-hex pinned commit, and the usage journal is bound to THIS run
 │       │   ├── test_modern_web_guidance.py # Modern Web Guidance adapter self-test (pin freshness, ranking, unstable gating, scan, session evidence)
@@ -95,16 +95,16 @@ projects or creates projects from scratch.
 │       │   ├── test_rollback.py            # rollback helper self-test
 │       │   ├── delegation_gate.py          # per-role retry budgets counted at EXECUTION: check (increment or refuse; a registered UNBUDGETED role passes through allow:true, budgeted:false, and --round <id> counts one reviewer iteration per LOGICAL round so a shard fan-out spends none more), init, settle (refund a wholly refuted reviewer round), audit (counters vs session wire); --owner-authorized grants one extra delegation per owner decision
 │       │   ├── test_delegation_gate.py     # delegation gate self-test
-│       │   ├── permit_gate.py              # supervisor permits: add/verdict/bind/close + finish audit (every spawn = a unique allowed permit judged before it, scope ⊆ the plan task's files; every transition also appends to the append-only hash-chained permits.ledger.jsonl, whose head must equal the state on disk before every write, so a reset, a truncated tail or a post-deny repair is refused; each state write and its journal append are ONE transaction — a failed append rolls the file back, the FIRST write by deleting it, and a PARTIAL journal line is restored to the journal's previous byte image (or the new journal removed), so the same command can be retried — the idempotent answers verify the history before claiming `unchanged`, and the owner's explicit `repair` is the only recovery from a divergence: no --mode only reports it, --mode restore re-derives the file from the ledger head's projection, --mode attest --note <why> keeps the file and appends ONE marked repair event; a `--kind bootstrap` permit answers the pre-plan task for analyzer/planner/supervisor, the supervisor's own permit is written before Phase 0 via --launch-dir (run-keyed by --launch-id) and bound to the run by `bind-run` when activate writes the checkpoint — which TRANSFERS a keyed launch registry to the run's own name and RETIRES the launch copy to an archive even when the launch folder IS the resolved repository, while an unkeyed legacy launch registry is bound where it lies — and a supervisor spawn carries the run's own authority)
+│       │   ├── permit_gate.py              # supervisor permits: add/verdict/bind/close + finish audit (every spawn = a unique allowed permit judged before it, scope ⊆ the plan task's files — a plan `files:` value may be the canonical BRACKETED list (`files: [a.py, b.py]`), whose one outer bracket pair is list syntax, never part of a path; every transition also appends to the append-only hash-chained permits.ledger.jsonl, whose head must equal the state on disk before every write, so a reset, a truncated tail or a post-deny repair is refused; each state write and its journal append are ONE transaction — a failed append rolls the file back, the FIRST write by deleting it, and a PARTIAL journal line is restored to the journal's previous byte image (or the new journal removed), so the same command can be retried — the idempotent answers verify the history before claiming `unchanged`, and the owner's explicit `repair` is the only recovery from a divergence: no --mode only reports it, --mode restore re-derives the file from the ledger head's projection, --mode attest --note <why> keeps the file and appends ONE marked repair event; a `--kind bootstrap` permit answers the pre-plan task for analyzer/planner/supervisor, the supervisor's own permit is written before Phase 0 via --launch-dir (run-keyed by --launch-id) and bound to the run by `bind-run` when activate writes the checkpoint — which TRANSFERS a keyed launch registry to the run's own name and RETIRES the launch copy to an archive even when the launch folder IS the resolved repository, while an unkeyed legacy launch registry is bound where it lies — and a supervisor spawn carries the run's own authority)
 │       │   ├── test_permit_gate.py         # permit gate self-test
 │       │   ├── gate_all.py                 # phase K|Y aggregator of the deterministic gates: a gate that ran leaves a record, a missing record is a failure (the watchdog-deny row fails the phase while a supervisor deny is unresolved; the manifest audit is skipped as not applicable for a report-only run; the ONE explicit --session of this run is forwarded to the wire-auditing gates, and a phase launched from another directory FAILS CLOSED instead of auditing another session)
 │       │   ├── test_gate_all.py            # gate aggregator self-test
-│       │   ├── supervisor_watchdog.py      # run-long supervisor watchdog: begin/observe/activate/scan/status/deny/resolve — the bootstrap starts BEFORE Phase 0 (launch-scoped, run-id independent) and records the parse/resolve/memory-read/memory-write/run-id order, a deterministic anomaly scan runs at every phase transition, and an unresolved deny blocks the gate_all watchdog-deny row; `begin` returns the launch nonce naming watchdog-bootstrap-<launch_id>.json, every later operation names it with --launch-id (an ambiguous launch directory fails closed: exit 2 listing the ids), and a completed/abandoned keyed bootstrap is an immutable record
+│       │   ├── supervisor_watchdog.py      # run-long supervisor watchdog: begin/resolve-model/observe/activate/scan/status/deny/resolve — the bootstrap starts BEFORE Phase 0 (launch-scoped, run-id independent) and records the parse/resolve/memory-read/memory-write/run-id order, `resolve-model --task <the handed-over task>` resolves and RECORDS the supervisor's model before the spawn (a task pin `models.supervisor` verbatim, only an absent pin taking the default matrix, no model = a STOP at exit 1, a second DIFFERENT resolution = exit 2), a deterministic anomaly scan runs at every phase transition, and an unresolved deny blocks the gate_all watchdog-deny row; `begin` returns the launch nonce naming watchdog-bootstrap-<launch_id>.json, every later operation names it with --launch-id (an ambiguous launch directory fails closed: exit 2 listing the ids), and a completed/abandoned keyed bootstrap is an immutable record; `activate` spans two writes and is RECOVERABLE — a retried activation finishes a binding whose run state landed but whose bootstrap did not
 │       │   ├── test_supervisor_watchdog.py # supervisor watchdog self-test
 │       │   ├── test_business_tester_flow.py # business-tester role wiring self-test
 │       │   ├── version_manager.py          # single version source: get/bump/sync/validate/set/suggest
 │       │   ├── test_version_manager.py     # version script self-test (≥12 cases)
-│       │   ├── validate_mermaid.py         # structural Mermaid diagram validator
+│       │   ├── validate_mermaid.py         # structural Mermaid diagram validator (shape delimiters open and close in ORDER and NEST — a stack, quote/escape aware, so reversed `A] --> B[` and crossed `A([)]` fail where equal counts alone would pass)
 │       │   ├── test_validate_mermaid.py    # Mermaid validator self-test
 │       │   ├── repo_inventory.py           # repository inventory + shards (shard protocol; --tracked = the `git ls-files -z` set)
 │       │   ├── test_repo_inventory.py      # inventory self-test
@@ -118,17 +118,17 @@ projects or creates projects from scratch.
 │       │   ├── test_log_tail.py            # log tail self-test
 │       │   ├── factory_preflight.py        # environment pre-flight (python/python3/py etc.; --web-gui adds the browser capability block, --farukon the platform block, --roblox the static Studio block)
 │       │   ├── test_factory_preflight.py   # pre-flight self-test
-│       │   ├── action_gate.py              # destructive actions: ALLOW/CONFIRM/HARD_DENY (shell wrappers classified by payload; process signalling — kill/pkill/killall/taskkill/Stop-Process — classified by blast radius, since a kill has no path to scope; mutating git stash → CONFIRM, `stash list/show` → ALLOW; a push whose destination is `HEAD`/`@` → CONFIRM) + `audit`: the commands the CLI really EXECUTED, from the session wire, joined with the journal — a destructive command with no decision fails, malformed evidence fails closed
+│       │   ├── action_gate.py              # destructive actions: ALLOW/CONFIRM/HARD_DENY (shell wrappers classified by payload; a BACKTICK substitution is read like its `$(...)` twin — body classified recursively, never executed, quoted/escaped/PowerShell backticks stay text, an unclosed/empty/deeply nested body CONFIRMs; process signalling — kill/pkill/killall/taskkill/Stop-Process — classified by blast radius, since a kill has no path to scope; mutating git stash → CONFIRM, `stash list/show` → ALLOW; a push whose destination is `HEAD`/`@` → CONFIRM) + `audit`: the commands the CLI really EXECUTED, from the session wire, joined with the journal — a destructive command with no decision fails, malformed evidence fails closed
 │       │   ├── test_action_gate.py         # action gate self-test (+ --help/usage under cp1251)
 │       │   ├── task_graph.py               # on-disk task graph: create/claim/complete/ready/list
 │       │   ├── test_task_graph.py          # task graph self-test
-│       │   ├── evidence_ledger.py          # evidence ledger with FRESH/STALE/UNSCOPED signatures (an empty or missing signed scope is UNSCOPED, never FRESH; `stamp` refuses `--files` that name no file, and `sign`/`stamp` reject an absolute, `..`-carrying or outside-`--repo` path — evidence covers the repository)
+│       │   ├── evidence_ledger.py          # evidence ledger with FRESH/STALE/UNSCOPED signatures (an empty or missing signed scope is UNSCOPED, never FRESH; `stamp` refuses `--files` that name no file AND any file that does not exist or cannot be read — an existing readable zero-byte file is legitimate evidence, and `check` keeps the missing/unreadable markers so a deletion AFTER stamping is still a change; `sign`/`stamp` reject an absolute, `..`-carrying or outside-`--repo` path — evidence covers the repository)
 │       │   ├── test_evidence_ledger.py     # evidence ledger self-test
 │       │   ├── verify_acceptance.py        # machine verification of acceptance criteria (anti-tautology: SUCCESS needs the FRESH `--ledger` evidence the task type requires — `regression=pass` for implement/refactor, the review deliverables for review/security_audit — so no ledger = DEGRADED; a verify command's stdout/stderr go to TEMP FILES and are read back as a bounded tail, so bulk output or a handle-inheriting grandchild cannot hang the gate)
 │       │   ├── test_verify_acceptance.py   # acceptance check self-test
 │       │   ├── verify_quotes.py            # verbatim quote check of evidence quotes (Evidence-Preserving Reducer)
 │       │   ├── test_verify_quotes.py       # quote check self-test
-│       │   ├── task_parser.py              # deterministic task.yaml parser (Phase 0): the documented schema incl. `business_tests` and multi-line `|` criteria, verbatim texts, line-numbered actionable errors
+│       │   ├── task_parser.py              # deterministic task.yaml parser (Phase 0): the documented schema incl. `business_tests` and multi-line `|` criteria, verbatim texts, line-numbered actionable errors; `models:` is validated against the ONE role registry (`model_matrix.ROLES`, non-empty alias values), and an UNQUOTED YAML anchor/alias (`&name`, `*name`) is refused with the line and the fix instead of being read as text (a quoted one stays literal); a plain scalar whose flow collection (`[...]`/`{...}`) is never closed is refused the same way, while a quote delimits a scalar only at a boundary — after an opener, a comma or a `key:` separator — so the apostrophe of `[Bob's]`/`[Bob 's]` stays text
 │       │   ├── test_task_accepts_business_scenario.py # task parser self-test: a `business_tests:` block survives verbatim
 │       │   ├── test_task_accepts_multiline_criteria.py # task parser self-test: multi-line `|` criteria with sibling verify/derived
 │       │   ├── test_task_error_is_actionable.py # task parser self-test: an error names the line and the fix
@@ -426,6 +426,18 @@ projects the behavior is unchanged: the skill is deployed by `prepare_factory` i
 presence alone is not enough — an AGENTS.md with no fingerprint state remains an error, and a state that is
 present but stale remains an error even at the factory root.
 
+Record integrity is part of the same contract, because a record that LOOKS substantiated must be
+substantiated: every `results` sub-key is one verdict and may appear ONCE (a second `integration=…`
+is either a leftover of another run or a contradiction — an error naming the repeated key), and an
+evidence mark `[verified: …]` may not cite a run LATER than the record itself, since a proof cannot
+come from a run that had not happened yet (a same-date or earlier reference is legitimate). Item
+blocks belong to the record that wrote them: each record opens `unfinished:`/`closed:` exactly ONCE
+and names no later run there, so a later run's debt is never folded into an earlier record. Where a
+run left no artifact for a field, the value says so — `unknown` or `unknown` plus a spaced
+explanation — instead of inventing one, and only the fields whose emptiness has no other expression
+accept that marker, so it can never become a way around the format. All of it is enforced by
+`memory_project.py check` (exit 1 names the entry and the fix).
+
 ## Business task format
 
 The minimal format is free text. The recommended one is `task.yaml` (see the template in
@@ -454,6 +466,19 @@ There is no `priority` field — all tasks are processed with the highest priori
 parses the file, so an acceptance criterion or a `business_tests` text may be written as a multi-line
 `|` block scalar and keeps every line verbatim; if the field is absent, the factory clarifies the scenario,
 configs, and expected business results with the user at the planning stage (hitl).
+
+The parser validates the schema instead of guessing at it: an UNQUOTED YAML anchor or alias
+(`title: &title Anchored`, `- criterion: *shared`) is an actionable error naming the line and the
+fix, because this is the documented task schema — not a YAML implementation — and neither construct
+can be resolved (a QUOTED one stays literal text, since those characters are intended). A plain
+scalar whose flow collection is never closed (`title: [unterminated`) is refused for the same
+reason, while a quote character delimits only where a quoted scalar can begin — after a flow
+opener, a comma or a `key:` separator, with whitespace merely padding a token — so an apostrophe
+inside a plain scalar (`[Bob's]`, `[Bob 's]`) stays literal text and neither raises a false error
+nor hides a really unclosed opener behind a quote state nobody opened.
+A `models:` block is a mapping of supported roles (`model_matrix.ROLES`) to ONE non-empty model
+alias each, so a list of entries, an empty value or an unknown role is a contract error, never a
+silently empty matrix that would resolve the factory's defaults.
 <!-- factory-rule: task-format begin -->
 **Task format (canonical wording):** a task carries `title`, `repo_path`, `description`, optionally `user_story`, `mode` (`hitl`|`auto`), `task_type` (`implement`|`review`|`refactor`|`security_audit`), `acceptance_criteria` (a criterion may carry `verify: <command>` and `derived: true`), `business_tests` (scenario, configs, expected business results), `commit_exclude`, `models`, `reference_docs`, `reference_skills`. `repo_path` is REQUIRED for every task except a green-field one (a brand-new project created in place) and is always resolved ONCE to an absolute path at the start of the run. There is NO `priority` field — all tasks are high by default, the factory does not prioritize them. A missing required field is a task parsing error, not a reason to guess it mid-run.
 <!-- factory-rule: task-format end -->
@@ -733,7 +758,12 @@ fix or visually validate a browser-based Web GUI, and is invisible for every oth
   merge-config`: idempotent, every other server and user setting preserved byte-for-byte, and an
   existing DIFFERENT `chrome-devtools` entry is reported and preserved instead of overwritten (exit 3,
   nothing written) — resolve the conflict explicitly and re-run. `npx`/`npx.cmd` is never used: the
-  CLI spawns stdio servers without a shell (ENOENT/EINVAL on Windows). When node/npm is unavailable
+  CLI spawns stdio servers without a shell (ENOENT/EINVAL on Windows). The install is bounded by
+  `--timeout`, which accepts whole decimal SECONDS in 1..3600 only and is validated BEFORE the vendor
+  directory, the npm command or any config entry is touched: zero or a negative deadline makes a
+  subprocess raise instead of waiting, a fractional or exponent form silently changes the unit, an
+  absurd deadline is indistinguishable from none — each is a usage error (exit 2), never a guess.
+  When node/npm is unavailable
   or the install fails, NO entry is written and the deployer reports
   `chrome-devtools MCP: package install skipped/failed — <reason>`; without a working Python an
   existing `mcp.json` is left untouched and no new one is created. MCP configuration takes effect in
@@ -825,7 +855,10 @@ Reference: `references/farukon-mcp.md`.
   when the task explicitly says `live` (replay is preferred for evidence), every start gets a bounded
   stop in a `try/finally` and a leaked instance counts as a failure, secrets are redacted before any
   evidence is written, and instance state, logs and snapshots stay run artifacts under
-  `.code-factory/logs/farukon/`, never committed into `memory/`.
+  `.code-factory/logs/farukon/`, never committed into `memory/`. The stop reaches the DESCENDANTS, not
+  just the child it started: a launcher (`cargo run`, a Node wrapper) may exit while the server it
+  spawned survives, so cleanup runs even then — `taskkill /F /T` plus a Windows job object the child
+  is adopted into immediately, a POSIX process GROUP outliving its leader — and every step is bounded.
 - **The live proof is an ADAPTER gate, not prose**: the real check runs in the platform's own working
   directory with its live MCP configuration — `farukon_mcp.py record-session --mode registration`
   runs one bounded handshake per fresh CLI session and writes an immutable run-scoped record, and
@@ -871,7 +904,11 @@ build, run, test or debug a Roblox place, and is invisible for every other task.
   `Instance.new(...)`, `script.Parent`, a Roblox service), or an existing `Roblox_Studio` entry in the
   project's `.kimi-code/mcp.json`; (2) the metadata-stripped task text binds an explicit Roblox
   SUBJECT (`roblox`, `roblox studio`, `rojo`, `luau`, a place file, the Studio MCP server) to an
-  ACTION (`add`, `create`, `build`, `fix`, `playtest`, `script`, `run`, `debug`, …). Task-file
+  ACTION (`add`, `create`, `build`, `fix`, `playtest`, `script`, `run`, `debug`, …). The binding is
+  CLAUSE-level, never distance-based: a clause whose object is documentation/media (`README`,
+  `changelog`, `guide`) discards only ITS OWN action, so a neighbouring documentation clause can
+  neither discard a real play-test nor let a documentation action escape, and quoted/escaped text is
+  not scope either. Task-file
   METADATA is not scope — a `models.roblox_expert` model pin, the repository identity alone or the
   task text alone stay `not_applicable` — and an explicit exclusion phrase in the task text
   (`no roblox`, `without roblox`, `out of scope`) always wins, because deactivating by mistake costs a
@@ -908,7 +945,10 @@ build, run, test or debug a Roblox place, and is invisible for every other task.
   `list_roblox_studios` → `start_stop_play` start → `get_console_output` → `start_stop_play` stop) and
   writes `console.log` (the CAPTURED console output plus the server's bounded stderr tail) and a
   structured `verdict.json`. `PASS` requires the scenario to have COMPLETED and the capture to carry
-  NO error log line; a screenshot may be attached but is recorded as
+  NO error log line; a `tools/call` result counts as an answer only when its `isError` is ABSENT,
+  `false` or `true` — a PRESENT non-boolean one (`"true"`, `1`, `null`) leaves the tool-level outcome
+  unknown and is refused, never coerced, so a string or numeric error signal can never produce a
+  PASS. A screenshot may be attached but is recorded as
   `screenshot_is_verdict: false` and is never the verdict. `scenario verdict` reads the stored record,
   `scenario verify` is the GATE: it re-reads the artifacts (the capture must sit in that evidence
   directory with the sha256 the verdict recorded), so a record claiming PASS while its own console
@@ -1072,6 +1112,20 @@ The optional `models.business_tester` key names the model of the adversarial tes
 reviewer's), logged as `models_used.business_tester`. The optional `models.supervisor` key names the
 model of `factory-supervisor`, which is judge-side — its family must contrast with the generator's —
 and is logged as `models_used.supervisor`.
+The matrix itself has ONE validated contract: a `models:` block is a MAPPING of supported roles
+(`model_matrix.ROLES`) to ONE non-empty model alias string, and `validate_matrix` is the single place
+that decides it for the task parser and the resolver alike — a list of entries, a nested mapping, an
+empty value or an unknown role is an actionable contract error (exit 2) naming the offending key and
+the roster, NEVER a silently empty matrix that lets the defaults answer instead. The CLI config's own
+model-selection entries are read under the same rule: a `default_model` that is not one alias, a
+table header that is not closed with the SAME number of brackets it opens (`[[secondary_model]`,
+`[secondary_model]]`) or a malformed INDENTED header is a config error naming the file, the line and
+the fix, because a misread there hands a role a model nobody configured — an indented header is
+legal TOML and is read as its section, never skipped. And the supervisor's own model is resolved
+BEFORE its spawn from the task as handed over (`supervisor_watchdog.py resolve-model`): a task pin
+`models.supervisor` is taken verbatim, only an ABSENT pin falls back to the role's default-matrix
+side, and a resolution that yields no model is a STOP — never a substitute, never the main agent's
+own choice.
 Attribution of the logged models is STRICT BY DEFAULT for `implement`/`refactor`: the run writes
 `task_type` and `required_roles` into `.code-factory/state/pipeline.yaml` (the mandatory non-empty
 set: analyzer, planner, coder, tester, business_tester, reviewer, documenter — the conditional roles

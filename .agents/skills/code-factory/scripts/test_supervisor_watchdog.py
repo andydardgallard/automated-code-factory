@@ -39,6 +39,17 @@ it):
     guess; a completed keyed record is an IMMUTABLE history entry (no cross-run `history`
     carry-over) and an unkeyed legacy bootstrap stays resumable, never silently migrated; a
     malformed or unknown `--launch-id` is an exit-2 input error;
+  - the activation is RECOVERABLE (defect C07): it covers two writes (the run-bound state, then the
+    bootstrap), and a fault injected into the second one leaves the run carrying this bootstrap's
+    own `begun_at`. Retrying the SAME bootstrap finishes the binding through the shipped CLI instead
+    of being refused as a second supervisor, while a genuinely competing supervisor is still exit 2;
+  - the supervisor's MODEL is resolved from the handed-over task BEFORE the spawn (defect C11): a
+    `models.supervisor` pin is recorded VERBATIM (`source: task`), only an ABSENT pin falls back to
+    the role's `model_preference: primary` side of the default matrix (`source: default`), a role
+    with no model at all is exit 1 (a STOP, never a substitute), a DIFFERENT second resolution is
+    refused (a model is never swapped mid-launch), an empty/unreadable task or config is exit 2, a
+    hand-edited `supervisor_model` record is fail-closed, and the binding carries the resolution
+    into the run's own watchdog state for the finish attribution;
   - an observation note (`observe --detail`) is OPTIONAL and bounded: empty is legitimate, 4000
     characters is the documented bound and 4001 is an exit-2 input error that records nothing;
   - `retry_counters.plan_rejections` — the counter the flow MANDATES — is a non-role counter, never
@@ -417,8 +428,8 @@ def test_deny_blocks_and_routes(tmp: pathlib.Path) -> None:
 def test_cli_contract(tmp: pathlib.Path) -> None:
     res = run("--help")
     expect_clean_cli(res, 0, "--help")
-    for name in ("launch", "scan", "deny", "resolve", "status", "begin", "observe", "activate",
-                 "complete", "abandon"):
+    for name in ("launch", "scan", "deny", "resolve", "status", "begin", "resolve-model",
+                 "observe", "activate", "complete", "abandon"):
         check(name in res.stdout, f"the top-level help must list {name}: {res.stdout!r}")
         expect_clean_cli(run(name, "--help"), 0, f"{name} --help")
     expect_clean_cli(run(), 2, "no subcommand")
@@ -426,6 +437,9 @@ def test_cli_contract(tmp: pathlib.Path) -> None:
     expect_clean_cli(run("scan"), 2, "scan without --repo")
     expect_clean_cli(run("deny", "--repo", "."), 2, "deny without --rule/--role/--detail")
     expect_clean_cli(run("begin"), 2, "begin without --launch-dir")
+    expect_clean_cli(run("resolve-model", "--launch-dir", "."), 2, "resolve-model without --task")
+    expect_clean_cli(run("resolve-model", "--task", "task.yaml"), 2,
+                     "resolve-model without --launch-dir")
     expect_clean_cli(run("observe", "--launch-dir", ".", "--event", "parse"), 2,
                      "observe without --seq")
     expect_clean_cli(run("activate", "--launch-dir", "."), 2, "activate without --repo")
@@ -1180,6 +1194,261 @@ def test_concurrent_keyed_launches(tmp: pathlib.Path) -> None:
           f"{bootstrap_of(launch, second_id)!r}")
 
 
+def interrupt_second_write(launch: pathlib.Path, target: pathlib.Path, launch_id: str) -> str:
+    """Run the activation with its SECOND write (the bootstrap) failing — the C07 interruption.
+
+    `activate` is one logical transition over TWO files: the run-bound state first, then the
+    bootstrap that records the binding. The fault is injected IN PROCESS on `_atomic_json` (the one
+    atomic writer both writes go through), failing only for the bootstrap path, so the test proves
+    the exact shipped code path rather than a hand-made state file. Returns the surfaced message.
+    """
+    scripts = pathlib.Path(__file__).resolve().parent
+    added = str(scripts) not in sys.path
+    if added:
+        sys.path.insert(0, str(scripts))
+    import supervisor_watchdog as sw
+
+    real = sw._atomic_json
+
+    def flaky(path: pathlib.Path, data: dict) -> pathlib.Path:
+        if pathlib.Path(path).name.startswith("watchdog-bootstrap"):
+            raise sw.WatchdogError(f"injected fault: cannot write {path}")
+        return real(path, data)
+
+    sw._atomic_json = flaky
+    try:
+        try:
+            sw.activate(launch, target, launch_id)
+        except sw.WatchdogError as exc:
+            return str(exc)
+        raise AssertionError("the injected second-write fault must surface as a WatchdogError")
+    finally:
+        sw._atomic_json = real
+        if added and str(scripts) in sys.path:
+            sys.path.remove(str(scripts))
+
+
+def test_activation_recovers_after_second_write_fault(tmp: pathlib.Path) -> None:
+    """(defect C07) An activation interrupted between its two writes is RECOVERABLE by a retry.
+
+    The defect this pins: `activate` wrote the run-bound state (which already carries
+    `launch.at` = the bootstrap's `begun_at`) and only then the bootstrap. If the second write
+    failed — a transient full disk, a locked file, a killed process — the run looked "already
+    launched" while nothing was bound, so the retry was refused as a SECOND supervisor and the run
+    could never be supervised. The contract: the interrupted transition is finished by retrying the
+    SAME bootstrap, and a genuinely competing supervisor is still refused.
+    """
+    target = repo(tmp, "recover-activation")
+    launch = phase0_dir(tmp, "recover-activation-launch")
+    launch_id = begin(launch)
+    for seq, event in enumerate(PHASE0_REQUIRED):
+        expect_clean_cli(observe(launch, seq, event, launch_id=launch_id), 0, f"observe {event}")
+
+    message = interrupt_second_write(launch, target, launch_id)
+    check("injected fault" in message,
+          f"the failing second write must surface its own cause: {message!r}")
+    # The interruption is real: the run-bound state was written, the bootstrap was NOT bound.
+    interrupted = state_of(target)
+    begun_at = bootstrap_of(launch, launch_id)["begun_at"]
+    check(interrupted["launch"] is not None and interrupted["launch"]["at"] == begun_at,
+          f"the first write landed (the run carries this bootstrap's own launch time): "
+          f"{interrupted!r}")
+    check(bootstrap_of(launch, launch_id)["activated"] is None,
+          f"the second write did not land (the bootstrap is still unbound): "
+          f"{bootstrap_of(launch, launch_id)!r}")
+
+    # The retry FINISHES the same transition through the shipped CLI — no conflict, no archive.
+    res = run("activate", "--launch-dir", str(launch), "--repo", str(target),
+              "--launch-id", launch_id)
+    expect_clean_cli(res, 0, "retrying the interrupted activation")
+    report = payload(res)
+    check(report["status"] == "activated" and report["run_id"] == RUN_ID,
+          f"the retry binds the run the interrupted attempt already named: {report!r}")
+    recovered = bootstrap_of(launch, launch_id)
+    check(recovered["run_id"] == RUN_ID and recovered["activated"] is not None,
+          f"the retry completes the binding on the bootstrap: {recovered!r}")
+    check(state_of(target)["launch"] == interrupted["launch"],
+          f"the recovered launch keeps its ORIGINAL launch time (never a later stand-in): "
+          f"{state_of(target)!r}")
+    check([entry["event"] for entry in state_of(target)["events"]] == list(PHASE0_REQUIRED),
+          f"the recovered state carries the ordered Phase 0 observations: {state_of(target)!r}")
+
+    # The recovered binding is a REAL binding: the run finishes and its bootstrap completes.
+    finish_checkpoint(target)
+    expect_clean_cli(run("complete", "--launch-dir", str(launch), "--launch-id", launch_id), 0,
+                     "completing the recovered binding")
+
+    # A GENUINELY competing supervisor is still refused: another bootstrap retried over a run that
+    # carries a DIFFERENT launch is not this transition's interruption.
+    other_target = repo(tmp, "recover-activation-competing")
+    expect_clean_cli(run("launch", "--repo", str(other_target)), 0, "launch the competing run")
+    competing_launch = phase0_dir(tmp, "recover-activation-competing-launch")
+    competing_id = begin(competing_launch)
+    for seq, event in enumerate(PHASE0_REQUIRED):
+        expect_clean_cli(observe(competing_launch, seq, event, launch_id=competing_id), 0,
+                         f"observe {event} of the competing bootstrap")
+    res = run("activate", "--launch-dir", str(competing_launch), "--repo", str(other_target),
+              "--launch-id", competing_id)
+    expect_clean_cli(res, 2, "a competing supervisor over an already launched run")
+    check("already launched" in res.stderr,
+          f"the refusal must name the existing launch: {res.stderr!r}")
+    check(bootstrap_of(competing_launch, competing_id)["activated"] is None,
+          "a refused competing activation binds nothing")
+
+
+# --------------------------------------------------------------------------------------------
+# The supervisor's MODEL is resolved from the handed-over task BEFORE the spawn (defect C11)
+# --------------------------------------------------------------------------------------------
+PINNED_TASK = "title: pinned\nmodels:\n  coder: kimi-k3\n  supervisor: deepseek-flash\n"
+ABSENT_TASK = "title: absent\nmode: hitl\n"
+OTHER_PIN_TASK = "title: other\nmodels:\n  supervisor: kimi-k3\n"
+# A config whose TWO sides differ, so "which side the absent pin took" is observable.
+PRIMARY_CONFIG = ('default_model = "kimi-k3"\n\n[secondary_model]\n'
+                  'default_model = "deepseek-flash"\n')
+BARE_CONFIG = '# no model-selection entry at all\ntheme = "dark"\n'
+
+
+def write_text(tmp: pathlib.Path, name: str, text: str) -> pathlib.Path:
+    path = tmp / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def resolve_model(launch: pathlib.Path, task: pathlib.Path, config: object = None,
+                  launch_id: str | None = None) -> subprocess.CompletedProcess[str]:
+    args = ["resolve-model", "--launch-dir", str(launch), "--task", str(task)]
+    if config is not None:
+        args += ["--config", str(config)]
+    if launch_id is not None:
+        args += ["--launch-id", launch_id]
+    return run(*args)
+
+
+def test_supervisor_model_resolution(tmp: pathlib.Path) -> None:
+    """(defect C11) The handed-over task's `models.supervisor` is resolved BEFORE the spawn.
+
+    The violation this pins: the supervisor was spawned with a model the main agent had in hand,
+    so a task pin `models.supervisor: k3.1-pro` ran on another model and the finish attribution
+    failed against a claim nobody could honour. The model is therefore resolved DETERMINISTICALLY
+    from the task the owner handed over — the pin VERBATIM, the role's `model_preference: primary`
+    default side ONLY when the task does not name it — and recorded in the launch-scoped bootstrap
+    the spawn is bound to, so the spawn model and the `models_used.supervisor` claim are one value.
+    """
+    launch = phase0_dir(tmp, "model-launch")
+    launch_id = begin(launch)
+    pinned = write_text(tmp, "task-pinned.yaml", PINNED_TASK)
+    absent = write_text(tmp, "task-absent.yaml", ABSENT_TASK)
+    other_pin = write_text(tmp, "task-other-pin.yaml", OTHER_PIN_TASK)
+    primary_config = write_text(tmp, "config-primary.toml", PRIMARY_CONFIG)
+    bare_config = write_text(tmp, "config-bare.toml", BARE_CONFIG)
+
+    # The input is validated at the boundary: `--task` is the handed-over FILE, never a guess.
+    expect_clean_cli(run("resolve-model", "--launch-dir", str(launch)), 2,
+                     "resolve-model without --task")
+    res = resolve_model(launch, tmp / "no-such-task.yaml", launch_id=launch_id)
+    expect_clean_cli(res, 2, "a --task that is not a file")
+    check("--task" in res.stderr and "HANDED" in res.stderr,
+          f"the refusal must name the --task contract: {res.stderr!r}")
+    empty = write_text(tmp, "task-empty.yaml", "")
+    res = resolve_model(launch, empty, launch_id=launch_id)
+    expect_clean_cli(res, 2, "an empty --task")
+    check("empty" in res.stderr, f"the refusal must say the task file is empty: {res.stderr!r}")
+    expect_clean_cli(resolve_model(launch, launch, launch_id=launch_id), 2,
+                     "a directory as --task")
+    check(bootstrap_of(launch, launch_id).get("supervisor_model") is None,
+          "a refused resolution records no model")
+
+    # A task PIN is taken VERBATIM and recorded in the launch-scoped bootstrap.
+    res = resolve_model(launch, pinned, launch_id=launch_id)
+    expect_clean_cli(res, 0, "a pinned supervisor model")
+    report = payload(res)
+    check(report["model"] == "deepseek-flash" and report["source"] == "task"
+          and report["recorded"] is True and report["role"] == "supervisor",
+          f"the task pin must be recorded verbatim: {report!r}")
+    record = bootstrap_of(launch, launch_id)["supervisor_model"]
+    check(record["model"] == "deepseek-flash" and record["source"] == "task"
+          and record["resolved_at"],
+          f"the bootstrap must carry the resolution the spawn binds to: {record!r}")
+    # Re-resolving the SAME task is idempotent: no duplicate, no rewrite of the record.
+    res = resolve_model(launch, pinned, launch_id=launch_id)
+    expect_clean_cli(res, 0, "the same resolution again")
+    check(payload(res)["recorded"] is False
+          and bootstrap_of(launch, launch_id)["supervisor_model"] == record,
+          f"an identical re-resolution changes nothing: {payload(res)!r}")
+    # A DIFFERENT model is a swap mid-launch: refused, and the recorded model stays untouched.
+    res = resolve_model(launch, other_pin, launch_id=launch_id)
+    expect_clean_cli(res, 2, "a different supervisor model")
+    check("deepseek-flash" in res.stderr and "swapped" in res.stderr,
+          f"the refusal must name the recorded model and the rule: {res.stderr!r}")
+    check(bootstrap_of(launch, launch_id)["supervisor_model"] == record,
+          "a refused swap leaves the recorded model untouched")
+    # A malformed models matrix and an unsupported role are input errors naming the file/line.
+    for name, body, label in (
+            ("task-malformed.yaml", "title: t\nmodels:\n  supervisor:\n    - a\n",
+             "a list inside a models role"),
+            ("task-unknown-role.yaml", "title: t\nmodels:\n  orchestrator: kimi-k3\n",
+             "an unsupported models role")):
+        broken = write_text(tmp, name, body)
+        res = resolve_model(launch, broken, launch_id=launch_id)
+        expect_clean_cli(res, 2, label)
+        check(name in res.stderr and "line" in res.stderr,
+              f"{label} must be named with its line: {res.stderr!r}")
+    check(bootstrap_of(launch, launch_id)["supervisor_model"] == record,
+          "a malformed task records no model and rewrites nothing")
+
+    # An ABSENT pin takes the role's PRIMARY default-matrix side — never the secondary one.
+    default_launch = phase0_dir(tmp, "model-default-launch")
+    default_id = begin(default_launch)
+    res = resolve_model(default_launch, absent, config=primary_config, launch_id=default_id)
+    expect_clean_cli(res, 0, "an absent pin resolved from the default matrix")
+    check(payload(res)["model"] == "kimi-k3" and payload(res)["source"] == "default",
+          f"the primary side of the default matrix must be used: {payload(res)!r}")
+    check(bootstrap_of(default_launch, default_id)["supervisor_model"]["source"] == "default",
+          "the bootstrap names the default matrix as the source")
+    # No model for the role at all is exit 1: a STOP, never a substitute and never a silent spawn.
+    bare_launch = phase0_dir(tmp, "model-bare-launch")
+    bare_id = begin(bare_launch)
+    res = resolve_model(bare_launch, absent, config=bare_config, launch_id=bare_id)
+    expect_clean_cli(res, 1, "no supervisor model resolving at all")
+    check("models.supervisor" in res.stderr,
+          f"the STOP must name the pin that fixes it: {res.stderr!r}")
+    check(bootstrap_of(bare_launch, bare_id).get("supervisor_model") is None,
+          "an unresolved role records no model")
+    # An explicit but missing/empty --config is an input error, not "no default matrix".
+    expect_clean_cli(resolve_model(bare_launch, absent, config=tmp / "no-config.toml",
+                                   launch_id=bare_id), 2, "a --config that does not exist")
+    expect_clean_cli(resolve_model(bare_launch, absent, config="", launch_id=bare_id), 2,
+                     "an empty --config")
+    expect_clean_cli(resolve_model(bare_launch, absent, launch_id=""), 2, "an empty --launch-id")
+
+    # A hand-edited record is FAIL-CLOSED on read, so nobody interprets a half-written model.
+    tampered = phase0_dir(tmp, "model-tampered-launch")
+    tampered_id = begin(tampered)
+    path = boot_path(tampered, tampered_id)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["supervisor_model"] = {"model": "kimi-k3", "source": "wizard", "resolved_at": "x"}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    res = resolve_model(tampered, pinned, launch_id=tampered_id)
+    expect_clean_cli(res, 2, "a malformed recorded supervisor model")
+    check("supervisor_model" in res.stderr and "source" in res.stderr,
+          f"the refusal must name the malformed record field: {res.stderr!r}")
+
+    # The BINDING carries the resolution into the run's own watchdog state.
+    target = repo(tmp, "model-target")
+    for seq, event in enumerate(PHASE0_REQUIRED):
+        expect_clean_cli(observe(default_launch, seq, event, launch_id=default_id), 0,
+                         f"observe {event} of the resolved launch")
+    res = run("activate", "--launch-dir", str(default_launch), "--repo", str(target),
+              "--launch-id", default_id)
+    expect_clean_cli(res, 0, "activate after resolving the supervisor model")
+    check(payload(res)["supervisor_model"]["model"] == "kimi-k3",
+          f"the activation reports the resolved model: {payload(res)!r}")
+    check(state_of(target)["supervisor_model"]["source"] == "default",
+          f"the run's own state carries the resolution: {state_of(target)!r}")
+    check(payload(run("status", "--repo", str(target)))["supervisor_model"]["model"] == "kimi-k3",
+          "the watchdog status names the model the supervisor was spawned with")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as raw:
         tmp = pathlib.Path(raw)
@@ -1204,6 +1473,8 @@ def main() -> int:
         test_legacy_bootstrap_resumes(tmp)
         test_launch_id_validation(tmp)
         test_concurrent_keyed_launches(tmp)
+        test_activation_recovers_after_second_write_fault(tmp)
+        test_supervisor_model_resolution(tmp)
 
     print("PASS - supervisor_watchdog.py is the supervisor watchdog's deterministic layer: a clean "
           "scan costs nothing and records nothing, a budget/permits/gate-record/journal violation "
@@ -1216,6 +1487,11 @@ def main() -> int:
           "COMPLETED bootstrap frees the launch directory for the next independent run, and an "
           "UNACTIVATED failed bootstrap is ended with an audited `abandon --reason` that an "
           "activated run in progress is protected from) and the "
+          "supervisor's MODEL is resolved from the handed-over task BEFORE the spawn (a "
+          "`models.supervisor` pin verbatim, only an absent pin taking the role's primary "
+          "default-matrix side, a role resolving NO model a STOP rather than a substitute, a "
+          "different re-resolution refused as a mid-launch swap, the resolution carried into the "
+          "run's own state for the finish attribution) and the "
           "OLD order — an unobserved operation, an out-of-order journal, a stale run binding — can "
           "never activate, the bootstrap is KEYED (begin mints a launch nonce and its own file, so "
           "several factories launched from ONE directory into DIFFERENT repositories share no "

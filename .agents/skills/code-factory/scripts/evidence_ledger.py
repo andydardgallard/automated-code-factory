@@ -11,7 +11,10 @@ FRESH — a green test log from an older revision is not proof about the current
 Fingerprint: SHA-256 over one line per file, `<relative path>:<content sha256>`, sorted by path
 and de-duplicated, so neither the order of `--files` nor the platform separator matters. A
 missing file contributes `<relative path>:missing` and an unreadable one `:unreadable`, so a
-deletion counts as a change instead of an error. The timestamp is the only non-deterministic
+deletion counts as a change instead of an error. `stamp` refuses such a file up front (a missing
+or unreadable file cannot be evidence: its marker reproduces on any tree that lacks it), while
+`check` keeps the markers so a deletion AFTER stamping is still detected as a change. An existing
+readable zero-byte file is valid evidence. The timestamp is the only non-deterministic
 field of an entry and is NOT part of the fingerprint.
 
 The `--files` of `sign` and `stamp` must be plain repository-relative paths: an absolute entry, a
@@ -143,6 +146,33 @@ def file_digest(path: pathlib.Path, root: pathlib.Path) -> str:
         return sha256_file(target)
     except OSError:
         return UNREADABLE
+
+
+def stamp_problems(files, root) -> list[str]:
+    """One problem per `--files` entry `stamp` must refuse, empty when every file is signable.
+
+    Evidence is evidence only for files that EXIST: a missing file is recorded as the `missing`
+    marker, so a `regression=pass` stamp over a nonexistent path would later look FRESH on any
+    tree that lacks the same file — the tautology this gate closes. `stamp` therefore refuses a
+    missing or unreadable file before it writes anything. An existing READABLE file is signable
+    even when it is empty (zero bytes are a real content); `check` keeps using the
+    `missing`/`unreadable` markers, so a deletion AFTER stamping is still detected as a change.
+    """
+    root = pathlib.Path(root)
+    problems: list[str] = []
+    for item in files:
+        target = _abs(item, root)
+        if not target.exists():
+            problems.append(f"{item}: missing (evidence must sign files that exist)")
+            continue
+        if not target.is_file():
+            problems.append(f"{item}: unreadable (not a regular file, so it cannot be signed)")
+            continue
+        try:
+            sha256_file(target)
+        except OSError:
+            problems.append(f"{item}: unreadable (cannot read the file, so it cannot be signed)")
+    return problems
 
 
 def fingerprint_files(files, root) -> str:
@@ -372,6 +402,13 @@ def cmd_stamp(args: argparse.Namespace) -> int:
     problems = scope_problems(args.files, args.repo)
     if problems:
         print("error: --files: " + "; ".join(problems), file=sys.stderr)
+        return 1
+    unsignable = stamp_problems(args.files, args.repo)
+    if unsignable:
+        # A stamp over a file that does not exist (or cannot be read) records the `missing` /
+        # `unreadable` marker, which the same tree reproduces: the entry would be FRESH evidence
+        # for a file nobody could have tested. Refuse it BEFORE the ledger is touched.
+        print("error: --files: " + "; ".join(unsignable), file=sys.stderr)
         return 1
     ledger = pathlib.Path(args.ledger)
     scope = normalize_scope(args.files, args.repo)

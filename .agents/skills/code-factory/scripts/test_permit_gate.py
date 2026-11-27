@@ -87,6 +87,10 @@ COVERED, through the shipped CLI (a subprocess, like the flow calls it):
     ONE uncompleted launch when it is not passed and REFUSED loudly (naming the ids) when several
     are open, a malformed or unknown id is an exit-2 input error (it is a filename component), and
     an in-flight LEGACY unkeyed registry is resolved and transferred as it stands, never migrated;
+  - the PLAN FORMAT (C06): the planning guide's canonical `files: [a.py, b.py]` declares the two
+    plain paths — one optional OUTER bracket pair is list syntax and never part of the first or last
+    path — so a permit for a declared path answers its task instead of being refused as outside the
+    plan's scope, and a bare list stays valid;
   - the CLI contract: `--help` exit 0 for every subcommand, usage errors exit 2, no traceback, and
     the help survives a legacy console code page;
   - the ROUND-1 REWORK (T24): a launch folder that IS the resolved repository still TRANSFERS its
@@ -659,6 +663,48 @@ def test_scope_direction(tmp: pathlib.Path) -> None:
     expect_clean_cli(run("bind", "--repo", str(equal), "--permit-id", "P3", "--agent-id",
                          "agent-n"), 0, "bind")
     expect_clean_cli(audit(equal, directory), 0, "a permit narrower than the plan task")
+
+
+def test_canonical_bracketed_plan_files(tmp: pathlib.Path) -> None:
+    """(C06, failing-first) `files: [a.py, b.py]` declares TWO paths, never bracketed ones.
+
+    The parser split the `files:` value on commas and kept the outer brackets, so the first and the
+    last declared path carried them (`[a.py`, `b.py]`) and a permit for the plainly named `a.py` was
+    refused as OUTSIDE the plan task — a canonical plan could not authorise its own files. One
+    optional outer bracket pair is stripped, whitespace ignored and an empty list kept empty; a
+    declared path is otherwise taken verbatim.
+    """
+    root = tmp / "plan-bracketed"
+    state = root / ".code-factory" / "state"
+    state.mkdir(parents=True)
+    (root / PIPELINE_REL).write_text(f"run_id: {RUN_ID}\n", encoding="utf-8")
+    (root / PLAN_REL).write_text(
+        "## Tasks (DAG)\n\n"
+        "- task_09: canonical list. files: [manifest.py, test_manifest.py]; deps: []; verify: x\n"
+        "- task_10: an empty list. files: []; deps: []; verify: y\n", encoding="utf-8")
+    expect_clean_cli(run("init", "--repo", str(root)), 0, "init (bracketed plan)")
+    check(pg.plan_tasks(root) == {"task_09": ["manifest.py", "test_manifest.py"], "task_10": []},
+          f"the canonical bracketed list must parse to plain paths: {pg.plan_tasks(root)!r}")
+
+    # A NON-EMPTY canonical scope: both declared paths answer task_09.
+    for permit_id, path in (("P1", "manifest.py"), ("P2", "test_manifest.py")):
+        expect_clean_cli(run("add", "--repo", str(root), "--permit-id", permit_id,
+                             "--task-id", "task_09", "--role", "coder", "--phase", "implement",
+                             "--scope", path), 0,
+                         f"add {permit_id} under a canonical bracketed scope ({path})")
+    # A genuinely outside path is still refused, and never quoted with the list's brackets.
+    res = run("add", "--repo", str(root), "--permit-id", "P3", "--task-id", "task_09",
+              "--role", "coder", "--phase", "implement", "--scope", "other.py")
+    expect_clean_cli(res, 2, "a scope outside a canonical bracketed task")
+    check("[manifest.py" not in res.stderr and "test_manifest.py]" not in res.stderr,
+          f"the refusal must never quote bracket-decorated paths: {res.stderr!r}")
+
+    # The parser contract on its own: one outer pair, whitespace ignored, empty stays empty.
+    check(pg.declared_files(" [ a.py ,b.py ] ") == ["a.py", "b.py"], "brackets + whitespace")
+    check(pg.declared_files(" [] ") == [], "an empty list stays legitimately empty")
+    check(pg.declared_files(" a.py, b.py ") == ["a.py", "b.py"], "the bare legacy list stays valid")
+    check(pg.declared_files(" [dir]/file.py ") == ["[dir]/file.py"],
+          "only an OUTER pair is list syntax: a declared path is never rewritten")
 
 
 def test_wire_times(tmp: pathlib.Path) -> None:
@@ -2441,43 +2487,64 @@ def test_ledger_retroactive_authorization(tmp: pathlib.Path) -> None:
     is not a waiver: an authorization appended at finish — after the delegation already ran — is
     the post-hoc acceptance this release forbids. The record's own stamp must precede the spawn it
     excuses; otherwise the out-of-order verdict stands and the run FAILS.
+
+    The fixture is built through the SUPPORTED owner-authorization path — the run-bound
+    `owner_authorizations:` note in the checkpoint, plus exactly the annotation fields the ledger
+    exempts — and asserts `pg.ledger_problems` is clean BEFORE the audit. So the refusal can only
+    come from the timestamp rule: the same annotated registry audits CLEAN when the note's stamp
+    precedes the spawn (the control), and an assertion that accepted a generic ledger word would
+    otherwise pass on unrelated drift.
     """
     past = int(time.time() * 1000) - 600000
-    root = tmp / "ledger-retroactive"
-    state = root / ".code-factory" / "state"
-    state.mkdir(parents=True)
-    (root / PIPELINE_REL).write_text(f"run_id: {RUN_ID}\nphase: analysis\n", encoding="utf-8")
-    (root / TASK_REL).write_text(TASK_YAML, encoding="utf-8")
-    (root / PLAN_REL).write_text(PLAN, encoding="utf-8")
-    expect_clean_cli(run("init", "--repo", str(root)), 0, "init (retroactive)")
-    expect_clean_cli(run("add", "--repo", str(root), "--permit-id", "PR", "--kind", "bootstrap",
-                         "--task-id", "bootstrap", "--role", "analyzer", "--phase", "analysis"), 0,
-                     "add PR")
-    expect_clean_cli(run("verdict", "--repo", str(root), "--permit-id", "PR", "--verdict",
-                         "allow", "--evidence", "bootstrap permit against the parsed task"), 0,
-                     "verdict PR")
-    expect_clean_cli(run("bind", "--repo", str(root), "--permit-id", "PR", "--agent-id",
-                         "agent-r"), 0, "bind PR")
-    # The verdict (recorded now) postdates the spawn (ten minutes ago): out of order by construction.
-    data = permits(root)
-    data["permits"][0].update(owner_authorized=True, evidence="the owner said so afterwards")
-    write_permits(root, data)
-    # The owner's note carries its own stamp — AFTER the spawn it is supposed to excuse.
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime((past + 300000) / 1000))
-    (root / PIPELINE_REL).write_text(
-        (root / PIPELINE_REL).read_text(encoding="utf-8")
-        + f"owner_authorizations:\n  - {stamp} permit=PR role=analyzer mode=hitl\n",
-        encoding="utf-8")
-    directory = session(root, [("agent-r", "factory-analyzer", past)])
+
+    def fixture(name: str, note_offset_ms: int) -> tuple[pathlib.Path, pathlib.Path]:
+        """One bootstrap delegation spawned at `past`, its owner note stamped `past + offset`."""
+        root = tmp / name
+        state = root / ".code-factory" / "state"
+        state.mkdir(parents=True)
+        (root / PIPELINE_REL).write_text(f"run_id: {RUN_ID}\nphase: analysis\n", encoding="utf-8")
+        (root / TASK_REL).write_text(TASK_YAML, encoding="utf-8")
+        (root / PLAN_REL).write_text(PLAN, encoding="utf-8")
+        expect_clean_cli(run("init", "--repo", str(root)), 0, f"init ({name})")
+        expect_clean_cli(run("add", "--repo", str(root), "--permit-id", "PR", "--kind",
+                             "bootstrap", "--task-id", "bootstrap", "--role", "analyzer",
+                             "--phase", "analysis"), 0, f"add PR ({name})")
+        expect_clean_cli(run("verdict", "--repo", str(root), "--permit-id", "PR", "--verdict",
+                             "allow", "--evidence", "bootstrap permit against the parsed task"), 0,
+                         f"verdict PR ({name})")
+        expect_clean_cli(run("bind", "--repo", str(root), "--permit-id", "PR", "--agent-id",
+                             "agent-r"), 0, f"bind PR ({name})")
+        # The owner's decision goes where the gate looks for it: this run's OWN checkpoint.
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime((past + note_offset_ms) / 1000))
+        (root / PIPELINE_REL).write_text(
+            (root / PIPELINE_REL).read_text(encoding="utf-8")
+            + f"owner_authorizations:\n  - {stamp} permit=PR role=analyzer mode=hitl\n",
+            encoding="utf-8")
+        # The annotation the note is the decision for: only the fields the ledger exempts.
+        mutate(root, "PR", owner_authorized=True, evidence="the owner said so afterwards")
+        check(pg.ledger_problems(root) == [],
+              f"{name}: the documented annotation must not read as a rewritten history: "
+              f"{pg.ledger_problems(root)!r}")
+        return root, session(root, [("agent-r", "factory-analyzer", past)])
+
+    # The control: the SAME annotated registry audits CLEAN when the note precedes the spawn.
+    root, directory = fixture("ledger-authorized-in-order", -300000)
+    expect_clean_cli(audit(root, directory), 0, "an owner authorization before the spawn")
+
+    # The abuse: the note's own stamp is AFTER the spawn it is supposed to excuse.
+    root, directory = fixture("ledger-retroactive", 300000)
     res = audit(root, directory)
     expect_clean_cli(res, 1, "a retroactive owner authorization")
-    text = (res.stdout + res.stderr).lower()
-    check("pr" in text, f"the refusal must name the permit: {res.stdout!r} {res.stderr!r}")
-    check(any(word in text for word in
-              ("retroactive", "after the spawn", "out-of-order", "authorization")
-              + LEDGER_WORDS),
-          f"the refusal must name the retroactive authorization or the broken ledger: "
-          f"{res.stdout!r} {res.stderr!r}")
+    text = res.stdout + res.stderr
+    check("retroactive owner authorization" in text,
+          f"the refusal must name the RETROACTIVE authorization: {text!r}")
+    check("permit 'PR'" in text, f"the refusal must name the permit: {text!r}")
+    check("was authorized AFTER agent 'agent-r' spawned" in text,
+          f"the refusal must name the order of the decision and the spawn: {text!r}")
+    check("the out-of-order verdict stands" in text,
+          f"the refusal must state the consequence: {text!r}")
+    check(not any(word in text.lower() for word in LEDGER_WORDS),
+          f"the refusal must come from the timestamp rule, never from ledger drift: {text!r}")
 
 
 def test_owner_authorization_verified(tmp: pathlib.Path) -> None:
@@ -3552,6 +3619,7 @@ def main() -> int:
         test_lifecycle(tmp)
         test_audit(tmp)
         test_scope_direction(tmp)
+        test_canonical_bracketed_plan_files(tmp)
         test_wire_times(tmp)
         test_verdict_time(tmp)
         test_atomic_write_failure(tmp)

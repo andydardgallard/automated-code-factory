@@ -10,16 +10,15 @@ compaction (threshold 50 records) and is read at the start of every task, so the
 does not have to be derived again.
 
 ## Current state
-Factory v12.26.0 — run 20261126-8ab3e96d added the conditional roblox_expert specialist (global
-user-scope Studio MCP registration, structured scenario verdicts) and fixed the critical
-verify_acceptance long-output hang. Regression is 59/59 modules and vaccination 216/216; live
-Roblox Studio acceptance is PASS with honest good/broken verdicts and FRESH evidence; review
-approved at r3 with 0 open findings; acceptance SUCCESS. Finish gates pass except permit-audit
-and strict attribution on the owner-accepted early-spawn debt. Open backlog: 3 carried items
-(the Farukon workspace_saved anomaly, the accepted early-spawn audit debt, the D1 heuristic
-limitation). Self-test files: 59.
-Latest run: implement 20261126-8ab3e96d (task_roblox_expert.yaml, hitl) — SUCCESS acceptance and
-v12.26.0 release on factory/20261126-8ab3e96d.
+Factory v12.26.1 — the review follow-up completed all 30 findings of review 20261126-0caddbd9
+plus six adversarial/review boundary findings. Regression is 59/59 modules and vaccination 216/216;
+business checks are 103/103 MATCH and adversarial replay is 70 held / 0 broke / 2 environment-unverified.
+Review approved with all 36 dispositions closed; acceptance SUCCESS; phase K/Y gates and documentation
+validation pass. Strict supervisor attribution retains the disclosed initial wrong-model wire mismatch.
+Open backlog: 3 carried items (the out-of-scope Farukon anomaly, the prior run's early-spawn audit debt,
+and this run's stopped initial-supervisor attribution debt). Closed backlog items: 60. Self-test files: 59.
+Latest run: implement 20261126-39892599 (fix-tasks.yaml, hitl) — SUCCESS acceptance and v12.26.1 release
+on factory/20261126-39892599.
 
 ## Key decisions
 - The long-term memory `memory/` belongs to ONE target project (`repo_path`); the field

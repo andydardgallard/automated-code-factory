@@ -162,6 +162,20 @@ target named by the task is NOT resolved, so the registry is anchored to the lau
 the activation transfers it into the resolved repository; the run-bound forms of `init`, `add`,
 `verdict` and `bind` cannot name the run this launch is supervising.
 
+**Resolve the supervisor's model BEFORE the spawn** — never from a model the main agent picks:
+`python .agents/skills/code-factory/scripts/supervisor_watchdog.py resolve-model --launch-dir
+<launch directory> --task <the task file AS HANDED OVER> --launch-id <launch_id>` reads only that
+file's `models:` block (the same matrix `model_matrix.py` resolves for every role, so no Phase 0
+operation moves out of order), takes a task pin `models.supervisor` VERBATIM and falls back to the
+role's `model_preference: primary` side of the default matrix ONLY when the task does not name it.
+It RETURNS the `model` the Agent tool is spawned with and RECORDS it in the bootstrap
+(`supervisor_model`: model, source, `resolved_at`), so the model this step hands the spawn, the
+model `models_used.supervisor` reports at the finish and the model the session wire served are one
+and the same value. Exit 1 means NO model resolves at all — a STOP (rule `model-unavailable-stop`),
+never a substitute — and exit 2 means an empty/malformed task file or a DIFFERENT re-resolution,
+because a supervisor's model is never swapped mid-launch (fix the handed-over task, or
+`abandon --reason` and `begin` a fresh launch).
+
 Every Phase 0 operation is then RECORDED as it happens, in the closed vocabulary and in this order,
 with a strictly increasing `--seq`:
 `supervisor_watchdog.py observe --launch-dir <launch directory> --event <parse|resolve|memory-read|run-id> --seq <n> --detail "<what happened>"`.
@@ -1061,8 +1075,14 @@ On ANY failure, do NOT roll back immediately. Follow `references/error-routing.m
 3. **Diagnostician** (LLM): launch `factory-diagnostician` with the error output + attempt
    history. It returns `root_cause`, `recommended_role`, `recommended_action`,
    `context_for_retry`, `confidence`. Write the report to `.code-factory/logs/diagnostic.md`.
-   Reset the recommended role's counter to 0 and re-run it with the diagnostic context. Every
-   finding must quote the archived evidence verbatim, and the quotes are re-checked with
+   The budgets are FIXED and a counter is NEVER reset: a reset would spend a delegation the
+   budget never granted and falsify the `delegation_gate.py audit` at the finish. Before the
+   contextual retry take the ordinary delegation gate check,
+   `python .agents/skills/code-factory/scripts/delegation_gate.py check --role <recommended_role>
+   --repo <resolved repo_path> --mode <hitl|auto>`, exactly as before every other delegation: if
+   it ALLOWS, re-run the role ONCE with the diagnostic context; if it REFUSES, do not retry —
+   escalate to the Advisor. Every finding must quote the archived evidence verbatim, and the
+   quotes are re-checked with
    `scripts/verify_quotes.py` — an unverifiable quote falls back to the full log, never trusted.
 <!-- factory-rule: evidence-ledger begin -->
 **Evidence ledger and quotes (canonical wording):** every piece of evidence (baseline, tests, review) is signed with the working-tree fingerprint via `scripts/evidence_ledger.py` and is accepted only with FRESH status; STALE evidence (files changed after signing) does not count as acceptance. Every quote from the reviewer, diagnostician or advisor is re-checked verbatim by `scripts/verify_quotes.py` (exact substring, only CRLF→LF is normalized). An unconfirmed quote is marked UNTRUSTED and does not affect the verdict.
@@ -1163,7 +1183,9 @@ write `.code-factory/report_code_changes.md` (next to it) via
 <!-- factory-rule: vaccination end -->
 
 12. **AGENTS.md + memory** — AGENTS.md is the machine-generated single source of truth (exactly 8
-    `##` sections + a two-level embedded fingerprint: structural AND content, no init step);
+    `##` sections, NO embedded fingerprint marker and no init step — the two-level fingerprint
+    (structural AND content) lives in the derived state
+    `.code-factory/state/fingerprint.json` (`--write-state` / `--check-state`));
     regenerate it when EITHER hash mismatches (start of task) — the "skip regeneration" branch
     requires BOTH to match — or when structure/stack/entry points changed (end of task), then
     commit it. **One memory — one project**: `memory/` is the long-term memory of the TARGET

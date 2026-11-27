@@ -33,7 +33,15 @@ ownership explicit and machine-checkable:
                                  the summary declaration (always an error otherwise); a `run_id`
                                  may appear in ONE record only (one run — one record), and
                                  `--run-id <id>` additionally requires EXACTLY one record
-                                 carrying that run id (implied by the Finish gate). A fresh
+                                 carrying that run id (implied by the Finish gate). The record
+                                 integrity is part of the same contract (see
+                                 record_integrity_errors): a `results` sub-key declared TWICE is an
+                                 error, and so is an evidence mark `[verified: …]` naming a run
+                                 LATER than the record itself (a same-date or earlier reference is
+                                 legitimate). Record ATTRIBUTION is the other half (see
+                                 record_attribution_errors): one `unfinished:`/`closed:` block per
+                                 record, and no item naming a run LATER than the record, so a
+                                 record can never inherit another run's debt. A fresh
                                  project — no `memory/` at all — is a note and exit 0, while a
                                  `memory/` WITHOUT `change-log.md` is an error unless
                                  `--allow-fresh` declares the absence deliberate.
@@ -181,7 +189,9 @@ AGENTS.md, i.e. one the factory has worked in — a missing journal stays a hard
 Exit codes: 0 = OK, 1 = FAIL (memory mixes projects, belongs to an unexpected or a foreign
 repository, a record violates the record contract — a missing required key, an unknown
 `task_type`, a missing `results` sub-key of the record's kind, an empty `project:` value, an
-incomplete `unfinished` item — or the memory format v2, one run_id in two records,
+incomplete `unfinished` item, a `results` sub-key declared twice, an evidence mark naming a run
+later than the record, a second `unfinished:`/`closed:` block in one record, an item naming a run
+later than the record — or the memory format v2, one run_id in two records,
 `check --run-id` without exactly one such record, a `closed:` element without `evidence:` or
 naming an unknown item, an open item re-declared without a `reason:`, `memory/` without
 `change-log.md` without `--allow-fresh`, a `## Current state` divergence under `--strict`,
@@ -271,7 +281,32 @@ SYNTHETIC_SUFFIX_RE = re.compile(r" \(synthetic, backfilled \d{4}-\d{2}-\d{2}\)$
 def unsynth(value: str) -> str:
     """The canonical value without a ` (synthetic, backfilled ...)` migration annotation."""
     return SYNTHETIC_SUFFIX_RE.sub("", value)
+
+
+def is_unknown_value(value: str) -> bool:
+    """True when a field value DECLARES that its evidence is absent (`unknown …`, see above).
+
+    The marker is the bare word `unknown` or that word followed by a spaced explanation, so a value
+    that merely starts with it (`unknown-12.20.0`) is never read as a declaration of ignorance.
+    """
+    return bool(UNKNOWN_VALUE_RE.match(value.strip()))
 PROVENANCE_RE = re.compile(r"\[verified:[^\[\]]+\]|\[inferred\]")
+# The content of an EVIDENCE mark — the proof a `[verified: …]` carries (see
+# record_integrity_errors: a proof never comes from a run later than the record).
+VERIFIED_MARK_RE = re.compile(r"\[verified:([^\[\]]*)\]")
+# A run id inside such a proof; group 1 is its date part, compared with the record's own date.
+EVIDENCE_RUN_ID_RE = re.compile(r"\b(\d{8})-[0-9a-f]{8}\b")
+# The sub-key of ONE `results` segment (`integration=PASS; …`). Only a segment-LEADING key counts,
+# so a value that mentions another key in prose ("its own integration=PASS") is never a duplicate.
+RESULT_KEY_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
+# The date part of a record `timestamp:` ('YYYY-MM-DD…'), read for the same comparison.
+STAMP_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
+# The explicit ABSENCE-OF-EVIDENCE marker: a value that is not known says so out loud
+# (`factory_version: unknown — the run left no artifact`) instead of inventing one. Only a field
+# whose emptiness cannot be expressed otherwise allows it (see record_contract_issues). The word
+# must stand on its own, followed by nothing or by a spaced explanation, so a real value that
+# merely starts with it (`unknown-12.20.0`) is not a declaration of ignorance.
+UNKNOWN_VALUE_RE = re.compile(r"^unknown(?:\s+.*)?$", re.IGNORECASE)
 MEMORY_V2_AFTER = (12, 8, 0)
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
@@ -592,6 +627,34 @@ ERROR; entries without the `project:` field and entries written by a factory no 
 v12.8.0 are legacy (a warning, not an error). Verified by `scripts/memory_project.py check` and
 `scripts/check_factory_model.py`.
 
+**Record integrity: one verdict per key, and no proof from the future.** Every sub-key of
+`results` is ONE verdict and appears exactly ONCE (`integration=…; regression=…; business=…;
+review=…`), so a second `integration=` — a leftover of another run or a contradiction — is an
+ERROR naming the repeated key (a key merely NAMED in a value's prose is not a second key). An
+evidence mark `[verified: …]` may not name a run id LATER than the entry itself: a proof cannot
+come from a run that had not happened yet, so a later `YYYYMMDD-<8 hex>` inside an evidence mark
+is an ERROR (naming the entry's own run id, an earlier run, and a later run mentioned OUTSIDE an
+evidence mark — an owner-authorized supplement note — are all legitimate). Verified by
+`scripts/memory_project.py check` and `scripts/check_factory_model.py`.
+
+**Record attribution: an item belongs to the record that wrote it.** A record opens each item block
+(`unfinished:`, `closed:`) exactly ONCE, and neither block may name a run id later than the record
+itself. A second `unfinished:` in one record is not a formatting nicety: it is what a LATER run
+leaves behind when its findings are appended to an existing record instead of getting a heading and
+metadata of their own, and every such item is then folded as the earlier run's debt. The same
+applies to an item text naming a later run (`10 findings of run 20261031-aaaaaaaa` inside a record
+dated earlier) — that debt belongs to the later run's record. A same-date or earlier reference is
+legitimate, and so is one in the `reason:`/`evidence:` prose describing where an item came from.
+Verified by `scripts/memory_project.py check` and `scripts/check_factory_model.py`.
+
+**No evidence, no invention: `unknown` is a value.** Where a run left no artifact for a field —
+a `branch`, a `commit`, the `factory_version` at the time of the run — the value says so instead of
+being guessed: `unknown` or `unknown` plus a spaced explanation (`factory_version: unknown — the run
+left no artifact and no wire trace`). Only the fields whose emptiness has no other expression accept
+the marker (`factory_version`; the free-text fields accept it as ordinary text), and any other
+malformed `factory_version` stays an error, so the marker can never become a way around the format.
+Verified by `scripts/memory_project.py check` and `scripts/check_factory_model.py`.
+
 If there is debt, the single `unfinished:` line is replaced by a multi-line list; every element
 requires 4 fields (`item`, `reason`, `severity` critical|warning|info, `follow_up` true|false):
 
@@ -803,7 +866,9 @@ def record_contract_issues(change_log: pathlib.Path) -> tuple[list[str], list[st
     and `impact=` for a `backlog` record. A `project:` key with an EMPTY value is an error,
     never silent legacy. The `unfinished` block is either the explicit no-debt marker or a list
     of complete items (`item`, `reason`, `severity` critical|warning|info, `follow_up`
-    true|false).
+    true|false). A `factory_version` value that is not known may say so explicitly — the value
+    starts with `unknown` (see is_unknown_value) — because a recorded absence of evidence is
+    honest, while an invented version is not; any other non-`X.Y.Z` value stays an error.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -831,7 +896,8 @@ def record_contract_issues(change_log: pathlib.Path) -> tuple[list[str], list[st
         if "timestamp" in fields and not TIMESTAMP_RE.search(fields["timestamp"]):
             errors.append(f"entry '{heading}': timestamp not ISO-date-like "
                           f"'{fields['timestamp']}'")
-        if "factory_version" in fields and not VERSION_RE.match(unsynth(fields["factory_version"])):
+        if ("factory_version" in fields and not is_unknown_value(fields["factory_version"])
+                and not VERSION_RE.match(unsynth(fields["factory_version"]))):
             errors.append(f"entry '{heading}': invalid factory_version "
                           f"'{fields['factory_version']}'")
         if "results" in fields:
@@ -873,6 +939,120 @@ def duplicate_run_id_errors(change_log: pathlib.Path) -> list[str]:
             errors.append(f"run_id '{run_id}' is carried by {len(headings)} records ("
                           + " and ".join(f"'{h}'" for h in headings)
                           + ") - one run produces exactly one record, the memory record of that run")
+    return errors
+
+
+def record_date(fields: dict[str, str]) -> str:
+    """The record's own date as YYYYMMDD: the LATER of its `run_id` and `timestamp` dates.
+
+    A run that crosses midnight legitimately carries the `run_id` of the earlier day and a later
+    `timestamp`, so the later of the two is the boundary its evidence must respect. A record with
+    neither date (legacy history) yields "" and is exempt from the evidence comparison.
+    """
+    dates: list[str] = []
+    run_id = unsynth(fields.get("run_id", "").strip())
+    if RUN_ID_RE.match(run_id):
+        dates.append(run_id[:8])
+    m = STAMP_DATE_RE.match(fields.get("timestamp", "").strip())
+    if m:
+        dates.append("".join(m.groups()))
+    return max(dates) if dates else ""
+
+
+def result_key_list(results: str) -> list[str]:
+    """The `results` sub-keys in order: the segment-leading `key=` of the `a=…; b=…` map.
+
+    Only a SEGMENT-leading key counts, so a value that names another key in prose (a record
+    explaining that it was "inferred from this entry's own integration=PASS") is never read as a
+    second, duplicate key — the shape under suspicion is a whole second `integration=…` map entry.
+    """
+    keys: list[str] = []
+    for segment in results.split(";"):
+        m = RESULT_KEY_RE.match(segment)
+        if m:
+            keys.append(m.group(1))
+    return keys
+
+
+def record_integrity_errors(change_log: pathlib.Path) -> list[str]:
+    """Errors of the record INTEGRITY an append-only journal owes its reader.
+
+    Two shapes make a record look substantiated when it is not:
+
+      - a `results` map that declares the SAME sub-key twice (`integration=…; …; integration=…`).
+        A sub-key is one verdict; a second one is either a leftover of another run or a
+        contradiction, and no reader can tell which one holds.
+      - an evidence mark `[verified: <evidence>]` naming a run id LATER than the record itself.
+        A proof cannot come from a run that had not happened yet, so the reference was copied from
+        a later run (fabricated provenance) or the record is misdated. A SAME-DATE or EARLIER
+        reference is legitimate — a record may cite its own run id and any older run — and so is a
+        mention of a later run OUTSIDE an evidence mark (an authorized supplement note).
+    """
+    errors: list[str] = []
+    for record in journal_blocks(change_log):
+        heading = record["heading"]
+        fields = record["fields"]
+        keys = result_key_list(fields.get("results", ""))
+        for key in dict.fromkeys(keys):
+            count = keys.count(key)
+            if count > 1:
+                errors.append(f"entry '{heading}': results declares '{key}=' {count} times - "
+                              f"every result sub-key is exactly one verdict, so a repeated one is "
+                              f"unsupported (a leftover of another run or a contradiction)")
+        own_date = record_date(fields)
+        if not own_date:
+            continue
+        own_iso = f"{own_date[:4]}-{own_date[4:6]}-{own_date[6:]}"
+        for name, value in fields.items():
+            for evidence in VERIFIED_MARK_RE.findall(value):
+                for match in EVIDENCE_RUN_ID_RE.finditer(evidence):
+                    if match.group(1) > own_date:
+                        errors.append(f"entry '{heading}': '{name}' cites run '{match.group(0)}' "
+                                      f"as evidence, but that run is LATER than the record itself "
+                                      f"({own_iso}) - a proof cannot come from a run that had not "
+                                      f"happened yet (a same-date or earlier reference is legal)")
+    return errors
+
+
+def record_attribution_errors(change_log: pathlib.Path) -> list[str]:
+    """Errors of a record that carries debt which is NOT its own.
+
+    The journal is append-only and every block item is folded as the debt of the record it sits
+    in, so two shapes silently make a record claim another run's work:
+
+      - the SAME item block (`unfinished:`, `closed:`) opened more than once in one record. One
+        block per record is the format; a repeated one is a later record whose heading and metadata
+        were lost, and its items then read as the earlier record's.
+      - an item of such a block naming a run id LATER than the record itself: that debt belongs to
+        the later run's own record. Only the `item:` line is compared, because the item text is
+        what the backlog fold and the closing protocol match on; a same-date or earlier run, and a
+        run mentioned in the `reason:`/`evidence:` prose around it, stay legitimate.
+    """
+    errors: list[str] = []
+    for record in journal_blocks(change_log):
+        heading = record["heading"]
+        counts: dict[str, int] = {}
+        for key in record.get("sections", ()):
+            counts[key] = counts.get(key, 0) + 1
+        for key, count in counts.items():
+            if count > 1:
+                errors.append(f"entry '{heading}': '{key}:' is opened {count} times in one record "
+                              f"- a record carries ONE '{key}:' block, so a repeated one is a later "
+                              f"record whose heading and metadata were lost, and its items would be "
+                              f"attributed to this one")
+        own_date = record_date(record["fields"])
+        if not own_date:
+            continue
+        own_iso = f"{own_date[:4]}-{own_date[4:6]}-{own_date[6:]}"
+        for section in ITEM_SECTIONS:
+            for item in record["blocks"][section]:
+                for match in EVIDENCE_RUN_ID_RE.finditer(item.get("item", "")):
+                    if match.group(1) > own_date:
+                        errors.append(f"entry '{heading}': the {section} item "
+                                      f"'{item.get('item', '')}' names run '{match.group(0)}', "
+                                      f"which is LATER than the record itself ({own_iso}) - that "
+                                      f"debt belongs to the later run's own record, never to this "
+                                      f"one (a same-date or earlier run is legal)")
     return errors
 
 
@@ -925,6 +1105,10 @@ def validate_memory(root: str | pathlib.Path, expect: str = "", no_owner_check: 
       - the record contract (`record_contract_issues`): required keys, the v2 fields a
         current-generation record may not omit (`unfinished`, `factory_version`), the record KIND
         (`RECORD_KINDS`), the `results` sub-keys of that kind and the `unfinished` items;
+      - the record integrity (`record_integrity_errors`): a `results` sub-key declared twice, and
+        an evidence mark naming a run LATER than the record itself;
+      - the record attribution (`record_attribution_errors`): a second `unfinished:`/`closed:`
+        block in one record, and an item naming a run LATER than the record itself;
       - the memory format v2 (`record_format_issues`): `run_id` + provenance marks, with the
         pre-v2 and no-`project:` records kept as warnings and never rewritten;
       - one run — one record (`duplicate_run_id_errors`), plus `run_id_record_errors` when the
@@ -968,6 +1152,8 @@ def validate_memory(root: str | pathlib.Path, expect: str = "", no_owner_check: 
         warnings += fmt_warnings
         errors += fmt_errors
         errors += duplicate_run_id_errors(change_log)
+        errors += record_integrity_errors(change_log)
+        errors += record_attribution_errors(change_log)
         if run_id:
             errors += run_id_record_errors(change_log, run_id)
         # The closing protocol runs over the WHOLE journal: a closure without evidence is invalid
@@ -1585,10 +1771,12 @@ def journal_blocks_text(text: str) -> list[dict]:
     """Parse journal TEXT into records carrying their fields, item blocks and line range.
 
     Every record is `{"heading": str, "start": int, "end": int, "fields": {key: value},
-    "blocks": {"unfinished": [...], "closed": [...]}}`, where `start`/`end` are the 1-BASED line
-    numbers of the record's `## ` heading and of its last non-blank line (so
+    "blocks": {"unfinished": [...], "closed": [...]}, "sections": [key, ...]}`, where `start`/`end`
+    are the 1-BASED line numbers of the record's `## ` heading and of its last non-blank line (so
     `text.splitlines(keepends=True)[start - 1:end]` is exactly one record, trailing blank lines
-    excluded). An item block is opened by the top-level key of that name with an EMPTY value
+    excluded), and `sections` lists every item block the record OPENS, in file order — so a block
+    opened twice is visible to `record_attribution_errors` (see above). An item block is opened by
+    the top-level key of that name with an EMPTY value
     (`unfinished:`, `closed:`) and ends at the next top-level `key: value` line; inside it a
     `- item: <text>` line starts an element and the indented sub-fields belong to it (`reason`,
     `severity`, `follow_up` — and `evidence` for a `closed:` element). Lines before the first
@@ -1601,7 +1789,7 @@ def journal_blocks_text(text: str) -> list[dict]:
     for lineno, line in enumerate(text.splitlines(), 1):
         if ENTRY_RE.match(line):
             cur = {"heading": line.strip(), "start": lineno, "end": lineno, "fields": {},
-                   "blocks": {s: [] for s in ITEM_SECTIONS}}
+                   "blocks": {s: [] for s in ITEM_SECTIONS}, "sections": []}
             records.append(cur)
             section, item = None, None
             continue
@@ -1614,6 +1802,8 @@ def journal_blocks_text(text: str) -> list[dict]:
             key, value = m.group(1), m.group(2).strip()
             cur["fields"][key] = value
             section = key if not value and key in ITEM_SECTIONS else None
+            if section:
+                cur["sections"].append(section)
             item = None
             continue
         if section is None:

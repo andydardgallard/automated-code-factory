@@ -55,6 +55,12 @@ Cases:
      never pick the stale target-cwd session — it resolves the one run-bound candidate or degrades —
      a blank `--session` is an input error (never "auto"), and a run whose session is gone is
      DEGRADED rather than audited from a wire that predates the run.
+ 16. END-TO-END (defect C11): a task pinning a NON-DEFAULT `models.supervisor` is resolved by
+     `supervisor_watchdog.py resolve-model` BEFORE the spawn and recorded in the launch bootstrap;
+     a hermetic session wire is then built from THAT recorded model, and the run PASSES with the
+     claim, the spawn model and the served model being one value. The vaccination is the pre-fix
+     spawn (the primary default instead of the pin), which is a MISMATCH — the attribution proves
+     the resolution really reached the spawn rather than being restated in prose.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -1290,6 +1296,93 @@ def case_18_current_session_resolution(root: pathlib.Path) -> None:
            f"the stale session must not be audited as the run: {stale_artifact.get('session')!r}")
 
 
+# ---------------------------------------------------------------------------------------------
+# Case 19: the supervisor's model comes from the handed-over task, not from a per-run choice
+# ---------------------------------------------------------------------------------------------
+WATCHDOG = SCRIPTS / "supervisor_watchdog.py"
+
+
+def watchdog(*args: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run([sys.executable, str(WATCHDOG), *args], capture_output=True, env=ENV)
+
+
+def supervisor_bootstrap(launch: pathlib.Path, launch_id: str) -> dict:
+    path = launch / ".code-factory" / "state" / f"watchdog-bootstrap-{launch_id}.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def case_19_pinned_supervisor_model(root: pathlib.Path) -> None:
+    """(defect C11) A non-default `models.supervisor` pin reaches spawn, wire AND final claim.
+
+    The violation this pins: the supervisor was spawned with a model the main agent happened to
+    have — the primary default — while the handed-over task pinned another one, so the finish
+    attribution failed against a claim nobody could have honoured. The supervisor's model is
+    therefore RESOLVED from the task file before the spawn by `supervisor_watchdog.py
+    resolve-model`, and this case proves the whole chain is ONE value: the recorded bootstrap model
+    (the spawn model), the model the session wire served, and the `models_used.supervisor` claim.
+    """
+    launch = root / "case19-launch"
+    launch.mkdir()
+    task = write(root, "case19-task.yaml",
+                 "title: pinned supervisor\nmodels:\n  coder: kimi-k3\n"
+                 "  supervisor: deepseek-flash\n")
+    begun = watchdog("begin", "--launch-dir", str(launch))
+    expect(begun.returncode == 0, f"begin must record the launch bootstrap: {err(begun)!r}")
+    launch_id = json.loads(begun.stdout)["launch_id"]
+    resolved = watchdog("resolve-model", "--launch-dir", str(launch), "--task", str(task),
+                        "--launch-id", launch_id)
+    expect(resolved.returncode == 0,
+           f"the task pin must resolve before the spawn: exit {resolved.returncode} "
+           f"{err(resolved)!r}")
+    spawn_model = json.loads(resolved.stdout)["model"]
+    expect(spawn_model == "deepseek-flash",
+           f"the task's models.supervisor pin is authoritative, got {spawn_model!r}")
+    recorded = supervisor_bootstrap(launch, launch_id)["supervisor_model"]
+    expect(recorded["model"] == spawn_model and recorded["source"] == "task",
+           f"the spawn model is the RECORDED one, never a per-run choice: {recorded!r}")
+
+    # The session wire spawns the supervisor with THAT model and serves it.
+    home = root / "case19-home"
+    repo = root / "case19-repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    build_session(home, repo, "session_19999999-9999-4999-8999-999999999999", {
+        "main": [llm("main", "kimi-k3", at=T0),
+                 spawned("agent-0", "factory-supervisor", spawn_model, at=T0)],
+        "agent-0": [llm("agent-0", spawn_model, at=T0 + 10),
+                    usage("agent-0", spawn_model, at=T0 + 11)],
+    }, profiles={"agent-0": "factory-supervisor"})
+    spec = write(root, "case19-pipeline.yaml",
+                 pipeline(("main", "kimi-k3"), ("supervisor", spawn_model)))
+    res, artifact, text = attr(root, home, repo, "--pipeline", str(spec), name="case19.json")
+    expect(res.returncode == 0,
+           f"spawn model == served model == claim must PASS: exit {res.returncode} {text!r} "
+           f"{err(res)!r}")
+    expect(artifact["roles"]["supervisor"]["spawn_model"] == spawn_model,
+           f"the wire records the resolved spawn model: {artifact['roles']['supervisor']!r}")
+    expect(artifact["roles"]["supervisor"]["models_served"] == {spawn_model: 1},
+           f"the wire served that model: {artifact['roles']['supervisor']!r}")
+    expect(artifact["comparison"] == {"main": "match", "supervisor": "match"},
+           f"the resolved pin matches the claim: {artifact['comparison']!r}")
+
+    # VACCINATION: the pre-fix spawn (the primary DEFAULT instead of the pin) is a MISMATCH.
+    wrong_home = root / "case19-home-default"
+    wrong_repo = root / "case19-repo-default"
+    wrong_repo.mkdir(parents=True, exist_ok=True)
+    build_session(wrong_home, wrong_repo, "session_19999998-9999-4999-8999-999999999999", {
+        "main": [llm("main", "kimi-k3", at=T0),
+                 spawned("agent-0", "factory-supervisor", "kimi-k3", at=T0)],
+        "agent-0": [llm("agent-0", "kimi-k3", at=T0 + 10),
+                    usage("agent-0", "kimi-k3", at=T0 + 11)],
+    }, profiles={"agent-0": "factory-supervisor"})
+    res, artifact, text = attr(root, wrong_home, wrong_repo, "--pipeline", str(spec),
+                               name="case19-default.json")
+    expect(res.returncode == 1,
+           f"the substituted default model must FAIL the attribution: exit {res.returncode} "
+           f"{text!r} {err(res)!r}")
+    expect(artifact["comparison"]["supervisor"] == "mismatch",
+           f"the substituted supervisor is a mismatch: {artifact['comparison']!r}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -1311,13 +1404,16 @@ def main() -> int:
         case_16_malformed_wire_records_never_pass(root)
         case_17_required_role_without_claim(root)
         case_18_current_session_resolution(root)
+        case_19_pinned_supervisor_model(root)
 
     print("PASS - model_attribution.py confirms every models_used claim against the CLI's own "
           "session wire: roles come from state.json (or subagent.spawned), the wire name is "
           "normalised to its alias, only top-level typed events are counted, a disproven claim is "
           "a mismatch (exit 1), a missing session is DEGRADED with an artifact (exit 3), a role "
           "the factory does not have is a run error (exit 1), a role served by the claimed model AND "
-          "a fallback model is a mismatch (exit 1, the served set must EQUAL the claimed one), and "
+          "a fallback model is a mismatch (exit 1, the served set must EQUAL the claimed one), "
+          "a NON-DEFAULT `models.supervisor` pin resolved before the spawn reaches the wire and "
+          "the final claim as ONE value, and "
           "the self-reported view that would look green without the cross-check is proven red.")
     return 0
 

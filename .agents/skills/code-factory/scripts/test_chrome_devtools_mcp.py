@@ -24,7 +24,9 @@ Covers, with tempfile fixtures:
     package: it is reinstalled or reported unavailable, never declared ready), and the fail-soft
     degradations (a simulated/missing npm, a failing runner, a runner that reports success without
     creating the entry) — with an INJECTED runner and the offline seam
-    `CHROME_DEVTOOLS_MCP_VENDOR_OFFLINE=1`, so the suite never reaches the network or npm,
+    `CHROME_DEVTOOLS_MCP_VENDOR_OFFLINE=1`, so the suite never reaches the network or npm — plus the
+    `--timeout` boundary: only whole seconds 1..3600 are accepted, and every other value (zero,
+    negative, above range, fractional, boolean at the API) is refused before any side effect,
   - `probe` with `--simulate-missing node` / `chrome` / `chrome-for-testing` / `mcp-server` /
     `vendor-entry` and with a concrete `--target`: the vendored entry of that project is checked and
     a missing one makes the browser path unusable (DATA, exit 0); and the reviewed pin is enforced
@@ -881,6 +883,85 @@ def test_vendor_install(tmp: pathlib.Path) -> None:
           f"an unprovable installation must not be reported as present: {cli_res.stdout!r}")
 
 
+# --------------------------------------------------------------------- vendor-install timeout
+#
+# The deadline is a boundary input, not a number to pass on: it is the only bound on a wedged npm, so
+# zero/negative values, fractions, booleans and absurd magnitudes are refused BEFORE the vendor
+# directory, the runner or a config entry is touched — proven here by the untouched target path and
+# the never-called runner.
+
+def test_vendor_install_timeout(tmp: pathlib.Path) -> None:
+    low, high = cd.VENDOR_INSTALL_TIMEOUT_RANGE
+    check((low, high) == (1, 3600), f"the documented range is 1..3600 inclusive: {(low, high)}")
+    for good in (low, 300, high):
+        check(cd.vendor_install_timeout(good) == good, f"{good} must be an acceptable deadline")
+    check(cd.vendor_install_timeout("3600") == high, "the CLI's decimal text must validate")
+    check(cd.vendor_install_timeout("1") == low, "the lower boundary as text must validate")
+
+    rejected = (0, -1, high + 1, 10 ** 9, 10 ** 100, True, False, 1.5, None,
+                "0", "-1", str(high + 1), "1.5", "1_0", "+5", "", "abc", "9" * 40)
+    for bad in rejected:
+        try:
+            accepted = cd.vendor_install_timeout(bad)
+        except cd.InputError as exc:
+            check("1..3600" in str(exc), f"the reason for {bad!r} must name the range: {exc}")
+        else:
+            raise AssertionError(f"{bad!r} must be refused, got {accepted!r}")
+
+    # No side effect through the public API: no runner call, no vendor directory, no entry file.
+    untouched = tmp / "timeout-api"
+    calls: list[list[str]] = []
+
+    def recording_runner(argv: list[str], timeout: int) -> tuple[int, str]:
+        calls.append(argv)
+        return 1, "must never run"
+
+    for bad in (0, -30, 10 ** 12, True, 1.5, "abc"):
+        try:
+            cd.vendor_install(vendor_prefix(untouched), offline=False, runner=recording_runner,
+                              timeout=bad)
+        except cd.InputError:
+            pass
+        else:
+            raise AssertionError(f"vendor_install must refuse timeout={bad!r} before any work")
+    check(not calls, f"an invalid deadline must never reach the install runner: {calls}")
+    check(not untouched.exists(), f"an invalid deadline must not create {untouched}")
+    check(not project_assets(untouched)[0].exists(),
+          "an invalid deadline must not touch the managed config either")
+
+    # The validated deadline is what the runner receives (the values are not silently clamped).
+    delivered: list[int] = []
+
+    def seeding_runner(argv: list[str], timeout: int) -> tuple[int, str]:
+        delivered.append(timeout)
+        seed_vendored_entry(tmp / "timeout-ok")
+        return 0, "added 1 package"
+
+    ok = cd.vendor_install(vendor_prefix(tmp / "timeout-ok"), offline=False,
+                           runner=seeding_runner, timeout=high)
+    check(delivered == [high] and ok["status"] == "installed",
+          f"the validated deadline must reach the runner unchanged: {delivered} {ok}")
+
+    # CLI: an unusable --timeout is a usage error (exit 2) before the seam or the target is touched.
+    for index, bad in enumerate(("0", "-1", str(high + 1), "1.5", "abc", "9" * 40)):
+        case = tmp / f"timeout-cli-bad-{index}"
+        res = run("vendor-install", "--target", str(case), "--timeout", bad)
+        expect_clean_cli(res, 2, f"vendor-install --timeout {bad}")
+        check("timeout" in res.stderr, f"--timeout {bad}: the usage error must name it: {res.stderr!r}")
+        check(not case.exists(), f"--timeout {bad} must be refused before any side effect: {case}")
+    # ... and both boundaries are accepted end to end.
+    env = {**os.environ, cd.VENDOR_OFFLINE_ENV: "1"}
+    for index, good in enumerate(("1", str(high))):
+        case = tmp / f"timeout-cli-ok-{index}"
+        cli = subprocess.run([sys.executable, str(TOOL), "vendor-install", "--target",
+                              str(vendor_prefix(case)), "--timeout", good, "--json"],
+                             capture_output=True, text=True, errors="replace", env=env)
+        expect_clean_cli(cli, 0, f"vendor-install --timeout {good} (offline seam)")
+        check(json.loads(cli.stdout)["installed"], f"--timeout {good} must install: {cli.stdout!r}")
+    check("1..3600" in run("vendor-install", "--help").stdout,
+          "the help must state the accepted range")
+
+
 # --------------------------------------------------------------------- probe
 
 def test_probe(tmp: pathlib.Path) -> None:
@@ -1126,6 +1207,7 @@ def main() -> int:
         test_merge_config(tmp)
         test_validate_config(tmp)
         test_vendor_install(tmp)
+        test_vendor_install_timeout(tmp)
         test_probe(tmp)
         test_shipped_assets()
         test_cli_contract()
@@ -1133,7 +1215,8 @@ def main() -> int:
     print(f"PASS - chrome_devtools_mcp.py contract holds: {COUNTER['checks']} assertions over "
           "applicability decisions with reasons, E2E-stack discovery, requirement-driven browser "
           "matrix, the per-installation vendored package install (command line, pin, offline seam, "
-          "fail-soft degradations), the byte-preserving idempotent mcp.json merge with explicit "
+          "fail-soft degradations, the bounded 1..3600 whole-second deadline refused before any side "
+          "effect), the byte-preserving idempotent mcp.json merge with explicit "
           "conflicts, fail-soft capability probes including the vendored entry of a project, the "
           "shipped template's safety invariants and the argparse CLI contract.")
     return 0

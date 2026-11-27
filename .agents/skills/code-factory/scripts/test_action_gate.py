@@ -1342,6 +1342,76 @@ def main() -> int:
         check(len(rows) == calls,
               f"every item-2 check must be journaled: {len(rows)} rows for {calls} gate calls")
 
+        # 23j. Backtick substitutions (run 20261126-39892599): a backtick body is the older twin of
+        #      `$(...)`, so the shell runs it and it must be classified at EVERY level and in every
+        #      wrapper. Reading only `$(` was a destructive-action bypass: `echo ` + backtick-wrapped
+        #      `rm -rf /` returned ALLOW (exit 0) in hitl — the exact ALLOW the gate must never give.
+        for action in ("echo `rm -rf /`", 'echo "`rm -rf /`"',
+                       "echo `git push origin main`", 'echo "`git push origin main`"',
+                       "echo `git push --force origin master`",
+                       "echo `rm -rf /; echo ok`", "echo `git push origin main && echo ok`",
+                       'echo "start `rm -rf /` end"',
+                       'sh -c "echo `rm -rf /`"', 'sudo sh -c "`rm -rf /`"',
+                       'sudo bash -c "echo `git push origin main`"',
+                       'echo "`sudo rm -rf /`"', 'echo "`env git push origin main`"',
+                       'cmd /c "echo `rm -rf /`"',
+                       "echo `echo \\`rm -rf /\\``",
+                       # …and the SAME nesting written inside double quotes, where the escaped
+                       # backticks used to survive into the body and the nested deletion read as
+                       # inert text: ALLOW in hitl and auto (review-1 finding 1).
+                       'echo "`echo \\`rm -rf /\\``"',
+                       'echo "start `echo \\`rm -rf /\\`` end"',
+                       'echo "`echo \\`git push origin main\\``"'):
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                check(res.returncode == 1,
+                      f"{action!r} in {mode} runs a destructive backtick substitution and must be "
+                      f"HARD_DENY (exit 1): {res.returncode} {res.stdout!r}")
+                check(class_of(res) == "HARD_DENY" and "decision: HARD_DENY" in res.stdout,
+                      f"{action!r} in {mode} must report HARD_DENY: {res.stdout!r}")
+
+        # 23k. Negative controls for backticks (no over-deny): text the enclosing shell does NOT run
+        #      stays ALLOW — a backtick inside a literal single-quoted string, an escaped one outside
+        #      quotes, and a PowerShell payload, where a backtick is the ESCAPE character and never a
+        #      substitution. A readable but harmless body stays ALLOW as well.
+        for action in ("echo '`rm -rf /`'", "echo \\`rm -rf /\\`",
+                       'echo "\\`rm -rf /\\`"',
+                       "echo '`git push origin main`'", "echo 'fix `typo`'",
+                       "echo `date`", "echo `git status`", 'echo "`git status`"',
+                       "echo `echo hi`", 'sh -c "echo `git log --oneline -5`"',
+                       "pwsh -Command 'Write-Host \"a`tb\"'",
+                       "pwsh -Command 'Write-Host `n'"):
+            res = gate("--action", action)
+            check(res.returncode == 0 and "decision: ALLOW\n" in res.stdout,
+                  f"the inert or harmless backtick form {action!r} must stay ALLOW: {res.stdout!r}")
+
+        # 23l. Fail-safe CONFIRM, never a blind ALLOW: a backtick that never closes and an EMPTY or
+        #      blank body carry no command that could be proven harmless.
+        for action in ("echo `rm -rf /", 'echo "`rm -rf /', "echo ``", "echo `   `",
+                       "echo `" + "`" * 1200):
+            for mode in ("hitl", "auto"):
+                res = gate("--action", action, "--mode", mode)
+                check(class_of(res) == "CONFIRM",
+                      f"{action!r} in {mode} cannot be read as a finished command and must be "
+                      f"CONFIRM, not {class_of(res)!r}: {res.stdout!r}")
+                if mode == "hitl":
+                    check(res.returncode == 2 and "decision: CONFIRM_REQUIRED" in res.stdout,
+                          f"{action!r} in hitl must require confirmation: "
+                          f"{res.returncode} {res.stdout!r}")
+                else:
+                    check(res.returncode == 0 and "decision: ALLOW_WITH_ASSUMPTION" in res.stdout,
+                          f"{action!r} in auto must be a recorded assumption: {res.stdout!r}")
+                check("decision: ALLOW\n" not in res.stdout,
+                      f"{action!r} must never be a blind ALLOW: {res.stdout!r}")
+
+        # 23m. `--scope` is decided inside a backtick body too, exactly like the bare deletion.
+        hitl = gate("--action", 'echo "`rm -rf src/generated`"', "--scope", "src")
+        check(hitl.returncode == 2 and "decision: CONFIRM_REQUIRED" in hitl.stdout,
+              f"an in-scope backtick deletion must require confirmation in hitl: {hitl.stdout!r}")
+        res = gate("--action", 'echo "`rm -rf other/data`"', "--scope", "src")
+        check(res.returncode == 1,
+              f"an out-of-scope backtick deletion must be HARD_DENY: {res.stdout!r}")
+
         # 24. Item 2 follow-up (vaccination, run 20261017-4beb46d5): `VAR=value` words before the
         #     command are ordinary launcher arguments for `sudo` too (the manual documents environment
         #     settings in that form), so the command AFTER them is classified like its bare twin. The
@@ -1813,7 +1883,10 @@ def main() -> int:
           "malformed wire line fails closed, an absent wire is DEGRADED, and an audited command is "
           "never executed); --help and usage errors survive a legacy cp1251 console without a "
           "traceback; cmd /c|/k payloads are split with cmd.exe quoting rules, so a single quote "
-          "cannot hide a separator behind it; and scope containment resolves targets and scopes "
+          "cannot hide a separator behind it; backtick substitutions are classified exactly like their "
+          "`$(...)` twins (a destructive body is HARD_DENY in every wrapper, nested bodies included, "
+          "while single-quoted, escaped and PowerShell-escape text stays ALLOW and an unclosed or "
+          "empty body CONFIRMs); and scope containment resolves targets and scopes "
           "against one repository base (symlink-aware), so a relative rollback path under an "
           "absolute --scope CONFIRMs while traversal and symlink escapes stay HARD_DENY.")
     return 0

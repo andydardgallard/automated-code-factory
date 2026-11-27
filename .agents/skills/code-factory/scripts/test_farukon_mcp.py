@@ -33,8 +33,10 @@ Covers, with tempfile fixtures:
     WRONG reading of a process that has already exited),
   - the launcher SHAPES that really produce it: an exit-after-`tools/list` server, a server that dies
     on the first `tools/call` (answered with `-32000`), a launcher that exits 1 after writing its
-    diagnostics to stderr and no protocol frame at all, and the platform's ACTUAL registration — a
-    real `node <launcher>.js` wrapper that spawns the server on inherited stdio,
+    diagnostics to stderr and no protocol frame at all, the platform's ACTUAL registration — a real
+    `node <launcher>.js` wrapper that spawns the server on inherited stdio — and a launcher that
+    starts its server and EXITS at once, whose surviving descendant must still be terminated (the
+    bounded cleanup is not tied to the direct child's liveness),
   - the CLI contract: `--help` exit 0 for every subcommand, usage error exit 2, no traceback.
 
 Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
@@ -46,9 +48,11 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 TOOL = SCRIPTS / "farukon_mcp.py"
@@ -1280,6 +1284,72 @@ def process_alive(pid: int) -> bool:
     return True
 
 
+def wait_gone(pid: int, timeout: float = 10.0) -> bool:
+    """`True` once `pid` is gone (polled, so a stop that is not instantaneous still counts)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not process_alive(pid):
+            return True
+        time.sleep(0.05)
+    return not process_alive(pid)
+
+
+def kill_pid(pid: int) -> None:
+    """Fixture hygiene only: a leaked probe child must never outlive a failing case."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+# The launcher shape that leaks when the tree cleanup is tied to the DIRECT child's liveness: it
+# starts the long-lived server it launches on the INHERITED stdio (so the session's pipes stay open),
+# records that child's pid and exits AT ONCE — the server OUTLIVES its launcher.
+ORPHANING_LAUNCHER = '''\
+import subprocess, sys
+
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write(str(child.pid))
+'''
+
+
+def test_exited_launcher_leaves_no_descendant(tmp: pathlib.Path) -> None:
+    """(review C05) The descendant cleanup runs even when the launcher has ALREADY exited.
+
+    `_terminate_tree` used to return as soon as `proc.poll()` reported the direct child dead, so a
+    launcher that starts the platform server and exits (`cargo run`, a Node wrapper) leaked exactly
+    the MCP descendant the probe exists to close — a live platform instance per probe. Bounded
+    cleanup now runs unconditionally: `taskkill /T` for a live leader, the session's job object for
+    the descendants that outlived it (POSIX: the process group, which also outlives its leader).
+    """
+    workdir = tmp / "exited-launcher"
+    workdir.mkdir()
+    launcher = written(tmp / "orphaning_launcher.py", ORPHANING_LAUNCHER)
+    pid_file = tmp / "exited-launcher-child.pid"
+    result = handshake(workdir, [sys.executable, str(launcher), str(pid_file)],
+                       first_response_timeout=2, response_timeout=2)
+    check(result["ok"] is False,
+          f"a launcher that exits without answering is never a green handshake: {result}")
+    check(result.get("exit_code") == 0,
+          f"the LAUNCHER's own exit code must be reported: {result}")
+    check(pid_file.is_file(),
+          f"the fixture launcher must record the pid of the child it started: {pid_file}")
+    child = int(pid_file.read_text(encoding="utf-8").strip())
+    alive = True
+    try:
+        alive = not wait_gone(child)
+    finally:
+        if alive:                                   # never leak the probe child
+            kill_pid(child)
+    check(not alive,
+          f"the server {child} started by an ALREADY EXITED launcher must be terminated: it was "
+          "still running after the handshake returned, so every probe would leak a platform instance")
+
+
 # A launcher that dies the way the platform's Node launcher dies on this host: it rebuilds, the
 # rebuild fails, every diagnostic goes to STDERR and NOT ONE protocol frame reaches stdout. An MCP
 # client sees a closed connection and reports JSON-RPC error -32000; the handshake must report the
@@ -2007,6 +2077,7 @@ def main() -> int:
         test_handshake(tmp)
         test_handshake_timeout_validation(tmp)
         test_handshake_is_bounded_and_cleans_up(tmp)
+        test_exited_launcher_leaves_no_descendant(tmp)
         test_handshake_reports_failure_evidence(tmp)
         test_handshake_detects_post_list_exit(tmp)
         test_handshake_opt_in_tool_call_stage(tmp)
@@ -2027,7 +2098,8 @@ def main() -> int:
           "toolchain and a cwd outside the platform root are unusable), the bounded JSON-RPC "
           "handshake for all eight Farukon tools (with the failure EVIDENCE of a dead server — the "
           "protocol stage, the exit code, its own stderr/stdout and the post-tools-list liveness — "
-          "the exit-after-list and dying-tools/call shapes, the launcher's real `node` registration "
+          "the exit-after-list and dying-tools/call shapes, the surviving descendant of an ALREADY "
+          "EXITED launcher, the launcher's real `node` registration "
           "shape and the opt-in tools/call stage, the recorded live-session evidence that "
           "`verify-reproduction` judges strictly — an OBSERVED pre-initialize launch failure plus a "
           "healthy eight-tool control — and the five distinct healthy sessions of THIS project that "

@@ -13,9 +13,13 @@ helper resolves by default is redirected into that temp directory — the operat
      Roblox subject when an action is bound to it ("Add a coin pickup script and playtest it in
      Studio"), while a `studio` naming another product or place (Visual Studio, a recording studio, a
      studio apartment) is not; an action bound to documentation/media ("update the Roblox README",
-     "update the Studio changelog") is not Roblox work; `--repo` that is not a directory and a
-     missing `--task-file` are usage errors (exit 2). The non-Roblox case is pinned on the FACTORY
-     repository itself, this run's own task file included.
+     "update the Studio changelog") is not Roblox work, and that binding is per CLAUSE, so a
+     documentation clause never discards the real game action of the next clause and adjacent
+     wording can never smuggle a documentation action past its own doc object, while an action
+     counts only inside the clause that ALSO names the Roblox subject (a subject in one clause and a
+     generic verb in another never combine); `--repo` that is not
+     a directory and a missing `--task-file` are usage errors (exit 2). The non-Roblox case is pinned
+     on the FACTORY repository itself, this run's own task file included.
   2. `merge-config` DEFAULT target — the USER-SCOPE GLOBAL CLI config: `KIMI_CODE_HOME` is honoured
      (temp dir only), the home directory is the fallback, an undeterminable or nonexistent data root
      is exit 2 and writes nothing.
@@ -30,7 +34,9 @@ helper resolves by default is redirected into that temp directory — the operat
      the absolute `…/Roblox/mcp.bat` launcher), and no diagnostic echoes a value the entry supplies.
   6. the scenario runner against an INJECTED fake stdio Studio server (`--executable`/`--arg`) — a
      structured PASS with its captured console output (`console.log` + `verdict.json` + the console
-     sha256), a run that logged an error is FAIL (exit 1), a screenshot is never the verdict, a
+     sha256), a run that logged an error is FAIL (exit 1), a PRESENT non-boolean `isError` (a string,
+     a number, null, a container) is refused before its `content` can read as success, a screenshot is
+     never the verdict, a
      zero-step scenario and every timeout outside (0, 3600] are exit 2, a missing `--executable` and
      an empty `--arg` are exit 2. The bounded stop is pinned on the shape a real launcher has: a
      launcher that EXITS while the child it started survives must leave nothing running, on both the
@@ -46,6 +52,13 @@ helper resolves by default is redirected into that temp directory — the operat
      `_handshake`) so it can never start a real Studio session.
   9. the CLI contract — `--help` exit 0 for every subcommand, usage errors exit 2 without a
      traceback, and non-ASCII output surviving a legacy console code page.
+ 10. the SKILL-GUIDANCE regression — the shipped `game-development` skill must scope the
+     `LocalScript` prohibition to the containers that really do not run one and must keep naming
+     every supported client location (`StarterPlayerScripts`, `StarterCharacterScripts`,
+     `StarterGui`/`PlayerGui`, `StarterPack`/`Backpack`, and the script parented directly at
+     runtime under `PlayerScripts`/`PlayerGui`) with no exhaustive "one of those three" list, so the
+     text can never again tell an agent that a perfectly valid client script will not run, nor
+     delete the valid ones while "fixing" that sentence.
 
 Exit code 0 = all assertions pass, 1 = a command did not behave as expected.
 """
@@ -67,6 +80,24 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent
 TOOL = SCRIPTS / "roblox_mcp.py"
 # `.agents/skills/code-factory/scripts` -> the repository root (the non-Roblox fixture of case 1).
 REPO_ROOT = SCRIPTS.parents[3]
+# The shipped guidance the Roblox path hands to a specialist (DATA only: this test never runs it).
+GAME_SKILL = REPO_ROOT / "skill-base" / "skills" / "game-development" / "SKILL.md"
+# The containers a `LocalScript` really runs in — the skill must never stop naming them.
+CLIENT_CONTAINERS = ("StarterPlayerScripts", "StarterCharacterScripts", "StarterGui", "PlayerGui")
+# Containers where a `LocalScript` really does not run — the scoped prohibition names these.
+UNSUPPORTED_CONTAINERS = ("ServerScriptService", "ServerStorage", "Workspace")
+# The supported client LOCATIONS beyond the three `Starter*` containers: `StarterPack` is cloned into
+# the player's `Backpack`, and a client script also runs parented directly at runtime under
+# `PlayerScripts`, `PlayerGui`, the `Backpack` or the character. Guidance that listed only three
+# containers told an agent to move a valid tool or runtime script where it does not belong.
+CLIENT_DESTINATIONS = ("StarterPack", "Backpack", "PlayerScripts", "PlayerGui")
+# The false EXHAUSTIVE claim this regression exists for: "one of those three" reads as a closed list,
+# so every other supported location (a `StarterPack` tool, a runtime-parented script) looks invalid.
+EXHAUSTIVE_CLAIMS = ("one of those three", "one of these three", "one of the three",
+                     "one of those 3", "only three", "the only three")
+# The false blanket this regression exists for: it calls EVERY LocalScript outside the character
+# dead, contradicting the StarterPlayerScripts/StarterGui rows of the very same table.
+BLANKET_CLAIMS = ("outside the player's character", "outside the character")
 
 sys.path.insert(0, str(SCRIPTS))
 import roblox_mcp as rm  # noqa: E402  (the importable API under test)
@@ -88,21 +119,31 @@ DOC_BOUND_TEXTS = (
     # …and a bare "Studio" bound to a documentation action is discarded the same way.
     "Update the Studio changelog to describe the new pickup.",
 )
-# D1 — DOCUMENTED LIMITATION of the object-window heuristic (pinned in its CURRENT shape, not
-# redesigned): an action is bound to a documentation/media object only when such a word sits within
-# ACTION_OBJECT_WINDOW (±3) words of THAT occurrence. Unusual wording therefore errs in both
-# directions:
-#   FALSE POSITIVE (over-fires) — "Update the Roblox changelog with the coin system changes.": the
-#     doc object `changelog` is consumed by `update`, and the trailing clause binds `changes` to no
-#     documentation word, so a pure documentation edit activates the Roblox role.
-#   FALSE NEGATIVE (under-fires) — "Fix the Roblox README typo and playtest the coin pickup in
-#     Studio.": `playtest` sees `README` inside its window and is discarded, so the real game action
-#     in the same sentence is lost. The SAME task with two filler words ("… typo first and then
-#     playtest …") pushes `README` out of the window and does decide applicable.
-OBJECT_WINDOW_OVER_FIRE = "Update the Roblox changelog with the coin system changes."
-OBJECT_WINDOW_UNDER_FIRE = "Fix the Roblox README typo and playtest the coin pickup in Studio."
-OBJECT_WINDOW_LUCK = ("Update the Roblox README typo first and then playtest the coin pickup in "
-                      "Studio.")
+# 1.13 — action/object binding is CLAUSE-level: an action is documentation work only when the CLAUSE
+# it governs (see CLAUSE_BOUNDARY in the module) names a documentation/media object. These are the two
+# wordings a ±3-word proximity window got WRONG, kept as regressions in their corrected shape:
+#   OVER-FIRE (was: applicable) — "Update the Roblox changelog with the coin system changes.": the
+#     doc object `changelog` governs the whole clause, so the trailing "changes" cannot escape it and
+#     a pure documentation edit no longer activates the Roblox role.
+#   UNDER-FIRE (was: not applicable) — "Fix the Roblox README typo and playtest the coin pickup in
+#     Studio.": only the documentation clause is discarded, so the real game action of the next
+#     clause decides — no filler words are needed any more.
+CLAUSE_DOC_ONLY = "Update the Roblox changelog with the coin system changes."
+CLAUSE_MIXED_UNDER_FIRE = "Fix the Roblox README typo and playtest the coin pickup in Studio."
+# Cross-clause CONTROLS: the documentation clause and the game clause are judged separately, in
+# either ORDER and across every boundary kind (conjunction, comma + adverb, plain conjunction).
+CLAUSE_CROSS_CONTROLS = (
+    "Update the Roblox README typo first and then playtest the coin pickup in Studio.",
+    "Update the Roblox changelog, then playtest the coin pickup in Studio.",
+    "Playtest the coin pickup in Studio and update the Roblox README.",
+    "Fix the coin pickup in Studio; update the Roblox changelog afterwards.",
+)
+# …while a documentation object in the action's OWN clause still discards that action.
+CLAUSE_SAME_CLAUSE_DOC = "Review the Roblox README examples in Studio."
+# The subject and the action must sit in the SAME clause (review-1 finding 3): a Roblox subject in a
+# documentation clause plus a generic verb in an unrelated one used to combine GLOBALLY and activate
+# the role, although the verb drives somebody else's task.
+CLAUSE_SPLIT_SUBJECT_ACTION = "Update the Roblox README, then fix the Python CI."
 # `studio` in a Roblox repository but naming ANOTHER product or place: never the Roblox IDE.
 OTHER_STUDIO_TEXTS = (
     "Add a Visual Studio extension for the build log.",
@@ -149,6 +190,9 @@ TOOLS = %s
 CONSOLE = %s
 LIVE_NOISE = %s
 DEATH_NOISE = %s
+# The `isError` MEMBER the result carries: a Python fragment (see `studio_server`), `None` when the
+# member is ABSENT from the result — so a case can pin every present non-boolean shape.
+IS_ERROR_MEMBER = %s
 
 
 def answer(request_id, result):
@@ -173,8 +217,10 @@ for line in sys.stdin:
         answer(message["id"], {"tools": [{"name": tool, "inputSchema": {"type": "object"}}
                                         for tool in TOOLS]})
     elif method == "tools/call":
-        answer(message["id"], {"content": [{"type": "text", "text": text} for text in CONSOLE],
-                               "isError": False})
+        result = {"content": [{"type": "text", "text": text} for text in CONSOLE]}
+        if IS_ERROR_MEMBER is not None:
+            result.update(IS_ERROR_MEMBER)
+        answer(message["id"], result)
 
 # The session is over: stdin closed, so the peer is being torn down and whatever it logs from here
 # on is the SHUTDOWN talking, not the scenario.
@@ -313,15 +359,24 @@ def fake_launcher(tmp: pathlib.Path) -> pathlib.Path:
     return written(tmp / "host" / "AppData" / "Local" / "Roblox" / "mcp.bat", "@echo off\n")
 
 
+# The sentinel that keeps `isError` OUT of the fake result entirely (a present member is what the
+# module must judge, an absent one is the legal "no tool-level failure reported" shape).
+ABSENT_IS_ERROR = "<absent>"
+
+
 def studio_server(tmp: pathlib.Path, name: str, console: tuple[str, ...] = GOOD_CONSOLE,
-                  live_noise: str = "", death_noise: str = "") -> list[str]:
+                  live_noise: str = "", death_noise: str = "",
+                  is_error: object = False) -> list[str]:
     """Write the fake Studio server and return the argv that starts it.
 
     `live_noise` / `death_noise` are stderr lines logged while the scenario RUNS / while the session
-    is being torn down, so a case can tell the two apart.
+    is being torn down, so a case can tell the two apart. `is_error` is the VALUE of the result's
+    `isError` member — any JSON-encodable shape, `ABSENT_IS_ERROR` to leave the member out.
     """
+    member = None if is_error is ABSENT_IS_ERROR else repr({"isError": is_error})
     source = FAKE_STUDIO_SERVER % (json.dumps(list(STUDIO_TOOLS)), json.dumps(list(console)),
                                    json.dumps(live_noise), json.dumps(death_noise),
+                                   member if member is not None else "None",
                                    json.dumps(f"fake-studio-{name}"))
     return [sys.executable, str(written(tmp / "servers" / f"{name}.py", source))]
 
@@ -557,23 +612,38 @@ def test_decide(tmp: pathlib.Path) -> None:
               f"the excluded studio must not be recorded as a subject: {text!r} -> "
               f"{decision['evidence']['scope_terms']}")
 
-    # 1.13 D1 — the ±3-word object window is a DOCUMENTED limitation, pinned in its CURRENT shape so
-    #      a future refinement is a deliberate, visible change: near a documentation word the
-    #      classifier OVER-fires on a doc action and UNDER-fires on a real game action.
-    over = rm.decide_applicability(OBJECT_WINDOW_OVER_FIRE, repo=repo)
-    check(over["applicable"] is True,
-          f"documented over-fire: a documentation action with a trailing clause still activates the "
-          f"role (D1, pinned as-is): {OBJECT_WINDOW_OVER_FIRE!r} -> {over}")
-    under = rm.decide_applicability(OBJECT_WINDOW_UNDER_FIRE, repo=repo)
-    check(under["applicable"] is False,
-          "documented under-fire: `playtest` loses to a `README` inside its ±3-word window, so the "
-          f"real game action is discarded (D1, pinned as-is): {OBJECT_WINDOW_UNDER_FIRE!r} -> {under}")
-    check(any("documentation/media" in reason for reason in under["reasons"]),
-          f"the under-fire must be explained by the discarded docs action: {under['reasons']}")
-    # …and the window itself is the trigger: two filler words move the doc word out of reach.
-    luck = rm.decide_applicability(OBJECT_WINDOW_LUCK, repo=repo)
-    check(luck["applicable"] is True,
-          f"the same task with the doc word pushed outside the window must decide applicable: {luck}")
+    # 1.13 CLAUSE-level action/object binding (the fixed D1): a documentation action no longer
+    #      activates the role, a documentation word no longer discards the real game action of a
+    #      NEIGHBOURING clause, and both directions stay pinned plus cross-clause controls.
+    over = rm.decide_applicability(CLAUSE_DOC_ONLY, repo=repo)
+    check(over["applicable"] is False,
+          "a documentation action must stay not applicable when its own clause governs the object, "
+          f"whatever clause follows it: {CLAUSE_DOC_ONLY!r} -> {over}")
+    check(any("documentation/media" in reason for reason in over["reasons"]),
+          f"the discarded documentation action must be explained: {over['reasons']}")
+    under = rm.decide_applicability(CLAUSE_MIXED_UNDER_FIRE, repo=repo)
+    check(under["applicable"] is True,
+          "a real game action in its own clause must be applicable next to a documentation clause: "
+          f"{CLAUSE_MIXED_UNDER_FIRE!r} -> {under}")
+    check("playtest" in under["evidence"]["scope_terms"],
+          f"the surviving game action must be recorded as evidence: {under['evidence']}")
+    # …judged separately whichever ORDER the clauses come in and whichever boundary separates them.
+    for text in CLAUSE_CROSS_CONTROLS:
+        decision = rm.decide_applicability(text, repo=repo)
+        check(decision["applicable"] is True,
+              f"a docs clause and a game clause must be judged separately: {text!r} -> {decision}")
+    same_clause = rm.decide_applicability(CLAUSE_SAME_CLAUSE_DOC, repo=repo)
+    check(same_clause["applicable"] is False,
+          "a documentation object inside the action's OWN clause must still discard that action: "
+          f"{CLAUSE_SAME_CLAUSE_DOC!r} -> {same_clause}")
+    # …and the two must meet in one clause: a Roblox subject in one clause plus a generic verb in
+    # another are two statements, so no action is bound to the subject (review-1 finding 3).
+    split = rm.decide_applicability(CLAUSE_SPLIT_SUBJECT_ACTION, repo=repo)
+    check(split["applicable"] is False,
+          "a Roblox subject and an action in DIFFERENT clauses must never combine globally: "
+          f"{CLAUSE_SPLIT_SUBJECT_ACTION!r} -> {split}")
+    check(any("binds no action" in reason for reason in split["reasons"]),
+          f"the unbound subject must be explained: {split['reasons']}")
 
     # 1.9 INPUT BOUNDARIES (exit 2): --repo that is not a directory, a missing --task-file, and
     #     decide with neither input. Nothing is decided against a tree that does not exist.
@@ -1110,6 +1180,48 @@ def test_scenario_runner(tmp: pathlib.Path) -> None:
     res = run("scenario", "verdict", "--evidence", str(broken_evidence), env=env)
     expect_clean_cli(res, 1, "scenario verdict of a FAIL record")
     check(res.stdout.startswith("FAIL"), f"the stored FAIL must be reported: {res.stdout!r}")
+
+    # 6.2b `isError` is a BOOLEAN by contract, so every PRESENT value that is not one leaves the
+    #      tool-level outcome UNKNOWN and is refused BEFORE any `content` can be read as a success.
+    #      A string ("true"/"false") and a number (1/0) are NOT coerced: a server that says "false"
+    #      in prose, or `1`, may still be reporting a failure.
+    well_formed = {"content": [{"type": "text", "text": GOOD_CONSOLE[0]}]}
+    check(rm._mcp_result_problem(well_formed) is None,
+          "a result WITHOUT an isError member and with content is a well-formed answer")
+    check(rm._mcp_result_problem({**well_formed, "isError": False}) is None,
+          "isError: false is the legal success shape")
+    check("isError: true" in (rm._mcp_result_problem({**well_formed, "isError": True}) or ""),
+          "isError: true must stay the tool-level FAILURE it is")
+    for shape in ("true", "false", "", 1, 0, 1.0, None, [], {}):
+        problem = rm._mcp_result_problem({**well_formed, "isError": shape})
+        check(problem is not None and "non-boolean" in problem,
+              f"a present isError={shape!r} must be refused as non-boolean: {problem}")
+    for label, value in (("string-true", "true"), ("number-one", 1), ("number-zero", 0)):
+        lying = studio_server(tmp, f"is-error-{label}", is_error=value)
+        lying_scenario = write_scenario(tmp, f"is-error-{label}", ONE_STEP)
+        lying_evidence = scenario_evidence(tmp, f"is-error-{label}")
+        res = run("scenario", "run", "--scenario", str(lying_scenario), "--evidence",
+                  str(lying_evidence), "--timeout-seconds", "120", "--executable", lying[0],
+                  "--arg", lying[1], "--json", env=env)
+        expect_clean_cli(res, 1, f"scenario run (isError={value!r})")
+        payload = json.loads(res.stdout)
+        record = payload["record"]
+        check(payload["verdict"] == "FAIL" and record["completed"] is False,
+              f"a server answering isError={value!r} must never complete the scenario: "
+              f"{record['steps']}")
+        check(record["steps"] and record["steps"][0]["ok"] is False
+              and "non-boolean" in record["steps"][0]["message"],
+              f"the refused step must name the non-boolean isError: {record['steps']}")
+    # …and the ABSENT member is the legal shape: no tool-level failure was reported, so it still
+    # completes, exactly like `isError: false`.
+    silent = studio_server(tmp, "is-error-absent", is_error=ABSENT_IS_ERROR)
+    silent_scenario = write_scenario(tmp, "is-error-absent", ONE_STEP)
+    res = run("scenario", "run", "--scenario", str(silent_scenario), "--evidence",
+              str(scenario_evidence(tmp, "is-error-absent")), "--timeout-seconds", "120",
+              "--executable", silent[0], "--arg", silent[1], "--json", env=env)
+    expect_clean_cli(res, 0, "scenario run (no isError member)")
+    check(json.loads(res.stdout)["verdict"] == "PASS",
+          "a result without an isError member and an error-free console is still a PASS")
 
     # 6.3 INPUT BOUNDARIES (exit 2), each writing NOTHING.
     zero_step = write_scenario(tmp, "zero-step", [])
@@ -1697,6 +1809,73 @@ def test_cli_contract(tmp: pathlib.Path) -> None:
           f"a non-ASCII Roblox task must still classify: {res.stdout!r}")
 
 
+def test_skill_guidance() -> None:
+    """10. The shipped guidance scopes the LocalScript prohibition and keeps every client container.
+
+    Content is DATA: nothing here starts Studio or executes the skill's advice — the assertion is
+    that the text an agent is handed tells the truth about which containers run a `LocalScript`.
+    """
+    check(GAME_SKILL.is_file(), f"the Roblox guidance must ship at {GAME_SKILL}")
+    text = GAME_SKILL.read_text(encoding="utf-8")
+
+    # 10.1 The false blanket is gone: no wording may call every LocalScript outside the character
+    # dead, because that contradicts the skill's own StarterPlayerScripts/StarterGui rows.
+    lowered = text.lower()
+    for claim in BLANKET_CLAIMS:
+        check(claim not in lowered,
+              f"{GAME_SKILL}: the blanket claim {claim!r} is false - a LocalScript in "
+              "StarterPlayerScripts/StarterCharacterScripts/StarterGui does run")
+
+    # 10.2 The prohibition is a SINGLE, SCOPED statement: one paragraph says where a LocalScript
+    # never runs, and it names the unsupported containers instead of generalising.
+    paragraphs = [p for p in text.split("\n\n") if "never runs" in p]
+    check(len(paragraphs) == 1,
+          f"{GAME_SKILL}: expected exactly one paragraph stating where a LocalScript never runs, "
+          f"got {len(paragraphs)}")
+    paragraph = paragraphs[0]
+    flat = " ".join(paragraph.split())
+    sentences = [s for s in flat.split(". ") if "never runs" in s]
+    check(len(sentences) == 1,
+          f"{GAME_SKILL}: the prohibition must be one sentence, got {sentences!r}")
+    prohibition = sentences[0]
+    check(any(name in prohibition for name in UNSUPPORTED_CONTAINERS),
+          f"{GAME_SKILL}: the never-runs sentence must name the unsupported container(s) "
+          f"{UNSUPPORTED_CONTAINERS}: {prohibition!r}")
+    check("ServerScriptService" in prohibition,
+          f"{GAME_SKILL}: ServerScriptService is the core unsupported location and must be named: "
+          f"{prohibition!r}")
+
+    # 10.3 The supported client containers stay enumerated in THAT paragraph - the reader learns both
+    # halves of the rule where the rule is made, and no valid client script is implied dead.
+    for name in CLIENT_CONTAINERS:
+        check(name in paragraph,
+              f"{GAME_SKILL}: the execution-model guidance must name the supported client "
+              f"container {name!r} next to the prohibition")
+
+    # 10.4 ...and the table keeps its LocalScript rows, so a "fix" cannot delete the valid ones.
+    for name in ("StarterPlayerScripts", "StarterCharacterScripts", "StarterGui"):
+        rows = [line for line in text.splitlines() if line.startswith(f"| `{name}`")]
+        check(len(rows) == 1, f"{GAME_SKILL}: the table must keep exactly one {name!r} row: {rows!r}")
+        check("LocalScript" in rows[0],
+              f"{GAME_SKILL}: the {name!r} row must keep its LocalScript marker: {rows[0]!r}")
+
+    # 10.5 The supported client LOCATIONS are complete (review-2 finding 3): `StarterPack` is cloned
+    # into the player's `Backpack` and a script also runs parented directly at runtime, so a reader
+    # must learn those next to the prohibition instead of being told there are only three.
+    for name in CLIENT_DESTINATIONS:
+        check(name in paragraph,
+              f"{GAME_SKILL}: the execution-model guidance must name the supported client "
+              f"destination {name!r} next to the prohibition")
+
+    # 10.6 ...and no wording may close the list again: an exhaustive claim sends a valid tool or
+    # runtime script into a container that does not fit it.
+    flat = " ".join(text.split())
+    for claim in EXHAUSTIVE_CLAIMS:
+        check(claim not in flat,
+              f"{GAME_SKILL}: the exhaustive claim {claim!r} is false - a `StarterPack` tool is "
+              "cloned into the `Backpack` and a script also runs parented directly at runtime")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         tmp = pathlib.Path(td)
@@ -1716,6 +1895,7 @@ def main() -> int:
         test_probe(tmp)
         test_probe_check_mcp_start(tmp)
         test_cli_contract(tmp)
+        test_skill_guidance()
 
     print(f"PASS - roblox_mcp.py contract holds: {COUNTER['checks']} assertions over the "
           "BOTH-conditions applicability matrix (repository identity alone, task text alone and a "
@@ -1729,12 +1909,16 @@ def main() -> int:
           "no stored value echoed, --dry-run writing nothing), the managed-entry invariants of "
           "validate-config, the scenario runner against an injected fake Studio server (structured "
           "PASS/FAIL derived from the captured console output with its sha256, a screenshot never "
-          "the verdict, zero-step and out-of-range budgets refused, the bounded stop reaching a "
-          "descendant whose launcher already exited, the fail-closed refusal of a host that cannot "
-          "guarantee that stop, and the console capture taken BEFORE that stop "
+          "the verdict, a PRESENT non-boolean isError (string, number, null, container) refused "
+          "before any content can read as success, zero-step and out-of-range budgets refused, the "
+          "bounded stop reaching a "
+          "descendant whose launcher already exited, the fail-closed refusal "
+          "of a host that cannot guarantee that stop, and the console capture taken BEFORE that stop "
           "so a peer's teardown noise never becomes a verdict) with its strict `scenario "
           "verify` gate, the fail-soft capability probe whose Studio handshake is strictly opt-in "
-          "and seam-driven, and the argparse CLI contract.")
+          "and seam-driven, the argparse CLI contract, and the shipped Roblox guidance that scopes the "
+          "LocalScript prohibition to its unsupported containers while keeping every supported "
+          "client container listed.")
     return 0
 
 

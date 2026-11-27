@@ -14,8 +14,11 @@ the role OFF:
       server/tools) bound to an ACTION term (`add`, `create`, `build`, `fix`, `playtest`, `script`,
       `run`, …), where an action on DOCUMENTATION/media (`edit the markdown guide`, `update the
       README`) is not Roblox work and a `studio` naming another product or place (`Visual Studio`, a
-      `studio apartment`) is not the Roblox IDE. Task-file METADATA (`models:`, `repo_path:`,
-      `commit_exclude:`) is not scope and is
+      `studio apartment`) is not the Roblox IDE. The action/object binding is CLAUSE-level, so a
+      documentation clause discards only its own action and never the game work of the next clause,
+      while an action counts only inside the clause that ALSO names the Roblox subject — a subject
+      in one clause and a generic verb in another never combine. Task-file METADATA (`models:`,
+      `repo_path:`, `commit_exclude:`) is not scope and is
       stripped before classification, so `models.roblox_expert` alone (a MODEL pin), the repository
       identity alone, or the task text alone all stay `not_applicable`. Every decision carries a
       REASON naming the repository markers, the scope terms and the discarded ones. Never a model
@@ -76,10 +79,13 @@ Determinism and safety of the helpers themselves:
     probe or a scenario never leaves a Studio session behind;
   - a scenario verdict is DERIVED from evidence, never asserted: PASS requires the scenario to have
     COMPLETED **and** the captured console output to contain no error log line — any error line is
-    FAIL. A screenshot may be attached and is recorded as an artifact; it is NEVER the verdict
-    (`screenshot_is_verdict` is false in every verdict this helper writes), and `scenario verify`
-    re-derives PASS from the stored console bytes (their sha256 included) instead of trusting the
-    stored verdict field.
+    FAIL. A `tools/call` result only counts as answered when it is a well-formed MCP result whose
+    `isError` is ABSENT, `false` or `true` — a PRESENT non-boolean `isError` (`"true"`, `"false"`,
+    `1`, `0`, `null`) is refused, never coerced, so a string or numeric error signal can never
+    produce a PASS. A screenshot may be attached and is recorded as an artifact; it is NEVER the
+    verdict (`screenshot_is_verdict` is false in every verdict this helper writes), and `scenario
+    verify` re-derives PASS from the stored console bytes (their sha256 included) instead of
+    trusting the stored verdict field.
 """
 from __future__ import annotations
 
@@ -193,25 +199,23 @@ ROBLOX_ACTION_TERMS: tuple[str, ...] = (
     "place", "instance", "gameplay",
 )
 # SUBJECT BINDING: an action whose object is documentation/media is not Roblox work — "update the
-# Roblox README" documents the game instead of changing it. Checked ACTION_OBJECT_WINDOW words
-# either side of the action, per OCCURRENCE, so another occurrence in the same task still counts.
-#
-# DOCUMENTED LIMITATION of that window — pinned as-is by `test_roblox_mcp.py` (case 1.13), NOT an
-# unfinished implementation: it binds action -> object by DISTANCE, not by clause, so unusual
-# wording errs in BOTH directions:
-#   false POSITIVE (over-fires): "Update the Roblox changelog with the coin system changes." is read
-#     as Roblox work — the documentation object `changelog` is consumed by `update`, while the
-#     trailing clause binds `changes` to no documentation word at all;
-#   false NEGATIVE (under-fires): "Fix the Roblox README typo and playtest the coin pickup in
-#     Studio." is NOT read as Roblox work — `README` sits inside `playtest`'s window and discards the
-#     real game action of the same sentence ("Update the Roblox README typo first and then playtest
-#     the coin pickup in Studio." — two filler words — decides applicable again).
-# Refining this into clause-level action/object binding is a deliberate redesign with its own task.
+# Roblox README" documents the game instead of changing it. The object is bound inside the action's
+# OWN CLAUSE, per OCCURRENCE, so an action in the task still counts:
+#   "Update the Roblox changelog with the coin system changes." — `changelog` governs this whole
+#     clause, so both `update` and `changes` are documentation work and not Roblox work;
+#   "Fix the Roblox README typo and playtest the coin pickup in Studio." — the documentation clause
+#     is discarded while the next clause really plays the game, so the task IS Roblox work.
+# Clause-level, not distance-based: proximity let a neighbouring clause's `README` discard a real
+# play-test and let a trailing clause escape a documentation action (both pinned by
+# `test_roblox_mcp.py`, case 1.13).
 NON_ROBLOX_OBJECTS: frozenset[str] = frozenset({
     "documentation", "doc", "docs", "readme", "manual", "guide", "changelog", "website", "site",
     "report", "diagram", "docstring", "note", "blog", "tutorial", "markdown", "markdown file",
 })
-ACTION_OBJECT_WINDOW = 3
+# What closes a clause: a sentence terminator, a comma, or a coordinating conjunction. A deliberate
+# SHALLOW rule — it decides which object an action governs, never the sentence's full grammar, so it
+# stays deterministic and free of a natural-language dependency.
+CLAUSE_BOUNDARY = re.compile(r"[.!?;,]|\b(?:and|but|then|so)\b")
 _WORD = re.compile(r"[A-Za-z][A-Za-z_-]*")
 
 # `studio` alone is the Roblox IDE, but the word also names other PRODUCTS and PLACES: Visual Studio,
@@ -455,23 +459,33 @@ def _object_key(word: str) -> str:
     return key[:-1] if len(key) > 3 and key.endswith("s") else key
 
 
-def _operates_on_other_object(text: str, match: "re.Match[str]") -> bool:
-    """`True` when THIS occurrence of an action names a documentation/media object.
+def _clauses(text: str) -> list[str]:
+    """The CLAUSES of an already-lowercased scope — the span one action governs.
 
-    A ±ACTION_OBJECT_WINDOW word window, not a clause parse — its documented false positives and
-    false negatives are listed beside NON_ROBLOX_OBJECTS and pinned by the test module.
+    `CLAUSE_BOUNDARY` closes a clause, so a documentation word in a NEIGHBOURING clause can no longer
+    discard this clause's action, and a documentation action cannot escape through a boundary.
     """
-    before = _WORD.findall(text[:match.start()])[-ACTION_OBJECT_WINDOW:]
-    after = _WORD.findall(text[match.end():])[:ACTION_OBJECT_WINDOW]
-    return any(_object_key(word) in NON_ROBLOX_OBJECTS for word in before + after)
+    return [clause for clause in CLAUSE_BOUNDARY.split(text or "") if clause.strip()]
+
+
+def _names_documentation_object(clause: str) -> bool:
+    """`True` when this clause names a documentation/media OBJECT (NON_ROBLOX_OBJECTS)."""
+    return any(_object_key(word) in NON_ROBLOX_OBJECTS for word in _WORD.findall(clause))
 
 
 def bound_actions(scope: str) -> list[str]:
-    """The action terms of a METADATA-stripped scope with at least one Roblox-bound occurrence."""
-    low = (scope or "").lower()
+    """The action terms BOUND to a Roblox subject in a METADATA-stripped scope.
+
+    An action counts only inside the clause that ALSO names the Roblox subject, because that is the
+    subject it governs. A subject in one clause and a generic verb in another ("Update the Roblox
+    README, then fix the Python CI.") are two unrelated statements: the verb drives somebody else's
+    task, so nothing is bound. A clause naming a documentation/media object is discarded before the
+    binding, so it can neither bind nor discard a neighbouring clause's action.
+    """
+    game_clauses = [clause for clause in _clauses((scope or "").lower())
+                    if not _names_documentation_object(clause) and subject_terms(clause)]
     return [term for term in ROBLOX_ACTION_TERMS
-            if any(not _operates_on_other_object(low, match)
-                   for match in re.finditer(r"\b" + re.escape(term) + r"s?\b", low))]
+            if any(re.search(r"\b" + re.escape(term) + r"s?\b", clause) for clause in game_clauses)]
 
 
 def scope_text(text: str) -> str:
@@ -513,8 +527,9 @@ def _text_condition(scope: str) -> tuple[bool, str]:
                        "luau, a place file, the Studio MCP server): a task on another subject is not "
                        "Roblox work, however often it says add/build/fix")
     return False, (f"the task text names a Roblox subject ({', '.join(subjects[:6])}) but binds no "
-                   "action to it (an action on documentation/media such as a README or a markdown "
-                   "guide is not Roblox work, and a mention in passing is not a task)")
+                   "action to it in its own clause (an action on documentation/media such as a "
+                   "README or a markdown guide is not Roblox work, and a subject in one clause "
+                   "next to a generic verb in another is a mention in passing, not a task)")
 
 
 def decide_applicability(text: str, repo: str | pathlib.Path) -> dict:
@@ -1255,11 +1270,16 @@ def _mcp_result_problem(value: object) -> str | None:
     """Why a `tools/call` RESULT is not a well-formed MCP answer, or `None` when it is.
 
     A JSON-RPC envelope without an `error` member says nothing about the TOOL: an MCP result carries
-    `content` blocks and `isError` may mark a tool-level failure.
+    `content` blocks and `isError` may mark a tool-level failure. `isError` is a BOOLEAN by contract,
+    so every PRESENT value that is not one (`"true"`, `"false"`, `1`, `0`, `null`, a list) leaves the
+    tool-level outcome unknown — it is refused instead of being coerced into a success.
     """
     if not isinstance(value, dict):
         return (f"the response carries a {type(value).__name__} instead of the MCP result object, so "
                 "the answer cannot be read")
+    if "isError" in value and not isinstance(value["isError"], bool):
+        return ("the MCP result carries a non-boolean `isError`, so a tool-level failure cannot be "
+                "ruled out")
     if value.get("isError") is True:
         return "the MCP result carries isError: true — the tool reported a FAILURE"
     content = value.get("content")

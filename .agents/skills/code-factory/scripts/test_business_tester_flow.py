@@ -25,7 +25,11 @@ report the role has to hand over:
       fixture report (marked `fixture: seeded-defect/1`) is additionally compared with the built-in
       seeded-defect matrix — a real run's scenario ids are the run's, never this fixture's. `--write`
       refuses to overwrite an existing file, because that file may hold a real run's evidence: the
-      fixture report is regenerated only with `--write --force`.
+      fixture report is regenerated only with `--write --force`;
+  (f) `--no-drive` is VALIDATION-ONLY: the fixture product is never driven and no subprocess runs.
+      The expected matrix a marked report is compared with is derived statically from the scenario
+      table, and a poison regression proves that any drive invocation under `--no-drive` fails the
+      script instead of being silently executed.
 
 Usage:
   python test_business_tester_flow.py [--evidence <report.json>] [--write [--force]] [--no-drive]
@@ -34,9 +38,13 @@ Usage:
                      A report WITHOUT the fixture marker is validated on shape alone; a marked one
                      is also checked against the seeded-defect matrix.
   --write            regenerate the fixture self-check report (default target: the seeded-defect
-                     path under `.code-factory/logs/business-adversarial/`). REFUSES to overwrite an
-                     existing file unless `--force` is given.
-  --no-drive         validate `--evidence` only, without driving the fixture product.
+                     path under `.code-factory/logs/business-adversarial/`) and stop there — the
+                     self-check itself only runs without `--write`. REFUSES to overwrite an
+                     existing file unless `--force` is given. A report can only be written by a
+                     real drive, so `--write` and `--no-drive` are mutually exclusive.
+  --no-drive         validate `--evidence` only, WITHOUT driving the fixture product (no scenario
+                     runs, no subprocess). With no `--evidence` there is nothing to validate and the
+                     script still exits 0 — the mode never falls back to driving.
 
 Without `--evidence` the report is built and validated in memory only; nothing is written.
 
@@ -45,14 +53,19 @@ Exit code 0 = every assertion passed, 1 = a check did not behave as expected.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
+import os
 import pathlib
 import re
 import shlex
 import subprocess
 import sys
 import tempfile
+import types
 from datetime import date
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
@@ -279,6 +292,28 @@ def build_report(product_source: pathlib.Path, sandbox: pathlib.Path) -> dict:
 def fixture_triples(report: dict) -> list[tuple[str, str, str]]:
     """The `(id, outcome, classification)` rows of a report: the fixture matrix comparison."""
     return [(s["id"], s["outcome"], s["classification"]) for s in report["scenarios"]]
+
+
+def expected_matrix() -> list[tuple[str, str, str]]:
+    """The built-in seeded-defect matrix, derived from the scenario table WITHOUT driving anything.
+
+    `--no-drive` is validation-only, so the matrix a marked report is compared with must not come
+    from a drive. The derivation is the rule `build_report` applies: the seeded outcome plus
+    `no_defect` for a held scenario and the scenario's declared classification otherwise. The full
+    self-check asserts that this static matrix equals the driven one, so the two cannot drift.
+    """
+    return [(scenario["id"], EXPECTED_OUTCOMES[scenario["id"]],
+             "no_defect" if EXPECTED_OUTCOMES[scenario["id"]] == "held"
+             else scenario["classification"])
+            for scenario in SCENARIOS]
+
+
+def read_report(path: pathlib.Path) -> object:
+    """The JSON a report file holds; an unreadable file is a check failure, never a traceback."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise AssertionError(f"{path} is not readable JSON: {exc}") from exc
 
 
 def validate_report(report: object, fixture_matrix: list[tuple[str, str, str]] | None = None
@@ -628,6 +663,21 @@ def case_4_routing(report: dict, sandbox: pathlib.Path) -> None:
            f"the coder budget is the one a breakage spends: {delegation_gate.BUDGETS!r}")
 
 
+def use_utf8_output() -> None:
+    """Force UTF-8 on stdout/stderr so the help survives being piped or a legacy console code page.
+
+    A Windows console defaults to cp866/cp1251 and this script's docstring (used as the argparse
+    description) carries a non-ASCII arrow: `--help` raised UnicodeEncodeError and the user got a
+    traceback instead of the help (BA-001). `errors="replace"` keeps a stream that cannot be
+    reconfigured from ever raising.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):      # an old interpreter or a replaced stream
+            pass
+
+
 def run_script(script: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run this self-test as a user would, with the arguments the flow tells the role to type."""
     return subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True,
@@ -778,17 +828,91 @@ def case_5_evidence_file(report: dict, script: pathlib.Path, sandbox: pathlib.Pa
     expect("--force" in res.stdout + res.stderr,
            f"the refusal must name the escape hatch: {res.stdout!r} {res.stderr!r}")
     expect(real_path.read_bytes() == before, "a refused --write must leave the file untouched")
-    res = run_script(script, "--write", "--force", "--evidence", str(real_path), "--no-drive")
+    res = run_script(script, "--write", "--force", "--evidence", str(real_path))
     expect(res.returncode == 0, f"--write --force must regenerate: {res.stdout[-400:]!r} "
                                 f"{res.stderr[-400:]!r}")
     regenerated = json.loads(real_path.read_text(encoding="utf-8"))
     expect(regenerated.get("fixture") == FIXTURE_MARKER,
            "only an explicit --write --force replaces a report, and it writes the marked fixture")
-    expect(not validate_report(regenerated, fixture_triples(report)),
+    expect(not validate_report(regenerated, expected_matrix()),
            f"the regenerated fixture report must validate: {regenerated!r:.200}")
 
 
+def load_self(script: pathlib.Path) -> types.ModuleType:
+    """Import this script as a module, so a regression can poison its drive() in-process."""
+    spec = importlib.util.spec_from_file_location("business_tester_flow_self", script)
+    expect(spec is not None and spec.loader is not None,
+           f"the self-test must be importable as a module: {script}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def case_6_no_drive_is_validation_only(script: pathlib.Path, sandbox: pathlib.Path,
+                                       report: dict) -> None:
+    """(f) `--no-drive` never drives: drive() and every subprocess invocation are poisoned.
+
+    The finding this pins: the validate-only mode built the report before its early return, so it
+    ran the whole scenario matrix — the workload it promises to skip. A drive attempt now raises,
+    which turns the run into exit 1, so the regression cannot pass by accident.
+    """
+    module = load_self(script)
+    fired: list[str] = []
+
+    def poison(what: str):
+        def refused(*_args, **_kwargs):
+            fired.append(what)
+            raise AssertionError(f"--no-drive must never {what} — this mode validates only")
+        return refused
+
+    module.drive = poison("drive the fixture product")
+    module.subprocess = types.SimpleNamespace(run=poison("run a subprocess"))
+    fixture = write(sandbox / "no-drive-fixture.json", json.dumps(report, indent=1) + "\n")
+
+    for argv in (["--no-drive"], ["--no-drive", "--evidence", str(fixture)]):
+        transcript = io.StringIO()
+        with contextlib.redirect_stdout(transcript), contextlib.redirect_stderr(transcript):
+            code = module.main(argv)
+        said = transcript.getvalue()
+        expect(code == 0, f"{argv} must exit 0 without driving anything: {said!r}")
+        expect("PASS" in said, f"{argv} must still report PASS: {said!r}")
+    expect(not fired, f"--no-drive performed work it must skip: {fired!r}")
+
+    # A report can only be written by a real drive, so the two flags are mutually exclusive.
+    transcript = io.StringIO()
+    with contextlib.redirect_stdout(transcript), contextlib.redirect_stderr(transcript):
+        code = module.main(["--no-drive", "--write", "--force", "--evidence", str(fixture)])
+    expect(code == 1 and "--no-drive" in transcript.getvalue(),
+           f"--write must refuse to ride on --no-drive (nothing would be driven to write): "
+           f"{transcript.getvalue()!r}")
+    expect(json.loads(fixture.read_text(encoding="utf-8")) == report,
+           "a refused --write under --no-drive must leave the report untouched")
+    expect(not fired, f"the --write refusal must not drive either: {fired!r}")
+
+
+def case_7_help_survives_a_legacy_code_page(script: pathlib.Path) -> None:
+    """Regression (BA-001): `--help` prints on a cp1251 console instead of raising a traceback.
+
+    The docstring used as the argparse description carries a non-ASCII arrow, which a legacy Windows
+    console code page cannot encode: the help raised UnicodeEncodeError, so the one command that
+    explains the script was lost. `PYTHONIOENCODING` pins exactly such a code page, which makes the
+    pre-fix script fail this check on every platform.
+    """
+    for code_page in ("cp1251", "cp866"):
+        res = subprocess.run([sys.executable, str(script), "--help"], capture_output=True,
+                             text=True, encoding="utf-8", errors="replace", timeout=300,
+                             env={**os.environ, "PYTHONIOENCODING": code_page})
+        expect(res.returncode == 0,
+               f"--help must exit 0 on a {code_page} stdout, got {res.returncode}: "
+               f"{res.stderr[-600:]!r}")
+        expect("Traceback" not in res.stderr,
+               f"--help must never traceback on a {code_page} stdout: {res.stderr[-600:]!r}")
+        expect("usage:" in res.stdout,
+               f"--help must still print the usage on a {code_page} stdout: {res.stdout!r}")
+
+
 def main(argv: list[str] | None = None) -> int:
+    use_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--evidence", metavar="JSON", default=None,
@@ -801,7 +925,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true",
                         help="allow --write to replace an existing report")
     parser.add_argument("--no-drive", action="store_true",
-                        help="validate --evidence only (used by the self-test on its own output)")
+                        help="validate --evidence only, without driving the fixture product (no "
+                             "scenario runs at all); cannot be combined with --write")
     args = parser.parse_args(argv)
 
     try:
@@ -810,40 +935,65 @@ def main(argv: list[str] | None = None) -> int:
                                              else DEFAULT_EVIDENCE)
         else:
             evidence = pathlib.Path(args.evidence) if args.evidence else None
+        if args.write and args.no_drive:
+            raise AssertionError("--write regenerates the report from a DRIVEN fixture, so it "
+                                 "cannot be combined with --no-drive: drop --no-drive to write")
         if args.write and evidence.exists() and not args.force:
             raise AssertionError(f"refusing to overwrite {evidence}: it may hold a REAL run's "
                                  "evidence and this script only writes its own fixture report. "
                                  "Re-run with --write --force to replace it.")
-        if args.no_drive and evidence is None:
-            raise AssertionError("--no-drive validates a report: pass --evidence <path>")
+
+        # Validation-only: NOTHING is driven here, so the matrix a marked report is compared with is
+        # derived statically from the scenario table (the full self-check proves the two agree).
+        if args.no_drive:
+            if evidence is not None:
+                expect(evidence.exists(),
+                       f"--no-drive cannot create {evidence}: a report is written by a driven "
+                       "fixture (drop --no-drive, or pass an existing --evidence path)")
+                stored = read_report(evidence)
+                # The matrix comparison applies to THIS script's own marked report only: a real
+                # run's report has the run's scenarios and is judged on the documented shape.
+                problems = validate_report(
+                    stored, expected_matrix()
+                    if isinstance(stored, dict)
+                    and stored.get("fixture") == FIXTURE_MARKER else None)
+                expect(not problems, f"{evidence} is not a valid evidence report: {problems!r}")
+                print(f"PASS - {evidence} carries the documented business-tester evidence shape "
+                      f"(and, when marked, the exact seeded-defect matrix)")
+            else:
+                print("PASS - --no-drive had no --evidence report to validate and drove nothing")
+            return 0
 
         with tempfile.TemporaryDirectory() as tmp:
             sandbox = pathlib.Path(tmp)
             product = write(sandbox / "product" / "shop.py", PRODUCT)
             before = digest(product)
             report = build_report(product, sandbox / "runs")
+            expect(expected_matrix() == fixture_triples(report),
+                   "the statically derived matrix must equal the driven one, otherwise "
+                   f"--no-drive validates against a matrix no drive produces: "
+                   f"{expected_matrix()!r} != {fixture_triples(report)!r}")
             expect(digest(product) == before,
                    "the attack must never edit a product file (the copy changed)")
-            expect(not validate_report(report, fixture_triples(report)),
+            expect(not validate_report(report, expected_matrix()),
                    "the fixture report this script builds must satisfy its own shape")
 
             if evidence is not None:
                 if args.write or not evidence.exists():
                     write(evidence, json.dumps(report, indent=1) + "\n")
-                try:
-                    stored = json.loads(evidence.read_text(encoding="utf-8"))
-                except (OSError, ValueError) as exc:
-                    raise AssertionError(f"{evidence} is not readable JSON: {exc}") from exc
+                stored = read_report(evidence)
                 # The matrix comparison applies to THIS script's own marked report only: a real
                 # run's report has the run's scenarios and is judged on the documented shape.
                 problems = validate_report(
-                    stored, fixture_triples(report)
+                    stored, expected_matrix()
                     if isinstance(stored, dict)
                     and stored.get("fixture") == FIXTURE_MARKER else None)
                 expect(not problems, f"{evidence} is not a valid evidence report: {problems!r}")
-            if args.no_drive:
-                print(f"PASS - {evidence} carries the documented business-tester evidence shape "
-                      f"(and, when marked, the exact seeded-defect matrix)")
+            if args.write:
+                # Writing is a report job: it stops here, because a --write call that continued
+                # into the self-check would re-enter this script from case 5 without end.
+                print(f"PASS - wrote the fixture self-check report to {evidence} from a driven "
+                      f"fixture; the self-check itself runs without --write")
                 return 0
 
             case_1_user_level_drive(product, sandbox)
@@ -862,6 +1012,12 @@ def main(argv: list[str] | None = None) -> int:
             print("PASS 5 - `--evidence` accepts any shape-valid report (a real run's included) "
                   "while only the marked fixture is matrix-checked, every mutated shape is "
                   "rejected, and --write refuses to clobber a report without --force")
+            case_6_no_drive_is_validation_only(pathlib.Path(__file__).resolve(), sandbox, report)
+            print("PASS 6 - `--no-drive` is validation-only: with drive() and every subprocess "
+                  "poisoned it still exits 0, and --write refuses to ride on it")
+            case_7_help_survives_a_legacy_code_page(pathlib.Path(__file__).resolve())
+            print("PASS 7 - `--help` exits 0 with the usage on a cp1251 and a cp866 stdout "
+                  "instead of raising UnicodeEncodeError on the arrow of the docstring")
     except AssertionError as exc:
         print(f"FAIL - {exc}", file=sys.stderr)
         return 1

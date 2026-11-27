@@ -104,7 +104,8 @@ whether re-analysis + AGENTS.md regeneration are skipped:
   different kind of value than a content digest and a deletion must move the hash; without a usable git repository the level hashes every non-excluded
   working-tree file instead (same normalization and exclusions). Reading the WORKING TREE is what
   makes unstaged edits visible, while the value stays commit-stable (a commit changes no worktree
-  file) and platform-neutral, so AGENTS.md can still embed its own hash pair. UNTRACKED files are
+  file) and platform-neutral, so the pair recorded in `.code-factory/state/fingerprint.json` stays
+  true across the very commit that carries the regenerated `AGENTS.md`. UNTRACKED files are
   outside `git ls-files` and therefore outside the hash; that boundary is reported instead of
   hidden: `--content`/`--all` print a stderr note with the count of untracked files
   (`untracked_files`, the factory's own artifacts excluded), and `check_factory_model.py` raises a

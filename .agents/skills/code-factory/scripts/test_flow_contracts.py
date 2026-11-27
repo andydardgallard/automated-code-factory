@@ -61,6 +61,13 @@ legitimate `--session auto` (the initial resolution) is bound to this run's chec
 `--pipeline .code-factory/state/pipeline.yaml`. Each of those is vaccinated by a probe that removes
 it from a throwaway copy.
 
+The fingerprint's home moved from an embedded `code-factory-fingerprint` marker to the DERIVED
+state `.code-factory/state/fingerprint.json`, and section U keeps all THREE references teaching
+that one design: `tech-stack-detection.md`, `planning-guide.md` and the AGENTS.md step of
+`code-factory.md` must each name `--write-state`, `--check-state` and the state file, and every
+mention of an embedded marker must be a NEGATED one (never trusted / IGNORED / dropped) — a bare
+mention is the removed design, and restoring the old wording on a throwaway copy must fail.
+
 Invariant: every command and every constraint pinned below is present in the shipped file, at the
 place where the mechanism lives (a flow node, a named section, a template block) — absence, or a
 restored old wording, is reported as `<file>:<line>: <what is missing>`.
@@ -99,11 +106,13 @@ DELEGATION_GATE = ".agents/skills/code-factory/scripts/delegation_gate.py"
 TESTER = ".agents/agents/sub-agents/tester.md"
 REFERENCE_DOCS = ".agents/skills/code-factory/references/reference-docs.md"
 VERIFICATION = ".agents/skills/code-factory/references/verification-strategy.md"
+TECH_STACK_REF = ".agents/skills/code-factory/references/tech-stack-detection.md"
+PLANNING_GUIDE = ".agents/skills/code-factory/references/planning-guide.md"
 
 # Every file a contract reads: a probe copies exactly these, then breaks one of them.
 FILES = (SKILL, CODE_FACTORY, AGENTS, README, BRIEFING, PROVIDERS, ERROR_ROUTING, EXAMPLE_TASK,
          TASK_TEMPLATE, CHECK_MODEL, MEMORY, ENGLISH, RULEBOOK, CODE_REVIEW, FARUKON_REF, ROBLOX_REF,
-         DELEGATION_GATE, TESTER, REFERENCE_DOCS, VERIFICATION)
+         DELEGATION_GATE, TESTER, REFERENCE_DOCS, VERIFICATION, TECH_STACK_REF, PLANNING_GUIDE)
 
 FINISH_NODE = "Y"      # `Y[Finish: ...]` — the only place compaction/attribution are invoked
 CODER_NODE = "M"       # `M[Implement: ...]` — the coder delegation and its briefing
@@ -129,6 +138,10 @@ AUTO_ATTRIBUTION = "model_attribution.py --session auto --repo <resolved repo_pa
 INITIAL_ATTRIBUTION = ("model_attribution.py --session auto --pipeline "
                        ".code-factory/state/pipeline.yaml --repo <resolved repo_path>")
 AUDIT_SESSION_RE = re.compile(r"permit_gate\.py audit\b(.{0,200})", re.S)
+
+# The Diagnostician's contextual retry: the ordinary pre-delegation gate, and no counter reset.
+DIAGNOSTIC_RETRY_CMD = "delegation_gate.py check --role <recommended_role>"
+COUNTER_RESET_RE = re.compile(r"reset\w*[^.\n]{0,80}?\bcounter\w*\s+to\s+0", re.I)
 
 # The Advisor gate: the agreement decision, and the role decision INSIDE `agree`.
 ADVISOR_NODE = "ADR"
@@ -701,6 +714,40 @@ def check_retry_budget_gate(root: pathlib.Path) -> list[str]:
     return problems
 
 
+def check_diagnostic_retry_gate(root: pathlib.Path) -> list[str]:
+    """The Diagnostician's retry takes the ORDINARY gate check and never resets a counter.
+
+    The finding this pins (C01): the Diagnostician step used to tell the main agent to "reset the
+    recommended role's counter to 0" before the contextual retry. Every budget is counted where the
+    role EXECUTES, so a reset grants a delegation the budget never allowed and leaves the finish
+    `delegation_gate.py audit` reconciling counters the session wire does not have. The retry now
+    takes the same pre-delegation check as every other delegation, and a REFUSAL escalates.
+    """
+    problems: list[str] = []
+    agent = Doc.load(root, CODE_FACTORY, problems)
+    if not agent.text:
+        return problems
+    prose = prose_only(agent)
+    for match in COUNTER_RESET_RE.finditer(prose.text):
+        problems.append(f"{CODE_FACTORY}:{prose.line_of(match.start())}: a retry counter is reset "
+                        f"to 0 ({squash(match.group(0))!r}) — budgets are FIXED, so the contextual "
+                        "retry takes the ordinary delegation gate check instead")
+    step = next((text for _line, text in prose.paragraphs()
+                 if "**Diagnostician** (LLM)" in text), "")
+    if not step:
+        problems.append(f"{CODE_FACTORY}:1: no Diagnostician step — the contextual retry has no "
+                        "documented gate")
+        return problems
+    if DIAGNOSTIC_RETRY_CMD not in squash(step):
+        problems.append(f"{CODE_FACTORY}:1: the Diagnostician step must take the ordinary gate "
+                        f"check before the contextual retry ({DIAGNOSTIC_RETRY_CMD!r} is missing) "
+                        "— a retry outside the counting gate is an uncounted delegation")
+    if "reset" not in step.lower() or not NEGATION_RE.search(step):
+        problems.append(f"{CODE_FACTORY}:1: the Diagnostician step must state that a retry counter "
+                        "is NEVER reset — the budgets are fixed and a reset falsifies the audit")
+    return problems
+
+
 # The W2/W3 wiring: every mechanism built in those workstreams must be REACHABLE from the flow, in
 # BOTH carriers (SKILL.md draws it, code-factory.md executes it), with the honest limits stated.
 # (relative path, whitespace-normalized fragment, what the carrier must say)
@@ -757,6 +804,59 @@ def check_w2_w3_wiring(root: pathlib.Path) -> list[str]:
         if docs[rel].text and needle not in bodies[rel]:
             problems.append(f"{rel}:1: the flow must name {what} ({needle!r} is missing) — a "
                             "mechanism the flow never reaches is not a control")
+    return problems
+
+
+# The fingerprint has ONE home: DERIVED state. Every fingerprint reference must teach the same
+# design — `--write-state` / `--check-state` over `.code-factory/state/fingerprint.json` and NO
+# embedded marker in AGENTS.md — because a reference is what the next role reads instead of the
+# command it should run.
+FINGERPRINT_STATE = ".code-factory/state/fingerprint.json"
+FINGERPRINT_GUIDANCE = (
+    (TECH_STACK_REF, ("--write-state", "--check-state", FINGERPRINT_STATE)),
+    (PLANNING_GUIDE, ("--write-state", "--check-state", FINGERPRINT_STATE)),
+    (CODE_FACTORY, ("--write-state", "--check-state", FINGERPRINT_STATE)),
+)
+# A mention of the legacy marker is legitimate ONLY as a negated/stale one (never trusted,
+# IGNORED, dropped on the next regeneration); a bare mention teaches the removed design.
+EMBED_RE = re.compile(r"\bembed(?:s|ded)?\b", re.I)
+NEGATED_EMBED_RE = re.compile(
+    r"\b(?:no|not|never|without|ignore[ds]?|drops?|removes?)\b(?:\W+\w+){0,3}\W+"
+    r"embed(?:s|ded)?\b", re.I)
+EMBED_CONTEXT_RE = re.compile(r"\b(?:never|not|ignor\w*|without|removed|legacy|stale)\b", re.I)
+EMBED_CONTEXT_CHARS = 100
+
+
+def check_fingerprint_guidance(root: pathlib.Path) -> list[str]:
+    """The three fingerprint references must teach the DERIVED state, never the removed marker.
+
+    The finding this pins: the embedded-hash design was removed from the scripts and from two
+    carriers, but `tech-stack-detection.md`, `planning-guide.md` and the AGENTS.md step of
+    `code-factory.md` kept teaching it. A stale sentence is what the next role reads INSTEAD of
+    the command it should run: `--write-state` is never called, the state file never exists and
+    every run re-analyzes — and the removed design needed a SECOND commit to stay true.
+    """
+    problems: list[str] = []
+    for rel, tokens in FINGERPRINT_GUIDANCE:
+        doc = Doc.load(root, rel, problems)
+        if not doc.text:
+            continue
+        body = squash(doc.text)
+        for token in tokens:
+            if token not in body:
+                problems.append(
+                    f"{rel}:1: the fingerprint reference must name {token!r} — the embedded-hash "
+                    "design is gone, so a reader that never sees the derived-state command and "
+                    "its file has nothing it can run")
+        for match in EMBED_RE.finditer(doc.text):
+            start = max(0, match.start() - EMBED_CONTEXT_CHARS)
+            window = doc.text[start:match.end() + EMBED_CONTEXT_CHARS]
+            if NEGATED_EMBED_RE.search(window) or EMBED_CONTEXT_RE.search(window):
+                continue
+            problems.append(
+                f"{rel}:{doc.line_of(match.start())}: an embedded fingerprint marker is presented "
+                f"as the fingerprint's home ({squash(window)[:90]!r}) — the hashes live in "
+                f"{FINGERPRINT_STATE}, written by `--write-state` and compared by `--check-state`")
     return problems
 
 
@@ -1390,6 +1490,7 @@ LAUNCH_ADD_TOKEN = "permit_gate.py add --launch-dir"
 LAUNCH_VERDICT_TOKEN = "permit_gate.py verdict --launch-dir"
 LAUNCH_BIND_TOKEN = "permit_gate.py bind --launch-dir"
 BIND_RUN_TOKEN = "permit_gate.py bind-run"
+RESOLVE_MODEL_TOKEN = "supervisor_watchdog.py resolve-model"
 PARSE_TOKEN = "task_parser.py parse"
 RUN_ID_TOKEN = "run_id.py gen"
 FLOW_ENTRY = "A"
@@ -1637,6 +1738,32 @@ def check_supervisor_first(root: pathlib.Path) -> list[str]:
             problems.append(f"{CODE_FACTORY}:{agent.line_of(agent_activate)}: `bind-run` must "
                             f"TRANSFER the launch registry to the resolved repository — name BOTH "
                             f"`--launch-dir` and the now-resolved `--repo`")
+
+    # (defect C11) The supervisor's MODEL is resolved from the HANDED-OVER task BEFORE the spawn.
+    # Both carriers must invoke the resolution and say WHERE the model comes from: a task pin
+    # `models.supervisor` wins verbatim and only an ABSENT pin takes the role's
+    # `model_preference: primary` default side — never a model the main agent picks. The step reads
+    # only the task's `models:` block, so it sits BEFORE the parse and before the spawn it feeds.
+    for doc in (skill, agent):
+        at = doc.text.find(RESOLVE_MODEL_TOKEN)
+        if at < 0:
+            problems.append(f"{doc.rel}:1: the flow must invoke `{RESOLVE_MODEL_TOKEN}` — the "
+                            f"supervisor's model comes from the handed-over task and is resolved "
+                            f"BEFORE the spawn, never from a model the main agent picks")
+            continue
+        for token, what in (("models.supervisor", "the task's `models.supervisor` pin"),
+                            ("the role's `model_preference: primary` side of the default matrix",
+                             "the primary default-matrix fallback"),
+                            ("--task", "the handed-over task file it reads")):
+            if token not in squash(doc.text):
+                problems.append(f"{doc.rel}:{doc.line_of(at)}: the model resolution must name "
+                                f"{what} (`{token}`) — the pin is authoritative and only an ABSENT "
+                                f"pin falls back to the role's primary default side")
+        parse_at = doc.text.find(PARSE_TOKEN)
+        if parse_at >= 0 and at > parse_at:
+            problems.append(f"{doc.rel}:{doc.line_of(at)}: `{RESOLVE_MODEL_TOKEN}` is documented "
+                            f"AFTER the parse — the resolution reads the handed-over task's "
+                            f"`models:` block BEFORE the spawn, not a Phase 0 result")
     return problems
 
 
@@ -1813,7 +1940,10 @@ SECTIONS = (
     ("M", "the conditional Farukon path is wired like its Web GUI twin", check_farukon_wiring),
     ("T", "the conditional Roblox path is wired like its Farukon twin", check_roblox_wiring),
     ("N", "the retry budget is counted by the pre-delegation gate", check_retry_budget_gate),
+    ("N2", "the Diagnostician retry takes the ordinary gate check and never resets a counter",
+     check_diagnostic_retry_gate),
     ("O", "the W2/W3 machinery is reachable from the flow", check_w2_w3_wiring),
+    ("U", "every fingerprint reference teaches the derived state", check_fingerprint_guidance),
     ("P", "the pre-delegation gate binds every delegation and the adversarial leg is a fork",
      check_delegation_gates),
     ("Q", "the supervisor begins before Phase 0 and observes it", check_supervisor_first),
@@ -2005,6 +2135,15 @@ PROBES = (
     ("N: the gate's budget table drifts from the canonical rule", check_retry_budget_gate,
      ((DELEGATION_GATE, '"reviewer": 2', '"reviewer": 3'),),
      "must be budgeted 2"),
+    ("N2: the Diagnostician resets the counter before the retry again",
+     check_diagnostic_retry_gate,
+     ((CODE_FACTORY, "The budgets are FIXED and a counter is NEVER reset",
+       "Reset the recommended role's counter to 0"),),
+     "reset to 0"),
+    ("N2: the Diagnostician's retry bypasses the ordinary gate check", check_diagnostic_retry_gate,
+     ((CODE_FACTORY, "delegation_gate.py check --role <recommended_role>",
+       "delegation_gate.py retry --role <recommended_role>"),),
+     "ordinary gate check"),
     ("O: the flow stops naming the pre-delegation budget gate", check_w2_w3_wiring,
      ((SKILL, "delegation_gate.py check", "count_the_retries.py check"),),
      "delegation_gate.py check"),
@@ -2017,6 +2156,20 @@ PROBES = (
     ("O: the permit step disappears from the executable order", check_w2_w3_wiring,
      ((CODE_FACTORY, "permit_gate.py add", "permit_gate.py imagine"),),
      "permit_gate.py add"),
+    ("U: the tech-stack reference teaches the embedded marker again", check_fingerprint_guidance,
+     ((TECH_STACK_REF,
+       "**The hashes live in derived state, not in AGENTS.md.** `AGENTS.md` no longer embeds a",
+       "**The hashes are carried in AGENTS.md.** `AGENTS.md` embeds a"),),
+     "an embedded fingerprint marker is presented"),
+    ("U: the planning guide stops running the state comparison", check_fingerprint_guidance,
+     ((PLANNING_GUIDE, "--check-state", "--compare-state"),),
+     "'--check-state'"),
+    ("U: the agent teaches a two-level embedded fingerprint again", check_fingerprint_guidance,
+     ((CODE_FACTORY,
+       "    `##` sections, NO embedded fingerprint marker and no init step — the two-level "
+       "fingerprint\n    (structural AND content) lives in the derived state",
+       "    `##` sections + a two-level embedded fingerprint: structural AND content, kept in"),),
+     "an embedded fingerprint marker is presented"),
     ("P: the implement node stops running the pre-delegation gate", check_delegation_gates,
      ((SKILL, "delegation_gate.py check --role coder",
        "delegation_gate.py maybe --role coder"),),
@@ -2106,6 +2259,18 @@ PROBES = (
     ("Q: the executor loses the launch-scoped spawn binding", check_supervisor_first,
      ((CODE_FACTORY, "permit_gate.py bind --launch-dir", "permit_gate.py bind"),),
      "permit_gate.py bind --launch-dir"),
+    ("Q: the supervisor's model resolution disappears from the flow", check_supervisor_first,
+     ((SKILL, "supervisor_watchdog.py resolve-model", "supervisor_watchdog.py model"),),
+     "supervisor_watchdog.py resolve-model"),
+    ("Q: the executor stops resolving the supervisor's model before the spawn",
+     check_supervisor_first,
+     ((CODE_FACTORY, "supervisor_watchdog.py resolve-model --launch-dir",
+       "supervisor_watchdog.py model --launch-dir"),),
+     "supervisor_watchdog.py resolve-model"),
+    ("Q: the primary default-matrix fallback is dropped from the flow", check_supervisor_first,
+     ((SKILL, "the role's `model_preference: primary` side of the default matrix",
+       "the role's configured model"),),
+     "model_preference: primary"),
     ("S: the catalog derivation disappears from the reference guide",
      check_cross_workstream_wiring,
      ((REFERENCE_DOCS, "modern_web_guidance.py build", "modern_web_guidance.py derive"),),
@@ -2205,10 +2370,14 @@ def main() -> int:
           f"(add → verdict → spawn → bind, with the model-enforced verdict and the deterministic "
           f"audit backstop), the blocking manifest gate, the K/Y gate aggregation, the "
           f"factory-business-tester at node S with its own evidence tree, the finding disposition "
-          f"and its settlement, the derived fingerprint state and the phase-role table — the "
+          f"and its settlement, the derived fingerprint state and the phase-role table — and all "
+          f"three fingerprint references teach that ONE derived-state design (`--write-state` / "
+          f"`--check-state` over `.code-factory/state/fingerprint.json`, no embedded marker) — the "
           f"supervision bootstrap DOMINATES Phase 0 (the parse, the repo resolution, the memory "
-          f"read and the run id all follow the supervisor that observes them, and the run id "
-          f"precedes the activation that binds the launch to it) with the old-order detector "
+          "read and the run id all follow the supervisor that observes them, and the run id "
+          "precedes the activation that binds the launch to it, while the supervisor's MODEL is "
+          "resolved from the handed-over task — a task pin verbatim, only an absent pin taking "
+          "the primary default-matrix side — BEFORE the spawn) with the old-order detector "
           f"vaccinated on synthetic graphs — the cross-workstream mechanisms are REACHED by the "
           f"flow: the pinned Modern Web Guidance catalog is derived and read BEFORE UI code, the "
           f"Farukon live proof targets the real Node registration with a safe `tools/call` and "

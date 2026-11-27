@@ -23,7 +23,9 @@ Supported schema (top level, column 0):
       - criterion: <text>           with optional siblings `verify: <command>`, `derived: true`
   business_tests:                   optional list of `- scenario/config/expected_results` mappings
   commit_exclude:                   optional list of plain strings
-  models:                           optional FLAT mapping `<role>: <model>`
+  models:                           optional FLAT mapping `<role>: <model>` whose role keys are the
+                                    supported model roles (`model_matrix.ROLES`) and whose values
+                                    are non-empty model aliases
   reference_docs:                   optional list of `- path/skill` mappings
   reference_skills:                 optional list of plain strings
 
@@ -33,6 +35,15 @@ lines is read as the same text block (the shape the live tasks actually use for 
 A quoted scalar must be CLOSED on the same line, and a double-quoted one must be valid
 JSON-escaped text: `title: "unterminated` or an invalid escape (`"A \\q value"`) is an error naming
 the line and the fix, never text that silently keeps its opening quote.
+YAML anchors (`&name`) and aliases (`*name`) are NOT supported — this is a scoped schema, not a YAML
+implementation, and it cannot resolve them: an UNQUOTED one at the start of a value (`title: &title
+Anchored`, `- criterion: *shared`) is an error naming the line, the construct and the fix, so it is
+never read as literal text. A QUOTED one (`title: "&title Anchored"`) is intended literal
+characters and is kept verbatim, and a `&`/`*` inside a plain scalar stays text — YAML forbids the
+constructs only at the start.
+The same holds for a flow collection: this parser reads no `[...]`/`{...}`, so a plain scalar whose
+flow opener is never CLOSED (`title: [unterminated`) is an error naming the line and the fix instead
+of the literal text `'[unterminated'` (BA-033), while a BALANCED pair and a quoted value stay text.
 Block scalars chomp the way YAML does, for both the literal and the folded style: `|-` strips
 (no trailing newline), plain `|`/`>` clips (exactly one trailing newline) and `|+`/`>+` keeps
 EVERY trailing blank line of the block, so a keep-form text is never shortened. LEADING and
@@ -67,6 +78,8 @@ import re
 import sys
 from pathlib import Path
 
+from model_matrix import ROLES as MODEL_ROLES   # the ONE role registry: imported, never re-declared
+
 # Top-level fields of the documented schema, in the order the normalized JSON uses.
 TOP_FIELDS = ("title", "repo_path", "description", "user_story", "mode", "task_type",
               "green_field", "acceptance_criteria", "business_tests", "commit_exclude", "models",
@@ -85,6 +98,32 @@ REFERENCE_DOC_KEYS = ("path", "skill")
 
 _KEY_RE = re.compile(r"^(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)\s*:(?P<rest>.*)$")
 _BLOCK_HEADER_RE = re.compile(r"^[|>][+-]?$")
+# A YAML anchor (`&name`) or alias (`*name`) TOKEN: the sigil plus a non-empty name. YAML forbids
+# these constructs at the START of a plain scalar, which is exactly where this parser would have
+# read them as ordinary text.
+_ANCHOR_ALIAS_RE = re.compile(r"^(?P<token>[&*][A-Za-z0-9_][A-Za-z0-9_-]*)")
+# The YAML flow-collection openers -> their closer. This parser reads no flow collection, so an
+# UNCLOSED opener is an authoring error rather than the literal text of a value.
+_FLOW_CLOSERS = {"[": "]", "{": "}"}
+# Where a QUOTED scalar may begin inside a plain scalar: right after a flow opener, a comma or a
+# `key:` separator (whitespace there is allowed too). Anywhere else a quote character is literal
+# text — the apostrophe of `[Bob's]` or of `[Bob 's]` — and must not open a quoted region.
+_QUOTE_BOUNDARY = "[{,:"
+
+
+def _at_scalar_boundary(text: str, index: int) -> bool:
+    """True when `index` is a place where a quoted scalar can START in `text`.
+
+    A quote is a delimiter only at the start of a value or after an opener, a comma or a separator;
+    inside a plain scalar YAML reads it literally. WHITESPACE alone is NOT a boundary (it only pads
+    a flow token): without that distinction the apostrophe of `[Bob's]` opened a quoted region, the
+    closing `]` fell inside it, and a valid value was refused as an unclosed flow collection — and
+    the same false refusal hit `[Bob 's]`, where the apostrophe merely follows a space.
+    """
+    before = index - 1
+    while before >= 0 and text[before] in " \t":
+        before -= 1
+    return before < 0 or text[before] in _QUOTE_BOUNDARY
 
 
 class TaskError(Exception):
@@ -146,6 +185,68 @@ def _strip_comment(text: str) -> str:
     return "".join(out).rstrip()
 
 
+def _reject_anchor_alias(text: str, line: int | None) -> None:
+    """Refuse an UNQUOTED YAML anchor (`&name`) or alias (`*name`) instead of reading it as text.
+
+    This parser supports the documented task schema only and resolves neither anchors nor aliases,
+    so such a token used to travel on as literal text (`title: &title Anchored` -> `'&title
+    Anchored'`). That is a silent loss of the owner's meaning: the refusal names the line, the
+    construct and the fix. Only a token at the START of the scalar counts (YAML allows `&`/`*`
+    inside a plain scalar), and a QUOTED value never reaches here — its characters are intended
+    literally and stay verbatim.
+    """
+    match = _ANCHOR_ALIAS_RE.match(text)
+    if match is None:
+        return
+    token = match.group("token")
+    kind = "anchor" if token.startswith("&") else "alias"
+    raise TaskError(
+        f"unsupported YAML {kind} {token!r} in {text!r} — this parser reads the documented task "
+        f"schema only and does not resolve anchors or aliases, so write the value out in full "
+        f"where the {kind} is used, or quote it ('\"{text}\"') to keep these characters as "
+        f"literal text", line)
+
+
+def _reject_unclosed_flow(text: str, line: int | None) -> None:
+    """Refuse a plain scalar whose YAML flow collection (`[...]` / `{...}`) is never closed.
+
+    This parser reads the documented schema only and has no flow-collection reader, so
+    `title: [unterminated` used to travel on as the literal text `'[unterminated'` (BA-033) — a
+    malformed document entering every later stage as valid task data. An unclosed opener is now an
+    error naming the line and the fix; a BALANCED pair stays plain text, and a quoted scalar never
+    reaches here (its characters are intended literally). A quote character counts only where a
+    quoted scalar can begin (`_at_scalar_boundary`), so an apostrophe inside a plain scalar neither
+    raises a false error nor hides a really unclosed opener behind a quote state nobody opened.
+    """
+    stack: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if quote:
+            if char == "\\" and quote == '"':
+                i += 2
+                continue
+            if char == quote:
+                quote = ""
+        elif char in "\"'" and _at_scalar_boundary(text, i):
+            quote = char
+        elif char in _FLOW_CLOSERS:
+            stack.append(char)
+        elif char in "]}":
+            if stack and _FLOW_CLOSERS[stack[-1]] == char:
+                stack.pop()
+        i += 1
+    if not stack:
+        return
+    opener = stack[-1]
+    raise TaskError(
+        f"unclosed YAML flow collection in {text!r} — the '{opener}' opened here has no closing "
+        f"'{_FLOW_CLOSERS[opener]}', and this parser reads the documented task schema only (it has "
+        f"no flow collection): close it, or write the value as literal text without the "
+        f"'{opener}' — quote it ('\"{text}\"') to keep these characters verbatim", line)
+
+
 def _scalar(text: str, line: int | None = None) -> str:
     """One scalar value: quoted (with escapes) or plain. Nothing else is rewritten.
 
@@ -175,6 +276,8 @@ def _scalar(text: str, line: int | None = None) -> str:
                 f"quote on this line, so this one is unterminated or followed by extra text; close "
                 f"it (\"'<text>'\") or write the text without quotes", line)
         return text[1:-1].replace("''", "'")
+    _reject_anchor_alias(text, line)
+    _reject_unclosed_flow(text, line)
     return text
 
 
@@ -308,6 +411,7 @@ class TaskParser:
     def _text_block(self, key_column: int, first_content: str) -> str:
         """A key with no inline value and an indented block: same text, plain multi-line shape."""
         collected: list[str] = []
+        start_line = self.index + 1          # 1-based line of the block's first line
         while self.index < len(self.lines):
             raw = self.lines[self.index]
             if not raw.strip():
@@ -323,6 +427,9 @@ class TaskParser:
         indents = [_indent_of(line) for line in collected if line.strip()]
         base = min(indents) if indents else 0
         dedented = [line[base:] if line.strip() else "" for line in collected]
+        first_text = next((line for line in dedented if line.strip()), "")
+        _reject_anchor_alias(first_text.strip(), start_line)
+        _reject_unclosed_flow(first_text.strip(), start_line)
         return _fold(dedented).strip()
 
     # -- collections ------------------------------------------------------------------
@@ -464,7 +571,14 @@ class TaskParser:
             self.index = i + 1
         return values
 
-    def _mapping(self, parent_indent: int, field: str, key_hint: str) -> dict[str, str]:
+    def _mapping(self, parent_indent: int, field: str, key_hint: str,
+                 allowed: tuple[str, ...] | None = None) -> dict[str, str]:
+        """A flat `<key>: <value>` mapping; `allowed` restricts the key names (when given).
+
+        The `models:` block names a MODEL ROLE on every entry, so its keys are checked against the
+        one role registry (`model_matrix.ROLES`): an unsupported key exits 2 naming the line, the
+        key and the supported roles instead of entering every later stage as a valid assignment.
+        """
         mapping: dict[str, str] = {}
         entry_indent: int | None = None
         while True:
@@ -485,6 +599,10 @@ class TaskParser:
             if key is None:
                 raise TaskError(f"expected '{key_hint}: <value>' under '{field}:' but found "
                                 f"{content!r}", i + 1)
+            if allowed is not None and key not in allowed:
+                raise TaskError(
+                    f"unknown {field} {key_hint} '{key}' — the supported {key_hint}s are: "
+                    f"{', '.join(allowed)}; fix the key name or drop the entry", i + 1)
             if key in mapping:
                 raise TaskError(f"duplicate '{field}:' entry '{key}' — each entry appears once",
                                 i + 1)
@@ -551,7 +669,7 @@ class TaskParser:
             return self._mapping_items(0, key, REFERENCE_DOC_KEYS, ("path",))
         if key in ("commit_exclude", "reference_skills"):
             return self._string_list(0, key)
-        return self._mapping(0, "models", "role")
+        return self._mapping(0, "models", "role", MODEL_ROLES)
 
     def _business_tests(self, parent_indent: int) -> list[dict]:
         items = self._mapping_items(parent_indent, "business_tests", BUSINESS_TEST_KEYS, ())

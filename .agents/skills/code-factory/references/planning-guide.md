@@ -56,8 +56,10 @@ returns a concise summary. Combine into one picture:
 - Existing tests that cover the affected area
 - Regression baseline result (`.code-factory/logs/baseline.md`)
 
-If AGENTS.md is stale (its embedded fingerprint does not match — see
-`tech-stack-detection.md` §7), regenerate it before delegating.
+If AGENTS.md is stale (its DERIVED fingerprint state in `.code-factory/state/fingerprint.json` does
+not match — `python .agents/skills/code-factory/scripts/project_fingerprint.py --repo
+<deployment root> --check-state` — see `tech-stack-detection.md` §7), regenerate it and rewrite the
+state with `--write-state` before delegating; `AGENTS.md` itself carries no embedded marker.
 
 ## 2.5 Repo-mismatch gate
 

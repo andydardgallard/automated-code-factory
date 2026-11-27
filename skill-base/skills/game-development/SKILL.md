@@ -54,11 +54,20 @@ memory for unstable APIs.
 | `StarterPlayerScripts` | `LocalScript`, once per player | persistent client systems |
 | `StarterCharacterScripts` | `LocalScript`, once per character | per-character client logic |
 | `StarterGui` | `LocalScript` in UI, cloned to `PlayerGui` | UI behaviour |
+| `StarterPack` | `LocalScript` in a `Tool`, cloned to `Backpack` | tool behaviour the player carries |
 | `Workspace` | replicated world and live characters | streaming and ownership change what a client sees |
 
-A `LocalScript` outside the player's character or in `ServerScriptService` never runs; a `Script`
-with `RunContext = Client` inside a `Starter*` container runs twice (original plus clone). Get
-services with `game:GetService("Name")`, parent Instances last, and own every connection.
+A `LocalScript` runs only in a location the client replicates into a player: `StarterPlayerScripts`
+(cloned into `PlayerScripts`, once per player), `StarterCharacterScripts` (cloned into the
+character, once per character), `StarterGui` (cloned into `PlayerGui`) and a `Tool` under
+`StarterPack` (cloned into the player's `Backpack`). The same script runs when it is parented
+directly at runtime under `PlayerScripts`, `PlayerGui`, the player's `Backpack` or the character —
+that is the clone's own location, where an edit reaches one client and is lost on respawn or
+rejoin. In an unsupported container — `ServerScriptService`, `ServerStorage`, or `Workspace` on the
+server — it never runs, so a client feature authored there must move into one of the supported
+client locations listed above, never left where the client cannot reach it. A `Script` with
+`RunContext = Client` inside a `Starter*` container runs twice (original plus clone). Get services
+with `game:GetService("Name")`, parent Instances last, and own every connection.
 
 ### The eight focused Roblox areas
 

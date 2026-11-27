@@ -57,10 +57,12 @@ CLI
   python agent_catalog_check.py check [--root <dir>] [--role <role>]
 
   --root  directory to probe. Default: the factory's own `.agents/agents/sub-agents`. A root that
-          carries `agents/sub-agents/` is probed there (a factory or target-project root); a root
-          that IS the profiles directory (a hermetic test fixture) is probed directly. A path that
-          is not an existing directory is a contract error (exit 2): it has zero legitimacy and
-          must not silently check nothing.
+          carries the DEPLOYED layout `.agents/agents/sub-agents/` is probed there (the layout of
+          every factory checkout and of a target project the factory was installed into); else a
+          root that carries the LEGACY `agents/sub-agents/` is probed there (an older checkout, or
+          a hermetic test fixture); else a root that IS the profiles directory is probed directly.
+          A path that is not an existing directory is a contract error (exit 2): it has zero
+          legitimacy and must not silently check nothing.
   --role  check ONE role only (the degradation route asks about the role that failed). A value
           outside `model_matrix.ROLES` is a contract error (exit 2) listing the valid roles, so a
           typo can never look like a clean result.
@@ -86,8 +88,13 @@ from model_matrix import ROLES, ROLE_FILES, SUBAGENTS_DIR, use_utf8_output  # no
 
 # The `model_preference` values the CLI accepts; anything else cannot select a model side.
 PREFERENCES = ("primary", "secondary")
-# Where a profile root carries its profiles (mirrors the repository layout).
-PROFILES_REL = pathlib.Path("agents") / "sub-agents"
+# Where a repository root carries its profiles. The DEPLOYED layout — `<root>/.agents/agents/
+# sub-agents` — is the one a factory checkout and an installed target project actually have, so it
+# is resolved FIRST; resolving only the legacy path made `--root <repo>` report every role missing.
+DEPLOYED_PROFILES_REL = pathlib.Path(".agents") / "agents" / "sub-agents"
+# The LEGACY layout — `<root>/agents/sub-agents` — kept for an older checkout and for a hermetic
+# fixture root that copies just what it needs.
+LEGACY_PROFILES_REL = pathlib.Path("agents") / "sub-agents"
 # A top-level frontmatter key; an indented line belongs to a nested value and is not read.
 FRONTMATTER_KEY = re.compile(r"^([A-Za-z0-9_\-]+)[ \t]*:(?:[ \t]+(.*))?$")
 # An indented `- item` of a sequence value (the only indented form the profiles use).
@@ -100,15 +107,19 @@ def profiles_dir(root=None) -> pathlib.Path:
     """The directory the profiles are read from.
 
     Default: the factory's own sub-agent directory (`model_matrix.SUBAGENTS_DIR`, the one home of
-    that path). For an explicit `root`, `<root>/agents/sub-agents` wins when it is a directory —
-    that is the layout of a repository — otherwise `root` itself is taken as the profiles
-    directory, so a hermetic fixture can copy just the profiles it needs.
+    that path). For an explicit `root`, the layouts are tried in the order the CLI actually meets
+    them: the deployed `<root>/.agents/agents/sub-agents` first (a factory or target-project root
+    — this is the layout that made `--root <repo>` report every profile missing), then the legacy
+    `<root>/agents/sub-agents` (an older checkout or a hermetic fixture root), otherwise `root`
+    itself is taken as the profiles directory, so a fixture can copy just the profiles it needs.
     """
     if root is None:
         return SUBAGENTS_DIR
     base = pathlib.Path(root)
-    nested = base / PROFILES_REL
-    return nested if nested.is_dir() else base
+    for nested in (base / DEPLOYED_PROFILES_REL, base / LEGACY_PROFILES_REL):
+        if nested.is_dir():
+            return nested
+    return base
 
 
 def _closing_quote(value: str, quote: str) -> int:
@@ -390,8 +401,8 @@ def check_catalog(root=None, roles=None) -> dict:
 def cmd_check(args) -> int:
     if args.root is not None and not pathlib.Path(args.root).is_dir():
         print(f"agent_catalog_check.py: --root {args.root!r} is not an existing directory — "
-              f"point it at the directory holding `agents/sub-agents/` (or at the profiles "
-              f"directory itself)", file=sys.stderr)
+              f"point it at the repository root holding `.agents/agents/sub-agents/` (or at the "
+              f"profiles directory itself)", file=sys.stderr)
         return 2
     if args.role is not None and args.role not in ROLES:
         print(f"agent_catalog_check.py: unknown role {args.role!r} — valid roles: "

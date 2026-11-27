@@ -11,7 +11,9 @@ source and the reason, never a traceback), the PUBLIC-destination guard of remot
 (loopback / private / link-local / cloud-metadata addresses and a DNS name resolving to one are
 rejected for the initial URL and every redirect hop — hermetically, with an injected resolver) and
 the `--timeout` / `--max-bytes` usage-error contract (a non-finite or non-positive timeout and a
-non-positive or overflowing byte cap are exit 2 BEFORE any transfer).
+non-positive or overflowing byte cap are exit 2 BEFORE any transfer), and the revision-matching
+contract of a pinned source (a full HEAD sha matches only canonically or as a genuine shorter hex
+abbreviation, so an overlong forged revision never matches it).
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -291,6 +293,45 @@ def main() -> int:
         finally:
             sb._connect_to = original_connect
 
+        # 12b. REVISION MATCHING (M05): an overlong forged revision must NOT match a full HEAD.
+        #      Only canonical equality with the full sha or a GENUINE (shorter) hex prefix of it
+        #      denotes that commit; a 64-char value offered against a 40-char HEAD names another
+        #      object, and empty / non-hex / non-full values name nothing.
+        sha1 = "0123456789abcdef0123456789abcdef01234567"
+        sha256 = sha1 + sha1[:24]
+        for head, revision, expected in (
+            (sha1, sha1, True),                       # canonical equality, sha1
+            (sha1, sha1.upper(), True),               # equality is case-insensitive
+            (sha256, sha256, True),                   # canonical equality, sha256
+            (sha1, sha1[:7], True),                   # genuine abbreviation (git's minimum)
+            (sha1, sha1[:12], True),                  # longer abbreviation
+            (sha1, sha1[:39], True),                  # one short of the full sha
+            (sha256, sha256[:16], True),              # abbreviation of a sha256 HEAD
+            (sha1, sha1 + "deadbeef", False),         # OVERLONG forgery: HEAD + trailing hex
+            (sha1, sha256, False),                    # 64-char forgery against a 40-char HEAD
+            (sha1, sha1[:39] + "f", False),           # same length, different object
+            (sha1, sha1[1:], False),                  # suffix, not a prefix
+            (sha1, "", False),                        # empty names nothing
+            (sha1, "   ", False),                     # blank names nothing
+            ("", sha1[:7], False),                    # no HEAD, no match
+            (None, sha1[:7], False),                  # absent HEAD, no match
+            (sha1, "abcdefg", False),                 # non-hex is never a sha
+            (sha1, "012", False),                     # shorter than any usable abbreviation
+            (sha1[:10], sha1, False),                 # a short "HEAD" cannot anchor a longer pin
+        ):
+            got = sb._revision_matches(head, revision)
+            expect(got is expected,
+                   f"_revision_matches({head!r}, {revision!r}) must be {expected}, got {got}")
+
+        # The forgery must not reach a signed offline reuse: a call site that must stay
+        # fail-closed (the pinned-clone probe) reports "not pinned" for an overlong value instead
+        # of treating the cache as the requested commit.
+        forged = sha1 + "deadbeef" * 3
+        expect(sb._clone_is_pinned(root / "no-clone", forged, timeout=1) is None,
+               "a cache probe must never accept an overlong forged pin")
+        expect(sb._clone_is_pinned(root / "no-clone", sha1, timeout=1) is None,
+               "a missing clone is never a pinned one, valid pin or not")
+
         # 12. --timeout / --max-bytes are validated BEFORE any transfer: a non-finite or
         #     non-positive timeout and a non-positive or overflowing byte cap are usage errors
         #     (exit 2), never an uncaught ValueError deep in the transfer machinery. A local
@@ -311,7 +352,9 @@ def main() -> int:
     print("PASS - skill_base hashing, repo anchoring, resolved-hash recording, manifest, reuse, "
           "cache-failure reporting (a message, never a traceback), the public-destination guard "
           "(loopback/private/link-local rejected on the source and every redirect hop), the "
-          "--timeout/--max-bytes usage-error contract and error contract behave as expected.")
+          "--timeout/--max-bytes usage-error contract, the revision-matching contract (an overlong "
+          "forged revision never matches a full HEAD, a genuine abbreviation does) and error "
+          "contract behave as expected.")
     return 0
 
 

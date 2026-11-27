@@ -1,5 +1,5 @@
-# Autonomous Code Factory v12.26.0
-<!-- code-factory-version: 12.26.0 -->
+# Autonomous Code Factory v12.26.1
+<!-- code-factory-version: 12.26.1 -->
 
 An autonomous code-writing factory for the **Kimi Code CLI** (0.34+, Node).
 
@@ -286,7 +286,9 @@ build, run, test or debug a Roblox place, and is invisible for every other task.
 decide` is deterministic and carries reasons (never a model call), and TWO independent conditions
 must hold — either one alone keeps the role OFF: the repository IS a Roblox project (a Rojo
 `*.project.json` descriptor, a place file, a `.luau`/`.lua` source that really references the Roblox
-API, or a managed `Roblox_Studio` entry) AND the task text binds a Roblox SUBJECT to an ACTION. Task
+API, or a managed `Roblox_Studio` entry) AND the task text binds a Roblox SUBJECT to an ACTION
+clause by clause — a documentation clause discards only its own action, never the game work of the
+next clause. Task
 metadata is not scope, so a `models.roblox_expert` model pin never activates the role, and an explicit
 exclusion phrase in the task text always wins.
 
@@ -311,7 +313,9 @@ the reviewed invariants without echoing any value an entry supplies.
 The evidence model is what makes the path trustworthy: `roblox_mcp.py scenario run --scenario <doc>
 --evidence <dir>` drives one bounded MCP session, captures the console output into `console.log` and
 writes a STRUCTURED `verdict.json`. `PASS` requires the scenario to have COMPLETED and the captured
-console to carry no error log line — any error line is `FAIL`, and a screenshot may be attached as an
+console to carry no error log line — any error line is `FAIL`, a `tools/call` answer carrying a
+present non-boolean `isError` is refused instead of being read as success, and a screenshot may be
+attached as an
 artifact but is NEVER the verdict (the record says `screenshot_is_verdict: false`). `scenario verify`
 re-reads the artifacts instead of trusting the verdict field — the capture must sit in that evidence
 directory with the recorded sha256 — so a verdict claiming PASS while its log logged an error is
@@ -357,4 +361,4 @@ change to the beginning or middle of a prompt invalidates the cache.
 Versioning follows [Semantic Versioning](https://semver.org/). The [`VERSION`](./VERSION)
 file is the single source of truth — all other version mentions are synced from it by
 `scripts/version_manager.py`. Change history is in
-[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.26.0**.
+[`CHANGELOG.md`](./CHANGELOG.md). Current version: **12.26.1**.

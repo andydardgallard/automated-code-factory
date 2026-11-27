@@ -30,7 +30,28 @@ Cases (fixtures live in a tempdir; nothing is written into the repository):
      and an invalid double-quoted escape sequence exit 2 naming the line and the fix — the pre-fix
      `_scalar` only recognised a quoted scalar when BOTH delimiters existed and otherwise returned
      the text unchanged, so `title: "unterminated` parsed successfully — while well-formed quotes
-     and escapes still parse verbatim.
+     and escapes still parse verbatim;
+  8. REGRESSION (review 20261126, N02/M03): the `models:` block is validated against the ONE role
+     registry of `model_matrix.ROLES`, so a misspelled role key (`made_up_role`) exits 2 naming the
+     line, the role and the supported roles — the pre-fix parser accepted any key and the resolver
+     then printed it as a valid entry — and a list-shaped `models:` block stays a refusal; a
+     supported role->alias mapping still parses.
+  9. REGRESSION (review 20261126, N04): an UNQUOTED YAML anchor (`&name`) or alias (`*name`) at the
+     start of a value exits 2 naming the line, the construct and the fix — the pre-fix parser read
+     `title: &title Anchored` as the literal text `'&title Anchored'` (BA-008) — while a QUOTED
+     anchor/alias, the same characters inside a block scalar and a plain scalar keeps them verbatim.
+  10. REGRESSION (business-adversarial BA-033): a plain scalar whose YAML flow collection (`[...]` /
+     `{...}`) is never closed exits 2 naming the line, the opener and the fix — the pre-fix parser
+     accepted `title: [unterminated`, `description: [see the notes` and `repo_path: [unterminated`
+     as literal task data — while a BALANCED pair and a quoted value keep such characters as text.
+     An apostrophe inside a plain scalar (`[Bob's]`) is literal text, so it neither raises a false
+     unclosed-flow error nor hides a really unclosed opener.
+  11. REGRESSION (review-3): WHITESPACE alone is not a scalar boundary. `title: Ask [Bob 's] notes`
+     used to open a quoted region at the apostrophe that merely follows a space, swallow the
+     closing `]` and exit 2 on a perfectly valid value; a quoted scalar may begin only at a value
+     start or after a flow opener/comma/separator (whitespace in between allowed), so legitimate
+     quoted flow elements still parse (a quote there IS a delimiter again) and a real unclosed
+     opener with a quoted element in front of it is still refused.
 
 Exit code 0 = all assertions pass, 1 = a check did not behave as expected.
 """
@@ -128,6 +149,130 @@ title: "A \\"quoted\\" \\\\ title with \\t escapes"
 repo_path: .
 acceptance_criteria:
   - "A plain quoted item with a \\"quote\\" inside."
+"""
+
+# REGRESSION (review 20261126, N02/M03): the models block must name a SUPPORTED role and must be a
+# mapping. Each line number below is 1-based in its own fixture.
+UNKNOWN_MODELS_ROLE = """\
+title: "An unknown model role"
+repo_path: .
+models:
+  coder: deepseek-flash
+  made_up_role: deepseek-flash
+"""
+
+MODELS_AS_LIST = """\
+title: "A models block written as a list"
+repo_path: .
+models:
+  - coder: deepseek-flash
+"""
+
+MODELS_OK = """\
+title: "A supported models matrix"
+repo_path: .
+models:
+  coder: deepseek-flash
+  reviewer: kimi-code/k3
+"""
+
+# REGRESSION (review 20261126, N04): YAML anchors/aliases are unsupported and were read as literal
+# text. Each line number below is 1-based in its own fixture.
+ANCHOR_VALUE = """\
+title: &title Anchored title
+repo_path: .
+"""
+
+ALIAS_VALUE = """\
+title: "An alias in a criterion"
+repo_path: .
+acceptance_criteria:
+  - criterion: *shared
+"""
+
+ANCHOR_BLOCK_VALUE = """\
+title: "An anchor in an indented text block"
+repo_path: .
+user_story:
+  &story As the owner, I want the report.
+"""
+
+ANCHORS_AS_TEXT_OK = """\
+title: "&title Anchored title"
+repo_path: .
+description: |
+  Keep &anchor and *alias as literal characters.
+acceptance_criteria:
+  - "An item quoting *shared verbatim."
+  - criterion: '&title in single quotes'
+commit_exclude:
+  - "&build and *release stay text"
+"""
+
+# REGRESSION (business-adversarial BA-033): a plain scalar whose YAML flow collection is never
+# CLOSED was read as literal text, so `[unterminated` became valid title/description/repo_path data.
+# Each line number below is 1-based in its own fixture.
+UNCLOSED_FLOW_TITLE = """\
+title: [unterminated
+repo_path: .
+"""
+
+UNCLOSED_FLOW_DESCRIPTION = """\
+title: "An unclosed flow collection"
+repo_path: .
+description: [see the owner's notes
+"""
+
+UNCLOSED_FLOW_REPO_PATH = """\
+title: "An unclosed flow collection"
+repo_path: [unterminated
+"""
+
+FLOW_COLLECTIONS_AS_TEXT_OK = """\
+title: See [the notes] and {the glossary} for the wording
+repo_path: .
+description: "[unterminated is intended text inside a quoted scalar"
+acceptance_criteria:
+  - criterion: "The report lists the CNY instrument."
+    verify: "test -f report[1].txt"
+"""
+
+# REGRESSION (review-2 finding 2): an apostrophe inside a PLAIN scalar is literal text, never the
+# opening quote of a quoted scalar — `[Bob's]` used to hide its own closing bracket behind a quote
+# state nobody opened, so a perfectly valid task file failed with "unclosed flow collection".
+APOSTROPHE_PLAIN_SCALARS_OK = """\
+title: Ask Bob's team whether [Bob's] notes and {the owner's} rules apply
+repo_path: .
+description: |
+  Don't rewrite someone else's plain text; the owner's [notes] stay readable.
+acceptance_criteria:
+  - criterion: The player's own [inventory] list is unchanged
+    verify: test -f "report[1].txt"
+"""
+
+# REGRESSION (review-3): WHITESPACE alone must not count as a scalar boundary. A quote after a
+# space in plain text is the apostrophe of `[Bob 's]`, not the opening of a quoted scalar, so the
+# closing `]` stays visible and the value is valid.
+QUOTE_AFTER_SPACE_OK = """\
+title: Ask [Bob 's] team and {the owner 's} rules
+repo_path: .
+description: Roll call for [Bob 's] shift is done
+acceptance_criteria:
+  - criterion: The [Bob 's] list is complete
+    verify: test -f "report[1].txt"
+"""
+
+# The same rule must still DELIMIT a real quoted element inside a flow collection…
+QUOTED_FLOW_ELEMENTS_OK = """\
+title: Roll call [Bob, 'Carol'] and {'owner': 'the lead'}
+repo_path: .
+description: Notes for Bob, 'the lead' and [Bob 's] stay text
+"""
+
+# …and it must still catch a really unclosed opener, quoted element in front of it or not.
+UNCLOSED_FLOW_AFTER_QUOTED_ELEMENT = """\
+title: Roll call [Bob 's] and [unterminated
+repo_path: .
 """
 
 
@@ -325,6 +470,185 @@ def case_7_malformed_quoted_scalars_are_rejected(root: pathlib.Path) -> None:
            f"a quoted list item must survive: {task['acceptance_criteria']!r}")
 
 
+def case_8_models_block_is_validated(root: pathlib.Path) -> None:
+    """Regression (review 20261126, N02/M03): the models block names SUPPORTED roles only.
+
+    The parser used to accept any `models:` key, so a misspelled role entered every later stage and
+    the resolver printed it as a valid resolved entry. The block is now checked against the ONE
+    role registry (`model_matrix.ROLES`, imported rather than re-declared), and a wrong-shaped
+    block stays a refusal instead of becoming an empty matrix.
+    """
+    for name, text, line, needles in (
+            ("unknown-models-role.yaml", UNKNOWN_MODELS_ROLE, "line 5",
+             ("unknown models role", "made_up_role", "analyzer", "role")),
+            ("models-as-list.yaml", MODELS_AS_LIST, "line 4",
+             ("models", "role", "- coder: deepseek-flash"))):
+        task_file = write(root, name, text)
+        expect_failure(run("parse", "--task", str(task_file)), task_file,
+                       (line, *needles))
+        try:
+            tp.parse_file(task_file)
+        except tp.TaskError as exc:
+            expect(line in str(exc), f"{name}: TaskError must name {line}: {exc!r}")
+        else:
+            raise AssertionError(f"{name}: a wrong models block must raise TaskError")
+
+    # Contrast: a supported role->alias mapping still parses, and its count is reported.
+    good = write(root, "models-ok.yaml", MODELS_OK)
+    res = run("parse", "--task", str(good))
+    expect(res.returncode == 0, f"a supported models matrix must parse: {err(res)!r}")
+    expect("models=2" in out(res), f"the summary must count the models: {out(res)!r}")
+    task, _warnings = tp.parse_file(good)
+    expect(task["models"] == {"coder": "deepseek-flash", "reviewer": "kimi-code/k3"},
+           f"the matrix must be read verbatim: {task['models']!r}")
+
+
+def case_9_anchors_and_aliases_are_rejected(root: pathlib.Path) -> None:
+    """Regression (review 20261126, N04): an unsupported anchor/alias is refused, not literal text.
+
+    The parser read `title: &title Anchored` as the literal string `'&title Anchored'` and
+    `- criterion: *shared` as `'*shared'`, so a construct it cannot resolve entered every later
+    stage as if the owner had written it. An unquoted anchor or alias at the start of a value is
+    now exit 2 naming the line, the construct and the fix; quoted text (and a `&`/`*` inside a
+    plain scalar or a block scalar) is intended literal characters and is kept verbatim.
+    """
+    for name, text, line, kind in (
+            ("anchor-value.yaml", ANCHOR_VALUE, "line 1", "anchor"),
+            ("alias-value.yaml", ALIAS_VALUE, "line 4", "alias"),
+            ("anchor-block-value.yaml", ANCHOR_BLOCK_VALUE, "line 4", "anchor")):
+        task_file = write(root, name, text)
+        expect_failure(run("parse", "--task", str(task_file)), task_file,
+                       (line, "unsupported", kind, "aliases", "quote it"))
+        try:
+            tp.parse_file(task_file)
+        except tp.TaskError as exc:
+            expect(exc.line == int(line.split()[1]) and kind in str(exc),
+                   f"{name}: TaskError must name {line} and the {kind}: {exc!r}")
+        else:
+            raise AssertionError(f"{name}: an unquoted {kind} must raise TaskError")
+
+    # Contrast: quoted anchors/aliases — and the same characters inside a block scalar or a longer
+    # plain scalar — are intended LITERAL text and must survive verbatim.
+    good = write(root, "anchors-as-text.yaml", ANCHORS_AS_TEXT_OK)
+    res = run("parse", "--task", str(good))
+    expect(res.returncode == 0, f"quoted anchor/alias text must parse: {res.returncode} "
+                                f"{err(res)!r}")
+    expect(res.stderr == b"", f"quoted anchor/alias text must not warn: {err(res)!r}")
+    task, _warnings = tp.parse_file(good)
+    expect(task["title"] == "&title Anchored title",
+           f"a quoted anchor must stay literal text: {task['title']!r}")
+    expect(task["description"] == "Keep &anchor and *alias as literal characters.\n",
+           f"a block scalar keeps its &/* characters: {task['description']!r}")
+    expect([item["criterion"] for item in task["acceptance_criteria"]] ==
+           ["An item quoting *shared verbatim.", "&title in single quotes"],
+           f"quoted list items must stay literal: {task['acceptance_criteria']!r}")
+    expect(task["commit_exclude"] == ["&build and *release stay text"],
+           f"a quoted string list item must stay literal: {task['commit_exclude']!r}")
+
+
+def case_10_unclosed_flow_collections_are_rejected(root: pathlib.Path) -> None:
+    """Regression (business-adversarial BA-033): an unclosed `[`/`{` is an error, not task data.
+
+    The parser has no flow-collection reader, so a plain scalar with an unclosed opener used to
+    travel on as literal text: `title: [unterminated` parsed successfully and the malformed
+    value — including `repo_path: [unterminated` — entered every later stage as valid task data.
+    An unclosed opener is now exit 2 naming the line, the opener and the fix, while a BALANCED
+    pair and a quoted or block-scalar value keep such characters as intended literal text.
+    """
+    for name, text, line, opener in (
+            ("unclosed-flow-title.yaml", UNCLOSED_FLOW_TITLE, "line 1", "'['"),
+            ("unclosed-flow-description.yaml", UNCLOSED_FLOW_DESCRIPTION, "line 3", "'['"),
+            ("unclosed-flow-repo-path.yaml", UNCLOSED_FLOW_REPO_PATH, "line 2", "'['")):
+        task_file = write(root, name, text)
+        expect_failure(run("parse", "--task", str(task_file)), task_file,
+                       (line, "unclosed YAML flow collection", opener,
+                        "quote it"))
+        try:
+            tp.parse_file(task_file)
+        except tp.TaskError as exc:
+            expect(exc.line == int(line.split()[1]) and "flow collection" in str(exc),
+                   f"{name}: TaskError must name {line} and the flow collection: {exc!r}")
+        else:
+            raise AssertionError(f"{name}: an unclosed flow collection must raise TaskError")
+
+    # The nested `{` opener is refused the same way (the check is not specific to `[`).
+    braced = write(root, "unclosed-flow-braces.yaml",
+                   'title: "Braced"\nrepo_path: .\ndescription: {see the owner\n')
+    expect_failure(run("parse", "--task", str(braced)), braced,
+                   ("line 3", "unclosed YAML flow collection", "'{'", "quote it"))
+
+    # Contrast: BALANCED flow pairs stay plain text, and a quoted scalar keeps an unclosed opener
+    # verbatim (its characters are intended literally).
+    good = write(root, "flow-as-text.yaml", FLOW_COLLECTIONS_AS_TEXT_OK)
+    res = run("parse", "--task", str(good))
+    expect(res.returncode == 0, f"balanced flow brackets as text must parse: {res.returncode} "
+                                f"{err(res)!r}")
+    expect(res.stderr == b"", f"balanced flow brackets as text must not warn: {err(res)!r}")
+    task, _warnings = tp.parse_file(good)
+    expect(task["title"] == "See [the notes] and {the glossary} for the wording",
+           f"a balanced flow pair must stay plain text: {task['title']!r}")
+    expect(task["description"] == "[unterminated is intended text inside a quoted scalar",
+           f"a quoted scalar must keep its brackets verbatim: {task['description']!r}")
+    expect(task["acceptance_criteria"] == [{"criterion": "The report lists the CNY instrument.",
+                                            "verify": "test -f report[1].txt"}],
+           f"a balanced verify command must survive: {task['acceptance_criteria']!r}")
+
+    # Contrast (review-2 finding 2): an APOSTROPHE inside a plain scalar is literal text, so a
+    # balanced pair after it stays plain text instead of raising a false unclosed-flow error.
+    apostrophes = write(root, "apostrophe-plain-scalars.yaml", APOSTROPHE_PLAIN_SCALARS_OK)
+    res = run("parse", "--task", str(apostrophes))
+    expect(res.returncode == 0, f"apostrophes in plain scalars must parse: {res.returncode} "
+                                f"{err(res)!r}")
+    expect(res.stderr == b"", f"apostrophes in plain scalars must not warn: {err(res)!r}")
+    task, _warnings = tp.parse_file(apostrophes)
+    expect(task["title"] == "Ask Bob's team whether [Bob's] notes and {the owner's} rules apply",
+           f"an apostrophe inside a plain scalar is literal text: {task['title']!r}")
+
+    # …and the apostrophe never HIDES a really unclosed opener: before the fix the quote state it
+    # opened swallowed the `[`, so this malformed value would have entered the run as task data.
+    hidden = write(root, "unclosed-flow-after-apostrophe.yaml",
+                   "title: Ask the owner's team about [unterminated\nrepo_path: .\n")
+    expect_failure(run("parse", "--task", str(hidden)), hidden,
+                   ("line 1", "unclosed YAML flow collection", "'['", "quote it"))
+
+
+def case_11_whitespace_is_not_a_quote_boundary(root: pathlib.Path) -> None:
+    """Regression (review-3): a quote after WHITESPACE alone does not open a quoted scalar.
+
+    `_at_scalar_boundary` accepted any preceding space/tab, so the apostrophe of `[Bob 's]` opened a
+    quoted region, the closing `]` fell inside it and a valid task file exited 2 with "unclosed YAML
+    flow collection". The boundary is now the nearest non-whitespace character — a value start or a
+    flow opener/comma/separator — so `[Bob 's]` parses, a genuinely quoted flow element is still
+    read as quoted, and a real unclosed opener is still refused.
+    """
+    spaced = write(root, "quote-after-space.yaml", QUOTE_AFTER_SPACE_OK)
+    res = run("parse", "--task", str(spaced))
+    expect(res.returncode == 0, f"a quote after a space in plain text must parse: "
+                                f"{res.returncode} {err(res)!r}")
+    expect(res.stderr == b"", f"a quote after a space must not warn: {err(res)!r}")
+    task, _warnings = tp.parse_file(spaced)
+    expect(task["title"] == "Ask [Bob 's] team and {the owner 's} rules",
+           f"whitespace is not a quote boundary: {task['title']!r}")
+    expect(task["description"] == "Roll call for [Bob 's] shift is done",
+           f"whitespace is not a quote boundary in a description either: "
+           f"{task['description']!r}")
+
+    # Contrast: a quoted element after a flow opener/comma/separator IS a quoted scalar again.
+    quoted = write(root, "quoted-flow-elements.yaml", QUOTED_FLOW_ELEMENTS_OK)
+    res = run("parse", "--task", str(quoted))
+    expect(res.returncode == 0, f"quoted flow elements must parse: {res.returncode} "
+                                f"{err(res)!r}")
+    task, _warnings = tp.parse_file(quoted)
+    expect(task["title"] == "Roll call [Bob, 'Carol'] and {'owner': 'the lead'}",
+           f"a quoted flow element must stay plain text of the value: {task['title']!r}")
+
+    # Control: a real unclosed opener is still an error, whatever quoted text precedes it.
+    unclosed = write(root, "unclosed-flow-after-quoted-element.yaml",
+                     UNCLOSED_FLOW_AFTER_QUOTED_ELEMENT)
+    expect_failure(run("parse", "--task", str(unclosed)), unclosed,
+                   ("line 1", "unclosed YAML flow collection", "'['", "quote it"))
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -348,6 +672,23 @@ def main() -> int:
         print("PASS 7 - an unterminated double/single quote and an invalid double-quoted escape "
               "exit 2 naming the line and the fix (never a silent fallback), while well-formed "
               "quotes and escapes still parse")
+        case_8_models_block_is_validated(root)
+        print("PASS 8 - the models block is validated against the one role registry: an unknown "
+              "role key and a list-shaped block exit 2 naming the line, the problem and the fix, "
+              "while a supported role->alias mapping still parses")
+        case_9_anchors_and_aliases_are_rejected(root)
+        print("PASS 9 - an unquoted YAML anchor/alias exits 2 naming the line, the construct and "
+              "the fix (never literal text), while quoted anchors/aliases and their characters "
+              "inside a block scalar stay verbatim")
+        case_10_unclosed_flow_collections_are_rejected(root)
+        print("PASS 10 - an unclosed YAML flow collection in title/description/repo_path exits 2 "
+              "naming the line, the opener and the fix (never literal task data), while balanced "
+              "pairs, quoted values and apostrophes in plain scalars keep their brackets as text "
+              "and an apostrophe never hides a really unclosed opener")
+        case_11_whitespace_is_not_a_quote_boundary(root)
+        print("PASS 11 - a quote after whitespace alone in plain text ([Bob 's]) parses instead of "
+              "opening a quoted region, quoted flow elements after an opener/comma/separator are "
+              "still delimited, and a real unclosed opener is still refused")
     return 0
 
 

@@ -220,7 +220,13 @@ Cross-checks run before anything slow, and `--registry-only` stops after them:
   - `check_claim_fixtures()` does the same for the reconstructed claims: four claim lists the
     harness MUST refuse (a document that does not exist, an evidence anchor that rotted, an
     unregistered vaccine, a claim re-numbered instead of keyed by its vaccine) plus the shipped
-    list, which must pass.
+    list, which must pass;
+  - `check_timeout_capture()` re-proves the CAPTURE of a check's own output: every check is run with
+    its stdout/stderr in TEMPORARY FILES, never pipes, so its `wait()` ends at its REAL exit instead
+    of at a pipe EOF that a grandchild holding the inherited handles keeps open, and a timeout kills
+    the whole process TREE with a bounded grace. The fixture hangs past a 1s budget while leaving
+    such a grandchild alive, and must return inside the budget with the timeout reported and no
+    process left behind — the hang that stalled a full-suite baseline at 1200s.
 
 The disposition file lives under the gitignored `.code-factory/`, so a FRESH CLONE keeps no run
 artifact. Its ABSENCE is not a failure: the harness's durable ground truth is its own REGISTRY, and a
@@ -260,6 +266,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -6208,9 +6215,10 @@ def run_module(scripts: pathlib.Path, tool: str, timeout: int) -> Run:
     return _spawn([sys.executable, str(scripts / tool)], scripts, timeout)
 
 
-def run_probe(scripts: pathlib.Path, source: str, timeout: int) -> Run:
+def run_probe(scripts: pathlib.Path, source: str, timeout: int,
+              args: list[str] | None = None) -> Run:
     """Execute one focused probe (`python -c`) with the same interpreter and directory."""
-    return _spawn([sys.executable, "-c", source], scripts, timeout)
+    return _spawn([sys.executable, "-c", source, *(args or [])], scripts, timeout)
 
 
 def run_check(scripts: pathlib.Path, vaccine: Vaccine, timeout: int) -> Run:
@@ -6220,19 +6228,164 @@ def run_check(scripts: pathlib.Path, vaccine: Vaccine, timeout: int) -> Run:
     return run_module(scripts, vaccine.target, timeout)
 
 
+# Bytes read back from the tail of each captured stream. Bounded on purpose: a check may print
+# megabytes, while only its last lines can name its defect, so no capture grows with the volume.
+OUTPUT_TAIL_BYTES = 64 * 1024
+TRUNCATION_MARK = "[... earlier output truncated]"
+# Seconds a killed process TREE is given to die before its captured output is read anyway: a tree
+# that refuses to die must not become the secondary hang this capture removes.
+KILL_GRACE_SECONDS = 10
+# The inherited-handle regression: the grandchild inherits the capture handles and outlives its
+# parent by far more than the check's budget, so a wait on the handles is measurable, not merely long.
+TIMEOUT_FIXTURE_SECONDS = 1
+GRANDCHILD_SLEEP_SECONDS = 30
+# The elapsed bound of that regression: the budget, the kill grace and room for the process start.
+TIMEOUT_FIXTURE_BOUND_SECONDS = TIMEOUT_FIXTURE_SECONDS + KILL_GRACE_SECONDS + 5
+
+# The regression's child: it starts a grandchild that INHERITS stdout/stderr and outlives it, writes
+# the grandchild's pid so the fixture can prove the tree is gone, then hangs itself.
+INHERITED_HANDLE_PROBE = """import subprocess, sys, time
+inner = f"import pathlib, time; pathlib.Path({sys.argv[1]!r}).write_text(str(__import__('os').getpid())); time.sleep(%d)"
+subprocess.Popen([sys.executable, "-c", inner])
+time.sleep(%d)
+""" % (GRANDCHILD_SLEEP_SECONDS, GRANDCHILD_SLEEP_SECONDS)
+
+
+def read_tail(stream) -> str:
+    """The last OUTPUT_TAIL_BYTES of a captured stream, decoded as UTF-8, truncation marked."""
+    try:
+        stream.seek(0, os.SEEK_END)
+        start = max(0, stream.tell() - OUTPUT_TAIL_BYTES)
+        stream.seek(start)
+        data = stream.read()
+    except OSError:      # a stream we cannot re-read is not a reason to lose the check
+        return ""
+    text = data.decode("utf-8", errors="replace") if isinstance(data, bytes) else str(data)
+    return f"{TRUNCATION_MARK}\n{text}" if start else text
+
+
+def kill_tree(proc: subprocess.Popen) -> None:
+    """Kill a timed-out check AND its children: a leaked runner must not outlive the harness.
+
+    Windows: `taskkill /F /T` kills the whole tree (the real work runs in grandchildren).
+    POSIX: SIGKILL to the process group the child was started in.
+    """
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=10)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
 def _spawn(argv: list[str], cwd: pathlib.Path, timeout: int) -> Run:
-    """One child process, its bytes decoded as UTF-8, a timeout reported as `code=None`."""
+    """One child process, its bytes decoded as UTF-8, a timeout reported as `code=None`.
+
+    Output is captured into temporary FILES, never pipes: `wait()` then returns at the check's REAL
+    exit instead of at a pipe EOF that a grandchild holding the inherited handles keeps open — the
+    hang that stalled a full-suite baseline. A timeout kills the whole process TREE and waits for it
+    with a bounded grace, so a tree that refuses to die is not a second hang.
+    """
     env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
     env["PYTHONIOENCODING"] = "utf-8"     # the child's bytes are decoded as UTF-8 below
+    popen_kwargs = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+                    else {"start_new_session": True})
     started = _now()
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(argv, cwd=str(cwd), stdout=out, stderr=err, env=env,
+                                **popen_kwargs)
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            kill_tree(proc)
+            try:                # bounded: a tree that will not die must not block the harness twice
+                proc.wait(timeout=KILL_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        stdout, stderr = read_tail(out), read_tail(err)
+    return Run(None if timed_out else proc.returncode, stdout, stderr, _now() - started)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Is `pid` still running? Windows asks tasklist; POSIX uses signal 0."""
+    if os.name == "nt":
+        try:
+            res = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                                 capture_output=True, text=True, errors="replace", timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return str(pid) in res.stdout
     try:
-        res = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
-                             errors="replace", env=env, timeout=timeout)
-        return Run(res.returncode, res.stdout, res.stderr, _now() - started)
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        return Run(None, stdout, stderr, _now() - started)
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _kill_pid(pid: int) -> None:
+    """Last-resort cleanup: this regression must never leave a process behind."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=10)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def check_timeout_capture() -> list[str]:
+    """Prove the capture cannot hang on handles a grandchild inherited, and leaks nothing.
+
+    The wrapped check hangs past `TIMEOUT_FIXTURE_SECONDS` and leaves a grandchild holding the
+    inherited stdout/stderr for `GRANDCHILD_SLEEP_SECONDS`. With pipes the old
+    `subprocess.run(capture_output=True)` killed the direct child and then waited for a pipe EOF the
+    grandchild returned only after its own sleep — the 1200s baseline hang. The capture must return
+    inside `TIMEOUT_FIXTURE_BOUND_SECONDS`, report the timeout, and leave no process behind.
+    """
+    problems: list[str] = []
+    with tempfile.TemporaryDirectory() as td:
+        pidfile = pathlib.Path(td) / "grandchild.pid"
+        started = _now()
+        run = run_probe(SCRIPT_DIR, INHERITED_HANDLE_PROBE, TIMEOUT_FIXTURE_SECONDS,
+                        [str(pidfile)])
+        elapsed = _now() - started
+        if run.code is not None:
+            problems.append(f"CAPTURE FIXTURE: the hanging check exited {run.code} instead of "
+                            f"timing out — the regression no longer exercises the timeout path")
+        if elapsed > TIMEOUT_FIXTURE_BOUND_SECONDS:
+            problems.append(f"CAPTURE FIXTURE: the capture returned after {elapsed:.1f}s for a "
+                            f"{TIMEOUT_FIXTURE_SECONDS}s budget while its grandchild sleeps "
+                            f"{GRANDCHILD_SLEEP_SECONDS}s — it waited for the inherited handles "
+                            f"instead of for the check, or the tree kill did not bound the wait")
+        pid = 0
+        deadline = _now() + KILL_GRACE_SECONDS
+        while not pidfile.is_file() and _now() < deadline:
+            time.sleep(0.05)
+        try:
+            pid = int(pidfile.read_text(encoding="utf-8").strip()) if pidfile.is_file() else 0
+        except (OSError, ValueError):       # a half-written pid is not a live process we can name
+            pid = 0
+        if not pid:
+            problems.append("CAPTURE FIXTURE: the grandchild never reported its pid, so the "
+                            "regression cannot prove that the process tree was terminated")
+        else:
+            deadline = _now() + KILL_GRACE_SECONDS
+            while _pid_alive(pid) and _now() < deadline:
+                time.sleep(0.05)
+            if _pid_alive(pid):
+                _kill_pid(pid)
+                problems.append(f"CAPTURE FIXTURE: the check's process TREE was not terminated: "
+                                f"grandchild {pid} still runs after the timeout — a leaked process "
+                                f"would outlive the harness")
+    return problems
 
 
 def _now() -> float:
@@ -6527,6 +6680,7 @@ def main(argv: list[str]) -> int:
     problems.extend(check_disposition_fixtures())
     problems.extend(check_base_fixtures())
     problems.extend(check_claim_fixtures())
+    problems.extend(check_timeout_capture())
     if problems:
         print(f"FAIL - {len(problems)} vaccination cross-check problem(s) under {REPO_ROOT}:")
         for problem in problems:
